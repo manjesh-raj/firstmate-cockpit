@@ -100,6 +100,11 @@
   .ctab{ font-size:.76rem; padding:5px 11px; border-radius:.4rem; cursor:pointer; border:none; background:transparent; color:var(--color-base-content); opacity:.65; }
   .ctab.active{ background:var(--color-base-100); opacity:1; font-weight:600; }
   .x-btn{ width:30px;height:30px;border-radius:.5rem;border:1px solid color-mix(in oklab,var(--color-base-content) 14%,transparent);background:transparent;color:var(--color-base-content);cursor:pointer;display:grid;place-items:center; }
+  .term-theme-sel{ height:30px; border-radius:.5rem; border:1px solid color-mix(in oklab,var(--color-base-content) 14%,transparent); background:var(--color-base-100); color:var(--color-base-content); font-size:.78rem; padding:0 .5rem; cursor:pointer; }
+  .zoom-grp{ display:flex; gap:2px; background:color-mix(in oklab,var(--color-base-content) 8%,transparent); padding:3px; border-radius:.55rem; }
+  .zoom-btn{ min-width:30px; height:24px; padding:0 7px; border:none; background:transparent; color:var(--color-base-content); cursor:pointer; border-radius:.4rem; font-size:.8rem; font-weight:600; opacity:.8; transition:background-color .12s ease, opacity .12s ease; }
+  .zoom-btn:hover{ background:var(--color-base-100); opacity:1; }
+  .zoom-btn.zoom-reset{ font-size:.72rem; min-width:24px; }
   .transcript{ flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
   .msg{ display:flex; gap:9px; max-width:min(88%, 780px); }
   .msg.captain{ align-self:flex-end; flex-direction:row-reverse; }
@@ -286,6 +291,30 @@
       <button class="ctab active" id="ctab-term" onclick="setConsoleView('term')">Terminal</button>
       <button class="ctab" id="ctab-raw" onclick="setConsoleView('raw')">Transcript</button>
       <button class="ctab" id="ctab-chat" onclick="setConsoleView('chat')">Conversation</button>
+    </div>
+    <select id="term-theme" class="term-theme-sel" onchange="setTermTheme(this.value)" title="Terminal theme" aria-label="Terminal theme">
+      <optgroup label="Dark">
+        <option value="cockpit">Cockpit</option>
+        <option value="tokyo-night">Tokyo Night</option>
+        <option value="dracula">Dracula</option>
+        <option value="one-dark">One Dark</option>
+        <option value="catppuccin-mocha">Catppuccin Mocha</option>
+        <option value="gruvbox-dark">Gruvbox Dark</option>
+        <option value="nord">Nord</option>
+        <option value="monokai">Monokai</option>
+        <option value="night-owl">Night Owl</option>
+        <option value="ayu-mirage">Ayu Mirage</option>
+        <option value="solarized-dark">Solarized Dark</option>
+      </optgroup>
+      <optgroup label="Light">
+        <option value="solarized-light">Solarized Light</option>
+        <option value="github-light">GitHub Light</option>
+      </optgroup>
+    </select>
+    <div id="term-zoom" class="zoom-grp" title="Terminal text size">
+      <button class="zoom-btn" onclick="termFontDelta(-1)" title="Smaller text (⌘−)" aria-label="Smaller text">A−</button>
+      <button class="zoom-btn zoom-reset" onclick="termFontReset()" title="Reset text size (⌘0)" aria-label="Reset text size">A</button>
+      <button class="zoom-btn" onclick="termFontDelta(1)" title="Larger text (⌘+)" aria-label="Larger text">A+</button>
     </div>
     <button class="x-btn" onclick="minimizeConsole()" aria-label="Minimize" title="Minimize">
       <svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
@@ -570,6 +599,8 @@ function setConsoleView(v){
   ['term','raw','chat'].forEach(k=>{ const el=$('ctab-'+k); if(el) el.classList.toggle('active',k===v); });
   const isTerm = v==='term';
   $('console-foot').style.display = isTerm ? 'none' : '';   // terminal takes its own input
+  $('term-zoom').style.display = isTerm ? 'flex' : 'none';  // zoom controls are terminal-only
+  $('term-theme').style.display = isTerm ? '' : 'none';    // theme picker is terminal-only
   if(isTerm){
     ['console-chat','console-raw','console-notice'].forEach(id=>$(id).classList.add('hidden'));
     $('console-term').classList.remove('hidden');
@@ -585,7 +616,71 @@ function setConsoleView(v){
 
 /* ---- embedded terminal (xterm.js ↔ tmux) ---- */
 let term=null, fitAddon=null, termWs=null;
+let termFontSize = parseFloat(localStorage.getItem('fm-term-font')) || 12.5;
+const TERM_THEMES = {
+  cockpit: { background:'#12161c', foreground:'#d6e2e0', cursor:'#4fd1c5', cursorAccent:'#12161c', selectionBackground:'#33507a',
+    black:'#1b2028', red:'#e06c75', green:'#5ad6a0', yellow:'#e5c07b', blue:'#61afef', magenta:'#c678dd', cyan:'#4fd1c5', white:'#d6e2e0',
+    brightBlack:'#5c6773', brightRed:'#ff7b86', brightGreen:'#7df0bd', brightYellow:'#ffd88a', brightBlue:'#82c0ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite:'#ffffff' },
+  dracula: { background:'#282a36', foreground:'#f8f8f2', cursor:'#f8f8f2', cursorAccent:'#282a36', selectionBackground:'#44475a',
+    black:'#21222c', red:'#ff5555', green:'#50fa7b', yellow:'#f1fa8c', blue:'#bd93f9', magenta:'#ff79c6', cyan:'#8be9fd', white:'#f8f8f2',
+    brightBlack:'#6272a4', brightRed:'#ff6e6e', brightGreen:'#69ff94', brightYellow:'#ffffa5', brightBlue:'#d6acff', brightMagenta:'#ff92df', brightCyan:'#a4ffff', brightWhite:'#ffffff' },
+  'solarized-dark': { background:'#002b36', foreground:'#93a1a1', cursor:'#93a1a1', cursorAccent:'#002b36', selectionBackground:'#073642',
+    black:'#073642', red:'#dc322f', green:'#859900', yellow:'#b58900', blue:'#268bd2', magenta:'#d33682', cyan:'#2aa198', white:'#eee8d5',
+    brightBlack:'#586e75', brightRed:'#cb4b16', brightGreen:'#586e75', brightYellow:'#657b83', brightBlue:'#839496', brightMagenta:'#6c71c4', brightCyan:'#93a1a1', brightWhite:'#fdf6e3' },
+  nord: { background:'#2e3440', foreground:'#d8dee9', cursor:'#d8dee9', cursorAccent:'#2e3440', selectionBackground:'#434c5e',
+    black:'#3b4252', red:'#bf616a', green:'#a3be8c', yellow:'#ebcb8b', blue:'#81a1c1', magenta:'#b48ead', cyan:'#88c0d0', white:'#e5e9f0',
+    brightBlack:'#4c566a', brightRed:'#bf616a', brightGreen:'#a3be8c', brightYellow:'#ebcb8b', brightBlue:'#81a1c1', brightMagenta:'#b48ead', brightCyan:'#8fbcbb', brightWhite:'#eceff4' },
+  'solarized-light': { background:'#fdf6e3', foreground:'#657b83', cursor:'#586e75', cursorAccent:'#fdf6e3', selectionBackground:'#eee8d5',
+    black:'#073642', red:'#dc322f', green:'#859900', yellow:'#b58900', blue:'#268bd2', magenta:'#d33682', cyan:'#2aa198', white:'#eee8d5',
+    brightBlack:'#002b36', brightRed:'#cb4b16', brightGreen:'#586e75', brightYellow:'#657b83', brightBlue:'#839496', brightMagenta:'#6c71c4', brightCyan:'#93a1a1', brightWhite:'#fdf6e3' },
+  'tokyo-night': { background:'#1a1b26', foreground:'#c0caf5', cursor:'#c0caf5', cursorAccent:'#1a1b26', selectionBackground:'#33467c',
+    black:'#15161e', red:'#f7768e', green:'#9ece6a', yellow:'#e0af68', blue:'#7aa2f7', magenta:'#bb9af7', cyan:'#7dcfff', white:'#a9b1d6',
+    brightBlack:'#414868', brightRed:'#f7768e', brightGreen:'#9ece6a', brightYellow:'#e0af68', brightBlue:'#7aa2f7', brightMagenta:'#bb9af7', brightCyan:'#7dcfff', brightWhite:'#c0caf5' },
+  'one-dark': { background:'#282c34', foreground:'#abb2bf', cursor:'#528bff', cursorAccent:'#282c34', selectionBackground:'#3e4451',
+    black:'#282c34', red:'#e06c75', green:'#98c379', yellow:'#e5c07b', blue:'#61afef', magenta:'#c678dd', cyan:'#56b6c2', white:'#abb2bf',
+    brightBlack:'#5c6370', brightRed:'#e06c75', brightGreen:'#98c379', brightYellow:'#d19a66', brightBlue:'#61afef', brightMagenta:'#c678dd', brightCyan:'#56b6c2', brightWhite:'#ffffff' },
+  'catppuccin-mocha': { background:'#1e1e2e', foreground:'#cdd6f4', cursor:'#f5e0dc', cursorAccent:'#1e1e2e', selectionBackground:'#585b70',
+    black:'#45475a', red:'#f38ba8', green:'#a6e3a1', yellow:'#f9e2af', blue:'#89b4fa', magenta:'#f5c2e7', cyan:'#94e2d5', white:'#bac2de',
+    brightBlack:'#585b70', brightRed:'#f38ba8', brightGreen:'#a6e3a1', brightYellow:'#f9e2af', brightBlue:'#89b4fa', brightMagenta:'#f5c2e7', brightCyan:'#94e2d5', brightWhite:'#a6adc8' },
+  'gruvbox-dark': { background:'#282828', foreground:'#ebdbb2', cursor:'#ebdbb2', cursorAccent:'#282828', selectionBackground:'#504945',
+    black:'#282828', red:'#cc241d', green:'#98971a', yellow:'#d79921', blue:'#458588', magenta:'#b16286', cyan:'#689d6a', white:'#a89984',
+    brightBlack:'#928374', brightRed:'#fb4934', brightGreen:'#b8bb26', brightYellow:'#fabd2f', brightBlue:'#83a598', brightMagenta:'#d3869b', brightCyan:'#8ec07c', brightWhite:'#ebdbb2' },
+  monokai: { background:'#272822', foreground:'#f8f8f2', cursor:'#f8f8f0', cursorAccent:'#272822', selectionBackground:'#49483e',
+    black:'#272822', red:'#f92672', green:'#a6e22e', yellow:'#f4bf75', blue:'#66d9ef', magenta:'#ae81ff', cyan:'#a1efe4', white:'#f8f8f2',
+    brightBlack:'#75715e', brightRed:'#f92672', brightGreen:'#a6e22e', brightYellow:'#f4bf75', brightBlue:'#66d9ef', brightMagenta:'#ae81ff', brightCyan:'#a1efe4', brightWhite:'#f9f8f5' },
+  'night-owl': { background:'#011627', foreground:'#d6deeb', cursor:'#80a4c2', cursorAccent:'#011627', selectionBackground:'#1d3b53',
+    black:'#011627', red:'#ef5350', green:'#22da6e', yellow:'#addb67', blue:'#82aaff', magenta:'#c792ea', cyan:'#21c7a8', white:'#ffffff',
+    brightBlack:'#575656', brightRed:'#ef5350', brightGreen:'#22da6e', brightYellow:'#ffeb95', brightBlue:'#82aaff', brightMagenta:'#c792ea', brightCyan:'#7fdbca', brightWhite:'#ffffff' },
+  'ayu-mirage': { background:'#1f2430', foreground:'#cbccc6', cursor:'#ffcc66', cursorAccent:'#1f2430', selectionBackground:'#34455a',
+    black:'#191e2a', red:'#ed8274', green:'#a6cc70', yellow:'#fad07b', blue:'#6dcbfa', magenta:'#cfbafa', cyan:'#90e1c6', white:'#c7c7c7',
+    brightBlack:'#686868', brightRed:'#f28779', brightGreen:'#bae67e', brightYellow:'#ffd580', brightBlue:'#73d0ff', brightMagenta:'#d4bfff', brightCyan:'#95e6cb', brightWhite:'#ffffff' },
+  'github-light': { background:'#ffffff', foreground:'#24292e', cursor:'#24292e', cursorAccent:'#ffffff', selectionBackground:'#c8e1ff',
+    black:'#24292e', red:'#d73a49', green:'#28a745', yellow:'#dbab09', blue:'#0366d6', magenta:'#5a32a3', cyan:'#0598bc', white:'#6a737d',
+    brightBlack:'#959da5', brightRed:'#cb2431', brightGreen:'#22863a', brightYellow:'#b08800', brightBlue:'#005cc5', brightMagenta:'#5a32a3', brightCyan:'#3192aa', brightWhite:'#d1d5da' },
+};
+let termThemeName = localStorage.getItem('fm-term-theme') || 'cockpit';
+if(!TERM_THEMES[termThemeName]) termThemeName = 'cockpit';
+function setTermTheme(name){
+  if(!TERM_THEMES[name]) return;
+  termThemeName = name;
+  localStorage.setItem('fm-term-theme', name);
+  const sel = $('term-theme'); if(sel) sel.value = name;
+  if(term) term.options.theme = TERM_THEMES[name];
+}
 function safeFit(){ try{ fitAddon && fitAddon.fit(); }catch(e){} }
+function applyTermFont(){
+  localStorage.setItem('fm-term-font', termFontSize);
+  if(term){ term.options.fontSize = termFontSize; safeFit(); sendTermResize(); }
+}
+function termFontDelta(d){ termFontSize = Math.max(8, Math.min(30, Math.round((termFontSize + d) * 2) / 2)); applyTermFont(); }
+function termFontReset(){ termFontSize = 12.5; applyTermFont(); }
+// ⌘/Ctrl +/-/0 zoom while the terminal is open (capture so xterm/browser don't eat it)
+window.addEventListener('keydown', (e)=>{
+  if(!(consoleOpen && consoleView==='term') || !(e.metaKey || e.ctrlKey)) return;
+  if(e.key==='=' || e.key==='+'){ e.preventDefault(); e.stopPropagation(); termFontDelta(1); }
+  else if(e.key==='-' || e.key==='_'){ e.preventDefault(); e.stopPropagation(); termFontDelta(-1); }
+  else if(e.key==='0'){ e.preventDefault(); e.stopPropagation(); termFontReset(); }
+}, true);
 // Explicitly push the current grid size to tmux. Needed because fitAddon only
 // emits onResize when dimensions CHANGE - if the first fit already set the right
 // size before the socket was open, tmux never heard about it. Call on connect.
@@ -596,8 +691,9 @@ function sendTermResize(){
 }
 function initTerm(){
   if(term || typeof Terminal==='undefined') return;
-  term = new Terminal({ fontSize:12.5, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000,
-    theme:{ background:'#12161c', foreground:'#d6e2e0', cursor:'#4fd1c5', selectionBackground:'#33507a' } });
+  term = new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000,
+    theme: TERM_THEMES[termThemeName] });
+  const sel = $('term-theme'); if(sel) sel.value = termThemeName;
   fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.open($('xterm-host'));
