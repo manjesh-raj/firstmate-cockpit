@@ -1,0 +1,13 @@
+[project]
+name = "firstmate-cockpit"
+version = "0.1.0"
+description = "A macOS cockpit (FastAPI + Tauri) to observe and lightly control a firstmate fleet."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12",
+]
+
+[tool.uvicorn]
+# run with: uvicorn backend.app:app --host 127.0.0.1 --port 8765
