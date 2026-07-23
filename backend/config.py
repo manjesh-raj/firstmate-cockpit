@@ -16,6 +16,13 @@ from pathlib import Path
 APP_CONFIG_DIR = Path.home() / "Library" / "Application Support" / "firstmate-cockpit"
 CONFIG_FILE = APP_CONFIG_DIR / "config.json"
 
+# Sign-in credentials + the session-signing key live in a directory the operator
+# owns and can edit by hand. This is a localhost-only desktop app, so a plaintext
+# local credentials file is acceptable and intended.
+DEFAULT_CRED_DIR = Path.home() / ".firstmate-cockpit"
+DEFAULT_USERNAME = "manjesh"
+DEFAULT_PASSWORD = "Welcome@123!"
+
 
 def _load_saved() -> dict:
     try:
@@ -65,6 +72,15 @@ class Config:
         self.port: int = int(os.environ.get("FM_COCKPIT_PORT", "8765"))
         # Timeout for any single fm-* script invocation, in seconds.
         self.script_timeout: float = float(os.environ.get("FM_SCRIPT_TIMEOUT", "20"))
+        # Where sign-in credentials live. A plain file the operator owns; the
+        # default location is created with defaults on first run (see auth.py).
+        cred_env = os.environ.get("FM_CREDENTIALS_FILE")
+        self.cred_file: Path = (
+            Path(cred_env).expanduser() if cred_env else DEFAULT_CRED_DIR / "credentials"
+        )
+        # The session-signing secret persists next to the credentials so signed
+        # cookies survive an app restart.
+        self.session_key_file: Path = self.cred_file.parent / "session.key"
 
     # --- convenience paths (all under fm_home) ---
     @property

@@ -11,18 +11,94 @@ import asyncio
 import contextlib
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import fleet, scripts
+from . import auth, fleet, scripts
 from .config import config
 from .terminal import terminal_bridge
 
 app = FastAPI(title="firstmate-cockpit", version="0.1.0")
 
 _STATIC = Path(__file__).parent / "static"
+
+
+# --- authentication gate -----------------------------------------------------
+#
+# Everything under /api (bar login/logout/status/health) requires a valid signed
+# session cookie, so the auth is genuine rather than a frontend-only screen. The
+# index page and static assets stay open - the page itself shows the login
+# screen until /api/auth/status reports a session. Unauthenticated API calls get
+# a 401, which the UI treats as "show the login screen".
+
+_PUBLIC_PATHS = {
+    "/",
+    "/index.html",
+    "/favicon.ico",
+    "/api/login",
+    "/api/logout",
+    "/api/auth/status",
+    "/api/health",
+}
+
+
+def _is_public(path: str) -> bool:
+    if path in _PUBLIC_PATHS:
+        return True
+    return path.startswith("/static/")
+
+
+@app.middleware("http")
+async def require_session(request: Request, call_next):
+    path = request.url.path
+    if _is_public(path) or not path.startswith("/api/"):
+        return await call_next(request)
+    if not auth.is_authenticated(request.cookies):
+        return JSONResponse({"ok": False, "error": "unauthenticated"}, status_code=401)
+    return await call_next(request)
+
+
+# --- auth endpoints ----------------------------------------------------------
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def post_login(body: LoginBody, response: Response):
+    if not auth.validate(body.username, body.password):
+        return JSONResponse(
+            {"ok": False, "error": "That username or password doesn't match the credentials file."},
+            status_code=401,
+        )
+    token = auth.make_token(body.username)
+    response.set_cookie(
+        auth.SESSION_COOKIE, token,
+        max_age=auth.SESSION_TTL, httponly=True, samesite="lax", path="/",
+    )
+    return {"ok": True, "username": body.username}
+
+
+@app.post("/api/logout")
+def post_logout(response: Response):
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    username = auth.verify_token(token)
+    creds = auth.load_credentials()
+    return {
+        "authenticated": username is not None,
+        "username": username,
+        "credentials_file": str(config.cred_file),
+        "default_username": creds.get("username"),
+    }
 
 
 # --- read endpoints ----------------------------------------------------------
@@ -178,32 +254,69 @@ def save_settings(body: SettingsBody):
     return {"ok": True, "firstmate_target": config.firstmate_target}
 
 
-@app.get("/api/firstmate/detect")
-def detect_firstmate():
-    """Scan tmux panes and rank first-mate candidates (home panes first)."""
+def _scan_candidates():
+    """Scan tmux panes, tag first-mate home panes, and rank home panes first.
+
+    Returns (candidates, error). ``error`` is set (candidates empty) when no
+    tmux server is reachable. A candidate carries: target, session, window,
+    pane, command (runtime), path (cwd), and is_home.
+    """
     panes = scripts.tmux_panes()
     if panes is None:
-        return {"ok": False, "error": "No tmux server running - start your first mate in tmux first.", "candidates": []}
+        return [], "No tmux server running - start your first mate in tmux first."
     home = str(config.fm_home)
     cands = []
     for p in panes:
+        # Skip the internal mirror sessions the terminal bridge spins up
+        # (see terminal._group_name); they are not real first-mate targets.
+        if str(p.get("session", "")).startswith("cockpit_"):
+            continue
         path = p.get("path", "")
         is_home = path == home or path.startswith(home + "/")
         cands.append({**p, "is_home": is_home})
-    # home panes first, then by target
     cands.sort(key=lambda c: (not c["is_home"], c["target"]))
+    return cands, None
+
+
+@app.get("/api/firstmate/detect")
+def detect_firstmate():
+    """Scan tmux panes and rank first-mate candidates (home panes first)."""
+    cands, err = _scan_candidates()
+    if err:
+        return {"ok": False, "error": err, "candidates": []}
     return {"ok": True, "candidates": cands}
+
+
+@app.get("/api/targets")
+def get_targets():
+    """List candidate first-mate sessions (tmux panes) for the target selector.
+
+    Mirrors the "Detect" data in Settings → Connection: each candidate has a
+    target id, its runtime/command, its cwd/path, and whether that path is a
+    firstmate home. Also echoes the currently active target.
+    """
+    cands, err = _scan_candidates()
+    if err:
+        return {"ok": False, "error": err, "targets": [], "active": config.firstmate_target or None}
+    return {"ok": True, "targets": cands, "active": config.firstmate_target or None}
 
 
 # --- live websocket ----------------------------------------------------------
 
 @app.websocket("/ws/terminal")
 async def ws_terminal(ws: WebSocket):
+    # Gate the live terminal behind the session so auth is genuine.
+    if not auth.is_authenticated(ws.cookies):
+        await ws.close(code=1008)  # policy violation
+        return
     await terminal_bridge(ws)
 
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
+    if not auth.is_authenticated(ws.cookies):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     try:
         while True:
