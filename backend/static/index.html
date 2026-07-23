@@ -39,6 +39,39 @@
     --glow: radial-gradient(1100px 480px at 82% -10%, #4a1a0d55, transparent 62%);
     --term-bg:#0c0c0f;
   }
+  /* ===== GRAPHITE + INDIGO ===== */
+  [data-theme="graphite"]{
+    color-scheme:dark;
+    --bg:#0e0e12; --bg2:#09090d; --surf:#16161c; --surf2:#1d1d25; --raise:#26262f;
+    --line:#2b2b36; --line-soft:#1d1d25;
+    --ink:#eceef4; --dim:#9a9bab; --faint:#63647a;
+    --accent:#8b7dff; --accent-2:#aca1ff; --accent-ink:#0d0a24; --accent-soft:#241f48;
+    --ok:#5fd08a; --warn:#e6c24c; --bad:#f0757a; --info:#7aa8f0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #241f4840, transparent 62%);
+    --term-bg:#0c0c10;
+  }
+  /* ===== NIGHTFALL + SIGNAL ===== */
+  [data-theme="nightfall"]{
+    color-scheme:dark;
+    --bg:#0a0a0b; --bg2:#060607; --surf:#141416; --surf2:#1c1c1f; --raise:#252529;
+    --line:#2c2c31; --line-soft:#1e1e22;
+    --ink:#f4f4f6; --dim:#8f8f99; --faint:#5c5c66;
+    --accent:#c6f24e; --accent-2:#d9f987; --accent-ink:#141a02; --accent-soft:#2b330f;
+    --ok:#4fd0a0; --warn:#f0c94a; --bad:#ff5c6c; --info:#5ab0f0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #2b330f45, transparent 62%);
+    --term-bg:#08080a;
+  }
+  /* ===== SLATE + ROYAL ===== */
+  [data-theme="slate"]{
+    color-scheme:dark;
+    --bg:#10151c; --bg2:#0b0f15; --surf:#18202b; --surf2:#1f2937; --raise:#293546;
+    --line:#2f3b4d; --line-soft:#1d2632;
+    --ink:#e9eef5; --dim:#93a1b3; --faint:#647385;
+    --accent:#4c8dff; --accent-2:#82b0ff; --accent-ink:#04122e; --accent-soft:#152848;
+    --ok:#40c980; --warn:#e6b34a; --bad:#f0646f; --info:#6ab0ff;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #12294a45, transparent 62%);
+    --term-bg:#0e131a;
+  }
   /* ===== DAYLIGHT (readable light) ===== */
   [data-theme="light"]{
     color-scheme:light;
@@ -70,11 +103,21 @@
   .brand .logo svg{width:15px;height:15px}
   .brand .v{color:var(--faint); font-weight:500; font-size:.72rem; font-family:var(--mono)}
   .tb-spacer{flex:1}
-  /* palette toggle */
-  .palette-toggle{display:flex; align-items:center; gap:2px; padding:3px; background:var(--bg); border:1px solid var(--line-soft); border-radius:100px}
-  .palette-toggle button{border:none; background:transparent; color:var(--dim); height:24px; padding:0 11px; border-radius:100px; cursor:pointer; font-size:.72rem; font-weight:600; display:flex; align-items:center; gap:6px; transition:var(--sp)}
-  .palette-toggle button .sw{width:9px;height:9px;border-radius:50%}
-  .palette-toggle button.on{background:var(--surf2); color:var(--ink); box-shadow:var(--shadow-sm)}
+  /* theme dropdown */
+  .themedd{position:relative}
+  .themedd-btn{display:flex; align-items:center; gap:8px; height:28px; padding:0 8px 0 10px; background:var(--bg); border:1px solid var(--line-soft); border-radius:100px; color:var(--ink); cursor:pointer; font-size:.72rem; font-weight:600; transition:var(--sp)}
+  .themedd-btn:hover{border-color:var(--line)}
+  .themedd-btn .sw{width:10px;height:10px;border-radius:50%;flex:none}
+  .themedd-btn .cv{width:13px;height:13px;color:var(--dim);transition:transform var(--sp)}
+  .themedd-btn[aria-expanded="true"] .cv{transform:rotate(180deg)}
+  .themedd-menu{position:absolute; top:calc(100% + 7px); right:0; z-index:70; min-width:190px; background:var(--surf); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); padding:5px; display:none; transform-origin:top right}
+  .themedd-menu.on{display:block; animation:umin .16s cubic-bezier(.2,.7,.3,1)}
+  .themedd-item{width:100%; display:flex; align-items:center; gap:9px; padding:8px 9px; border:none; background:transparent; color:var(--ink); border-radius:var(--r-sm); cursor:pointer; font-size:.78rem; font-weight:550; text-align:left; transition:var(--sp)}
+  .themedd-item:hover,.themedd-item:focus-visible{background:var(--surf2)}
+  .themedd-item .sw{width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset}
+  .themedd-item .chk{margin-left:auto;color:var(--accent);opacity:0;font-size:.8rem}
+  .themedd-item.on .chk{opacity:1}
+  .themedd-item.on{color:var(--accent)}
   .conn{display:flex; align-items:center; gap:7px; font-size:.73rem; color:var(--dim); padding:4px 10px; border:1px solid var(--line-soft); border-radius:100px; background:var(--bg)}
   .led{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:pulse 2.6s infinite}
   .led.off{background:var(--bad);animation:none}
@@ -94,7 +137,29 @@
   .navbtn .cnt{position:absolute;top:4px;right:4px;min-width:16px;height:16px;padding:0 4px;border-radius:100px;background:var(--accent);color:var(--accent-ink);font-size:.58rem;font-weight:800;display:grid;place-items:center;font-family:var(--mono)}
   .navbtn .cnt.hidden{display:none}
   .rail .sep{flex:1}
-  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.82rem;cursor:pointer;border:none}
+  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.82rem;cursor:pointer;border:none;transition:var(--sp)}
+  .avatar:hover{filter:brightness(1.07)}
+  .avatar[aria-expanded="true"]{box-shadow:0 0 0 3px var(--accent-soft)}
+  /* user menu popover */
+  #usermenu{position:fixed;z-index:70;min-width:214px;background:var(--surf);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:6px;display:none;transform-origin:bottom left}
+  #usermenu.on{display:block;animation:umin .16s cubic-bezier(.2,.7,.3,1)}
+  @keyframes umin{from{opacity:0;transform:translateY(6px) scale(.97)}to{opacity:1;transform:none}}
+  .um-head{display:flex;align-items:center;gap:10px;padding:7px 8px 8px}
+  .um-avatar{width:34px;height:34px;flex:none;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.82rem}
+  .um-id{min-width:0}
+  .um-name{font-weight:650;font-size:.9rem;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:152px}
+  .um-sub{font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);font-weight:700}
+  .um-sep{height:1px;background:var(--line-soft);margin:2px 4px 4px}
+  .um-item{width:100%;display:flex;align-items:center;gap:9px;padding:9px 10px;border:none;background:transparent;color:var(--ink);border-radius:var(--r-sm);cursor:pointer;font-size:.83rem;font-weight:550;text-align:left;transition:var(--sp)}
+  .um-item svg{width:16px;height:16px;color:var(--dim);transition:var(--sp)}
+  .um-item:hover,.um-item:focus-visible{background:var(--surf2)}
+  .um-item.danger:hover,.um-item.danger:focus-visible{background:color-mix(in oklab,var(--bad) 15%,transparent);color:var(--bad)}
+  .um-item.danger:hover svg,.um-item.danger:focus-visible svg{color:var(--bad)}
+  .um-confirm{display:none;padding:4px 6px 6px}
+  .um-confirm.on{display:block}
+  .um-confirm .q{font-size:.78rem;color:var(--dim);padding:4px 4px 9px}
+  .um-confirm .row{display:flex;gap:6px}
+  .um-confirm .row .btn{flex:1;justify-content:center}
 
   .main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
   .view{flex:1;min-height:0;overflow:auto;padding:calc(26px * var(--pad)) 30px}
@@ -179,8 +244,6 @@
   .term-input .pr{color:var(--accent);font-family:var(--mono);font-size:.82rem;font-weight:700}
   .term-input input{flex:1;border:none;background:transparent;color:var(--ink);outline:none;font-family:var(--mono);font-size:.84rem}
   .term-input input::placeholder{color:var(--faint)}
-  .altnote{flex:none;display:flex;align-items:center;gap:8px;padding:7px 14px;background:var(--surf2);border-top:1px solid var(--line-soft);color:var(--dim);font-size:.72rem}
-  .altnote svg{width:14px;height:14px;color:var(--warn);flex:none}
 
   /* settings */
   .setrow{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:16px;border-bottom:1px solid var(--line-soft)}
@@ -272,9 +335,13 @@
     <div class="dots"><i></i><i></i><i></i></div>
     <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7.5" r="2.2"/><path d="M12 9.7V21M6.5 15h11M12 21c-3.4 0-5.6-2.5-5.6-5.6M12 21c3.4 0 5.6-2.5 5.6-5.6M12 5.3V3.4M9.7 3.4h4.6"/></svg></span> Firstmate Cockpit <span class="v">1.1</span></div>
     <div class="tb-spacer"></div>
-    <div class="palette-toggle" id="ptoggle">
-      <button data-theme-set="charcoal" class="on"><span class="sw" style="background:#e3b55c"></span>Charcoal</button>
-      <button data-theme-set="ember"><span class="sw" style="background:#ff6b45"></span>Ember</button>
+    <div class="themedd" id="themedd">
+      <button class="themedd-btn" id="themedd-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="themedd-menu" title="Theme">
+        <span class="sw" id="themedd-sw"></span>
+        <span id="themedd-label">Charcoal + Amber</span>
+        <svg class="cv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="themedd-menu" id="themedd-menu" role="menu" aria-hidden="true"></div>
     </div>
     <button class="iconbtn" data-cmd="light" title="Daylight (light) theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg></button>
     <div class="conn" id="titleconn"><span class="led warn"></span> first mate · <span class="mono" style="color:var(--ink)" id="titleconn-txt">connecting</span></div>
@@ -287,8 +354,31 @@
       <button class="navbtn" data-nav="set" title="Settings (⌘3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button>
       <div class="sep"></div>
       <button class="navbtn" data-cmd="palette" title="Command palette (⌘K)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6H3M15 21v-6h6M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4"/></svg></button>
-      <button class="avatar" id="avatar" data-cmd="logout" title="sign out">M</button>
+      <button class="avatar" id="avatar" aria-haspopup="menu" aria-expanded="false" aria-controls="usermenu" title="Signed in">M</button>
     </nav>
+
+    <!-- user menu popover -->
+    <div id="usermenu" role="menu" aria-hidden="true" aria-labelledby="um-name">
+      <div class="um-head">
+        <div class="um-avatar" id="um-avatar">M</div>
+        <div class="um-id">
+          <div class="um-name" id="um-name">…</div>
+          <div class="um-sub">Signed in</div>
+        </div>
+      </div>
+      <div class="um-sep"></div>
+      <button class="um-item danger" id="um-signout" role="menuitem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out
+      </button>
+      <div class="um-confirm" id="um-confirm">
+        <div class="q">Sign out of the cockpit?</div>
+        <div class="row">
+          <button class="btn sm ghost" id="um-cancel">Cancel</button>
+          <button class="btn sm primary" id="um-confirm-btn">Sign out</button>
+        </div>
+      </div>
+    </div>
 
     <div class="main">
       <!-- DASHBOARD -->
@@ -334,7 +424,6 @@
           </div>
           <div class="term-screen"><div id="xterm-host"></div><button class="btn sm jump hidden" id="jumpbtn">↓ Jump to bottom</button></div>
           <div class="term-input"><span class="pr">captain ›</span><input id="terminput" placeholder="type a message to the first mate and press Enter…"></div>
-          <div class="altnote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg> Live agent view — scroll happens inside the agent (wheel maps to PageUp/PageDown). This terminal is the single source of truth.</div>
         </div>
       </section>
 
@@ -356,7 +445,7 @@
         </div>
         <div class="panel" style="margin-bottom:16px">
           <header><h3>Appearance</h3></header>
-          <div class="setrow"><div class="lbl"><div class="t">Theme</div><div class="d">Charcoal + Amber and Obsidian + Ember are the two warm working palettes (toggle up top). Daylight is a high-contrast light theme with dark ink. Every colour is a token, so themes stay modular.</div></div><div class="swatches" id="themepick"></div></div>
+          <div class="setrow"><div class="lbl"><div class="t">Theme</div><div class="d">Six palettes: five dark working themes (Charcoal + Amber, Obsidian + Ember, Graphite + Indigo, Nightfall + Signal, Slate + Royal) and Daylight, a high-contrast light theme with dark ink. Pick one here or from the dropdown up top. Every colour is a token, so themes stay modular.</div></div><div class="swatches" id="themepick"></div></div>
           <div class="setrow"><div class="lbl"><div class="t">Interface density</div><div class="d">Comfortable spacing, or compact to fit more on screen.</div></div><div class="seg" id="density"><button class="on" data-density="1">Comfortable</button><button data-density=".72">Compact</button></div></div>
         </div>
         <div class="panel" style="margin-bottom:16px">
@@ -430,24 +519,39 @@
   const THEMES=[
     {id:'charcoal',nm:'Charcoal + Amber',c:['#0d0f13','#1a1e25','#e3b55c']},
     {id:'ember',nm:'Obsidian + Ember',c:['#0e0e11','#1f1f24','#ff6b45']},
+    {id:'graphite',nm:'Graphite + Indigo',c:['#0e0e12','#1d1d25','#8b7dff']},
+    {id:'nightfall',nm:'Nightfall + Signal',c:['#0a0a0b','#1c1c1f','#c6f24e']},
+    {id:'slate',nm:'Slate + Royal',c:['#10151c','#1f2937','#4c8dff']},
     {id:'light',nm:'Daylight',c:['#efece6','#ffffff','#c67a12']},
   ];
   function setTheme(id){
+    if(!THEMES.some(t=>t.id===id)) id='charcoal';
+    const t=THEMES.find(x=>x.id===id);
     document.documentElement.dataset.theme=id;
     localStorage.setItem('fm-theme',id);
     $$('#themepick .swatch').forEach(s=>s.classList.toggle('on',s.dataset.t===id));
-    // the top toggle only reflects the two dark palettes
-    $$('#ptoggle button').forEach(b=>b.classList.toggle('on',b.dataset.themeSet===id));
+    // reflect the choice in the title-bar dropdown
+    $('#themedd-label').textContent=t.nm;
+    $('#themedd-sw').style.background=t.c[2];
+    $$('#themedd-menu .themedd-item').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
     if(term && termThemeName==='match') applyTermTheme();  // match-app follows the theme
   }
-  (function initTheme(){ setTheme(localStorage.getItem('fm-theme')||'charcoal'); })();
   const pick=$('#themepick');
   THEMES.forEach(t=>{ const el=document.createElement('div'); el.className='swatch'; el.dataset.t=t.id;
     el.innerHTML=`<div class="prev"><span class="c" style="background:${t.c[0]}"></span><span class="c" style="background:${t.c[1]}"></span><span class="c" style="background:${t.c[2]}"></span></div><div class="nm">${t.nm}<span class="chk">✓</span></div>`;
     el.onclick=()=>setTheme(t.id); pick.appendChild(el); });
-  $$('#ptoggle button').forEach(b=>b.addEventListener('click',()=>setTheme(b.dataset.themeSet)));
-  // re-mark the active swatch now that they exist
-  setTheme(document.documentElement.dataset.theme);
+  // build the title-bar theme dropdown
+  const ddmenu=$('#themedd-menu');
+  THEMES.forEach(t=>{ const b=document.createElement('button'); b.className='themedd-item'; b.dataset.t=t.id; b.setAttribute('role','menuitem');
+    b.innerHTML=`<span class="sw" style="background:${t.c[2]}"></span>${t.nm}<span class="chk">✓</span>`;
+    b.onclick=()=>{ setTheme(t.id); closeThemeMenu(); $('#themedd-btn').focus(); }; ddmenu.appendChild(b); });
+  function openThemeMenu(){ ddmenu.classList.add('on'); ddmenu.setAttribute('aria-hidden','false'); $('#themedd-btn').setAttribute('aria-expanded','true'); const cur=ddmenu.querySelector('.themedd-item.on')||ddmenu.firstElementChild; setTimeout(()=>cur&&cur.focus(),0); }
+  function closeThemeMenu(){ if(!ddmenu.classList.contains('on'))return; ddmenu.classList.remove('on'); ddmenu.setAttribute('aria-hidden','true'); $('#themedd-btn').setAttribute('aria-expanded','false'); }
+  function toggleThemeMenu(){ ddmenu.classList.contains('on') ? closeThemeMenu() : openThemeMenu(); }
+  $('#themedd-btn').addEventListener('click',e=>{ e.stopPropagation(); toggleThemeMenu(); });
+  document.addEventListener('click',e=>{ if(!e.target.closest('#themedd')) closeThemeMenu(); });
+  // mark the active swatch/dropdown now that they exist
+  setTheme(localStorage.getItem('fm-theme')||'charcoal');
 
   /* ---------- fetch helper (401 => login) ---------- */
   async function api(path, opts){
@@ -495,10 +599,40 @@
   });
   async function doLogout(){
     try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
+    closeUserMenu();
     closeTerm(); $('#drawer').classList.remove('on'); closePalette();
     showLogin();
     toast('Signed out.','ok');
   }
+
+  /* ---------- user menu ---------- */
+  function openUserMenu(){
+    const m=$('#usermenu'), a=$('#avatar');
+    resetSignoutConfirm();
+    m.classList.add('on'); m.setAttribute('aria-hidden','false');
+    a.setAttribute('aria-expanded','true');
+    // anchor to the right of the avatar, bottom-aligned so it opens upward
+    const r=a.getBoundingClientRect();
+    m.style.left=(r.right+10)+'px';
+    m.style.top=Math.max(10,(r.bottom-m.offsetHeight))+'px';
+    setTimeout(()=>$('#um-signout').focus(),0);
+  }
+  function closeUserMenu(){
+    const m=$('#usermenu');
+    if(!m.classList.contains('on')) return;
+    m.classList.remove('on'); m.setAttribute('aria-hidden','true');
+    $('#avatar').setAttribute('aria-expanded','false');
+    resetSignoutConfirm();
+  }
+  function toggleUserMenu(){ $('#usermenu').classList.contains('on') ? closeUserMenu() : openUserMenu(); }
+  function resetSignoutConfirm(){ $('#um-confirm').classList.remove('on'); $('#um-signout').style.display=''; }
+
+  $('#avatar').addEventListener('click',e=>{ e.stopPropagation(); toggleUserMenu(); });
+  $('#um-signout').addEventListener('click',()=>{ $('#um-signout').style.display='none'; $('#um-confirm').classList.add('on'); setTimeout(()=>$('#um-confirm-btn').focus(),0); });
+  $('#um-cancel').addEventListener('click',()=>{ resetSignoutConfirm(); $('#um-signout').focus(); });
+  $('#um-confirm-btn').addEventListener('click',doLogout);
+  // click anywhere outside closes the menu (the avatar handler stops propagation)
+  document.addEventListener('click',e=>{ if(!e.target.closest('#usermenu')) closeUserMenu(); });
 
   /* ---------- app start ---------- */
   function startApp(){
@@ -510,7 +644,9 @@
   }
   async function loadAuthInfo(){
     try{ const j=await apiJSON('/api/auth/status');
-      if(j.username){ const i=(j.username.trim()[0]||'M').toUpperCase(); $('#avatar').textContent=i; $('#avatar').title=j.username+' · sign out'; }
+      if(j.username){ const name=j.username.trim(); const i=(name[0]||'M').toUpperCase();
+        $('#avatar').textContent=i; $('#avatar').title=name; $('#avatar').setAttribute('aria-label','Signed in as '+name);
+        $('#um-avatar').textContent=i; $('#um-name').textContent=name; $('#um-name').title=name; }
       const cf=j.credentials_file||'~/.firstmate-cockpit/credentials';
       $('#credview').innerHTML=`<span class="cmt"># ${esc(cf)}</span>\n<span class="key">username</span> = ${esc(j.default_username||'manjesh')}\n<span class="key">password</span> = ••••••••••`;
     }catch(e){}
@@ -709,6 +845,9 @@
     {t:'Settings',kbd:'⌘3',nav:'set',ic:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3"/>'},
     {t:'Switch to Charcoal + Amber',run:()=>setTheme('charcoal'),ic:'<circle cx="12" cy="12" r="4"/>'},
     {t:'Switch to Obsidian + Ember',run:()=>setTheme('ember'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Graphite + Indigo',run:()=>setTheme('graphite'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Nightfall + Signal',run:()=>setTheme('nightfall'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Slate + Royal',run:()=>setTheme('slate'),ic:'<circle cx="12" cy="12" r="4"/>'},
     {t:'Switch to Daylight (light)',run:()=>setTheme('light'),ic:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/>'},
     {t:'Sign out',run:doLogout,ic:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'},
   ];
@@ -726,7 +865,7 @@
     if($('#login') && !$('#login').classList.contains('hide')) return;  // no shortcuts on login
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openPalette(); }
     else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='f'&&root.dataset.view==='term'){ e.preventDefault(); $('#termsearch').focus(); $('#termsearch').select(); }
-    else if(e.key==='Escape'){ closePalette(); $('#drawer').classList.remove('on'); }
+    else if(e.key==='Escape'){ closePalette(); $('#drawer').classList.remove('on'); if($('#usermenu').classList.contains('on')){ closeUserMenu(); $('#avatar').focus(); } if($('#themedd-menu').classList.contains('on')){ closeThemeMenu(); $('#themedd-btn').focus(); } }
     else if((e.metaKey||e.ctrlKey)&&['1','2','3'].includes(e.key)){ e.preventDefault(); go({'1':'dash','2':'term','3':'set'}[e.key]); }
   });
 
