@@ -14,6 +14,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Sign-in is file-based (`backend/auth.py`): a plaintext `~/.firstmate-cockpit/credentials` (path overridable via `FM_CREDENTIALS_FILE`), created with defaults on first run. Sessions are signed with a persistent key using stdlib `hmac` only - deliberately no `itsdangerous`/JWT dep so the py2app bundle stays simple.
 - All `/api/*` (except login/logout/auth-status/health) and both websockets are gated by a signed cookie. `/` and `/static/*` stay public so the page can serve the login screen and handle 401s itself.
 
+## Open PRs across the fleet (`/api/open-prs`)
+
+- `backend/openprs.py` walks `$FM_HOME/projects/*`, reads each clone's `origin` remote, and lists every OPEN PR per forge. GitHub uses the operator's authed `gh` CLI; Bitbucket hits the REST API with the cached git credential from `git credential fill`. Result is cached ~60s (`_TTL`); a clone with no remote / no usable credential is skipped, never failing the endpoint.
+- Bitbucket gotcha: the cached credential's username (a bare Bitbucket handle like `manjeshp`) is rejected by the REST API when the stored password is an Atlassian API token - the token must be paired with the account **email**. `_bb_candidates()` therefore tries the credential username first, then falls back to `git config --global user.email`, and memoizes whichever works.
+- The dashboard merges these with active-work PRs (dedupe by url in `mergedPRs()` in `index.html`); work PRs keep the Merge affordance, forge-only PRs get a Review button that opens the PR on its forge.
+
 ## Terminal (xterm.js over tmux)
 
 - The live terminal attaches to a per-connection *grouped* tmux mirror (`backend/terminal.py`). The group name carries a per-connection suffix (`cockpit_<session>_<pid>_<hex>`) so two cockpit instances don't fight over one shared mirror and kill each other's attach (that showed up as a dead `[exited]` frame). When the inner tmux client exits, the bridge closes the socket so the frontend auto-reconnects.

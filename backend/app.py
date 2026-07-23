@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, fleet, scripts
+from . import auth, fleet, openprs, scripts
 from .config import config
 from .terminal import terminal_bridge
 
@@ -170,6 +170,19 @@ def post_firstmate_key(body: KeyBody):
         return JSONResponse({"ok": False, "error": f"key not allowed: {key}"}, status_code=400)
     res = scripts.send_key(target, key)
     return {"ok": res.ok, "error": res.stderr if not res.ok else None}
+
+
+@app.get("/api/open-prs")
+def get_open_prs():
+    """Every OPEN, not-yet-merged PR across the operator's project clones.
+
+    Returns a list of ``{repo, number, title, url, forge, checks, createdAt}``.
+    Discovers repos by reading each ``$FM_HOME/projects/*`` clone's origin
+    remote, then asks GitHub (via ``gh``) or Bitbucket (via the cached git
+    credential). Aggregated result is cached ~60s; a repo that errors or has no
+    usable remote/credential is skipped, never failing the whole call.
+    """
+    return openprs.open_prs()
 
 
 @app.get("/api/report/{task_id}")

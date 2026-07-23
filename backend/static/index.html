@@ -657,10 +657,15 @@
   document.addEventListener('click',e=>{ if(!e.target.closest('#usermenu')) closeUserMenu(); });
 
   /* ---------- app start ---------- */
+  let openPrTimer=null;
   function startApp(){
     started=true;
     startClock();
     refreshFleet();
+    refreshOpenPRs();
+    // The server caches open PRs ~60s, so a 30s client poll is cheap and keeps
+    // the board current without hammering the forges.
+    clearInterval(openPrTimer); openPrTimer=setInterval(refreshOpenPRs,30000);
     connectLive();
     loadAuthInfo();
   }
@@ -688,6 +693,44 @@
   const PILL={ working:{c:'work',label:'working'}, needs_decision:{c:'warn',label:'needs input'}, blocked:{c:'bad',label:'blocked'}, failed:{c:'bad',label:'failed'}, done:{c:'ok',label:'done'}, unknown:{c:'idle',label:'idle'} };
 
   let SNAP=null;
+  let OPEN_PRS=[];   // from /api/open-prs: all open PRs across project clones
+
+  /* ---------- open PRs (merge active-work PRs with every open forge PR) ------ */
+  function normUrl(u){ return (u||'').replace(/^https?:\/\//,'').replace(/\/+$/,'').toLowerCase(); }
+  function prNumFromUrl(u){ const m=String(u||'').match(/(\d+)\/?$/); return m?+m[1]:null; }
+  const CHECK_BADGE={
+    green:  ['ok','checks pass'],
+    red:    ['bad','checks failing'],
+    pending:['warn','checks running'],
+    none:   ['idle','no checks'],
+  };
+  function checksBadge(c){
+    const [cls,label]=CHECK_BADGE[c]||CHECK_BADGE.none;
+    return `<span class="pill ${cls}" title="${label}"><span class="d"></span>${label}</span>`;
+  }
+  // Merge active-work PRs (which keep the safely-wired Merge affordance) with the
+  // open PRs discovered from the forges, deduped by url. When both describe the
+  // same PR, the work entry wins but is enriched with the forge's number / title
+  // / checks so it still shows a checks badge.
+  function mergedPRs(){
+    const byUrl=new Map();
+    (OPEN_PRS||[]).forEach(p=>{
+      if(!p||!p.url) return;
+      byUrl.set(normUrl(p.url), {source:'forge', repo:p.repo||'', url:p.url, number:p.number,
+        title:p.title||'', checks:p.checks||'none', forge:p.forge});
+    });
+    ((SNAP&&SNAP.tasks)||[]).filter(t=>t.pr).forEach(t=>{
+      const key=normUrl(t.pr); const f=byUrl.get(key)||{};
+      byUrl.set(key, {source:'work', taskId:t.id, repo:t.repo||f.repo||'', url:t.pr,
+        number:(f.number!=null?f.number:prNumFromUrl(t.pr)), title:f.title||'',
+        checks:f.checks||'none', forge:f.forge});
+    });
+    return Array.from(byUrl.values());
+  }
+  async function refreshOpenPRs(){
+    try{ const list=await apiJSON('/api/open-prs'); OPEN_PRS=Array.isArray(list)?list:[]; if(SNAP) render(SNAP); }catch(e){}
+  }
+
   function render(snap){
     SNAP=snap;
     // greeting
@@ -695,13 +738,17 @@
     const part = h<5?'Good night':h<12?'Good morning':h<17?'Good afternoon':'Good evening';
     $('#greeting').textContent = part+', '+(snap.captain||'Captain');
     const c=snap.counts;
+    // PRs ready = every open PR across the fleet (active-work + all open forge
+    // PRs), deduped - not just PRs tied to a currently-tracked task.
+    const prs = mergedPRs();
+    const prCount = prs.length;
     const bits=[];
     bits.push(c.active+' crew working');
-    bits.push(c.pr_ready+' pull request'+(c.pr_ready===1?'':'s')+' waiting on you');
+    bits.push(prCount+' pull request'+(prCount===1?'':'s')+' waiting on you');
     if(c.needs_you>0) bits.push(c.needs_you+' need'+(c.needs_you===1?'s':'')+' a decision');
     $('#subgreeting').textContent = bits.join(' · ');
     // stats
-    $('#s-active').textContent=c.active; $('#s-pr').textContent=c.pr_ready; $('#s-queued').textContent=c.queued; $('#s-done').textContent=c.done;
+    $('#s-active').textContent=c.active; $('#s-pr').textContent=prCount; $('#s-queued').textContent=c.queued; $('#s-done').textContent=c.done;
     // rail badge = needs-you
     const rc=$('#railcount'); if(c.needs_you>0){ rc.textContent=c.needs_you; rc.classList.remove('hidden'); } else rc.classList.add('hidden');
     // home warning
@@ -710,7 +757,7 @@
     // status bar
     $('#sb-home').textContent = (snap.home||'—').replace(/^\/Users\/[^/]+/,'~');
     $('#sb-target').textContent = snap.firstmate_target || 'not set';
-    $('#sb-counts').textContent = c.active+' working · '+c.pr_ready+' ready';
+    $('#sb-counts').textContent = c.active+' working · '+prCount+' ready';
 
     // working now (active tasks)
     const active = snap.tasks.filter(t=>['working','needs_decision','blocked'].includes(t.status));
@@ -730,21 +777,28 @@
       $$('#tasklist .task').forEach(el=>el.addEventListener('click',()=>openTaskDrawer(el.dataset.task)));
     }
 
-    // ready for review (tasks with a PR)
-    const prs = snap.tasks.filter(t=>t.pr);
+    // ready for review: every open PR across the fleet (see mergedPRs)
     const pl=$('#prlist');
     if(!prs.length){
-      pl.innerHTML='<div class="empty"><div class="big">'+ICON_CHECK+'</div><div class="t">Nothing waiting on you</div><p>No pull requests are ready for review. They show up here the moment a crewmate opens one.</p></div>';
+      pl.innerHTML='<div class="empty"><div class="big">'+ICON_CHECK+'</div><div class="t">Nothing waiting on you</div><p>No open pull requests across your projects. They show up here the moment a crewmate opens one.</p></div>';
     } else {
-      pl.innerHTML=prs.map(t=>{
-        const label=(t.repo?esc(t.repo)+' · ':'')+esc(t.pr.replace(/^https?:\/\//,''));
-        return `<div class="task" data-pr="${esc(t.id)}"><div class="ic" style="color:var(--ok)">${ICON_CHECK}</div>`
-          +`<div class="meta"><div class="t">${esc(t.id)}</div><div class="sub">${label}</div></div>`
-          +`<div class="right"><button class="btn sm" data-review="${esc(t.id)}">Review</button><button class="btn sm primary" data-merge="${esc(t.id)}">Merge</button></div></div>`;
+      pl.innerHTML=prs.map(p=>{
+        const num = p.number!=null ? 'PR #'+esc(String(p.number)) : 'PR';
+        const heading = p.title ? esc(p.title) : num;
+        const subBits=[];
+        if(p.repo) subBits.push('<span class="repo">'+esc(p.repo)+'</span>');
+        subBits.push(num);
+        if(p.forge) subBits.push(esc(p.forge));
+        const isWork = p.source==='work' && p.taskId;
+        const actions = `<button class="btn sm" data-review-url="${esc(p.url)}">Review</button>`
+          + (isWork ? `<button class="btn sm primary" data-merge-task="${esc(p.taskId)}">Merge</button>` : '');
+        return `<div class="task"${isWork?` data-pr-task="${esc(p.taskId)}"`:''}><div class="ic" style="color:var(--ok)">${ICON_CHECK}</div>`
+          +`<div class="meta"><div class="t">${heading}</div><div class="sub">${subBits.join(' · ')}</div></div>`
+          +`<div class="right">${checksBadge(p.checks)}${actions}</div></div>`;
       }).join('');
-      $$('#prlist [data-merge]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); mergeTask(b.dataset.merge,b); }));
-      $$('#prlist [data-review]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openTaskDrawer(b.dataset.review); }));
-      $$('#prlist .task').forEach(el=>el.addEventListener('click',()=>openTaskDrawer(el.dataset.pr)));
+      $$('#prlist [data-merge-task]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); mergeTask(b.dataset.mergeTask,b); }));
+      $$('#prlist [data-review-url]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); window.open(b.dataset.reviewUrl,'_blank','noopener'); }));
+      $$('#prlist [data-pr-task]').forEach(el=>el.addEventListener('click',()=>openTaskDrawer(el.dataset.prTask)));
     }
   }
   function taskById(id){ return (SNAP&&SNAP.tasks||[]).find(t=>t.id===id); }
