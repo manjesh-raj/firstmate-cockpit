@@ -1,836 +1,1103 @@
 <!doctype html>
-<html lang="en" data-theme="cockpit-dark">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>firstmate cockpit</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
-<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<title>Firstmate Cockpit</title>
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
-<style type="text/css">
-  /* ---- custom nautical themes (OKLCH) ---- */
-  [data-theme="cockpit-dark"]{
-    color-scheme: dark;
-    --color-base-100: oklch(20% 0.02 240); --color-base-200: oklch(24% 0.021 242); --color-base-300: oklch(29% 0.025 245);
-    --color-base-content: oklch(93% 0.01 230);
-    --color-primary: oklch(74% 0.12 195); --color-primary-content: oklch(19% 0.03 210);
-    --color-secondary: oklch(70% 0.05 250); --color-secondary-content: oklch(15% 0.02 250);
-    --color-accent: oklch(78% 0.13 210); --color-accent-content: oklch(18% 0.03 210);
-    --color-neutral: oklch(30% 0.02 245); --color-neutral-content: oklch(92% 0.01 240);
-    --color-info: oklch(75% 0.12 220); --color-info-content: oklch(17% 0.03 220);
-    --color-success: oklch(76% 0.15 155); --color-success-content: oklch(16% 0.03 155);
-    --color-warning: oklch(82% 0.15 80); --color-warning-content: oklch(20% 0.05 80);
-    --color-error: oklch(70% 0.18 25); --color-error-content: oklch(15% 0.03 25);
-    --radius-selector: 0.5rem; --radius-field: 0.55rem; --radius-box: 0.9rem;
-    --size-selector: 0.25rem; --size-field: 0.25rem; --border: 1px; --depth: 0; --noise: 0;
+<style>
+  :root{
+    --r-sm:6px; --r:9px; --r-lg:14px;
+    --sans: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,monospace;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
+    --shadow: 0 4px 12px -2px rgba(0,0,0,.4), 0 16px 40px -12px rgba(0,0,0,.55);
+    --sp:.17s cubic-bezier(.2,.7,.3,1);
+    --pad:1;
   }
-  [data-theme="cockpit-light"]{
-    color-scheme: light;
-    --color-base-100: oklch(98.5% 0.004 220); --color-base-200: oklch(96.2% 0.007 222); --color-base-300: oklch(90.5% 0.013 225);
-    --color-base-content: oklch(26% 0.03 245);
-    --color-primary: oklch(52% 0.11 205); --color-primary-content: oklch(99% 0 0);
-    --color-secondary: oklch(52% 0.06 250); --color-secondary-content: oklch(99% 0 0);
-    --color-accent: oklch(56% 0.11 210); --color-accent-content: oklch(99% 0 0);
-    --color-neutral: oklch(30% 0.02 245); --color-neutral-content: oklch(97% 0.005 240);
-    --color-info: oklch(53% 0.11 225); --color-info-content: oklch(99% 0 0);
-    --color-success: oklch(56% 0.13 155); --color-success-content: oklch(99% 0 0);
-    --color-warning: oklch(68% 0.14 72); --color-warning-content: oklch(21% 0.05 72);
-    --color-error: oklch(56% 0.19 27); --color-error-content: oklch(99% 0 0);
-    --radius-selector: 0.5rem; --radius-field: 0.55rem; --radius-box: 0.9rem;
-    --size-selector: 0.25rem; --size-field: 0.25rem; --border: 1px; --depth: 0; --noise: 0;
+  /* ===== CHARCOAL + AMBER (default) ===== */
+  :root,[data-theme="charcoal"]{
+    color-scheme:dark;
+    --bg:#0d0f13; --bg2:#0a0b0e; --surf:#14171d; --surf2:#1a1e25; --raise:#232833;
+    --line:#282d37; --line-soft:#1c2029;
+    --ink:#eef1f5; --dim:#99a1ac; --faint:#636b76;
+    --accent:#e3b55c; --accent-2:#f2d18a; --accent-ink:#1e1602; --accent-soft:#322910;
+    --ok:#5fb98a; --warn:#e0b84a; --bad:#e8797f; --info:#6aa8e8;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #3a2c0e40, transparent 62%);
+    --term-bg:#0c0e12;
+  }
+  /* ===== OBSIDIAN + EMBER ===== */
+  [data-theme="ember"]{
+    color-scheme:dark;
+    --bg:#0e0e11; --bg2:#09090c; --surf:#17171b; --surf2:#1f1f24; --raise:#28282f;
+    --line:#302f38; --line-soft:#212127;
+    --ink:#f3efec; --dim:#a29e9b; --faint:#6c6a72;
+    --accent:#ff6b45; --accent-2:#ff9270; --accent-ink:#2a0d03; --accent-soft:#3c1a11;
+    --ok:#5fd08a; --warn:#f0b73f; --bad:#f26060; --info:#6cb2ff;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #4a1a0d55, transparent 62%);
+    --term-bg:#0c0c0f;
+  }
+  /* ===== GRAPHITE + INDIGO ===== */
+  [data-theme="graphite"]{
+    color-scheme:dark;
+    --bg:#0e0e12; --bg2:#09090d; --surf:#16161c; --surf2:#1d1d25; --raise:#26262f;
+    --line:#2b2b36; --line-soft:#1d1d25;
+    --ink:#eceef4; --dim:#9a9bab; --faint:#63647a;
+    --accent:#8b7dff; --accent-2:#aca1ff; --accent-ink:#0d0a24; --accent-soft:#241f48;
+    --ok:#5fd08a; --warn:#e6c24c; --bad:#f0757a; --info:#7aa8f0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #241f4840, transparent 62%);
+    --term-bg:#0c0c10;
+  }
+  /* ===== NIGHTFALL + SIGNAL ===== */
+  [data-theme="nightfall"]{
+    color-scheme:dark;
+    --bg:#0a0a0b; --bg2:#060607; --surf:#141416; --surf2:#1c1c1f; --raise:#252529;
+    --line:#2c2c31; --line-soft:#1e1e22;
+    --ink:#f4f4f6; --dim:#8f8f99; --faint:#5c5c66;
+    --accent:#c6f24e; --accent-2:#d9f987; --accent-ink:#141a02; --accent-soft:#2b330f;
+    --ok:#4fd0a0; --warn:#f0c94a; --bad:#ff5c6c; --info:#5ab0f0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #2b330f45, transparent 62%);
+    --term-bg:#08080a;
+  }
+  /* ===== SLATE + ROYAL ===== */
+  [data-theme="slate"]{
+    color-scheme:dark;
+    --bg:#10151c; --bg2:#0b0f15; --surf:#18202b; --surf2:#1f2937; --raise:#293546;
+    --line:#2f3b4d; --line-soft:#1d2632;
+    --ink:#e9eef5; --dim:#93a1b3; --faint:#647385;
+    --accent:#4c8dff; --accent-2:#82b0ff; --accent-ink:#04122e; --accent-soft:#152848;
+    --ok:#40c980; --warn:#e6b34a; --bad:#f0646f; --info:#6ab0ff;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #12294a45, transparent 62%);
+    --term-bg:#0e131a;
+  }
+  /* ===== DAYLIGHT (readable light) ===== */
+  [data-theme="light"]{
+    color-scheme:light;
+    --bg:#efece6; --bg2:#e6e2da; --surf:#ffffff; --surf2:#f6f3ee; --raise:#efeae2;
+    --line:#d8d1c5; --line-soft:#e6e0d6;
+    --ink:#1e1a14; --dim:#5a5347; --faint:#8b8478;
+    --accent:#c67a12; --accent-2:#a86408; --accent-ink:#ffffff; --accent-soft:#f0e0c4;
+    --ok:#1f9d5f; --warn:#b07d16; --bad:#cf4a4f; --info:#1f7fc0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #c67a1216, transparent 62%);
+    --term-bg:#f6f3ec;
+  }
+  [data-theme="frost"]{
+    color-scheme:light;
+    --bg:#eef2f6; --bg2:#e4e9ef; --surf:#ffffff; --surf2:#f3f6fa; --raise:#e8eef5;
+    --line:#d2dae4; --line-soft:#e2e8ef;
+    --ink:#14202c; --dim:#4d5a68; --faint:#8291a0;
+    --accent:#2f6fe0; --accent-2:#1f5ac0; --accent-ink:#ffffff; --accent-soft:#d9e6fb;
+    --ok:#1f9d5f; --warn:#b07d16; --bad:#cf4a4f; --info:#1f7fc0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #2f6fe016, transparent 62%);
+    --term-bg:#f3f6fa;
+  }
+  [data-theme="mist"]{
+    color-scheme:light;
+    --bg:#f0eef6; --bg2:#e6e3ef; --surf:#ffffff; --surf2:#f5f3fa; --raise:#ece8f4;
+    --line:#d8d3e2; --line-soft:#e6e2ee;
+    --ink:#1d1930; --dim:#544e63; --faint:#8a83a0;
+    --accent:#6a4fd0; --accent-2:#5840b8; --accent-ink:#ffffff; --accent-soft:#e4ddf6;
+    --ok:#1f9d5f; --warn:#a5741a; --bad:#cf4a4f; --info:#4a6fd0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #6a4fd016, transparent 62%);
+    --term-bg:#f5f3fa;
   }
 
-  html,body{ background: var(--color-base-100); }
-  body{
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    color: var(--color-base-content);
-    transition: background-color .25s ease, color .25s ease;
-  }
-  .mono{ font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; }
-  .term{ font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; }
-  h1,h2,h3{ letter-spacing: -0.015em; }
-  input::placeholder{ color: color-mix(in oklab, var(--color-base-content) 55%, transparent); }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0; font-family:var(--sans); background:var(--bg2); color:var(--ink); font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; overflow:hidden}
+  button,input,textarea,select{font-family:inherit}
+  ::selection{background:var(--accent-soft); color:var(--ink)}
+  .mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .eyebrow{font-size:.65rem; letter-spacing:.15em; text-transform:uppercase; color:var(--faint); font-weight:700}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 
-  /* subtle app-canvas depth: a very soft radial toward the top, theme-aware */
-  .app-canvas{
-    background:
-      radial-gradient(1200px 380px at 78% -8%, color-mix(in oklab, var(--color-primary) 10%, transparent), transparent 70%),
-      var(--color-base-100);
-    min-height: 100vh;
-  }
+  #root{height:100vh; display:flex; flex-direction:column; background:var(--bg); background-image:var(--glow); transition:background-color .3s}
+  /* title bar */
+  .titlebar{height:40px; flex:none; display:flex; align-items:center; gap:12px; padding:0 12px; background:linear-gradient(180deg,var(--surf),var(--surf2)); border-bottom:1px solid var(--line-soft)}
+  .dots{display:flex; gap:7px} .dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#f0605c} .dots i:nth-child(2){background:#f0bf4a} .dots i:nth-child(3){background:#5fd08a}
+  .brand{display:flex; align-items:center; gap:9px; font-weight:650; letter-spacing:-.01em}
+  .brand .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(140deg,var(--accent),var(--accent-2));display:grid;place-items:center;color:var(--accent-ink)}
+  .brand .logo svg{width:15px;height:15px}
+  .brand .v{color:var(--faint); font-weight:500; font-size:.72rem; font-family:var(--mono)}
+  .tb-spacer{flex:1}
+  /* theme dropdown */
+  .themedd{position:relative}
+  .themedd-btn{display:flex; align-items:center; gap:8px; height:28px; padding:0 8px 0 10px; background:var(--bg); border:1px solid var(--line-soft); border-radius:100px; color:var(--ink); cursor:pointer; font-size:.72rem; font-weight:600; transition:var(--sp)}
+  .themedd-btn:hover{border-color:var(--line)}
+  .themedd-btn .sw{width:10px;height:10px;border-radius:50%;flex:none}
+  .themedd-btn .cv{width:13px;height:13px;color:var(--dim);transition:transform var(--sp)}
+  .themedd-btn[aria-expanded="true"] .cv{transform:rotate(180deg)}
+  .themedd-menu{position:absolute; top:calc(100% + 7px); right:0; z-index:70; min-width:190px; background:var(--surf); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); padding:5px; display:none; transform-origin:top right}
+  .themedd-menu.on{display:block; animation:umin .16s cubic-bezier(.2,.7,.3,1)}
+  .themedd-item{width:100%; display:flex; align-items:center; gap:9px; padding:8px 9px; border:none; background:transparent; color:var(--ink); border-radius:var(--r-sm); cursor:pointer; font-size:.78rem; font-weight:550; text-align:left; transition:var(--sp)}
+  .themedd-item:hover,.themedd-item:focus-visible{background:var(--surf2)}
+  .themedd-item .sw{width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset}
+  .themedd-item .chk{margin-left:auto;color:var(--accent);opacity:0;font-size:.8rem}
+  .themedd-item.on .chk{opacity:1}
+  .themedd-item.on{color:var(--accent)}
+  .conn{display:flex; align-items:center; gap:7px; font-size:.73rem; color:var(--dim); padding:4px 10px; border:1px solid var(--line-soft); border-radius:100px; background:var(--bg)}
+  .led{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:pulse 2.6s infinite}
+  .led.off{background:var(--bad);animation:none}
+  .led.warn{background:var(--warn)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--ok) 60%,transparent)}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  .iconbtn{width:30px;height:30px;border:1px solid var(--line-soft);background:var(--bg);border-radius:var(--r);display:grid;place-items:center;color:var(--dim);cursor:pointer;transition:var(--sp)}
+  .iconbtn:hover{color:var(--ink);border-color:var(--line)}
+  .iconbtn svg{width:15px;height:15px}
 
-  /* status dot */
-  .dot{ width:9px; height:9px; border-radius:9999px; display:inline-block; flex:none; }
-  @keyframes fmpulse{ 0%,100%{ opacity:1; transform:scale(1);} 50%{ opacity:.4; transform:scale(.82);} }
-  .dot.live{ animation: fmpulse 1.6s ease-in-out infinite; box-shadow: 0 0 0 3px color-mix(in oklab, currentColor 18%, transparent); }
+  .body{flex:1; display:flex; min-height:0}
+  .rail{width:62px;flex:none;background:var(--surf);border-right:1px solid var(--line-soft);display:flex;flex-direction:column;align-items:center;padding:11px 0;gap:5px}
+  .navbtn{width:44px;height:44px;border:none;background:transparent;border-radius:var(--r);display:grid;place-items:center;cursor:pointer;color:var(--dim);position:relative;transition:var(--sp)}
+  .navbtn svg{width:20px;height:20px}
+  .navbtn:hover{background:var(--surf2);color:var(--ink)}
+  .navbtn.on{background:var(--accent-soft);color:var(--accent)}
+  .navbtn.on::before{content:"";position:absolute;left:-11px;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--accent)}
+  .navbtn .cnt{position:absolute;top:4px;right:4px;min-width:16px;height:16px;padding:0 4px;border-radius:100px;background:var(--accent);color:var(--accent-ink);font-size:.58rem;font-weight:800;display:grid;place-items:center;font-family:var(--mono)}
+  .navbtn .cnt.hidden{display:none}
+  .rail .sep{flex:1}
+  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.82rem;cursor:pointer;border:none;transition:var(--sp)}
+  .avatar:hover{filter:brightness(1.07)}
+  .avatar[aria-expanded="true"]{box-shadow:0 0 0 3px var(--accent-soft)}
+  /* user menu popover */
+  #usermenu{position:fixed;z-index:70;min-width:214px;background:var(--surf);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:6px;display:none;transform-origin:bottom left}
+  #usermenu.on{display:block;animation:umin .16s cubic-bezier(.2,.7,.3,1)}
+  @keyframes umin{from{opacity:0;transform:translateY(6px) scale(.97)}to{opacity:1;transform:none}}
+  .um-head{display:flex;align-items:center;gap:10px;padding:7px 8px 8px}
+  .um-avatar{width:34px;height:34px;flex:none;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:.82rem}
+  .um-id{min-width:0}
+  .um-name{font-weight:650;font-size:.9rem;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:152px}
+  .um-sub{font-size:.66rem;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);font-weight:700}
+  .um-sep{height:1px;background:var(--line-soft);margin:2px 4px 4px}
+  .um-item{width:100%;display:flex;align-items:center;gap:9px;padding:9px 10px;border:none;background:transparent;color:var(--ink);border-radius:var(--r-sm);cursor:pointer;font-size:.83rem;font-weight:550;text-align:left;transition:var(--sp)}
+  .um-item svg{width:16px;height:16px;color:var(--dim);transition:var(--sp)}
+  .um-item:hover,.um-item:focus-visible{background:var(--surf2)}
+  .um-item.danger:hover,.um-item.danger:focus-visible{background:color-mix(in oklab,var(--bad) 15%,transparent);color:var(--bad)}
+  .um-item.danger:hover svg,.um-item.danger:focus-visible svg{color:var(--bad)}
+  .um-confirm{display:none;padding:4px 6px 6px}
+  .um-confirm.on{display:block}
+  .um-confirm .q{font-size:.78rem;color:var(--dim);padding:4px 4px 9px}
+  .um-confirm .row{display:flex;gap:6px}
+  .um-confirm .row .btn{flex:1;justify-content:center}
 
-  /* panels */
-  .panel{ background: var(--color-base-200); border: 1px solid color-mix(in oklab, var(--color-base-content) 9%, transparent); border-radius: var(--radius-box); }
-  .tile{ background: var(--color-base-200); border: 1px solid color-mix(in oklab, var(--color-base-content) 9%, transparent); border-radius: var(--radius-box); transition: border-color .18s ease, transform .18s ease; }
-  .tile:hover{ border-color: color-mix(in oklab, var(--color-base-content) 18%, transparent); }
-  .task{ background: var(--color-base-200); border: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent); border-radius: var(--radius-box); transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
-  .task:hover{ border-color: color-mix(in oklab, var(--color-base-content) 20%, transparent); transform: translateY(-1px); }
-  .task.attn{ border-color: color-mix(in oklab, var(--color-warning) 55%, transparent); background: color-mix(in oklab, var(--color-warning) 9%, var(--color-base-200)); }
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+  .view{flex:1;min-height:0;overflow:auto;padding:calc(26px * var(--pad)) 30px}
+  .view.pad0{padding:0}
+  .vhead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:calc(20px * var(--pad))}
+  .vhead h1{font-size:1.44rem;margin:.15rem 0 0;letter-spacing:-.025em;text-wrap:balance}
+  .vhead p{margin:.3rem 0 0;color:var(--dim);font-size:.85rem}
 
-  .icon{ width:18px; height:18px; stroke: currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-  .chip{ display:inline-flex; align-items:center; gap:.4rem; border-radius:9999px; padding:.28rem .7rem; font-size:.8rem; border:1px solid color-mix(in oklab, var(--color-base-content) 12%, transparent); background: color-mix(in oklab, var(--color-base-content) 4%, transparent); }
-  .theme-btn{ display:inline-grid; place-items:center; width:2.2rem; height:2.2rem; border-radius:var(--radius-field); border:1px solid color-mix(in oklab, var(--color-base-content) 14%, transparent); background: var(--color-base-200); cursor:pointer; transition: background-color .18s ease, border-color .18s ease; color: var(--color-base-content); }
-  .theme-btn:hover{ border-color: color-mix(in oklab, var(--color-base-content) 26%, transparent); background: var(--color-base-300); }
-  .avatar-m{ width:2.2rem; height:2.2rem; border-radius:9999px; display:grid; place-items:center; font-weight:700; font-size:.92rem; color: var(--color-primary-content); background: var(--color-primary); }
+  .statusbar{height:26px;flex:none;display:flex;align-items:center;gap:16px;padding:0 14px;background:var(--surf);border-top:1px solid var(--line-soft);font-size:.7rem;color:var(--dim);font-family:var(--mono)}
+  .statusbar .s{display:flex;align-items:center;gap:6px} .statusbar .s b{color:var(--ink);font-weight:600} .statusbar .push{flex:1}
 
-  a.prlink{ color: var(--color-primary); text-decoration: none; }
-  a.prlink:hover{ text-decoration: underline; }
+  /* components */
+  .btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:var(--r);border:1px solid var(--line);background:var(--surf2);color:var(--ink);font-size:.82rem;font-weight:550;cursor:pointer;transition:var(--sp)}
+  .btn:hover{border-color:var(--accent);background:var(--raise)}
+  .btn:active{transform:translateY(1px)}
+  .btn svg{width:15px;height:15px}
+  .btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:650}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.ghost{background:transparent}
+  .btn.sm{height:28px;padding:0 11px;font-size:.76rem}
+  .btn[disabled]{opacity:.55;cursor:default;pointer-events:none}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:100px;font-size:.67rem;font-weight:700;letter-spacing:.02em;font-family:var(--mono);border:1px solid transparent}
+  .pill .d{width:6px;height:6px;border-radius:50%}
+  .pill.work{background:var(--accent-soft);color:var(--accent)}.pill.work .d{background:var(--accent);animation:pulse 2s infinite}
+  .pill.ok{background:color-mix(in oklab,var(--ok) 16%,transparent);color:var(--ok)}.pill.ok .d{background:var(--ok)}
+  .pill.warn{background:color-mix(in oklab,var(--warn) 18%,transparent);color:var(--warn)}.pill.warn .d{background:var(--warn)}
+  .pill.bad{background:color-mix(in oklab,var(--bad) 18%,transparent);color:var(--bad)}.pill.bad .d{background:var(--bad)}
+  .pill.idle{background:var(--surf2);color:var(--faint);border-color:var(--line-soft)}.pill.idle .d{background:var(--faint)}
 
-  /* ---- first mate console drawer ---- */
-  /* our component display rules (flex/grid) would otherwise beat Tailwind's
-     .hidden on equal specificity; make hiding authoritative. */
-  .hidden{ display:none !important; }
-  .scrim{ position:fixed; inset:0; background:oklch(0% 0 0 / .48); opacity:0; pointer-events:none; transition:opacity .2s ease; z-index:40; }
-  .scrim.open{ opacity:1; pointer-events:auto; }
-  /* full-window console: fills the whole app window at a stable size (no side
-     slide), so the embedded terminal always fits and there's max space. */
-  .console{ position:fixed; inset:0; background:var(--color-base-100); opacity:0; pointer-events:none; transition:opacity .16s ease; z-index:50; display:flex; flex-direction:column; }
-  .console.open{ opacity:1; pointer-events:auto; }
-  .console-head{ display:flex; align-items:center; gap:10px; padding:13px 16px; border-bottom:1px solid color-mix(in oklab,var(--color-base-content) 10%,transparent); background:var(--color-base-200); }
-  .fm-anchor{ width:26px;height:26px;border-radius:.5rem;display:grid;place-items:center;background:color-mix(in oklab,var(--color-primary) 16%,transparent);color:var(--color-primary); }
-  .ctabs{ margin-left:auto; display:flex; gap:3px; background:color-mix(in oklab,var(--color-base-content) 8%,transparent); padding:3px; border-radius:.55rem; }
-  .ctab{ font-size:.76rem; padding:5px 11px; border-radius:.4rem; cursor:pointer; border:none; background:transparent; color:var(--color-base-content); opacity:.65; }
-  .ctab.active{ background:var(--color-base-100); opacity:1; font-weight:600; }
-  .x-btn{ width:30px;height:30px;border-radius:.5rem;border:1px solid color-mix(in oklab,var(--color-base-content) 14%,transparent);background:transparent;color:var(--color-base-content);cursor:pointer;display:grid;place-items:center; }
-  .term-theme-sel{ height:30px; border-radius:.5rem; border:1px solid color-mix(in oklab,var(--color-base-content) 14%,transparent); background:var(--color-base-100); color:var(--color-base-content); font-size:.78rem; padding:0 .5rem; cursor:pointer; }
-  .zoom-grp{ display:flex; gap:2px; background:color-mix(in oklab,var(--color-base-content) 8%,transparent); padding:3px; border-radius:.55rem; }
-  .zoom-btn{ min-width:30px; height:24px; padding:0 7px; border:none; background:transparent; color:var(--color-base-content); cursor:pointer; border-radius:.4rem; font-size:.8rem; font-weight:600; opacity:.8; transition:background-color .12s ease, opacity .12s ease; }
-  .zoom-btn:hover{ background:var(--color-base-100); opacity:1; }
-  .zoom-btn.zoom-reset{ font-size:.72rem; min-width:24px; }
-  .transcript{ flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
-  .msg{ display:flex; gap:9px; max-width:min(88%, 780px); }
-  .msg.captain{ align-self:flex-end; flex-direction:row-reverse; }
-  .bubble{ padding:9px 13px; border-radius:13px; font-size:.87rem; line-height:1.5; }
-  .msg.mate .bubble{ background:var(--color-base-200); border:1px solid color-mix(in oklab,var(--color-base-content) 9%,transparent); border-top-left-radius:4px; }
-  .msg.captain .bubble{ background:var(--color-primary); color:var(--color-primary-content); border-top-right-radius:4px; font-weight:500; }
-  .msg .ava{ width:26px;height:26px;border-radius:9999px;flex:none;display:grid;place-items:center;font-size:11px;font-weight:700; }
-  .msg.mate .ava{ background:color-mix(in oklab,var(--color-primary) 16%,transparent); color:var(--color-primary); }
-  .msg.captain .ava{ background:var(--color-primary); color:var(--color-primary-content); }
-  .who{ font-size:.68rem; opacity:.5; margin-bottom:3px; }
-  .term-view{ flex:1; min-height:0; overflow:hidden; padding:8px 6px 8px 10px; background:#12161c; }
-  .term-view #xterm-host{ width:100%; height:100%; }
-  .raw-view{ flex:1; overflow:auto; padding:15px; background:oklch(16% 0.02 240); }
-  .raw-view pre{ margin:0; font-family:ui-monospace,monospace; font-size:12px; line-height:1.55; color:oklch(88% 0.02 200); white-space:pre-wrap; }
-  /* resume tab: docked to the right edge, vertically centered - clear of the
-     chat bar and the top header, right where the console slides back from. */
-  .console-fab{ position:fixed; top:50%; right:0; transform:translateY(-50%); z-index:45;
-    display:inline-flex; align-items:center; gap:.5rem;
-    padding:.7rem 1rem .7rem .85rem; border-radius:.9rem 0 0 .9rem; cursor:pointer; color:var(--color-base-content);
-    background:var(--color-base-200); border:1px solid color-mix(in oklab,var(--color-base-content) 14%,transparent); border-right:none;
-    box-shadow:-10px 0 30px oklch(0% 0 0 / .28); transition:padding-right .16s ease, background-color .16s ease; }
-  .console-fab:hover{ padding-right:1.4rem; background:var(--color-base-300); }
-  .console-notice{ flex:1; display:grid; place-items:center; padding:24px; text-align:center; }
-  .console-foot{ padding:11px 14px; border-top:1px solid color-mix(in oklab,var(--color-base-content) 10%,transparent); background:var(--color-base-200); }
-  .keys-row{ display:flex; align-items:center; gap:5px; margin-bottom:9px; flex-wrap:wrap; }
-  .keys-label{ font-size:.72rem; opacity:.5; margin-right:2px; }
-  .keys-sep{ width:1px; height:18px; background:color-mix(in oklab,var(--color-base-content) 16%,transparent); margin:0 4px; }
-  .keycap{ min-width:30px; height:28px; padding:0 8px; border-radius:.4rem; cursor:pointer; font-size:.8rem; font-family:ui-monospace,monospace;
-    color:var(--color-base-content); background:var(--color-base-100); border:1px solid color-mix(in oklab,var(--color-base-content) 16%,transparent);
-    transition:background-color .12s ease, border-color .12s ease, transform .06s ease; }
-  .keycap.wide{ font-family:inherit; font-size:.76rem; }
-  .keycap:hover{ background:color-mix(in oklab,var(--color-primary) 18%,transparent); border-color:color-mix(in oklab,var(--color-primary) 45%,transparent); }
-  .keycap:active{ transform:translateY(1px); }
+  .grid{display:grid;gap:14px}
+  .stats{grid-template-columns:repeat(4,1fr)}
+  .stat{background:var(--surf);border:1px solid var(--line-soft);border-radius:var(--r-lg);padding:15px 16px;cursor:pointer;transition:var(--sp)}
+  .stat:hover{border-color:var(--line);transform:translateY(-1px)}
+  .stat .k{font-size:.72rem;color:var(--dim);display:flex;align-items:center;gap:7px;font-weight:550}
+  .stat .k svg{width:15px;height:15px;color:var(--faint)}
+  .stat .v{font-size:1.95rem;font-weight:750;letter-spacing:-.03em;margin-top:5px;font-family:var(--mono)}
+  .stat.accent{background:linear-gradient(155deg,var(--accent-soft),var(--surf));border-color:var(--accent-soft)}
+  .stat.accent .v{color:var(--accent)}
 
-  @media (prefers-reduced-motion: reduce){
-    *{ animation: none !important; transition: none !important; }
-    .task:hover{ transform: none; }
-    .console{ transition:none; }
-  }
+  .panel{background:var(--surf);border:1px solid var(--line-soft);border-radius:var(--r-lg);overflow:hidden}
+  .panel>header{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
+  .panel>header h3{margin:0;font-size:.85rem;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+  .panel>header h3 svg{width:15px;height:15px;color:var(--dim)}
+
+  .task{display:flex;align-items:center;gap:13px;padding:13px 16px;border-bottom:1px solid var(--line-soft);transition:var(--sp);cursor:pointer}
+  .task:last-child{border-bottom:none}
+  .task:hover{background:var(--surf2)}
+  .task .ic{width:34px;height:34px;border-radius:9px;background:var(--surf2);display:grid;place-items:center;color:var(--dim);flex:none}
+  .task .ic svg{width:17px;height:17px}
+  .task .meta{flex:1;min-width:0}
+  .task .meta .t{font-weight:600;font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .task .meta .sub{font-size:.73rem;color:var(--dim);font-family:var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .task .meta .sub .repo{color:var(--faint)}
+  .task .right{display:flex;align-items:center;gap:12px;flex:none}
+  .task .el{font-size:.72rem;color:var(--faint);font-family:var(--mono)}
+  .empty{padding:34px 20px;text-align:center;color:var(--dim)}
+  .empty .big{width:46px;height:46px;border-radius:50%;margin:0 auto 12px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+  .empty .big svg{width:22px;height:22px}
+  .empty .t{font-weight:650;color:var(--ink);margin-bottom:4px}
+  .empty p{margin:0 auto;max-width:30rem;font-size:.83rem}
+
+  /* terminal */
+  .term-wrap{height:100%;display:flex;flex-direction:column;background:var(--term-bg)}
+  .term-bar{flex:none;display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--surf);border-bottom:1px solid var(--line-soft)}
+  .term-bar .title{font-weight:600;font-size:.82rem;display:flex;align-items:center;gap:8px}
+  .term-bar .title svg{width:15px;height:15px;color:var(--accent)}
+  .term-bar .grow{flex:1}
+  .search{display:flex;align-items:center;gap:7px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:100px;background:var(--bg);color:var(--dim);font-size:.76rem;min-width:190px;transition:var(--sp)}
+  .search:focus-within{border-color:var(--accent)}
+  .search svg{width:13px;height:13px} .search input{border:none;background:transparent;color:var(--ink);outline:none;font-size:.76rem;width:100%;font-family:var(--mono)}
+  .search .cnt{font-family:var(--mono);font-size:.68rem;color:var(--faint);white-space:nowrap}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .seg button{border:none;background:var(--surf2);color:var(--dim);height:28px;padding:0 10px;cursor:pointer;font-size:.74rem;font-family:var(--mono);transition:var(--sp)}
+  .seg button:hover{color:var(--ink)} .seg button.on{background:var(--accent-soft);color:var(--accent)} .seg button+button{border-left:1px solid var(--line)}
+  .selct{height:28px;border-radius:var(--r);border:1px solid var(--line);background:var(--surf2);color:var(--ink);font-size:.75rem;padding:0 8px;cursor:pointer}
+  .term-conn{display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--dim);font-family:var(--mono)}
+  .term-conn .led{width:7px;height:7px;border-radius:50%}
+  .term-screen{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--term-bg)}
+  #xterm-host{position:absolute;inset:0;padding:8px 6px 6px 12px}
+  .jump{position:absolute;right:18px;bottom:16px;z-index:3}
+  .term-input{flex:none;display:flex;align-items:center;gap:9px;padding:10px 14px;background:var(--surf);border-top:1px solid var(--line-soft)}
+  .term-input .pr{color:var(--accent);font-family:var(--mono);font-size:.82rem;font-weight:700}
+  .term-input input{flex:1;border:none;background:transparent;color:var(--ink);outline:none;font-family:var(--mono);font-size:.84rem}
+  .term-input input::placeholder{color:var(--faint)}
+
+  /* settings */
+  .setrow{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:16px;border-bottom:1px solid var(--line-soft)}
+  .setrow:last-child{border-bottom:none}
+  .setrow .lbl{max-width:52%} .setrow .lbl .t{font-weight:600;font-size:.86rem} .setrow .lbl .d{color:var(--dim);font-size:.78rem;margin-top:3px}
+  .swatches{display:flex;gap:12px;flex-wrap:wrap}
+  .swatch{width:120px;border-radius:var(--r);border:1.5px solid var(--line);cursor:pointer;overflow:hidden;background:var(--surf2);transition:var(--sp)}
+  .swatch:hover{border-color:var(--accent)} .swatch.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .swatch .prev{height:50px;display:flex} .swatch .prev .c{flex:1}
+  .swatch .nm{padding:7px 9px;font-size:.74rem;font-weight:600;display:flex;align-items:center;justify-content:space-between}
+  .swatch .nm .chk{color:var(--accent);opacity:0} .swatch.on .nm .chk{opacity:1}
+  .fileview{font-family:var(--mono);font-size:.78rem;background:var(--bg2);border:1px solid var(--line-soft);border-radius:var(--r);padding:12px 14px;color:var(--dim);white-space:pre;overflow-x:auto}
+  .fileview .key{color:var(--accent)} .fileview .cmt{color:var(--faint)}
+  .toggle{width:42px;height:24px;border-radius:100px;background:var(--surf2);border:1px solid var(--line);position:relative;cursor:pointer;transition:var(--sp);flex:none}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--faint);transition:var(--sp)}
+  .toggle.on{background:var(--accent);border-color:transparent} .toggle.on::after{left:20px;background:var(--accent-ink)}
+  .input{height:38px;border-radius:var(--r);border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:0 13px;font-size:.85rem;outline:none;transition:var(--sp);font-family:var(--mono)}
+  .input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .tgt{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;cursor:pointer;transition:var(--sp);background:var(--surf2);display:block;width:100%;text-align:left}
+  .tgt+.tgt{margin-top:10px}
+  .tgt:hover{border-color:var(--accent)}
+  .tgt.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+  .tgt .r1{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-weight:700;font-size:.85rem;color:var(--ink)}
+  .tgt .r1 .badge{font-family:var(--sans);font-size:.66rem;font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:4px}
+  .tgt .r1 .badge svg{width:12px;height:12px}
+  .tgt .r2{font-family:var(--mono);font-size:.74rem;color:var(--dim);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tgt .r2 .h{color:var(--faint)}
+
+  /* login */
+  #login{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:var(--bg2);background-image:var(--glow)}
+  #login.hide{display:none}
+  .lcard{width:366px;background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);padding:32px 30px 26px;text-align:center}
+  .lcard .mark{width:54px;height:54px;margin:0 auto 15px;border-radius:16px;background:linear-gradient(140deg,var(--accent),var(--accent-2));display:grid;place-items:center;color:var(--accent-ink);box-shadow:var(--shadow-sm)}
+  .lcard .mark svg{width:28px;height:28px}
+  .lcard h2{margin:0 0 3px;font-size:1.24rem;letter-spacing:-.02em}
+  .lcard .tag{color:var(--dim);font-size:.8rem;margin-bottom:22px}
+  .field{text-align:left;margin-bottom:13px}
+  .field label{display:block;font-size:.72rem;color:var(--dim);margin-bottom:5px;font-weight:600}
+  .field input{width:100%;height:40px;border-radius:var(--r);border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:0 13px;font-size:.9rem;outline:none;transition:var(--sp)}
+  .field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .lcard .btn{width:100%;justify-content:center;height:42px;margin-top:6px;font-size:.9rem}
+  .lerr{color:var(--bad);font-size:.76rem;min-height:1.1em;margin:9px 0 2px;text-align:left}
+  .lhint{margin-top:18px;padding-top:15px;border-top:1px solid var(--line-soft);color:var(--faint);font-size:.72rem;line-height:1.6}
+  .lhint code{font-family:var(--mono);color:var(--dim);background:var(--surf2);padding:1px 5px;border-radius:4px}
+
+  /* command palette */
+  #palette{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;padding-top:15vh;background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
+  #palette.on{display:flex}
+  .pbox{width:540px;max-width:92vw;background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);overflow:hidden}
+  .pbox .pin{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line-soft)}
+  .pbox .pin svg{width:17px;height:17px;color:var(--faint)} .pbox .pin input{flex:1;border:none;background:transparent;color:var(--ink);outline:none;font-size:.95rem}
+  .prow{display:flex;align-items:center;gap:11px;padding:11px 16px;cursor:pointer;font-size:.85rem}
+  .prow.sel{background:var(--accent-soft);color:var(--accent)} .prow svg{width:16px;height:16px;color:var(--dim)} .prow.sel svg{color:var(--accent)}
+  .prow .kbd{margin-left:auto;font-family:var(--mono);font-size:.68rem;color:var(--faint)}
+
+  /* drawer */
+  #drawer{position:absolute;inset:0;z-index:20;display:none}
+  #drawer.on{display:block}
+  #drawer .scrim{position:absolute;inset:0;background:rgba(0,0,0,.4)}
+  #drawer .panel-d{position:absolute;top:0;right:0;bottom:0;width:420px;max-width:88%;background:var(--surf);border-left:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column;animation:slidein .22s cubic-bezier(.2,.7,.3,1)}
+  @keyframes slidein{from{transform:translateX(30px);opacity:.4}to{transform:none;opacity:1}}
+  #drawer header{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line-soft)}
+  #drawer header h3{margin:0;font-size:.95rem;letter-spacing:-.01em}
+  #drawer .dbody{flex:1;overflow:auto;padding:18px}
+  #drawer .kv{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:.82rem}
+  #drawer .kv .k{color:var(--dim)} #drawer .kv .val{font-family:var(--mono);text-align:right;word-break:break-word}
+  #drawer .log{margin-top:14px;background:var(--bg2);border:1px solid var(--line-soft);border-radius:var(--r);padding:11px 13px;font-family:var(--mono);font-size:.74rem;color:var(--dim);line-height:1.7;white-space:pre-wrap;max-height:40vh;overflow:auto}
+  #drawer footer{padding:14px 18px;border-top:1px solid var(--line-soft);display:flex;gap:10px}
+
+  /* toasts */
+  #toasts{position:fixed;bottom:40px;right:20px;z-index:80;display:flex;flex-direction:column;gap:10px;align-items:flex-end}
+  .toast{display:flex;align-items:center;gap:10px;background:var(--surf);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r);padding:11px 15px;box-shadow:var(--shadow);font-size:.83rem;animation:toastin .25s cubic-bezier(.2,.7,.3,1);max-width:380px}
+  .toast.ok{border-left-color:var(--ok)} .toast.bad{border-left-color:var(--bad)}
+  .toast svg{width:16px;height:16px;color:var(--accent);flex:none} .toast.ok svg{color:var(--ok)} .toast.bad svg{color:var(--bad)}
+  @keyframes toastin{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
+
+  .hidden{display:none!important}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  @media (max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}.view{padding:18px}}
+
+  /* xterm surface tweaks so its scrollbar matches the theme */
+  .xterm-viewport::-webkit-scrollbar{width:12px}
+  .xterm-viewport::-webkit-scrollbar-thumb{background:color-mix(in oklab,var(--ink) 22%,transparent);border-radius:8px;border:3px solid transparent;background-clip:content-box}
 </style>
 </head>
 <body>
-<div class="app-canvas">
-
-<!-- top bar -->
-<header class="mx-auto max-w-[1200px] px-5 lg:px-7 pt-5 pb-4">
-  <div class="flex items-center justify-between gap-4 flex-wrap">
-    <div class="flex items-center gap-3">
-      <div style="width:2.6rem;height:2.6rem;border-radius:.8rem;display:grid;place-items:center;background:color-mix(in oklab,var(--color-primary) 16%,transparent);border:1px solid color-mix(in oklab,var(--color-primary) 35%,transparent);">
-        <svg class="icon" style="width:22px;height:22px;color:var(--color-primary)" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><path d="M12 7.2V21"/><path d="M5 12a7 7 0 0 0 14 0"/><path d="M4 12H7M17 12h3"/></svg>
-      </div>
-      <div>
-        <div class="text-[1.15rem] font-bold leading-tight">firstmate <span style="opacity:.55;font-weight:500">cockpit</span></div>
-        <div id="home-path" class="text-[11.5px] mono" style="opacity:.55">connecting…</div>
-      </div>
-    </div>
-
-    <div class="flex items-center gap-2.5 flex-wrap">
-      <div id="conn" class="chip"><span class="dot" style="background:var(--color-warning)"></span><span style="opacity:.8">connecting</span></div>
-      <div id="watcher" class="chip"><span class="dot" style="background:color-mix(in oklab,var(--color-base-content) 40%,transparent)"></span><span style="opacity:.8">watcher —</span></div>
-      <button id="theme-toggle" class="theme-btn" title="Toggle light / dark" aria-label="Toggle theme"></button>
-      <button id="settings-btn" class="theme-btn" title="Settings" aria-label="Settings" onclick="openSettings()">
-        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+<div id="root" data-view="dash">
+  <div class="titlebar">
+    <div class="dots"><i></i><i></i><i></i></div>
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7.5" r="2.2"/><path d="M12 9.7V21M6.5 15h11M12 21c-3.4 0-5.6-2.5-5.6-5.6M12 21c3.4 0 5.6-2.5 5.6-5.6M12 5.3V3.4M9.7 3.4h4.6"/></svg></span> Firstmate Cockpit <span class="v">1.1</span></div>
+    <div class="tb-spacer"></div>
+    <div class="themedd" id="themedd">
+      <button class="themedd-btn" id="themedd-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="themedd-menu" title="Theme">
+        <span class="sw" id="themedd-sw"></span>
+        <span id="themedd-label">Charcoal + Amber</span>
+        <svg class="cv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <button class="chip" id="captain-chip" onclick="openConsole()" title="Open the first mate console" style="padding-right:.75rem;cursor:pointer;color:var(--color-base-content)">
-        <span class="avatar-m" id="capt-avatar">M</span>
-        <span style="line-height:1;text-align:left"><span style="display:block;font-size:.66rem;opacity:.55;text-transform:uppercase;letter-spacing:.04em">Captain</span><span id="capt-name" style="display:block;font-weight:600;font-size:.86rem">Manjesh</span></span>
-        <svg class="icon" style="width:15px;height:15px;opacity:.5;margin-left:.15rem" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
-      </button>
+      <div class="themedd-menu" id="themedd-menu" role="menu" aria-hidden="true"></div>
     </div>
+    <button class="iconbtn" data-cmd="light" title="Daylight (light) theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg></button>
+    <div class="conn" id="titleconn"><span class="led warn"></span> first mate · <span class="mono" style="color:var(--ink)" id="titleconn-txt">connecting</span></div>
   </div>
-</header>
 
-<main class="mx-auto max-w-[1200px] px-5 lg:px-7 pb-16">
+  <div class="body">
+    <nav class="rail">
+      <button class="navbtn on" data-nav="dash" title="Dashboard (⌘1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span class="cnt hidden" id="railcount">0</span></button>
+      <button class="navbtn" data-nav="term" title="Terminal (⌘2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></button>
+      <button class="navbtn" data-nav="set" title="Settings (⌘3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button>
+      <div class="sep"></div>
+      <button class="navbtn" data-cmd="palette" title="Command palette (⌘K)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6H3M15 21v-6h6M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4"/></svg></button>
+      <button class="avatar" id="avatar" aria-haspopup="menu" aria-expanded="false" aria-controls="usermenu" title="Signed in">M</button>
+    </nav>
 
-  <div id="home-warn" class="hidden mb-5" role="alert" style="padding:.9rem 1.1rem;border-radius:var(--radius-box);background:color-mix(in oklab,var(--color-error) 12%,var(--color-base-200));border:1px solid color-mix(in oklab,var(--color-error) 45%,transparent);"><span></span></div>
-
-  <!-- stat tiles -->
-  <section class="grid grid-cols-2 lg:grid-cols-4 gap-3.5 mb-7">
-    <div class="tile p-4">
-      <div class="flex items-center gap-2 mb-2" style="opacity:.7"><svg class="icon" style="color:var(--color-success)" viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="4"/></svg><span class="text-[.8rem]">Crew working</span></div>
-      <div class="text-[2rem] font-bold leading-none" id="s-working" style="color:var(--color-success)">–</div>
-      <div class="text-[.76rem] mt-1.5" style="opacity:.6" id="s-tasks">of – tasks</div>
-    </div>
-    <div class="tile p-4" id="tile-needs">
-      <div class="flex items-center gap-2 mb-2" style="opacity:.7"><svg class="icon" style="color:var(--color-warning)" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg><span class="text-[.8rem]">Needs you</span></div>
-      <div class="text-[2rem] font-bold leading-none" id="s-needs" style="color:var(--color-warning)">–</div>
-      <div class="text-[.76rem] mt-1.5" style="opacity:.6">decisions / blocked</div>
-    </div>
-    <div class="tile p-4">
-      <div class="flex items-center gap-2 mb-2" style="opacity:.7"><svg class="icon" style="color:var(--color-primary)" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg><span class="text-[.8rem]">PRs</span></div>
-      <div class="text-[2rem] font-bold leading-none" id="s-pr">–</div>
-      <div class="text-[.76rem] mt-1.5" style="opacity:.6">ready to review</div>
-    </div>
-    <div class="tile p-4">
-      <div class="flex items-center gap-2 mb-2" style="opacity:.7"><svg class="icon" style="color:var(--color-secondary)" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span class="text-[.8rem]">Projects</span></div>
-      <div class="text-[2rem] font-bold leading-none" id="s-proj">–</div>
-      <div class="text-[.76rem] mt-1.5" style="opacity:.6">registered</div>
-    </div>
-  </section>
-
-  <div class="grid lg:grid-cols-[1.9fr_1fr] gap-6">
-    <!-- fleet -->
-    <div>
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-[1.05rem] font-bold">Fleet</h2>
-        <span id="fleet-count" class="text-[.8rem]" style="opacity:.55"></span>
-      </div>
-      <div id="tasks" class="space-y-3"></div>
-      <!-- empty state -->
-      <div id="fleet-empty" class="hidden panel px-6 py-12 text-center">
-        <div style="width:3.2rem;height:3.2rem;border-radius:9999px;display:grid;place-items:center;margin:0 auto 1rem;background:color-mix(in oklab,var(--color-primary) 12%,transparent);">
-          <svg class="icon" style="width:26px;height:26px;color:var(--color-primary)" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><path d="M12 7.2V21"/><path d="M5 12a7 7 0 0 0 14 0"/><path d="M4 12H7M17 12h3"/></svg>
+    <!-- user menu popover -->
+    <div id="usermenu" role="menu" aria-hidden="true" aria-labelledby="um-name">
+      <div class="um-head">
+        <div class="um-avatar" id="um-avatar">M</div>
+        <div class="um-id">
+          <div class="um-name" id="um-name">…</div>
+          <div class="um-sub">Signed in</div>
         </div>
-        <div class="font-semibold text-[1.02rem] mb-1">All hands idle</div>
-        <p class="text-[.88rem] max-w-sm mx-auto" style="opacity:.65">No crew are working right now. Send your first mate a task below - it'll spawn a crewmate and this board will light up.</p>
+      </div>
+      <div class="um-sep"></div>
+      <button class="um-item danger" id="um-signout" role="menuitem">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out
+      </button>
+      <div class="um-confirm" id="um-confirm">
+        <div class="q">Sign out of the cockpit?</div>
+        <div class="row">
+          <button class="btn sm ghost" id="um-cancel">Cancel</button>
+          <button class="btn sm primary" id="um-confirm-btn">Sign out</button>
+        </div>
       </div>
     </div>
 
-    <!-- side rail -->
-    <aside class="space-y-6">
-      <section>
-        <h2 class="text-[1.05rem] font-bold mb-3">Backlog</h2>
-        <div id="backlog" class="panel divide-y" style="border-color:color-mix(in oklab,var(--color-base-content) 9%,transparent)"></div>
+    <div class="main">
+      <!-- DASHBOARD -->
+      <section class="view" data-view-panel="dash">
+        <div class="vhead">
+          <div><div class="eyebrow">Fleet overview</div><h1 id="greeting">Welcome, Captain</h1><p id="subgreeting">Loading the fleet…</p></div>
+          <button class="btn primary" data-cmd="newtask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> New task</button>
+        </div>
+        <div id="homewarn" class="hidden" style="margin-bottom:16px;padding:12px 15px;border-radius:var(--r);background:color-mix(in oklab,var(--bad) 12%,var(--surf));border:1px solid color-mix(in oklab,var(--bad) 45%,transparent);font-size:.82rem"></div>
+        <div class="grid stats" style="margin-bottom:16px">
+          <div class="stat accent" data-nav="term"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> In flight</div><div class="v" id="s-active">–</div></div>
+          <div class="stat"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 3v12M18 9v9M18 3v2"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/></svg> PRs ready</div><div class="v" id="s-pr">–</div></div>
+          <div class="stat"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 12h16M4 6h16M4 18h10"/></svg> Queued</div><div class="v" id="s-queued">–</div></div>
+          <div class="stat"><div class="k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg> Done</div><div class="v" id="s-done">–</div></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Working now</h3><span class="eyebrow">live</span></header>
+          <div id="tasklist"></div>
+        </div>
+        <div class="panel">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 3v12"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M18 8.4V12a6 6 0 0 1-6 6H8"/></svg> Ready for your review</h3></header>
+          <div id="prlist"></div>
+        </div>
       </section>
-      <section>
-        <h2 class="text-[1.05rem] font-bold mb-3">Projects</h2>
-        <div id="projects" class="flex flex-wrap gap-2"></div>
-      </section>
-    </aside>
-  </div>
-</main>
 
-<!-- chat bar -->
-<div style="position:sticky;bottom:0;z-index:20;background:color-mix(in oklab,var(--color-base-100) 88%, transparent);backdrop-filter:blur(8px);border-top:1px solid color-mix(in oklab,var(--color-base-content) 10%,transparent);">
-  <div class="mx-auto max-w-[1200px] px-5 lg:px-7 py-3.5">
-    <div class="flex items-center gap-2 mb-2">
-      <svg class="icon" style="width:15px;height:15px;color:var(--color-primary)" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg>
-      <span class="text-[.85rem] font-semibold">Talk to the first mate</span>
-      <span id="fm-target" class="mono text-[.72rem]" style="opacity:.55">target: not configured</span>
-      <button onclick="openConsole()" class="ml-auto text-[.78rem] font-medium" style="color:var(--color-primary);background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:.25rem">Open console <svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
+      <!-- TERMINAL -->
+      <section class="view pad0 hidden" data-view-panel="term">
+        <div class="term-wrap">
+          <div class="term-bar">
+            <div class="title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg> first mate · live terminal</div>
+            <span class="term-conn" id="termconn"><span class="led warn"></span> connecting</span>
+            <button class="btn sm ghost hidden" id="reconnectbtn" title="Reconnect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> Reconnect</button>
+            <div class="grow"></div>
+            <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input id="termsearch" placeholder="Search output  (⌘F)"><span class="cnt" id="searchcount"></span></label>
+            <div class="seg" title="Text size"><button data-zoom="-">A−</button><button data-zoom="+">A+</button></div>
+            <select class="selct" id="termtheme" title="Terminal palette (independent of app theme)">
+              <option value="match">Match app</option>
+              <option value="obsidian">Obsidian</option>
+              <option value="solarized">Solarized</option>
+              <option value="paper">Paper (light)</option>
+            </select>
+            <button class="btn sm ghost" id="copybtn" title="Copy terminal selection / screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+          </div>
+          <div class="term-screen"><div id="xterm-host"></div><button class="btn sm jump hidden" id="jumpbtn">↓ Jump to bottom</button></div>
+          <div class="term-input"><span class="pr">captain ›</span><input id="terminput" placeholder="type a message to the first mate and press Enter…"></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view hidden" data-view-panel="set">
+        <div class="vhead"><div><div class="eyebrow">Preferences</div><h1>Settings</h1><p>Connection, appearance, terminal, and sign-in — stored locally on this machine.</p></div></div>
+        <div class="panel" style="margin-bottom:16px">
+          <header><h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="width:15px;height:15px;color:var(--dim)"><path d="M5 12.5a7 7 0 0 1 14 0M8.5 12.5a3.5 3.5 0 0 1 7 0M12 16v.01"/></svg> Connection</h3></header>
+          <div class="setrow" style="flex-direction:column;align-items:stretch">
+            <div class="lbl" style="max-width:none"><div class="t">First mate target</div><div class="d">Point the cockpit at your first mate's tmux session so it can read replies and send messages.</div></div>
+            <div style="display:flex;gap:10px;margin-top:12px">
+              <input class="input" id="tgtinput" style="flex:1" placeholder="e.g. firstmate:1.1">
+              <button class="btn" id="savetgtbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg> Set</button>
+              <button class="btn" id="detectbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M21 3l-7 7"/></svg> Detect</button>
+            </div>
+            <div class="eyebrow" id="targets-head" style="margin:15px 0 9px">Run Detect to list first mate sessions</div>
+            <div id="targets"></div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:16px">
+          <header><h3>Appearance</h3></header>
+          <div class="setrow"><div class="lbl"><div class="t">Theme</div><div class="d">Eight palettes: five dark working themes (Charcoal + Amber, Obsidian + Ember, Graphite + Indigo, Nightfall + Signal, Slate + Royal) and three high-contrast light themes with dark ink (Daylight, Frost + Royal, Mist + Indigo). Pick one here or from the dropdown up top. Every colour is a token, so themes stay modular.</div></div><div class="swatches" id="themepick"></div></div>
+          <div class="setrow"><div class="lbl"><div class="t">Interface density</div><div class="d">Comfortable spacing, or compact to fit more on screen.</div></div><div class="seg" id="density"><button class="on" data-density="1">Comfortable</button><button data-density=".72">Compact</button></div></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px">
+          <header><h3>Terminal</h3></header>
+          <div class="setrow"><div class="lbl"><div class="t">Default font size</div><div class="d">Also adjustable live with A−/A+ in the terminal.</div></div><div class="seg" id="fontset"><button data-fs="12">12</button><button class="on" data-fs="13">13</button><button data-fs="14">14</button><button data-fs="16">16</button></div></div>
+          <div class="setrow"><div class="lbl"><div class="t">Reconnect automatically</div><div class="d">If the connection to the first mate drops, restore it silently.</div></div><div class="toggle on" id="autoreconnect" data-toggle></div></div>
+          <div class="setrow"><div class="lbl"><div class="t">Bell &amp; notifications</div><div class="d">Surface a desktop notification when work needs your decision.</div></div><div class="toggle on" id="notify" data-toggle></div></div>
+        </div>
+        <div class="panel">
+          <header><h3>Sign-in</h3></header>
+          <div class="setrow" style="flex-direction:column;align-items:stretch">
+            <div class="lbl" style="max-width:none"><div class="t">Credentials file</div><div class="d">Sign-in is validated against a plain file you own. Edit it to change your username or password — no rebuild.</div></div>
+            <div class="fileview" id="credview" style="margin-top:12px"><span class="cmt"># credentials file</span></div>
+            <div style="margin-top:12px"><button class="btn sm" data-cmd="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg> Sign out</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- drawer -->
+      <div id="drawer"><div class="scrim" data-cmd="closedrawer"></div><div class="panel-d">
+        <header><h3 id="dtitle">Task</h3><button class="iconbtn" data-cmd="closedrawer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+        <div class="dbody" id="dbody"></div>
+        <footer id="dfooter"></footer>
+      </div></div>
     </div>
-    <div class="flex gap-2">
-      <input id="chat-input" class="input w-full" style="background:var(--color-base-200)" placeholder="ahoy! …  (types into the first mate's pane via fm-send.sh)" />
-      <button id="chat-send" class="btn btn-primary px-6">Send</button>
-    </div>
-    <p id="chat-status" class="text-[.72rem] mt-2 mono" style="opacity:.5">the first mate stays the brain; this types into its pane.</p>
+  </div>
+
+  <div class="statusbar">
+    <div class="s"><span class="led warn" id="sb-led" style="display:inline-block"></span> <b id="sb-conn">connecting</b></div>
+    <div class="s">home <b id="sb-home">—</b></div>
+    <div class="s">target <b id="sb-target">not set</b></div>
+    <div class="push"></div>
+    <div class="s" id="sb-counts">—</div>
+    <div class="s" id="clock">—</div>
   </div>
 </div>
+
+<!-- LOGIN -->
+<div id="login">
+  <form class="lcard" id="loginform">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7.5" r="2.2"/><path d="M12 9.7V21M6.5 15h11M12 21c-3.4 0-5.6-2.5-5.6-5.6M12 21c3.4 0 5.6-2.5 5.6-5.6M12 5.3V3.4M9.7 3.4h4.6"/></svg></div>
+    <h2>Firstmate Cockpit</h2><div class="tag">Sign in to take the helm</div>
+    <div class="field"><label for="u">Username</label><input id="u" autocomplete="username" placeholder="manjesh"></div>
+    <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" placeholder="••••••••••"></div>
+    <div class="lerr" id="lerr"></div>
+    <button class="btn primary" type="submit" id="loginbtn">Sign in</button>
+    <div class="lhint">Validated against your local credentials file. Defaults are <code>manjesh</code> / <code>Welcome@123!</code> — edit the file to change them.</div>
+  </form>
 </div>
 
-<!-- settings modal -->
-<dialog id="settings_modal" class="modal">
-  <div class="modal-box panel" style="background:var(--color-base-200);max-width:32rem">
-    <h3 class="font-bold text-lg mb-1">Settings</h3>
-    <p class="text-[.82rem] mb-4" style="opacity:.65">Point the cockpit at your first mate's tmux pane so it can read replies and send messages.</p>
+<!-- PALETTE -->
+<div id="palette"><div class="pbox">
+  <div class="pin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input id="pq" placeholder="Type a command or a task for the first mate…"></div>
+  <div id="prows"></div>
+</div></div>
 
-    <label class="text-[.8rem] font-semibold">First mate tmux target</label>
-    <div class="flex gap-2 mt-1.5">
-      <input id="set-target" class="input w-full" style="background:var(--color-base-100)" placeholder="e.g. firstmate:1.1" />
-      <button class="btn" onclick="detectTargets()" id="detect-btn">Detect</button>
-    </div>
-    <p id="detect-status" class="text-[.72rem] mt-1.5" style="opacity:.55">Tip: start your first mate with <span class="mono">cd ~/manjesh/firstmate &amp;&amp; claude</span> inside tmux, then Detect.</p>
-    <div id="detect-list" class="mt-2 space-y-1.5"></div>
-
-    <div class="modal-action mt-5">
-      <button class="btn btn-sm" onclick="settings_modal.close()">Cancel</button>
-      <button class="btn btn-sm btn-primary" onclick="saveSettings()">Save</button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop"><button>close</button></form>
-</dialog>
-
-<!-- first mate console drawer -->
-<div class="scrim" id="drawer-scrim" onclick="closeConsole()"></div>
-<aside class="console" id="console-panel" aria-label="First mate console">
-  <div class="console-head">
-    <span class="fm-anchor">⚓</span>
-    <div style="min-width:0">
-      <div class="font-semibold text-[.92rem] leading-tight">First Mate</div>
-      <div id="console-sub" class="mono text-[.7rem]" style="opacity:.55">—</div>
-    </div>
-    <div class="ctabs">
-      <button class="ctab active" id="ctab-term" onclick="setConsoleView('term')">Terminal</button>
-      <button class="ctab" id="ctab-raw" onclick="setConsoleView('raw')">Transcript</button>
-      <button class="ctab" id="ctab-chat" onclick="setConsoleView('chat')">Conversation</button>
-    </div>
-    <select id="term-theme" class="term-theme-sel" onchange="setTermTheme(this.value)" title="Terminal theme" aria-label="Terminal theme">
-      <optgroup label="Dark">
-        <option value="cockpit">Cockpit</option>
-        <option value="tokyo-night">Tokyo Night</option>
-        <option value="dracula">Dracula</option>
-        <option value="one-dark">One Dark</option>
-        <option value="catppuccin-mocha">Catppuccin Mocha</option>
-        <option value="gruvbox-dark">Gruvbox Dark</option>
-        <option value="nord">Nord</option>
-        <option value="monokai">Monokai</option>
-        <option value="night-owl">Night Owl</option>
-        <option value="ayu-mirage">Ayu Mirage</option>
-        <option value="solarized-dark">Solarized Dark</option>
-      </optgroup>
-      <optgroup label="Light">
-        <option value="solarized-light">Solarized Light</option>
-        <option value="github-light">GitHub Light</option>
-      </optgroup>
-    </select>
-    <div id="term-zoom" class="zoom-grp" title="Terminal text size">
-      <button class="zoom-btn" onclick="termFontDelta(-1)" title="Smaller text (⌘−)" aria-label="Smaller text">A−</button>
-      <button class="zoom-btn zoom-reset" onclick="termFontReset()" title="Reset text size (⌘0)" aria-label="Reset text size">A</button>
-      <button class="zoom-btn" onclick="termFontDelta(1)" title="Larger text (⌘+)" aria-label="Larger text">A+</button>
-    </div>
-    <button class="x-btn" onclick="minimizeConsole()" aria-label="Minimize" title="Minimize">
-      <svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
-    </button>
-    <button class="x-btn" onclick="closeConsole()" aria-label="Close" title="Close">
-      <svg class="icon" style="width:16px;height:16px" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
-    </button>
-  </div>
-
-  <div class="term-view" id="console-term"><div id="xterm-host"></div></div>
-  <div class="transcript hidden" id="console-chat"></div>
-  <div class="raw-view hidden" id="console-raw"><pre id="console-raw-pre">connecting…</pre></div>
-  <div class="console-notice hidden" id="console-notice"></div>
-
-  <div class="console-foot" id="console-foot">
-    <!-- key controls for interactive menus / permission prompts -->
-    <div class="keys-row">
-      <span class="keys-label">Respond:</span>
-      <button class="keycap" onclick="sendKey('1')">1</button>
-      <button class="keycap" onclick="sendKey('2')">2</button>
-      <button class="keycap" onclick="sendKey('3')">3</button>
-      <button class="keycap" onclick="sendKey('4')">4</button>
-      <button class="keycap" onclick="sendKey('5')">5</button>
-      <span class="keys-sep"></span>
-      <button class="keycap" onclick="sendKey('Up')" title="Up">↑</button>
-      <button class="keycap" onclick="sendKey('Down')" title="Down">↓</button>
-      <button class="keycap wide" onclick="sendKey('Enter')" title="Enter / select">⏎ Enter</button>
-      <button class="keycap" onclick="sendKey('Escape')" title="Escape / cancel">esc</button>
-    </div>
-    <div class="flex gap-2">
-      <input id="console-input" class="input w-full" style="background:var(--color-base-100)" placeholder="ahoy! … (types a message into the first mate)" />
-      <button id="console-send" class="btn btn-primary px-5">Send</button>
-    </div>
-    <p id="console-hint" class="text-[.7rem] mt-2" style="opacity:.5">Type a message, or use the keys above to drive menus &amp; prompts (like the terminal). Raw pane hides UI chrome; Conversation is best-effort.</p>
-  </div>
-</aside>
-
-<!-- minimized console resume pill -->
-<button id="console-fab" class="console-fab hidden" onclick="openConsole()" title="Resume first mate console">
-  <svg class="icon" style="width:15px;height:15px;opacity:.6" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
-  <span class="fm-anchor" style="width:22px;height:22px">⚓</span>
-  <span style="font-weight:600;font-size:.86rem">First Mate</span>
-  <span class="dot live" style="background:var(--color-success);color:var(--color-success)"></span>
-</button>
-
-<!-- peek modal -->
-<dialog id="peek_modal" class="modal">
-  <div class="modal-box max-w-3xl panel" style="background:var(--color-base-200)">
-    <h3 id="peek-title" class="font-bold mono mb-3">peek</h3>
-    <div style="background:var(--color-base-300);border-radius:var(--radius-field);border:1px solid color-mix(in oklab,var(--color-base-content) 10%,transparent)"><pre class="term p-4" id="peek-body" style="max-height:60vh;overflow:auto">…</pre></div>
-    <div class="modal-action">
-      <button class="btn btn-sm" onclick="peek_modal.close()">Close</button>
-    </div>
-  </div>
-  <form method="dialog" class="modal-backdrop"><button>close</button></form>
-</dialog>
+<div id="toasts"></div>
 
 <script>
-const $ = (id)=>document.getElementById(id);
-const esc = (t)=>(t==null?'':String(t)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+  const root=$('#root');
+  const esc=(t)=>(t==null?'':String(t)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-/* ---- theme ---- */
-const SUN='<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
-const MOON='<svg class="icon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
-function applyTheme(t){
-  document.documentElement.dataset.theme = t;
-  $('theme-toggle').innerHTML = (t==='cockpit-dark') ? SUN : MOON;
-}
-(function initTheme(){
-  let t = localStorage.getItem('fm-theme');
-  if(!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'cockpit-light' : 'cockpit-dark';
-  applyTheme(t);
-})();
-$('theme-toggle').addEventListener('click', ()=>{
-  const next = document.documentElement.dataset.theme==='cockpit-dark' ? 'cockpit-light' : 'cockpit-dark';
-  localStorage.setItem('fm-theme', next); applyTheme(next);
-});
+  /* terminal state declared up-front: setTheme() (run during init) reads `term`
+     and `termThemeName`, so they must exist before the theme section runs. */
+  let term=null, fitAddon=null, termWs=null, termBooted=false, termConnState='connecting', termReconnectTimer=null;
+  let termFontSize = parseFloat(localStorage.getItem('fm-term-font')) || 13;
+  let termThemeName = localStorage.getItem('fm-term-theme') || 'match';
 
-/* ---- rendering ---- */
-const STATUS = {
-  working:{cls:'success', label:'working', dot:'live'},
-  needs_decision:{cls:'warning', label:'needs decision', dot:''},
-  blocked:{cls:'error', label:'blocked', dot:''},
-  failed:{cls:'error', label:'failed', dot:''},
-  done:{cls:'', label:'done', dot:''},
-  unknown:{cls:'', label:'unknown', dot:''},
-};
-function dotStyle(status){
-  const s = STATUS[status]||STATUS.unknown;
-  if(!s.cls) return 'background:color-mix(in oklab,var(--color-base-content) 40%,transparent)';
-  return 'background:var(--color-'+s.cls+');color:var(--color-'+s.cls+')';
-}
-function badge(status){
-  const s = STATUS[status]||STATUS.unknown;
-  const color = s.cls
-    ? 'background:color-mix(in oklab,var(--color-'+s.cls+') 16%,transparent);color:var(--color-'+s.cls+');border:1px solid color-mix(in oklab,var(--color-'+s.cls+') 40%,transparent)'
-    : 'background:color-mix(in oklab,var(--color-base-content) 8%,transparent);opacity:.75;border:1px solid transparent';
-  return '<span style="'+color+';border-radius:9999px;padding:.22rem .6rem;font-size:.74rem;font-weight:600;white-space:nowrap">'+esc(s.label)+'</span>';
-}
-
-function renderTask(t){
-  const s = STATUS[t.status]||STATUS.unknown;
-  const kindColor = t.kind==='scout' ? 'info' : 'success';
-  const prLink = t.pr ? '<a class="prlink mono text-[.76rem]" href="'+esc(t.pr)+'" target="_blank" rel="noreferrer">'+esc(t.pr.replace(/^https?:\/\//,''))+'</a>' : '<span></span>';
-  const mergeBtn = t.pr ? '<button class="btn btn-primary btn-xs" onclick="mergePr(\''+esc(t.pr)+'\')">Merge it</button>' : '';
-  const answerBtn = t.status==='needs_decision' ? '<button class="btn btn-warning btn-xs" onclick="focusChat()">Answer</button>' : '';
-  return '<div class="task '+(t.status==='needs_decision'?'attn':'')+' p-4">'
-    + '<div class="flex items-start justify-between gap-3">'
-      + '<div style="min-width:0">'
-        + '<div class="flex items-center gap-2 flex-wrap">'
-          + '<span class="dot '+(s.dot)+'" style="'+dotStyle(t.status)+'"></span>'
-          + '<span class="font-semibold mono text-[.92rem]">'+esc(t.id)+'</span>'
-          + '<span style="font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;padding:.1rem .45rem;border-radius:.35rem;background:color-mix(in oklab,var(--color-'+kindColor+') 15%,transparent);color:var(--color-'+kindColor+')">'+esc(t.kind)+'</span>'
-          + (t.repo?'<span class="text-[.74rem]" style="opacity:.55">'+esc(t.repo)+'</span>':'')
-        + '</div>'
-        + '<p class="text-[.76rem] mt-1.5 mono" style="opacity:.55">source: '+esc(t.source)+(t.detail?' · '+esc(t.detail):'')+'</p>'
-      + '</div>'
-      + badge(t.status)
-    + '</div>'
-    + '<div class="flex items-center justify-between gap-2 mt-3">'
-      + '<div style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+prLink+'</div>'
-      + '<div class="flex gap-2 flex-none">'
-        + '<button class="btn btn-ghost btn-xs" onclick="doPeek(\'fm-'+esc(t.id)+'\',\''+esc(t.id)+'\')">Peek</button>'
-        + answerBtn + mergeBtn
-      + '</div>'
-    + '</div>'
-  + '</div>';
-}
-
-let snapCaptain='Captain', captInitial='M', snapTarget='';
-function render(snap){
-  // captain
-  if(snap.captain){ $('capt-name').textContent = snap.captain; captInitial = snap.captain.trim().charAt(0).toUpperCase()||'C'; $('capt-avatar').textContent = captInitial; snapCaptain = snap.captain; }
-  snapTarget = snap.firstmate_target || '';
-  $('home-path').textContent = 'home: ' + snap.home;
-
-  // stats
-  $('s-working').textContent = snap.counts.active;
-  $('s-tasks').textContent = 'of ' + snap.counts.tasks + ' task' + (snap.counts.tasks===1?'':'s');
-  $('s-needs').textContent = snap.counts.needs_you;
-  $('s-pr').textContent = snap.counts.pr_ready;
-  $('s-proj').textContent = snap.counts.projects;
-  // escalate the needs-you tile
-  const nt = $('tile-needs');
-  if(snap.counts.needs_you>0){ nt.style.borderColor='color-mix(in oklab,var(--color-warning) 55%,transparent)'; nt.style.background='color-mix(in oklab,var(--color-warning) 8%,var(--color-base-200))'; }
-  else { nt.style.borderColor=''; nt.style.background=''; }
-
-  // home warning
-  const warn=$('home-warn');
-  if(!snap.home_ok){ warn.classList.remove('hidden'); warn.querySelector('span').textContent='firstmate home not found at '+snap.home+' - set FM_HOME.'; }
-  else warn.classList.add('hidden');
-
-  // watcher
-  const w=snap.watcher, age=w.last_beat_age_secs;
-  const ageTxt = age==null?'no beat':(age<90?'just now':(age<3600?Math.round(age/60)+'m ago':Math.round(age/3600)+'h ago'));
-  const wmap={ healthy:['var(--color-success)','watcher healthy',true], stale:['var(--color-warning)','watcher stale ('+ageTxt+')',false], off:['color-mix(in oklab,var(--color-base-content) 40%,transparent)','watcher off',false] };
-  const [wc,wt,wlive]=wmap[w.status]||wmap.off;
-  $('watcher').innerHTML='<span class="dot '+(wlive?'live':'')+'" style="background:'+wc+';color:'+wc+'"></span><span style="opacity:.8">'+wt+'</span>';
-
-  // fm target
-  $('fm-target').textContent='target: '+(snap.firstmate_target||'not configured');
-
-  // tasks
-  const tasksEl=$('tasks');
-  $('fleet-count').textContent = snap.counts.tasks ? (snap.counts.active+' active · '+snap.counts.tasks+' total') : '';
-  if(snap.tasks.length===0){ tasksEl.innerHTML=''; $('fleet-empty').classList.remove('hidden'); }
-  else { $('fleet-empty').classList.add('hidden'); tasksEl.innerHTML=snap.tasks.map(renderTask).join(''); }
-
-  // backlog
-  const bl=snap.backlog; let h='';
-  const row=(mark,markColor,id,tag)=>'<div class="flex items-center gap-2 px-3.5 py-2"><span style="color:'+markColor+';font-size:.8rem;width:.9rem;text-align:center">'+mark+'</span><span class="text-[.84rem] mono" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(id)+'</span><span class="text-[.72rem] ml-auto" style="opacity:.5">'+esc(tag||'')+'</span></div>';
-  const sect=(title,items,mark,markColor)=>{
-    h+='<div class="px-3.5 pt-2.5 pb-1 text-[.68rem] font-semibold" style="opacity:.5;text-transform:uppercase;letter-spacing:.05em">'+title+' · '+items.length+'</div>';
-    if(items.length===0){ h+='<div class="px-3.5 pb-2 text-[.8rem]" style="opacity:.4">none</div>'; }
-    else items.slice(0,8).forEach(i=>{ h+=row(mark,markColor,i.id,i.kind); });
-  };
-  sect('In flight',bl.in_flight,'▸','var(--color-success)');
-  sect('Queued',bl.queued,'•','color-mix(in oklab,var(--color-base-content) 45%,transparent)');
-  sect('Done',bl.done,'✓','var(--color-success)');
-  $('backlog').innerHTML=h;
-
-  // projects
-  $('projects').innerHTML=snap.projects.map(p=>'<span class="chip mono text-[.78rem]" title="'+esc(p.mode)+': '+esc(p.desc)+'">'+esc(p.name)+'</span>').join('');
-}
-
-/* ---- actions ---- */
-async function doPeek(target,title){
-  $('peek-title').textContent='peek: '+title; $('peek-body').textContent='loading…'; peek_modal.showModal();
-  try{ const r=await fetch('/api/peek/'+encodeURIComponent(target)+'?lines=40'); const j=await r.json();
-    $('peek-body').textContent = j.ok ? (j.output||'(empty)') : ('error: '+(j.error||'peek failed')); }
-  catch(e){ $('peek-body').textContent='error: '+e; }
-}
-async function mergePr(url){
-  if(!confirm('Merge this PR?\n'+url)) return;
-  const r=await fetch('/api/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-  const j=await r.json(); alert(j.ok?'Merge requested.':('Merge failed: '+(j.error||'unknown')));
-}
-function focusChat(){ $('chat-input').focus(); $('chat-input').scrollIntoView({behavior:'smooth',block:'center'}); }
-async function sendChat(){
-  const inp=$('chat-input'), text=inp.value.trim(); if(!text) return;
-  const st=$('chat-status'); st.textContent='sending…';
-  try{ const r=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})}); const j=await r.json();
-    const e=(j.error||'').toLowerCase();
-    if(j.ok){ st.textContent='sent ✓ - open the console to see the reply'; inp.value=''; }
-    else if(e.includes('not configured')||e.includes('firstmate_target')){ st.innerHTML='No first mate set - <a onclick="openSettings()" style="color:var(--color-primary);cursor:pointer;text-decoration:underline">configure the target</a>.'; }
-    else if(e.includes('swallow')||e.includes('not submitted')){ st.textContent='sent, but firstmate could not auto-confirm - open the console to verify.'; inp.value=''; }
-    else st.textContent='not sent: '+(j.error||'unknown'); }
-  catch(e){ st.textContent='error: '+e; }
-}
-$('chat-send').addEventListener('click',sendChat);
-$('chat-input').addEventListener('keydown',e=>{ if(e.key==='Enter') sendChat(); });
-
-/* ---- settings ---- */
-async function openSettings(){
-  try{ const s = await (await fetch('/api/settings')).json(); $('set-target').value = s.firstmate_target || ''; }
-  catch(e){}
-  $('detect-list').innerHTML=''; $('detect-status').textContent='Tip: start your first mate with  cd ~/manjesh/firstmate && claude  inside tmux, then Detect.';
-  settings_modal.showModal();
-  detectTargets();
-}
-async function detectTargets(){
-  const st=$('detect-status'), list=$('detect-list');
-  st.textContent='scanning tmux…'; list.innerHTML='';
-  try{
-    const r=await fetch('/api/firstmate/detect'); const j=await r.json();
-    if(!j.ok){ st.textContent=j.error||'no tmux'; return; }
-    if(!j.candidates.length){ st.textContent='No tmux panes found. Start your first mate in tmux, then Detect.'; return; }
-    st.textContent='Found '+j.candidates.length+' pane(s) - click one to use it:';
-    list.innerHTML=j.candidates.map(c=>
-      '<button class="w-full text-left" style="border:1px solid color-mix(in oklab,var(--color-base-content) 12%,transparent);border-radius:.5rem;padding:.5rem .7rem;background:'+(c.is_home?'color-mix(in oklab,var(--color-primary) 10%,transparent)':'transparent')+';cursor:pointer;color:var(--color-base-content)" onclick="pickTarget(\''+esc(c.target)+'\')">'
-      + '<span class="mono font-semibold text-[.82rem]">'+esc(c.target)+'</span>'
-      + (c.is_home?'<span class="ml-2 text-[.68rem]" style="color:var(--color-primary)">✓ firstmate home</span>':'')
-      + '<div class="text-[.7rem] mono" style="opacity:.5">'+esc(c.command)+' · '+esc(c.path)+'</div>'
-      + '</button>').join('');
-  }catch(e){ st.textContent='error: '+e; }
-}
-function pickTarget(t){ $('set-target').value=t; }
-async function saveSettings(){
-  const target=$('set-target').value.trim();
-  try{
-    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({firstmate_target:target})});
-    settings_modal.close();
-    // refresh fleet (updates the target label) and console if open
-    fetch('/api/fleet').then(r=>r.json()).then(render).catch(()=>{});
-    if(consoleOpen) pollConsole();
-  }catch(e){}
-}
-
-/* ---- first mate console ---- */
-let consoleOpen=false, consoleTimer=null, consoleView='term', consoleData=null;
-function openConsole(){
-  consoleOpen=true;
-  $('console-panel').classList.add('open');
-  $('drawer-scrim').classList.add('open');
-  $('console-fab').classList.add('hidden');   // hide the resume pill
-  pollConsole();
-  clearInterval(consoleTimer); consoleTimer=setInterval(pollConsole, 3000);
-  setConsoleView(consoleView);
-}
-function minimizeConsole(){
-  // collapse to a floating pill you can click to resume
-  consoleOpen=false;
-  $('console-panel').classList.remove('open');
-  $('drawer-scrim').classList.remove('open');
-  clearInterval(consoleTimer);
-  closeTerm();
-  $('console-fab').classList.remove('hidden');
-}
-function closeConsole(){
-  consoleOpen=false;
-  $('console-panel').classList.remove('open');
-  $('drawer-scrim').classList.remove('open');
-  $('console-fab').classList.add('hidden');   // fully closed - no pill
-  clearInterval(consoleTimer);
-  closeTerm();
-}
-// Esc closes the drawer only when NOT in the terminal (the terminal needs Esc)
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&consoleOpen&&consoleView!=='term') closeConsole(); });
-
-function setConsoleView(v){
-  consoleView=v;
-  ['term','raw','chat'].forEach(k=>{ const el=$('ctab-'+k); if(el) el.classList.toggle('active',k===v); });
-  const isTerm = v==='term';
-  $('console-foot').style.display = isTerm ? 'none' : '';   // terminal takes its own input
-  $('term-zoom').style.display = isTerm ? 'flex' : 'none';  // zoom controls are terminal-only
-  $('term-theme').style.display = isTerm ? '' : 'none';    // theme picker is terminal-only
-  if(isTerm){
-    ['console-chat','console-raw','console-notice'].forEach(id=>$(id).classList.add('hidden'));
-    $('console-term').classList.remove('hidden');
-    $('console-sub').textContent = (snapTarget||'first mate') + ' · live terminal';
-    openTerm();
-  } else {
-    closeTerm();
-    $('console-term').classList.add('hidden');
-    renderConsole(consoleData);
-    setTimeout(()=>{ const i=$('console-input'); if(i) i.focus(); }, 100);
+  /* ---------- theme ---------- */
+  const THEMES=[
+    {id:'charcoal',nm:'Charcoal + Amber',c:['#0d0f13','#1a1e25','#e3b55c']},
+    {id:'ember',nm:'Obsidian + Ember',c:['#0e0e11','#1f1f24','#ff6b45']},
+    {id:'graphite',nm:'Graphite + Indigo',c:['#0e0e12','#1d1d25','#8b7dff']},
+    {id:'nightfall',nm:'Nightfall + Signal',c:['#0a0a0b','#1c1c1f','#c6f24e']},
+    {id:'slate',nm:'Slate + Royal',c:['#10151c','#1f2937','#4c8dff']},
+    {id:'light',nm:'Daylight',c:['#efece6','#ffffff','#c67a12']},
+    {id:'frost',nm:'Frost + Royal',c:['#eef2f6','#ffffff','#2f6fe0']},
+    {id:'mist',nm:'Mist + Indigo',c:['#f0eef6','#ffffff','#6a4fd0']},
+  ];
+  function setTheme(id){
+    if(!THEMES.some(t=>t.id===id)) id='charcoal';
+    const t=THEMES.find(x=>x.id===id);
+    document.documentElement.dataset.theme=id;
+    localStorage.setItem('fm-theme',id);
+    $$('#themepick .swatch').forEach(s=>s.classList.toggle('on',s.dataset.t===id));
+    // reflect the choice in the title-bar dropdown
+    $('#themedd-label').textContent=t.nm;
+    $('#themedd-sw').style.background=t.c[2];
+    $$('#themedd-menu .themedd-item').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
+    if(term && termThemeName==='match') applyTermTheme();  // match-app follows the theme
   }
-}
+  const pick=$('#themepick');
+  THEMES.forEach(t=>{ const el=document.createElement('div'); el.className='swatch'; el.dataset.t=t.id;
+    el.innerHTML=`<div class="prev"><span class="c" style="background:${t.c[0]}"></span><span class="c" style="background:${t.c[1]}"></span><span class="c" style="background:${t.c[2]}"></span></div><div class="nm">${t.nm}<span class="chk">✓</span></div>`;
+    el.onclick=()=>setTheme(t.id); pick.appendChild(el); });
+  // build the title-bar theme dropdown
+  const ddmenu=$('#themedd-menu');
+  THEMES.forEach(t=>{ const b=document.createElement('button'); b.className='themedd-item'; b.dataset.t=t.id; b.setAttribute('role','menuitem');
+    b.innerHTML=`<span class="sw" style="background:${t.c[2]}"></span>${t.nm}<span class="chk">✓</span>`;
+    b.onclick=()=>{ setTheme(t.id); closeThemeMenu(); $('#themedd-btn').focus(); }; ddmenu.appendChild(b); });
+  function openThemeMenu(){ ddmenu.classList.add('on'); ddmenu.setAttribute('aria-hidden','false'); $('#themedd-btn').setAttribute('aria-expanded','true'); const cur=ddmenu.querySelector('.themedd-item.on')||ddmenu.firstElementChild; setTimeout(()=>cur&&cur.focus(),0); }
+  function closeThemeMenu(){ if(!ddmenu.classList.contains('on'))return; ddmenu.classList.remove('on'); ddmenu.setAttribute('aria-hidden','true'); $('#themedd-btn').setAttribute('aria-expanded','false'); }
+  function toggleThemeMenu(){ ddmenu.classList.contains('on') ? closeThemeMenu() : openThemeMenu(); }
+  $('#themedd-btn').addEventListener('click',e=>{ e.stopPropagation(); toggleThemeMenu(); });
+  document.addEventListener('click',e=>{ if(!e.target.closest('#themedd')) closeThemeMenu(); });
+  // mark the active swatch/dropdown now that they exist
+  setTheme(localStorage.getItem('fm-theme')||'charcoal');
 
-/* ---- embedded terminal (xterm.js ↔ tmux) ---- */
-let term=null, fitAddon=null, termWs=null;
-let termFontSize = parseFloat(localStorage.getItem('fm-term-font')) || 12.5;
-const TERM_THEMES = {
-  cockpit: { background:'#12161c', foreground:'#d6e2e0', cursor:'#4fd1c5', cursorAccent:'#12161c', selectionBackground:'#33507a',
-    black:'#1b2028', red:'#e06c75', green:'#5ad6a0', yellow:'#e5c07b', blue:'#61afef', magenta:'#c678dd', cyan:'#4fd1c5', white:'#d6e2e0',
-    brightBlack:'#5c6773', brightRed:'#ff7b86', brightGreen:'#7df0bd', brightYellow:'#ffd88a', brightBlue:'#82c0ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite:'#ffffff' },
-  dracula: { background:'#282a36', foreground:'#f8f8f2', cursor:'#f8f8f2', cursorAccent:'#282a36', selectionBackground:'#44475a',
-    black:'#21222c', red:'#ff5555', green:'#50fa7b', yellow:'#f1fa8c', blue:'#bd93f9', magenta:'#ff79c6', cyan:'#8be9fd', white:'#f8f8f2',
-    brightBlack:'#6272a4', brightRed:'#ff6e6e', brightGreen:'#69ff94', brightYellow:'#ffffa5', brightBlue:'#d6acff', brightMagenta:'#ff92df', brightCyan:'#a4ffff', brightWhite:'#ffffff' },
-  'solarized-dark': { background:'#002b36', foreground:'#93a1a1', cursor:'#93a1a1', cursorAccent:'#002b36', selectionBackground:'#073642',
-    black:'#073642', red:'#dc322f', green:'#859900', yellow:'#b58900', blue:'#268bd2', magenta:'#d33682', cyan:'#2aa198', white:'#eee8d5',
-    brightBlack:'#586e75', brightRed:'#cb4b16', brightGreen:'#586e75', brightYellow:'#657b83', brightBlue:'#839496', brightMagenta:'#6c71c4', brightCyan:'#93a1a1', brightWhite:'#fdf6e3' },
-  nord: { background:'#2e3440', foreground:'#d8dee9', cursor:'#d8dee9', cursorAccent:'#2e3440', selectionBackground:'#434c5e',
-    black:'#3b4252', red:'#bf616a', green:'#a3be8c', yellow:'#ebcb8b', blue:'#81a1c1', magenta:'#b48ead', cyan:'#88c0d0', white:'#e5e9f0',
-    brightBlack:'#4c566a', brightRed:'#bf616a', brightGreen:'#a3be8c', brightYellow:'#ebcb8b', brightBlue:'#81a1c1', brightMagenta:'#b48ead', brightCyan:'#8fbcbb', brightWhite:'#eceff4' },
-  'solarized-light': { background:'#fdf6e3', foreground:'#657b83', cursor:'#586e75', cursorAccent:'#fdf6e3', selectionBackground:'#eee8d5',
-    black:'#073642', red:'#dc322f', green:'#859900', yellow:'#b58900', blue:'#268bd2', magenta:'#d33682', cyan:'#2aa198', white:'#eee8d5',
-    brightBlack:'#002b36', brightRed:'#cb4b16', brightGreen:'#586e75', brightYellow:'#657b83', brightBlue:'#839496', brightMagenta:'#6c71c4', brightCyan:'#93a1a1', brightWhite:'#fdf6e3' },
-  'tokyo-night': { background:'#1a1b26', foreground:'#c0caf5', cursor:'#c0caf5', cursorAccent:'#1a1b26', selectionBackground:'#33467c',
-    black:'#15161e', red:'#f7768e', green:'#9ece6a', yellow:'#e0af68', blue:'#7aa2f7', magenta:'#bb9af7', cyan:'#7dcfff', white:'#a9b1d6',
-    brightBlack:'#414868', brightRed:'#f7768e', brightGreen:'#9ece6a', brightYellow:'#e0af68', brightBlue:'#7aa2f7', brightMagenta:'#bb9af7', brightCyan:'#7dcfff', brightWhite:'#c0caf5' },
-  'one-dark': { background:'#282c34', foreground:'#abb2bf', cursor:'#528bff', cursorAccent:'#282c34', selectionBackground:'#3e4451',
-    black:'#282c34', red:'#e06c75', green:'#98c379', yellow:'#e5c07b', blue:'#61afef', magenta:'#c678dd', cyan:'#56b6c2', white:'#abb2bf',
-    brightBlack:'#5c6370', brightRed:'#e06c75', brightGreen:'#98c379', brightYellow:'#d19a66', brightBlue:'#61afef', brightMagenta:'#c678dd', brightCyan:'#56b6c2', brightWhite:'#ffffff' },
-  'catppuccin-mocha': { background:'#1e1e2e', foreground:'#cdd6f4', cursor:'#f5e0dc', cursorAccent:'#1e1e2e', selectionBackground:'#585b70',
-    black:'#45475a', red:'#f38ba8', green:'#a6e3a1', yellow:'#f9e2af', blue:'#89b4fa', magenta:'#f5c2e7', cyan:'#94e2d5', white:'#bac2de',
-    brightBlack:'#585b70', brightRed:'#f38ba8', brightGreen:'#a6e3a1', brightYellow:'#f9e2af', brightBlue:'#89b4fa', brightMagenta:'#f5c2e7', brightCyan:'#94e2d5', brightWhite:'#a6adc8' },
-  'gruvbox-dark': { background:'#282828', foreground:'#ebdbb2', cursor:'#ebdbb2', cursorAccent:'#282828', selectionBackground:'#504945',
-    black:'#282828', red:'#cc241d', green:'#98971a', yellow:'#d79921', blue:'#458588', magenta:'#b16286', cyan:'#689d6a', white:'#a89984',
-    brightBlack:'#928374', brightRed:'#fb4934', brightGreen:'#b8bb26', brightYellow:'#fabd2f', brightBlue:'#83a598', brightMagenta:'#d3869b', brightCyan:'#8ec07c', brightWhite:'#ebdbb2' },
-  monokai: { background:'#272822', foreground:'#f8f8f2', cursor:'#f8f8f0', cursorAccent:'#272822', selectionBackground:'#49483e',
-    black:'#272822', red:'#f92672', green:'#a6e22e', yellow:'#f4bf75', blue:'#66d9ef', magenta:'#ae81ff', cyan:'#a1efe4', white:'#f8f8f2',
-    brightBlack:'#75715e', brightRed:'#f92672', brightGreen:'#a6e22e', brightYellow:'#f4bf75', brightBlue:'#66d9ef', brightMagenta:'#ae81ff', brightCyan:'#a1efe4', brightWhite:'#f9f8f5' },
-  'night-owl': { background:'#011627', foreground:'#d6deeb', cursor:'#80a4c2', cursorAccent:'#011627', selectionBackground:'#1d3b53',
-    black:'#011627', red:'#ef5350', green:'#22da6e', yellow:'#addb67', blue:'#82aaff', magenta:'#c792ea', cyan:'#21c7a8', white:'#ffffff',
-    brightBlack:'#575656', brightRed:'#ef5350', brightGreen:'#22da6e', brightYellow:'#ffeb95', brightBlue:'#82aaff', brightMagenta:'#c792ea', brightCyan:'#7fdbca', brightWhite:'#ffffff' },
-  'ayu-mirage': { background:'#1f2430', foreground:'#cbccc6', cursor:'#ffcc66', cursorAccent:'#1f2430', selectionBackground:'#34455a',
-    black:'#191e2a', red:'#ed8274', green:'#a6cc70', yellow:'#fad07b', blue:'#6dcbfa', magenta:'#cfbafa', cyan:'#90e1c6', white:'#c7c7c7',
-    brightBlack:'#686868', brightRed:'#f28779', brightGreen:'#bae67e', brightYellow:'#ffd580', brightBlue:'#73d0ff', brightMagenta:'#d4bfff', brightCyan:'#95e6cb', brightWhite:'#ffffff' },
-  'github-light': { background:'#ffffff', foreground:'#24292e', cursor:'#24292e', cursorAccent:'#ffffff', selectionBackground:'#c8e1ff',
-    black:'#24292e', red:'#d73a49', green:'#28a745', yellow:'#dbab09', blue:'#0366d6', magenta:'#5a32a3', cyan:'#0598bc', white:'#6a737d',
-    brightBlack:'#959da5', brightRed:'#cb2431', brightGreen:'#22863a', brightYellow:'#b08800', brightBlue:'#005cc5', brightMagenta:'#5a32a3', brightCyan:'#3192aa', brightWhite:'#d1d5da' },
-};
-let termThemeName = localStorage.getItem('fm-term-theme') || 'cockpit';
-if(!TERM_THEMES[termThemeName]) termThemeName = 'cockpit';
-function setTermTheme(name){
-  if(!TERM_THEMES[name]) return;
-  termThemeName = name;
-  localStorage.setItem('fm-term-theme', name);
-  const sel = $('term-theme'); if(sel) sel.value = name;
-  if(term) term.options.theme = TERM_THEMES[name];
-}
-function safeFit(){ try{ fitAddon && fitAddon.fit(); }catch(e){} }
-function applyTermFont(){
-  localStorage.setItem('fm-term-font', termFontSize);
-  if(term){ term.options.fontSize = termFontSize; safeFit(); sendTermResize(); }
-}
-function termFontDelta(d){ termFontSize = Math.max(8, Math.min(30, Math.round((termFontSize + d) * 2) / 2)); applyTermFont(); }
-function termFontReset(){ termFontSize = 12.5; applyTermFont(); }
-// ⌘/Ctrl +/-/0 zoom while the terminal is open (capture so xterm/browser don't eat it)
-window.addEventListener('keydown', (e)=>{
-  if(!(consoleOpen && consoleView==='term') || !(e.metaKey || e.ctrlKey)) return;
-  if(e.key==='=' || e.key==='+'){ e.preventDefault(); e.stopPropagation(); termFontDelta(1); }
-  else if(e.key==='-' || e.key==='_'){ e.preventDefault(); e.stopPropagation(); termFontDelta(-1); }
-  else if(e.key==='0'){ e.preventDefault(); e.stopPropagation(); termFontReset(); }
-}, true);
-// Explicitly push the current grid size to tmux. Needed because fitAddon only
-// emits onResize when dimensions CHANGE - if the first fit already set the right
-// size before the socket was open, tmux never heard about it. Call on connect.
-function sendTermResize(){
-  if(term && termWs && termWs.readyState===1){
-    termWs.send(JSON.stringify({type:'resize', rows:term.rows, cols:term.cols}));
+  /* ---------- fetch helper (401 => login) ---------- */
+  async function api(path, opts){
+    const r=await fetch(path, opts);
+    if(r.status===401){ showLogin(); throw new Error('unauthenticated'); }
+    return r;
   }
-}
-function initTerm(){
-  if(term || typeof Terminal==='undefined') return;
-  term = new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000,
-    theme: TERM_THEMES[termThemeName] });
-  const sel = $('term-theme'); if(sel) sel.value = termThemeName;
-  fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open($('xterm-host'));
-  term.onData(d=>{ if(termWs && termWs.readyState===1) termWs.send(new TextEncoder().encode(d)); });
-  term.onResize(({rows,cols})=>{ if(termWs && termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows,cols})); });
-  // Claude Code runs in the alternate screen (no terminal scrollback), so scroll
-  // must be driven inside Claude Code itself. Map the mouse wheel to PageUp /
-  // PageDown, which scrolls its buffer. We handle the wheel ourselves (return
-  // false) so xterm doesn't also try to scroll its empty alt-buffer.
-  term.attachCustomWheelEventHandler((e)=>{
-    if(termWs && termWs.readyState===1){
-      const seq = e.deltaY < 0 ? '\x1b[5~' : '\x1b[6~';   // PageUp : PageDown
-      termWs.send(new TextEncoder().encode(seq));
-    }
-    return false;
+  async function apiJSON(path, opts){ return (await api(path, opts)).json(); }
+
+  /* ---------- view routing ---------- */
+  function go(v){ root.dataset.view=v;
+    $$('.rail .navbtn').forEach(b=>b.classList.toggle('on',b.dataset.nav===v));
+    $$('[data-view-panel]').forEach(p=>p.classList.toggle('hidden',p.dataset.viewPanel!==v));
+    if(v==='term'){ openTerm(); }
+    if(v==='set'){ loadSettings(); }
+    closePalette();
+  }
+  $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.nav)));
+
+  /* ---------- global command dispatch ---------- */
+  document.addEventListener('click',e=>{ const c=e.target.closest('[data-cmd]'); if(!c)return; act(c.dataset.cmd); });
+  function act(cmd){
+    if(cmd==='palette') openPalette();
+    else if(cmd==='closedrawer') $('#drawer').classList.remove('on');
+    else if(cmd==='openterm'){ $('#drawer').classList.remove('on'); go('term'); }
+    else if(cmd==='logout') doLogout();
+    else if(cmd==='light') setTheme('light');
+    else if(cmd==='newtask'){ go('term'); setTimeout(()=>$('#terminput').focus(),120); }
+  }
+
+  /* ---------- login / auth ---------- */
+  let started=false;
+  function showLogin(){ $('#login').classList.remove('hide'); $('#p').value=''; $('#lerr').textContent=''; setTimeout(()=>$('#u').focus(),50); stopLive(); }
+  function hideLogin(){ $('#login').classList.add('hide'); }
+  $('#loginform').addEventListener('submit',async e=>{ e.preventDefault();
+    const btn=$('#loginbtn'); const u=$('#u').value.trim(), p=$('#p').value;
+    $('#lerr').textContent=''; btn.disabled=true; btn.textContent='Signing in…';
+    try{
+      const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+      const j=await r.json();
+      if(r.ok && j.ok){ hideLogin(); startApp(); toast('Signed in. Welcome aboard, Captain.','ok'); }
+      else $('#lerr').textContent = j.error || 'That username or password doesn’t match the credentials file.';
+    }catch(err){ $('#lerr').textContent='Could not reach the server. Is it running?'; }
+    finally{ btn.disabled=false; btn.textContent='Sign in'; }
   });
-  window.addEventListener('resize', ()=>{ if(consoleOpen && consoleView==='term') safeFit(); });
-  // refit whenever the terminal host actually changes size (drawer open anim,
-  // window resize, etc.) so xterm always fills the panel.
-  try{ new ResizeObserver(()=>{ if(consoleOpen && consoleView==='term') safeFit(); }).observe($('xterm-host')); }catch(e){}
-  // the slide-in transform finishes with a transitionend - the panel is at its
-  // final size then, so this fit is the accurate one.
-  $('console-panel').addEventListener('transitionend', ()=>{ if(consoleOpen && consoleView==='term') safeFit(); });
-  // first paint can mis-measure the char cell; refit once after it renders.
-  let firstRender=true;
-  term.onRender(()=>{ if(firstRender){ firstRender=false; requestAnimationFrame(()=>{ if(consoleView==='term') safeFit(); }); } });
-}
-function connectTerm(){
-  if(termWs && (termWs.readyState===0 || termWs.readyState===1)) return;
-  const proto=location.protocol==='https:'?'wss':'ws';
-  termWs = new WebSocket(proto+'://'+location.host+'/ws/terminal');
-  termWs.binaryType='arraybuffer';
-  termWs.onopen=()=>{
-    // fit, then FORCE-sync the size to tmux (fit alone won't emit if unchanged),
-    // and again shortly after in case layout settled late.
-    safeFit(); sendTermResize();
-    [120, 350, 700].forEach(t=>setTimeout(()=>{ if(consoleView==='term'){ safeFit(); sendTermResize(); } }, t));
+  async function doLogout(){
+    try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
+    closeUserMenu();
+    closeTerm(); $('#drawer').classList.remove('on'); closePalette();
+    showLogin();
+    toast('Signed out.','ok');
+  }
+
+  /* ---------- user menu ---------- */
+  function openUserMenu(){
+    const m=$('#usermenu'), a=$('#avatar');
+    resetSignoutConfirm();
+    m.classList.add('on'); m.setAttribute('aria-hidden','false');
+    a.setAttribute('aria-expanded','true');
+    // anchor to the right of the avatar, bottom-aligned so it opens upward
+    const r=a.getBoundingClientRect();
+    m.style.left=(r.right+10)+'px';
+    m.style.top=Math.max(10,(r.bottom-m.offsetHeight))+'px';
+    setTimeout(()=>$('#um-signout').focus(),0);
+  }
+  function closeUserMenu(){
+    const m=$('#usermenu');
+    if(!m.classList.contains('on')) return;
+    m.classList.remove('on'); m.setAttribute('aria-hidden','true');
+    $('#avatar').setAttribute('aria-expanded','false');
+    resetSignoutConfirm();
+  }
+  function toggleUserMenu(){ $('#usermenu').classList.contains('on') ? closeUserMenu() : openUserMenu(); }
+  function resetSignoutConfirm(){ $('#um-confirm').classList.remove('on'); $('#um-signout').style.display=''; }
+
+  $('#avatar').addEventListener('click',e=>{ e.stopPropagation(); toggleUserMenu(); });
+  $('#um-signout').addEventListener('click',()=>{ $('#um-signout').style.display='none'; $('#um-confirm').classList.add('on'); setTimeout(()=>$('#um-confirm-btn').focus(),0); });
+  $('#um-cancel').addEventListener('click',()=>{ resetSignoutConfirm(); $('#um-signout').focus(); });
+  $('#um-confirm-btn').addEventListener('click',doLogout);
+  // click anywhere outside closes the menu (the avatar handler stops propagation)
+  document.addEventListener('click',e=>{ if(!e.target.closest('#usermenu')) closeUserMenu(); });
+
+  /* ---------- app start ---------- */
+  let openPrTimer=null;
+  function startApp(){
+    started=true;
+    startClock();
+    refreshFleet();
+    refreshOpenPRs();
+    // The server caches open PRs ~60s, so a 30s client poll is cheap and keeps
+    // the board current without hammering the forges.
+    clearInterval(openPrTimer); openPrTimer=setInterval(refreshOpenPRs,30000);
+    connectLive();
+    loadAuthInfo();
+  }
+  async function loadAuthInfo(){
+    try{ const j=await apiJSON('/api/auth/status');
+      if(j.username){ const name=j.username.trim(); const i=(name[0]||'M').toUpperCase();
+        $('#avatar').textContent=i; $('#avatar').title=name; $('#avatar').setAttribute('aria-label','Signed in as '+name);
+        $('#um-avatar').textContent=i; $('#um-name').textContent=name; $('#um-name').title=name; }
+      const cf=j.credentials_file||'~/.firstmate-cockpit/credentials';
+      $('#credview').innerHTML=`<span class="cmt"># ${esc(cf)}</span>\n<span class="key">username</span> = ${esc(j.default_username||'manjesh')}\n<span class="key">password</span> = ••••••••••`;
+    }catch(e){}
+  }
+  (async function boot(){
+    try{ const j=await (await fetch('/api/auth/status')).json();
+      if(j.authenticated){ hideLogin(); startApp(); }
+      else showLogin();
+    }catch(e){ showLogin(); }
+  })();
+
+  /* ---------- dashboard render ---------- */
+  const ICON_TASK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9l2 2-2 2M13 15h4"/></svg>';
+  const ICON_SEARCH='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>';
+  const ICON_WARN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>';
+  const ICON_CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>';
+  const PILL={ working:{c:'work',label:'working'}, needs_decision:{c:'warn',label:'needs input'}, blocked:{c:'bad',label:'blocked'}, failed:{c:'bad',label:'failed'}, done:{c:'ok',label:'done'}, unknown:{c:'idle',label:'idle'} };
+
+  let SNAP=null;
+  let OPEN_PRS=[];   // from /api/open-prs: all open PRs across project clones
+
+  /* ---------- open PRs (merge active-work PRs with every open forge PR) ------ */
+  function normUrl(u){ return (u||'').replace(/^https?:\/\//,'').replace(/\/+$/,'').toLowerCase(); }
+  function prNumFromUrl(u){ const m=String(u||'').match(/(\d+)\/?$/); return m?+m[1]:null; }
+  const CHECK_BADGE={
+    green:  ['ok','checks pass'],
+    red:    ['bad','checks failing'],
+    pending:['warn','checks running'],
+    none:   ['idle','no checks'],
   };
-  termWs.onmessage=(e)=>{
-    if(typeof e.data==='string'){ try{ const j=JSON.parse(e.data); if(j.type==='fatal') term.write('\r\n\x1b[33m[cockpit] '+j.msg+'\x1b[0m\r\n'); }catch(_){}}
-    else term.write(new Uint8Array(e.data));
+  function checksBadge(c){
+    const [cls,label]=CHECK_BADGE[c]||CHECK_BADGE.none;
+    return `<span class="pill ${cls}" title="${label}"><span class="d"></span>${label}</span>`;
+  }
+  // Merge active-work PRs (which keep the safely-wired Merge affordance) with the
+  // open PRs discovered from the forges, deduped by url. When both describe the
+  // same PR, the work entry wins but is enriched with the forge's number / title
+  // / checks so it still shows a checks badge.
+  function mergedPRs(){
+    const byUrl=new Map();
+    (OPEN_PRS||[]).forEach(p=>{
+      if(!p||!p.url) return;
+      byUrl.set(normUrl(p.url), {source:'forge', repo:p.repo||'', url:p.url, number:p.number,
+        title:p.title||'', checks:p.checks||'none', forge:p.forge});
+    });
+    ((SNAP&&SNAP.tasks)||[]).filter(t=>t.pr).forEach(t=>{
+      const key=normUrl(t.pr); const f=byUrl.get(key)||{};
+      byUrl.set(key, {source:'work', taskId:t.id, repo:t.repo||f.repo||'', url:t.pr,
+        number:(f.number!=null?f.number:prNumFromUrl(t.pr)), title:f.title||'',
+        checks:f.checks||'none', forge:f.forge});
+    });
+    return Array.from(byUrl.values());
+  }
+  async function refreshOpenPRs(){
+    try{ const list=await apiJSON('/api/open-prs'); OPEN_PRS=Array.isArray(list)?list:[]; if(SNAP) render(SNAP); }catch(e){}
+  }
+
+  function render(snap){
+    SNAP=snap;
+    // greeting
+    const h=new Date().getHours();
+    const part = h<5?'Good night':h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+    $('#greeting').textContent = part+', '+(snap.captain||'Captain');
+    const c=snap.counts;
+    // PRs ready = every open PR across the fleet (active-work + all open forge
+    // PRs), deduped - not just PRs tied to a currently-tracked task.
+    const prs = mergedPRs();
+    const prCount = prs.length;
+    const bits=[];
+    bits.push(c.active+' crew working');
+    bits.push(prCount+' pull request'+(prCount===1?'':'s')+' waiting on you');
+    if(c.needs_you>0) bits.push(c.needs_you+' need'+(c.needs_you===1?'s':'')+' a decision');
+    $('#subgreeting').textContent = bits.join(' · ');
+    // stats
+    $('#s-active').textContent=c.active; $('#s-pr').textContent=prCount; $('#s-queued').textContent=c.queued; $('#s-done').textContent=c.done;
+    // rail badge = needs-you
+    const rc=$('#railcount'); if(c.needs_you>0){ rc.textContent=c.needs_you; rc.classList.remove('hidden'); } else rc.classList.add('hidden');
+    // home warning
+    const hw=$('#homewarn');
+    if(!snap.home_ok){ hw.classList.remove('hidden'); hw.textContent='firstmate home not found at '+snap.home+' — set FM_HOME.'; } else hw.classList.add('hidden');
+    // status bar
+    $('#sb-home').textContent = (snap.home||'—').replace(/^\/Users\/[^/]+/,'~');
+    $('#sb-target').textContent = snap.firstmate_target || 'not set';
+    $('#sb-counts').textContent = c.active+' working · '+prCount+' ready';
+
+    // working now (active tasks)
+    const active = snap.tasks.filter(t=>['working','needs_decision','blocked'].includes(t.status));
+    const tl=$('#tasklist');
+    if(!active.length){
+      tl.innerHTML='<div class="empty"><div class="big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="7.5" r="2.2"/><path d="M12 9.7V21M6.5 15h11"/></svg></div><div class="t">All hands idle</div><p>No crew are working right now. Send your first mate a task from the Terminal and this board lights up.</p></div>';
+    } else {
+      tl.innerHTML=active.map(t=>{
+        const p=PILL[t.status]||PILL.unknown;
+        const warn=t.status!=='working';
+        const title=esc(t.id)+(t.repo?'':'');
+        const sub=(t.repo?`<span class="repo">${esc(t.repo)}</span> · `:'')+esc(t.detail||('source: '+t.source));
+        return `<div class="task" data-task="${esc(t.id)}"><div class="ic">${warn?ICON_WARN:ICON_TASK}</div>`
+          +`<div class="meta"><div class="t">${title}</div><div class="sub">${sub}</div></div>`
+          +`<div class="right"><span class="pill ${p.c}"><span class="d"></span>${p.label}</span></div></div>`;
+      }).join('');
+      $$('#tasklist .task').forEach(el=>el.addEventListener('click',()=>openTaskDrawer(el.dataset.task)));
+    }
+
+    // ready for review: every open PR across the fleet (see mergedPRs)
+    const pl=$('#prlist');
+    if(!prs.length){
+      pl.innerHTML='<div class="empty"><div class="big">'+ICON_CHECK+'</div><div class="t">Nothing waiting on you</div><p>No open pull requests across your projects. They show up here the moment a crewmate opens one.</p></div>';
+    } else {
+      pl.innerHTML=prs.map(p=>{
+        const num = p.number!=null ? 'PR #'+esc(String(p.number)) : 'PR';
+        const heading = p.title ? esc(p.title) : num;
+        const subBits=[];
+        if(p.repo) subBits.push('<span class="repo">'+esc(p.repo)+'</span>');
+        subBits.push(num);
+        if(p.forge) subBits.push(esc(p.forge));
+        const isWork = p.source==='work' && p.taskId;
+        const actions = `<button class="btn sm" data-review-url="${esc(p.url)}">Review</button>`
+          + (isWork ? `<button class="btn sm primary" data-merge-task="${esc(p.taskId)}">Merge</button>` : '');
+        return `<div class="task"${isWork?` data-pr-task="${esc(p.taskId)}"`:''}><div class="ic" style="color:var(--ok)">${ICON_CHECK}</div>`
+          +`<div class="meta"><div class="t">${heading}</div><div class="sub">${subBits.join(' · ')}</div></div>`
+          +`<div class="right">${checksBadge(p.checks)}${actions}</div></div>`;
+      }).join('');
+      $$('#prlist [data-merge-task]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); mergeTask(b.dataset.mergeTask,b); }));
+      $$('#prlist [data-review-url]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); window.open(b.dataset.reviewUrl,'_blank','noopener'); }));
+      $$('#prlist [data-pr-task]').forEach(el=>el.addEventListener('click',()=>openTaskDrawer(el.dataset.prTask)));
+    }
+  }
+  function taskById(id){ return (SNAP&&SNAP.tasks||[]).find(t=>t.id===id); }
+
+  async function mergeTask(id, btn){
+    const t=taskById(id); if(!t||!t.pr) return;
+    if(!confirm('Merge this PR?\n'+t.pr)) return;
+    btn.disabled=true; btn.textContent='Merging…';
+    try{
+      const j=await apiJSON('/api/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:t.pr})});
+      if(j.ok){ btn.textContent='Merged'; toast('Merged '+id+' — cleaned up and updated the board.','ok'); refreshFleet(); }
+      else { btn.disabled=false; btn.textContent='Merge'; toast('Merge failed: '+(j.error||'unknown'),'bad'); }
+    }catch(e){ btn.disabled=false; btn.textContent='Merge'; }
+  }
+
+  /* ---------- drawer (task detail + peek) ---------- */
+  async function openTaskDrawer(id){
+    const t=taskById(id); if(!t) return;
+    const p=PILL[t.status]||PILL.unknown;
+    $('#dtitle').textContent=t.id;
+    const rows=[
+      ['Project', t.repo||'—'],
+      ['Kind', t.kind||'—'],
+      ['Status', `<span style="color:var(--${p.c==='work'?'accent':p.c==='ok'?'ok':p.c==='bad'?'bad':p.c==='warn'?'warn':'faint'})">${p.label}</span>`],
+      ['Source', esc(t.source||'—')],
+    ];
+    if(t.detail) rows.push(['Detail', esc(t.detail)]);
+    if(t.pr) rows.push(['Pull request', `<a href="${esc(t.pr)}" target="_blank" rel="noreferrer" style="color:var(--accent)">${esc(t.pr.replace(/^https?:\/\//,''))}</a>`]);
+    $('#dbody').innerHTML = rows.map(([k,v])=>`<div class="kv"><span class="k">${k}</span><span class="val">${v}</span></div>`).join('')
+      + `<div class="log" id="peeklog">loading recent output…</div>`;
+    const foot=$('#dfooter'); foot.innerHTML='';
+    if(t.pr){ const mb=document.createElement('button'); mb.className='btn primary'; mb.style.flex='1'; mb.textContent='Merge PR';
+      mb.onclick=()=>mergeTask(t.id, mb); foot.appendChild(mb); }
+    const ot=document.createElement('button'); ot.className='btn'+(t.pr?'':' primary'); if(!t.pr) ot.style.flex='1';
+    ot.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/></svg> Open in terminal';
+    ot.setAttribute('data-cmd','openterm'); foot.appendChild(ot);
+    const cb=document.createElement('button'); cb.className='btn'; cb.textContent='Close'; cb.setAttribute('data-cmd','closedrawer'); foot.appendChild(cb);
+    $('#drawer').classList.add('on');
+    // peek
+    try{ const j=await apiJSON('/api/peek/'+encodeURIComponent('fm-'+t.id)+'?lines=40');
+      const el=$('#peeklog'); if(el) el.textContent = j.ok ? (j.output||'(no recent output)') : ('peek error: '+(j.error||'unknown'));
+    }catch(e){ const el=$('#peeklog'); if(el) el.textContent='could not load output'; }
+  }
+
+  /* ---------- fleet data + live ws ---------- */
+  let liveWs=null, liveStop=false;
+  async function refreshFleet(){ try{ render(await apiJSON('/api/fleet')); }catch(e){} }
+  function setConn(state){ // 'live' | 'off' | 'connecting'
+    const map={ live:['','connected','live'], connecting:['warn','connecting','connecting'], off:['off','offline','offline'] };
+    const [ledcls, sb, title]=map[state]||map.connecting;
+    $('#titleconn').querySelector('.led').className='led '+ledcls;
+    $('#titleconn-txt').textContent=title;
+    $('#sb-led').className='led '+ledcls; $('#sb-led').style.display='inline-block';
+    $('#sb-conn').textContent=sb;
+  }
+  function connectLive(){
+    liveStop=false;
+    const proto=location.protocol==='https:'?'wss':'ws';
+    const ws=new WebSocket(proto+'://'+location.host+'/ws/live'); liveWs=ws;
+    setConn('connecting');
+    ws.onopen=()=>setConn('live');
+    ws.onmessage=ev=>{ try{ render(JSON.parse(ev.data)); }catch(e){} };
+    ws.onclose=ev=>{ setConn('off'); if(liveStop) return; if(ev.code===1008){ showLogin(); return; } setTimeout(connectLive,2000); };
+    ws.onerror=()=>{ try{ws.close();}catch(e){} };
+  }
+  function stopLive(){ liveStop=true; if(liveWs){ try{liveWs.close();}catch(e){} liveWs=null; } }
+
+  /* ---------- settings ---------- */
+  let settingsLoaded=false;
+  async function loadSettings(){
+    try{ const s=await apiJSON('/api/settings'); $('#tgtinput').value=s.firstmate_target||''; }catch(e){}
+    if(!settingsLoaded){ settingsLoaded=true; detectTargets(); }
+  }
+  $('#detectbtn').addEventListener('click',detectTargets);
+  $('#savetgtbtn').addEventListener('click',()=>saveTarget($('#tgtinput').value.trim()));
+  async function detectTargets(){
+    const head=$('#targets-head'), list=$('#targets');
+    head.textContent='Scanning tmux…'; list.innerHTML='';
+    try{
+      const j=await apiJSON('/api/targets');
+      if(!j.ok){ head.textContent=j.error||'no tmux server'; return; }
+      if(!j.targets.length){ head.textContent='No tmux panes found. Start your first mate in tmux, then Detect.'; return; }
+      head.textContent='Found '+j.targets.length+' session'+(j.targets.length===1?'':'s')+' — click to select';
+      const active=j.active;
+      list.innerHTML=j.targets.map(c=>
+        `<button class="tgt${c.target===active?' on':''}" data-tgt="${esc(c.target)}">`
+        +`<div class="r1">${esc(c.target)}${c.is_home?' <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg> firstmate home</span>':''}</div>`
+        +`<div class="r2">${esc(c.command||'?')} · <span class="h">${esc(c.path||'')}</span></div></button>`).join('');
+      $$('#targets .tgt').forEach(b=>b.addEventListener('click',()=>saveTarget(b.dataset.tgt)));
+    }catch(e){ head.textContent='error scanning tmux'; }
+  }
+  async function saveTarget(target){
+    if(!target) return;
+    try{
+      const j=await apiJSON('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({firstmate_target:target})});
+      $('#tgtinput').value=j.firstmate_target||target;
+      $$('#targets .tgt').forEach(x=>x.classList.toggle('on',x.dataset.tgt===target));
+      $('#sb-target').textContent=target;
+      toast('Target set to '+target+'.','ok');
+      refreshFleet();
+      // if terminal is live, reconnect it against the new target
+      if(root.dataset.view==='term'){ reconnectTerm(); }
+    }catch(e){ toast('Could not save target.','bad'); }
+  }
+  // density
+  $$('#density button').forEach(b=>b.addEventListener('click',()=>{ $$('#density button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); document.documentElement.style.setProperty('--pad',b.dataset.density); localStorage.setItem('fm-density',b.dataset.density); }));
+  (function initDensity(){ const d=localStorage.getItem('fm-density'); if(d){ document.documentElement.style.setProperty('--pad',d); $$('#density button').forEach(b=>b.classList.toggle('on',b.dataset.density===d)); } })();
+  // font size buttons
+  $$('#fontset button').forEach(b=>b.addEventListener('click',()=>{ $$('#fontset button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); setTermFont(+b.dataset.fs); }));
+  // toggles
+  $$('[data-toggle]').forEach(t=>t.addEventListener('click',()=>{ t.classList.toggle('on'); if(t.id) localStorage.setItem('fm-'+t.id, t.classList.contains('on')?'1':'0'); }));
+  (function initToggles(){ ['autoreconnect','notify'].forEach(id=>{ const v=localStorage.getItem('fm-'+id); if(v==='0') $('#'+id).classList.remove('on'); }); })();
+  function autoReconnectOn(){ return $('#autoreconnect').classList.contains('on'); }
+
+  /* ---------- command palette ---------- */
+  const CMDS=[
+    {t:'Go to Dashboard',kbd:'⌘1',nav:'dash',ic:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/>'},
+    {t:'Open Terminal',kbd:'⌘2',nav:'term',ic:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/>'},
+    {t:'New task for the first mate',kbd:'⏎',run:()=>{go('term');setTimeout(()=>$('#terminput').focus(),120);},ic:'<path d="M12 5v14M5 12h14"/>'},
+    {t:'Settings',kbd:'⌘3',nav:'set',ic:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3"/>'},
+    {t:'Switch to Charcoal + Amber',run:()=>setTheme('charcoal'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Obsidian + Ember',run:()=>setTheme('ember'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Graphite + Indigo',run:()=>setTheme('graphite'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Nightfall + Signal',run:()=>setTheme('nightfall'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Slate + Royal',run:()=>setTheme('slate'),ic:'<circle cx="12" cy="12" r="4"/>'},
+    {t:'Switch to Daylight (light)',run:()=>setTheme('light'),ic:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/>'},
+    {t:'Sign out',run:doLogout,ic:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'},
+  ];
+  function drawPalette(f=''){ const rows=CMDS.filter(c=>c.t.toLowerCase().includes(f.toLowerCase()));
+    $('#prows').innerHTML=rows.map((c,i)=>`<div class="prow${i===0?' sel':''}" data-i="${CMDS.indexOf(c)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">${c.ic}</svg> ${c.t}${c.kbd?`<span class="kbd">${c.kbd}</span>`:''}</div>`).join('')||'<div class="prow" style="color:var(--faint)">No matches</div>';
+    $$('#prows .prow[data-i]').forEach(r=>r.addEventListener('click',()=>runCmd(+r.dataset.i))); }
+  function runCmd(i){ const c=CMDS[i]; closePalette(); if(c.nav)go(c.nav); else if(c.run)c.run(); }
+  function openPalette(){ $('#palette').classList.add('on'); $('#pq').value=''; drawPalette(); $('#pq').focus(); }
+  function closePalette(){ $('#palette').classList.remove('on'); }
+  $('#pq').addEventListener('input',e=>drawPalette(e.target.value));
+  $('#pq').addEventListener('keydown',e=>{ if(e.key==='Enter'){ const sel=$('#prows .prow.sel')||$('#prows .prow[data-i]'); if(sel)runCmd(+sel.dataset.i); }});
+  $('#palette').addEventListener('click',e=>{ if(e.target.id==='palette')closePalette(); });
+
+  document.addEventListener('keydown',e=>{
+    if($('#login') && !$('#login').classList.contains('hide')) return;  // no shortcuts on login
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openPalette(); }
+    else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='f'&&root.dataset.view==='term'){ e.preventDefault(); $('#termsearch').focus(); $('#termsearch').select(); }
+    else if(e.key==='Escape'){ closePalette(); $('#drawer').classList.remove('on'); if($('#usermenu').classList.contains('on')){ closeUserMenu(); $('#avatar').focus(); } if($('#themedd-menu').classList.contains('on')){ closeThemeMenu(); $('#themedd-btn').focus(); } }
+    else if((e.metaKey||e.ctrlKey)&&['1','2','3'].includes(e.key)){ e.preventDefault(); go({'1':'dash','2':'term','3':'set'}[e.key]); }
+  });
+
+  /* ---------- terminal (real xterm.js ↔ tmux over /ws/terminal) ---------- */
+  function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function matchAppTheme(){
+    const bg=cssVar('--term-bg')||'#0c0e12', fg=cssVar('--ink')||'#eef1f5', accent=cssVar('--accent')||'#e3b55c', dim=cssVar('--dim')||'#99a1ac';
+    const light=document.documentElement.dataset.theme==='light';
+    return { background:bg, foreground:fg, cursor:accent, cursorAccent:bg, selectionBackground: light?'#c9d6e8':'#33507a',
+      black: light?'#3b3b3b':'#1b2028', red:'#e06c75', green:'#5ad6a0', yellow:accent, blue:'#61afef', magenta:'#c678dd', cyan:'#4fd1c5', white:fg,
+      brightBlack:dim, brightRed:'#ff7b86', brightGreen:'#7df0bd', brightYellow:'#ffd88a', brightBlue:'#82c0ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite: light?'#000':'#fff' };
+  }
+  const TERM_THEMES={
+    obsidian:{ background:'#0c0c0f', foreground:'#f3efec', cursor:'#ff9270', cursorAccent:'#0c0c0f', selectionBackground:'#3c1a11',
+      black:'#17171b', red:'#f26060', green:'#5fd08a', yellow:'#f0b73f', blue:'#6cb2ff', magenta:'#c678dd', cyan:'#4fd1c5', white:'#f3efec',
+      brightBlack:'#6c6a72', brightRed:'#ff8080', brightGreen:'#7df0bd', brightYellow:'#ffd070', brightBlue:'#8cc6ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite:'#ffffff' },
+    solarized:{ background:'#002b36', foreground:'#93a1a1', cursor:'#93a1a1', cursorAccent:'#002b36', selectionBackground:'#073642',
+      black:'#073642', red:'#dc322f', green:'#859900', yellow:'#b58900', blue:'#268bd2', magenta:'#d33682', cyan:'#2aa198', white:'#eee8d5',
+      brightBlack:'#586e75', brightRed:'#cb4b16', brightGreen:'#586e75', brightYellow:'#657b83', brightBlue:'#839496', brightMagenta:'#6c71c4', brightCyan:'#93a1a1', brightWhite:'#fdf6e3' },
+    paper:{ background:'#f6f3ec', foreground:'#3b352b', cursor:'#c67a12', cursorAccent:'#f6f3ec', selectionBackground:'#e6d8bd',
+      black:'#3b352b', red:'#c0392b', green:'#1f9d5f', yellow:'#b07d16', blue:'#1f7fc0', magenta:'#8e44ad', cyan:'#159a8c', white:'#e6e0d6',
+      brightBlack:'#8b8478', brightRed:'#cf4a4f', brightGreen:'#1f9d5f', brightYellow:'#a86408', brightBlue:'#1f7fc0', brightMagenta:'#8e44ad', brightCyan:'#159a8c', brightWhite:'#ffffff' },
   };
-}
-function openTerm(){
-  if(typeof Terminal==='undefined'){ return; }
-  initTerm(); connectTerm();
-  const doFit=()=>{ if(consoleView==='term') safeFit(); };
-  // double rAF: wait for layout + paint before the first measure
-  requestAnimationFrame(()=>requestAnimationFrame(doFit));
-  // transitionend usually nails it, but back it up with timed fits + a real
-  // resize event (the path the user confirmed always corrects the size).
-  [150, 400, 700].forEach(t=>setTimeout(doFit, t));
-  setTimeout(()=>{ if(consoleView==='term') window.dispatchEvent(new Event('resize')); }, 450);
-  setTimeout(()=>{ try{ term.focus(); }catch(e){} }, 360);
-}
-function closeTerm(){ if(termWs){ try{termWs.close();}catch(e){} termWs=null; } }
-async function pollConsole(){
-  try{ const r=await fetch('/api/firstmate/console?lines=200'); consoleData=await r.json(); renderConsole(consoleData); }
-  catch(e){ /* keep last */ }
-}
-// scroll helpers: don't yank the user's position on every poll
-function nearBottom(el){ return (el.scrollHeight - el.scrollTop - el.clientHeight) < 60; }
-function applyScroll(el, wasBottom, prevTop){ el.scrollTop = wasBottom ? el.scrollHeight : prevTop; }
+  function themeFor(name){ return name==='match' ? matchAppTheme() : (TERM_THEMES[name]||matchAppTheme()); }
+  function applyTermTheme(){ if(term) term.options.theme=themeFor(termThemeName); }
 
-function renderConsole(j){
-  if(consoleView==='term') return;   // the live terminal manages its own view
-  const chatEl=$('console-chat'), rawEl=$('console-raw'), noticeEl=$('console-notice');
-  const show=(el)=>{ [chatEl,rawEl,noticeEl,$('console-term')].forEach(x=>x.classList.add('hidden')); el.classList.remove('hidden'); };
-  if(!j){ $('console-sub').textContent='connecting…'; return; }
+  function safeFit(){ try{ fitAddon && fitAddon.fit(); }catch(e){} }
+  function sendTermResize(){ if(term&&termWs&&termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows:term.rows,cols:term.cols})); }
+  function setTermFont(fs){ termFontSize=Math.max(9,Math.min(24,fs)); localStorage.setItem('fm-term-font',termFontSize);
+    if(term){ term.options.fontSize=termFontSize; safeFit(); sendTermResize(); }
+    $$('#fontset button').forEach(b=>b.classList.toggle('on',+b.dataset.fs===termFontSize)); }
+  $$('[data-zoom]').forEach(b=>b.addEventListener('click',()=>setTermFont(termFontSize+(b.dataset.zoom==='+'?1:-1))));
 
-  if(!j.configured){
-    $('console-sub').textContent='no target';
-    noticeEl.innerHTML='<div><div style="font-size:1.4rem;margin-bottom:.4rem">⚓</div><div class="font-semibold mb-1">First mate target not set</div><p class="text-[.85rem]" style="opacity:.65;max-width:22rem">Open <span onclick="openSettings()" style="color:var(--color-primary);cursor:pointer;text-decoration:underline">Settings</span> and Detect your first mate\'s tmux pane so the cockpit can read and type to it.</p></div>';
-    show(noticeEl); return;
+  function setTermConn(state){ termConnState=state;
+    const map={ connecting:['warn','connecting'], connected:['','connected'], reconnecting:['warn','reconnecting…'], off:['off','disconnected'] };
+    const [cls,txt]=map[state]||map.connecting;
+    const el=$('#termconn'); el.querySelector('.led').className='led '+cls; el.childNodes[el.childNodes.length-1].textContent=' '+txt;
+    $('#reconnectbtn').classList.toggle('hidden', state==='connected'||state==='connecting');
   }
-  $('console-sub').textContent = (snapTarget||'first mate') + (j.ok?' · live':' · unreachable');
+  $('#reconnectbtn').addEventListener('click',reconnectTerm);
 
-  if(!j.ok){
-    noticeEl.innerHTML='<div><div class="font-semibold mb-1" style="color:var(--color-warning)">Can\'t reach the first mate pane</div><p class="text-[.82rem] mono" style="opacity:.7;max-width:24rem">'+esc(j.error||'unknown')+'</p><p class="text-[.8rem] mt-2" style="opacity:.6">Is the first mate running in tmux at that target?</p></div>';
-    show(noticeEl); return;
+  function initTerm(){
+    if(term || typeof Terminal==='undefined') return;
+    term=new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000, theme:themeFor(termThemeName) });
+    fitAddon=new FitAddon.FitAddon(); term.loadAddon(fitAddon);
+    term.open($('#xterm-host'));
+    $('#termtheme').value=termThemeName;
+    term.onData(d=>{ if(termWs&&termWs.readyState===1) termWs.send(new TextEncoder().encode(d)); });
+    term.onResize(({rows,cols})=>{ if(termWs&&termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows,cols})); });
+    // Claude Code runs in the alternate screen (no scrollback) - map wheel to PageUp/PageDown.
+    term.attachCustomWheelEventHandler((e)=>{
+      if(termWs&&termWs.readyState===1){ termWs.send(new TextEncoder().encode(e.deltaY<0?'\x1b[5~':'\x1b[6~')); }
+      return false;
+    });
+    window.addEventListener('resize',()=>{ if(root.dataset.view==='term') safeFit(); });
+    try{ new ResizeObserver(()=>{ if(root.dataset.view==='term') safeFit(); }).observe($('#xterm-host')); }catch(e){}
+    let firstRender=true;
+    term.onRender(()=>{ if(firstRender){ firstRender=false; requestAnimationFrame(()=>{ if(root.dataset.view==='term') safeFit(); }); } });
+    // jump-to-bottom affordance driven by xterm scroll position
+    term.onScroll(()=>updateJump());
   }
-
-  if(consoleView==='raw'){
-    const was=nearBottom(rawEl), prev=rawEl.scrollTop;
-    $('console-raw-pre').textContent = j.raw && j.raw.trim() ? j.raw : '(pane is empty)';
-    show(rawEl);
-    applyScroll(rawEl, was, prev);
-  } else {
-    const was=nearBottom(chatEl), prev=chatEl.scrollTop;
-    const msgs = j.messages||[];
-    if(!msgs.length){ chatEl.innerHTML='<div style="margin:auto;opacity:.5;font-size:.85rem">No conversation parsed yet.</div>'; }
-    else chatEl.innerHTML = msgs.map(m=>
-      '<div class="msg '+(m.who==='captain'?'captain':'mate')+'">'
-      + '<div class="ava">'+(m.who==='captain'?(captInitial||'M'):'⚓')+'</div>'
-      + '<div><div class="who">'+(m.who==='captain'?(snapCaptain||'Captain'):'First Mate')+'</div><div class="bubble">'+esc(m.text)+'</div></div>'
-      + '</div>').join('');
-    show(chatEl);
-    applyScroll(chatEl, was, prev);
+  function connectTerm(){
+    if(termWs&&(termWs.readyState===0||termWs.readyState===1)) return;
+    setTermConn(termConnState==='off'?'reconnecting':'connecting');
+    const proto=location.protocol==='https:'?'wss':'ws';
+    termWs=new WebSocket(proto+'://'+location.host+'/ws/terminal'); termWs.binaryType='arraybuffer';
+    termWs.onopen=()=>{ setTermConn('connected'); safeFit(); sendTermResize(); [120,350,700].forEach(t=>setTimeout(()=>{ if(root.dataset.view==='term'){ safeFit(); sendTermResize(); } },t)); };
+    termWs.onmessage=(e)=>{ if(typeof e.data==='string'){ try{ const j=JSON.parse(e.data); if(j.type==='fatal') term.write('\r\n\x1b[33m[cockpit] '+j.msg+'\x1b[0m\r\n'); }catch(_){}} else term.write(new Uint8Array(e.data)); };
+    termWs.onclose=(ev)=>{ termWs=null; if(ev.code===1008){ setTermConn('off'); showLogin(); return; }
+      setTermConn('off');
+      if(autoReconnectOn() && root.dataset.view==='term'){ clearTimeout(termReconnectTimer); termReconnectTimer=setTimeout(()=>{ setTermConn('reconnecting'); connectTerm(); },1800); } };
+    termWs.onerror=()=>{ try{termWs.close();}catch(e){} };
   }
-}
-async function sendKey(key){
-  const hint=$('console-hint');
-  try{
-    const r=await fetch('/api/firstmate/key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
-    const j=await r.json();
-    if(!j.ok){ hint.textContent='key not sent: '+(j.error||'unknown'); return; }
-    hint.textContent='sent '+key+' →'; setTimeout(pollConsole,400);
-  }catch(e){ hint.textContent='error: '+e; }
-}
-async function sendConsole(){
-  const inp=$('console-input'), text=inp.value.trim(); if(!text) return;
-  const hint=$('console-hint'); hint.textContent='sending…';
-  try{ const r=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})}); const j=await r.json();
-    const e=(j.error||'').toLowerCase();
-    if(j.ok){ inp.value=''; hint.textContent='sent ✓ - watching for the reply…'; setTimeout(pollConsole,700); }
-    else if(e.includes('not configured')||e.includes('firstmate_target')){ hint.innerHTML='No first mate set - <a onclick="openSettings()" style="color:var(--color-primary);cursor:pointer;text-decoration:underline">configure the target</a>.'; }
-    else if(e.includes('swallow')||e.includes('not submitted')){ inp.value=''; hint.textContent='sent, but couldn’t auto-confirm - watching the pane…'; setTimeout(pollConsole,700); }
-    else hint.textContent='not sent: '+(j.error||'unknown'); }
-  catch(e){ hint.textContent='error: '+e; }
-}
-$('console-send').addEventListener('click',sendConsole);
-$('console-input').addEventListener('keydown',e=>{ if(e.key==='Enter') sendConsole(); });
+  function openTerm(){
+    if(typeof Terminal==='undefined') return;
+    initTerm(); connectTerm();
+    const doFit=()=>{ if(root.dataset.view==='term') safeFit(); };
+    requestAnimationFrame(()=>requestAnimationFrame(doFit));
+    [150,400,700].forEach(t=>setTimeout(doFit,t));
+    setTimeout(()=>{ try{term.focus();}catch(e){} },360);
+    termBooted=true;
+  }
+  function closeTerm(){ clearTimeout(termReconnectTimer); if(termWs){ try{termWs.close();}catch(e){} termWs=null; } }
+  function reconnectTerm(){ closeTerm(); setTermConn('reconnecting'); connectTerm(); }
 
-/* ---- live ---- */
-function setConn(ok){ $('conn').innerHTML = ok
-  ? '<span class="dot live" style="background:var(--color-success);color:var(--color-success)"></span><span style="opacity:.8">live</span>'
-  : '<span class="dot" style="background:var(--color-error)"></span><span style="opacity:.8">offline</span>'; }
-function connect(){
-  const proto=location.protocol==='https:'?'wss':'ws';
-  const ws=new WebSocket(proto+'://'+location.host+'/ws/live');
-  ws.onopen=()=>setConn(true);
-  ws.onmessage=ev=>{ try{ render(JSON.parse(ev.data)); }catch(e){} };
-  ws.onclose=()=>{ setConn(false); setTimeout(connect,2000); };
-  ws.onerror=()=>{ try{ws.close();}catch(e){} };
-}
-fetch('/api/fleet').then(r=>r.json()).then(render).catch(()=>{});
-connect();
+  // terminal palette (independent of app theme)
+  $('#termtheme').addEventListener('change',e=>{ termThemeName=e.target.value; localStorage.setItem('fm-term-theme',termThemeName); applyTermTheme(); });
+
+  // jump to bottom
+  function updateJump(){ if(!term) return; const b=term.buffer.active; const atBottom=b.viewportY>=b.baseY-1;
+    $('#jumpbtn').classList.toggle('hidden', atBottom); }
+  $('#jumpbtn').addEventListener('click',()=>{ if(term){ term.scrollToBottom(); updateJump(); } });
+
+  // copy visible/selected output
+  $('#copybtn').addEventListener('click',async()=>{
+    if(!term) return;
+    let text=term.getSelection();
+    if(!text){ // fall back to visible viewport
+      const b=term.buffer.active; const lines=[];
+      for(let i=0;i<term.rows;i++){ const ln=b.getLine(b.viewportY+i); if(ln) lines.push(ln.translateToString(true)); }
+      text=lines.join('\n').replace(/\s+$/,'');
+    }
+    try{ await navigator.clipboard.writeText(text); toast('Copied terminal output to clipboard.','ok'); }
+    catch(e){ toast('Copy blocked by the browser.','bad'); }
+  });
+
+  // in-terminal search: scan the buffer, select + scroll to matches
+  let searchMatches=[], searchIdx=-1, searchQuery='';
+  function runSearch(q, forward=true){
+    if(!term) return;
+    q=q.trim();
+    if(q!==searchQuery){ searchQuery=q; buildMatches(q); searchIdx=forward?-1:searchMatches.length; }
+    if(!q){ $('#searchcount').textContent=''; term.clearSelection(); return; }
+    if(!searchMatches.length){ $('#searchcount').textContent='0/0'; term.clearSelection(); return; }
+    searchIdx = forward ? (searchIdx+1)%searchMatches.length : (searchIdx-1+searchMatches.length)%searchMatches.length;
+    const m=searchMatches[searchIdx];
+    term.select(m.col, m.row, q.length);
+    term.scrollToLine(Math.max(0, m.row - Math.floor(term.rows/2)));
+    $('#searchcount').textContent=(searchIdx+1)+'/'+searchMatches.length;
+  }
+  function buildMatches(q){
+    searchMatches=[];
+    if(!q || !term) return;
+    const needle=q.toLowerCase(); const b=term.buffer.active;
+    const total=b.length;
+    for(let r=0;r<total;r++){ const ln=b.getLine(r); if(!ln) continue;
+      const s=ln.translateToString(true).toLowerCase();
+      let idx=s.indexOf(needle);
+      while(idx!==-1){ searchMatches.push({row:r,col:idx}); idx=s.indexOf(needle, idx+1); }
+    }
+  }
+  $('#termsearch').addEventListener('input',e=>{ searchQuery=''; runSearch(e.target.value, true); });
+  $('#termsearch').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); runSearch(e.target.value, !e.shiftKey); }
+    else if(e.key==='Escape'){ e.target.value=''; searchQuery=''; searchMatches=[]; $('#searchcount').textContent=''; if(term){ term.clearSelection(); term.focus(); } } });
+
+  // terminal message input -> /api/send (types into the first mate pane)
+  $('#terminput').addEventListener('keydown',async e=>{ if(e.key!=='Enter'||!e.target.value.trim()) return;
+    const text=e.target.value.trim(); e.target.value='';
+    try{ const j=await apiJSON('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+      const err=(j.error||'').toLowerCase();
+      if(j.ok) toast('Sent to the first mate.','ok');
+      else if(err.includes('not configured')||err.includes('firstmate_target')) toast('No first mate target set — configure it in Settings.','bad');
+      else if(err.includes('swallow')||err.includes('not submitted')) toast('Sent, but could not auto-confirm — check the terminal.','ok');
+      else toast('Not sent: '+(j.error||'unknown'),'bad');
+    }catch(err){}
+  });
+
+  /* ---------- toasts ---------- */
+  function toast(msg,kind){ const t=document.createElement('div'); t.className='toast'+(kind==='ok'?' ok':kind==='bad'?' bad':'');
+    const ic = kind==='ok'?'<path d="M20 6L9 17l-5-5"/>':kind==='bad'?'<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>':'<circle cx="12" cy="12" r="9"/><path d="M12 8v4"/>';
+    t.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${ic}</svg> ${esc(msg)}`;
+    $('#toasts').appendChild(t); setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateX(20px)'; t.style.transition='.3s'; setTimeout(()=>t.remove(),320); },3200); }
+
+  /* ---------- clock ---------- */
+  let clockTimer=null;
+  function startClock(){ const c=$('#clock'); const t=()=>c.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); t(); clearInterval(clockTimer); clockTimer=setInterval(t,15000); }
 </script>
 </body>
 </html>

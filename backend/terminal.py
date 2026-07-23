@@ -12,11 +12,13 @@ disconnect.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import pty
 import re
+import secrets
 import signal
 import struct
 import subprocess
@@ -42,14 +44,17 @@ def _tmux(env, *args, timeout=6):
     return subprocess.run(["tmux", *args], env=env, capture_output=True, text=True, timeout=timeout)
 
 
-def _group_name(session: str) -> str:
+def _group_name(session: str, suffix: str = "") -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session)
-    return f"cockpit_{safe}"
+    # A per-connection suffix keeps two cockpit instances (or two windows) from
+    # fighting over one shared mirror session and killing each other's attach.
+    tag = f"_{suffix}" if suffix else ""
+    return f"cockpit_{safe}{tag}"
 
 
-def _setup_group(env, session: str, window):
+def _setup_group(env, session: str, window, suffix: str = ""):
     """Create a grouped session mirroring `session`, focused on `window`."""
-    group = _group_name(session)
+    group = _group_name(session, suffix)
     _tmux(env, "kill-session", "-t", group)  # clear any stale one (ignore errors)
     r = _tmux(env, "new-session", "-d", "-s", group, "-t", session)
     if r.returncode != 0:
@@ -91,7 +96,8 @@ async def terminal_bridge(ws: WebSocket):
     env.pop("TMUX", None)  # ensure the client isn't treated as nested
 
     session, window = _split_target(target)
-    group, err = await asyncio.to_thread(_setup_group, env, session, window)
+    suffix = f"{os.getpid()}_{secrets.token_hex(2)}"
+    group, err = await asyncio.to_thread(_setup_group, env, session, window, suffix)
     if not group:
         await ws.send_text(json.dumps({"type": "fatal", "msg": err or "tmux setup failed"}))
         await ws.close()
@@ -116,6 +122,11 @@ async def terminal_bridge(ws: WebSocket):
                 await ws.send_bytes(data)
         except Exception:
             pass
+        # The tmux client exited (EOF on the PTY) - e.g. the grouped session was
+        # killed out from under us. Close the socket so the frontend's auto-
+        # reconnect gets a fresh attach instead of showing a dead "[exited]".
+        with contextlib.suppress(Exception):
+            await ws.close()
 
     out_task = asyncio.create_task(pump_out())
     try:

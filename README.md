@@ -11,8 +11,20 @@ You keep talking to your first mate as usual (in tmux); this gives you a live wi
 ## Status
 
 - [x] **Phase 1 - backend core.** File/state parsing, script wrappers, FastAPI + WebSocket, a live dashboard page.
-- [x] **Phase 2 - dashboard UI.** Custom light/dark themes, captain identity, stat tiles, fleet board, First Mate Console (Raw pane + Conversation), empty states.
+- [x] **Phase 2 - dashboard UI.** Custom light/dark themes, captain identity, stat tiles, fleet board, empty states.
 - [x] **Phase 3 - native app** → `Firstmate.app` (pywebview + py2app; no Rust).
+- [x] **Phase 4 - cockpit redesign (r2).** Token-based themes (Charcoal + Amber, Obsidian + Ember, Daylight), custom app shell with an icon rail, a **terminal-first** view built on the real xterm.js terminal (search, font zoom, independent terminal palette, copy, auto-reconnect), command palette, task detail drawer, target selector, and **file-based sign-in** (see below). The Transcript (raw) and Conversation views were removed - the live terminal is the single source of truth.
+
+### Sign-in
+
+The cockpit is gated by a local sign-in. Credentials live in a plaintext file you own, default `~/.firstmate-cockpit/credentials` (override with `FM_CREDENTIALS_FILE`), created with defaults on first run:
+
+```
+username = manjesh
+password = Welcome@123!
+```
+
+Edit that file to change them - no rebuild. Sign-in validates both fields against the file and sets a signed session cookie. Every `/api/*` call and the terminal websocket are gated behind that session, so the auth is genuine, not just a screen.
 
 ## Build Firstmate.app
 
