@@ -117,6 +117,27 @@
   .who{ font-size:.68rem; opacity:.5; margin-bottom:3px; }
   .term-view{ flex:1; min-height:0; overflow:hidden; padding:8px 6px 8px 10px; background:#12161c; }
   .term-view #xterm-host{ width:100%; height:100%; }
+  /* Draggable scrollbar for xterm's normal-buffer scrollback. xterm renders a
+     natively-scrollable .xterm-viewport inside #xterm-host; its scrollbar lives
+     inside the viewport, so .term-view overflow:hidden doesn't clip it. Colors
+     are kept neutral/semi-transparent so the bar reads across all 13 terminal
+     themes without being tied to any one of them.
+     WebKit (the app's WKWebView) and Chromium render the fat, always-visible bar
+     via the ::-webkit-scrollbar pseudo-elements below. */
+  .term-view .xterm-viewport::-webkit-scrollbar{ width:11px; }
+  .term-view .xterm-viewport::-webkit-scrollbar-track{ background:transparent; }
+  .term-view .xterm-viewport::-webkit-scrollbar-thumb{
+    background:rgba(255,255,255,.25); border-radius:6px;
+    border:2px solid transparent; background-clip:content-box; }
+  .term-view .xterm-viewport::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.4); background-clip:content-box; }
+  .term-view .xterm-viewport::-webkit-scrollbar-thumb:active{ background:rgba(255,255,255,.55); background-clip:content-box; }
+  /* Firefox fallback only. Scoped behind @supports so the standard scrollbar-*
+     properties are NOT set where ::-webkit-scrollbar is supported - modern
+     WebKit/Chromium suppress the webkit pseudo-elements (and the fat bar) if
+     scrollbar-width is also present on the same element. */
+  @supports not selector(::-webkit-scrollbar){
+    .term-view .xterm-viewport{ scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.25) transparent; }
+  }
   .raw-view{ flex:1; overflow:auto; padding:15px; background:oklch(16% 0.02 240); }
   .raw-view pre{ margin:0; font-family:ui-monospace,monospace; font-size:12px; line-height:1.55; color:oklch(88% 0.02 200); white-space:pre-wrap; }
   /* resume tab: docked to the right edge, vertically centered - clear of the
@@ -692,6 +713,7 @@ function sendTermResize(){
 function initTerm(){
   if(term || typeof Terminal==='undefined') return;
   term = new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000,
+    smoothScrollDuration:125, scrollSensitivity:3,
     theme: TERM_THEMES[termThemeName] });
   const sel = $('term-theme'); if(sel) sel.value = termThemeName;
   fitAddon = new FitAddon.FitAddon();
@@ -699,16 +721,22 @@ function initTerm(){
   term.open($('xterm-host'));
   term.onData(d=>{ if(termWs && termWs.readyState===1) termWs.send(new TextEncoder().encode(d)); });
   term.onResize(({rows,cols})=>{ if(termWs && termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows,cols})); });
-  // Claude Code runs in the alternate screen (no terminal scrollback), so scroll
-  // must be driven inside Claude Code itself. Map the mouse wheel to PageUp /
-  // PageDown, which scrolls its buffer. We handle the wheel ourselves (return
-  // false) so xterm doesn't also try to scroll its empty alt-buffer.
+  // Wheel handling depends on which buffer is active:
+  //  - Alternate screen (full-screen TUIs like Claude Code): there is no xterm
+  //    scrollback, so the wheel must drive the TUI's own buffer. Map the wheel to
+  //    PageUp / PageDown and handle it ourselves (return false) so xterm doesn't
+  //    try to scroll its empty alt-buffer.
+  //  - Normal buffer: let xterm scroll its own scrollback. Returning true lets
+  //    xterm apply smoothScrollDuration and keeps the draggable scrollbar in sync.
   term.attachCustomWheelEventHandler((e)=>{
-    if(termWs && termWs.readyState===1){
-      const seq = e.deltaY < 0 ? '\x1b[5~' : '\x1b[6~';   // PageUp : PageDown
-      termWs.send(new TextEncoder().encode(seq));
+    if(term.buffer.active.type === 'alternate'){
+      if(termWs && termWs.readyState===1){
+        const seq = e.deltaY < 0 ? '\x1b[5~' : '\x1b[6~';   // PageUp : PageDown
+        termWs.send(new TextEncoder().encode(seq));
+      }
+      return false;
     }
-    return false;
+    return true;   // normal buffer: xterm scrolls its scrollback smoothly
   });
   window.addEventListener('resize', ()=>{ if(consoleOpen && consoleView==='term') safeFit(); });
   // refit whenever the terminal host actually changes size (drawer open anim,
