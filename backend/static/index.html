@@ -83,6 +83,26 @@
     --glow: radial-gradient(1100px 480px at 82% -10%, #c67a1216, transparent 62%);
     --term-bg:#f6f3ec;
   }
+  [data-theme="frost"]{
+    color-scheme:light;
+    --bg:#eef2f6; --bg2:#e4e9ef; --surf:#ffffff; --surf2:#f3f6fa; --raise:#e8eef5;
+    --line:#d2dae4; --line-soft:#e2e8ef;
+    --ink:#14202c; --dim:#4d5a68; --faint:#8291a0;
+    --accent:#2f6fe0; --accent-2:#1f5ac0; --accent-ink:#ffffff; --accent-soft:#d9e6fb;
+    --ok:#1f9d5f; --warn:#b07d16; --bad:#cf4a4f; --info:#1f7fc0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #2f6fe016, transparent 62%);
+    --term-bg:#f3f6fa;
+  }
+  [data-theme="mist"]{
+    color-scheme:light;
+    --bg:#f0eef6; --bg2:#e6e3ef; --surf:#ffffff; --surf2:#f5f3fa; --raise:#ece8f4;
+    --line:#d8d3e2; --line-soft:#e6e2ee;
+    --ink:#1d1930; --dim:#544e63; --faint:#8a83a0;
+    --accent:#6a4fd0; --accent-2:#5840b8; --accent-ink:#ffffff; --accent-soft:#e4ddf6;
+    --ok:#1f9d5f; --warn:#a5741a; --bad:#cf4a4f; --info:#4a6fd0;
+    --glow: radial-gradient(1100px 480px at 82% -10%, #6a4fd016, transparent 62%);
+    --term-bg:#f5f3fa;
+  }
 
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -445,7 +465,7 @@
         </div>
         <div class="panel" style="margin-bottom:16px">
           <header><h3>Appearance</h3></header>
-          <div class="setrow"><div class="lbl"><div class="t">Theme</div><div class="d">Six palettes: five dark working themes (Charcoal + Amber, Obsidian + Ember, Graphite + Indigo, Nightfall + Signal, Slate + Royal) and Daylight, a high-contrast light theme with dark ink. Pick one here or from the dropdown up top. Every colour is a token, so themes stay modular.</div></div><div class="swatches" id="themepick"></div></div>
+          <div class="setrow"><div class="lbl"><div class="t">Theme</div><div class="d">Eight palettes: five dark working themes (Charcoal + Amber, Obsidian + Ember, Graphite + Indigo, Nightfall + Signal, Slate + Royal) and three high-contrast light themes with dark ink (Daylight, Frost + Royal, Mist + Indigo). Pick one here or from the dropdown up top. Every colour is a token, so themes stay modular.</div></div><div class="swatches" id="themepick"></div></div>
           <div class="setrow"><div class="lbl"><div class="t">Interface density</div><div class="d">Comfortable spacing, or compact to fit more on screen.</div></div><div class="seg" id="density"><button class="on" data-density="1">Comfortable</button><button data-density=".72">Compact</button></div></div>
         </div>
         <div class="panel" style="margin-bottom:16px">
@@ -523,6 +543,8 @@
     {id:'nightfall',nm:'Nightfall + Signal',c:['#0a0a0b','#1c1c1f','#c6f24e']},
     {id:'slate',nm:'Slate + Royal',c:['#10151c','#1f2937','#4c8dff']},
     {id:'light',nm:'Daylight',c:['#efece6','#ffffff','#c67a12']},
+    {id:'frost',nm:'Frost + Royal',c:['#eef2f6','#ffffff','#2f6fe0']},
+    {id:'mist',nm:'Mist + Indigo',c:['#f0eef6','#ffffff','#6a4fd0']},
   ];
   function setTheme(id){
     if(!THEMES.some(t=>t.id===id)) id='charcoal';
