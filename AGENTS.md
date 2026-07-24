@@ -23,6 +23,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Terminal (xterm.js over tmux)
 
 - The live terminal attaches to a per-connection *grouped* tmux mirror (`backend/terminal.py`). The group name carries a per-connection suffix (`cockpit_<session>_<pid>_<hex>`) so two cockpit instances don't fight over one shared mirror and kill each other's attach (that showed up as a dead `[exited]` frame). When the inner tmux client exits, the bridge closes the socket so the frontend auto-reconnects.
+- Light-terminal readability (`matchAppTheme`/`applyTermTheme` in `index.html`): the first mate (Claude Code) emits much of its output as **truecolor (24-bit)**, which the xterm ANSI palette cannot remap - so a light ANSI palette alone leaves dim gray and blue/cyan washed out on a light bg. The fix is xterm's `minimumContrastRatio` (set to 4.5 via `contrastFloorFor()` whenever the terminal bg is light by WCAG luminance), which darkens *any* foreground to meet contrast. Dark terminals keep it at 1 (off) so they render unchanged.
 
 ## Maintaining this file
 

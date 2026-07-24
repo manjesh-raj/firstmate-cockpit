@@ -950,9 +950,19 @@
   function matchAppTheme(){
     const bg=cssVar('--term-bg')||'#0c0e12', fg=cssVar('--ink')||'#eef1f5', accent=cssVar('--accent')||'#e3b55c', dim=cssVar('--dim')||'#99a1ac';
     const light=document.documentElement.dataset.theme==='light';
-    return { background:bg, foreground:fg, cursor:accent, cursorAccent:bg, selectionBackground: light?'#c9d6e8':'#33507a',
-      black: light?'#3b3b3b':'#1b2028', red:'#e06c75', green:'#5ad6a0', yellow:accent, blue:'#61afef', magenta:'#c678dd', cyan:'#4fd1c5', white:fg,
-      brightBlack:dim, brightRed:'#ff7b86', brightGreen:'#7df0bd', brightYellow:'#ffd88a', brightBlue:'#82c0ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite: light?'#000':'#fff' };
+    if(light){
+      /* Light app themes get a proper LIGHT terminal palette: dark, high-contrast ANSI
+         colours on the light term background (modelled on GitHub Light / Solarized Light,
+         each foreground kept ≈4.5:1 against the light bg). The first mate's dim gray and
+         its blue/cyan links were tuned for a dark bg, so on a light bg they washed out -
+         these darkened values fix that. */
+      return { background:bg, foreground:fg, cursor:accent, cursorAccent:bg, selectionBackground:'#c9d6e8',
+        black:'#24292e', red:'#c0392b', green:'#1a7f37', yellow:'#9a6700', blue:'#0969da', magenta:'#8250df', cyan:'#1b7c83', white:'#57606a',
+        brightBlack:'#57606a', brightRed:'#a40e26', brightGreen:'#116329', brightYellow:'#7d4e00', brightBlue:'#0550ae', brightMagenta:'#6639ba', brightCyan:'#136169', brightWhite:'#24292e' };
+    }
+    return { background:bg, foreground:fg, cursor:accent, cursorAccent:bg, selectionBackground:'#33507a',
+      black:'#1b2028', red:'#e06c75', green:'#5ad6a0', yellow:accent, blue:'#61afef', magenta:'#c678dd', cyan:'#4fd1c5', white:fg,
+      brightBlack:dim, brightRed:'#ff7b86', brightGreen:'#7df0bd', brightYellow:'#ffd88a', brightBlue:'#82c0ff', brightMagenta:'#e0a0f0', brightCyan:'#7ee8dd', brightWhite:'#fff' };
   }
   const TERM_THEMES={
     obsidian:{ background:'#0c0c0f', foreground:'#f3efec', cursor:'#ff9270', cursorAccent:'#0c0c0f', selectionBackground:'#3c1a11',
@@ -966,7 +976,19 @@
       brightBlack:'#8b8478', brightRed:'#cf4a4f', brightGreen:'#1f9d5f', brightYellow:'#a86408', brightBlue:'#1f7fc0', brightMagenta:'#8e44ad', brightCyan:'#159a8c', brightWhite:'#ffffff' },
   };
   function themeFor(name){ return name==='match' ? matchAppTheme() : (TERM_THEMES[name]||matchAppTheme()); }
-  function applyTermTheme(){ if(term) term.options.theme=themeFor(termThemeName); }
+  /* True when the terminal background is light (WCAG relative luminance > 0.5). */
+  function isLightBg(hex){
+    const m=/^#?([0-9a-fA-F]{6})$/.exec((hex||'').trim()); if(!m) return false;
+    const n=parseInt(m[1],16), ch=[(n>>16&255)/255,(n>>8&255)/255,(n&255)/255].map(c=>c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4));
+    return 0.2126*ch[0]+0.7152*ch[1]+0.0722*ch[2] > 0.5;
+  }
+  /* On a light terminal background the first mate's colours wash out - its dim gray and
+     blue/cyan links are tuned for a dark bg, and truecolor (24-bit) output can't be
+     remapped by the ANSI palette at all. xterm's minimumContrastRatio darkens ANY
+     foreground (truecolor included) to ~4.5:1 against the bg. We only raise it for light
+     terminals; dark terminals keep 1 (off) so they render exactly as before. */
+  function contrastFloorFor(name){ return isLightBg(themeFor(name).background) ? 4.5 : 1; }
+  function applyTermTheme(){ if(!term) return; term.options.theme=themeFor(termThemeName); term.options.minimumContrastRatio=contrastFloorFor(termThemeName); }
 
   function safeFit(){ try{ fitAddon && fitAddon.fit(); }catch(e){} }
   function sendTermResize(){ if(term&&termWs&&termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows:term.rows,cols:term.cols})); }
@@ -985,7 +1007,7 @@
 
   function initTerm(){
     if(term || typeof Terminal==='undefined') return;
-    term=new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000, theme:themeFor(termThemeName) });
+    term=new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000, theme:themeFor(termThemeName), minimumContrastRatio:contrastFloorFor(termThemeName) });
     fitAddon=new FitAddon.FitAddon(); term.loadAddon(fitAddon);
     term.open($('#xterm-host'));
     $('#termtheme').value=termThemeName;
