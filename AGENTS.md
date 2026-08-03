@@ -25,6 +25,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The live terminal attaches to a per-connection *grouped* tmux mirror (`backend/terminal.py`). The group name carries a per-connection suffix (`cockpit_<session>_<pid>_<hex>`) so two cockpit instances don't fight over one shared mirror and kill each other's attach (that showed up as a dead `[exited]` frame). When the inner tmux client exits, the bridge closes the socket so the frontend auto-reconnects.
 - Light-terminal readability (`matchAppTheme`/`applyTermTheme` in `index.html`): the first mate (Claude Code) emits much of its output as **truecolor (24-bit)**, which the xterm ANSI palette cannot remap - so a light ANSI palette alone leaves dim gray and blue/cyan washed out on a light bg. The fix is xterm's `minimumContrastRatio` (set to 4.5 via `contrastFloorFor()` whenever the terminal bg is light by WCAG luminance), which darkens *any* foreground to meet contrast. Dark terminals keep it at 1 (off) so they render unchanged.
 
+## Shell tab (real PTY, true scrollback)
+
+- The "Shell" tab (`⌘3`) is a *second, independent* terminal on top of the mirror. It is a genuine `pty.fork()` login shell (`backend/shell.py`, endpoint `/ws/shell`, same auth gate as `/ws/terminal`), so lines that scroll off the top land in xterm's scrollback and the mouse wheel scrolls up like WezTerm. A tmux *mirror* (the "Terminal" tab) repaints only the visible region and keeps no scrollback - that difference is architectural, not a setting. The mirror tab is deliberately left untouched.
+- The scrollback win is **primary-screen only**. A full-screen (alternate-screen) TUI like Claude Code keeps no scrollback in any terminal. So the shell's wheel handler is conditional (`initShell` in `index.html`): native xterm scroll while `shTerm.buffer.active.type==='normal'`, PageUp/PageDown only when it is `'alternate'`. The mirror tab still hijacks the wheel to PageUp/PageDown unconditionally (it is always alt-screen).
+- Image/screenshot paste-into-agent needs no cockpit code: xterm forwards a browser paste as a **bracketed paste** (`ESC[200~…ESC[201~`) over the socket to the PTY, and the agent (running on the same host) reads the shared macOS system clipboard for the image. Both tabs share the `term.onData -> ws.send` wiring, so paste works identically in either.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

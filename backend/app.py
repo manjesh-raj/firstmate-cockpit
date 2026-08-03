@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from . import auth, fleet, openprs, scripts
 from .config import config
+from .shell import shell_bridge
 from .terminal import terminal_bridge
 
 app = FastAPI(title="firstmate-cockpit", version="0.1.0")
@@ -323,6 +324,16 @@ async def ws_terminal(ws: WebSocket):
         await ws.close(code=1008)  # policy violation
         return
     await terminal_bridge(ws)
+
+
+@app.websocket("/ws/shell")
+async def ws_shell(ws: WebSocket):
+    # A real PTY shell (with true scrollback), behind the same session gate as
+    # the mirror. Coexists with /ws/terminal; it does not replace it.
+    if not auth.is_authenticated(ws.cookies):
+        await ws.close(code=1008)  # policy violation
+        return
+    await shell_bridge(ws)
 
 
 @app.websocket("/ws/live")
