@@ -258,7 +258,7 @@
   .term-conn{display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--dim);font-family:var(--mono)}
   .term-conn .led{width:7px;height:7px;border-radius:50%}
   .term-screen{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--term-bg)}
-  #xterm-host{position:absolute;inset:0;padding:8px 6px 6px 12px}
+  #xterm-host,#xterm-shell-host{position:absolute;inset:0;padding:8px 6px 6px 12px}
   .jump{position:absolute;right:18px;bottom:16px;z-index:3}
   .term-input{flex:none;display:flex;align-items:center;gap:9px;padding:10px 14px;background:var(--surf);border-top:1px solid var(--line-soft)}
   .term-input .pr{color:var(--accent);font-family:var(--mono);font-size:.82rem;font-weight:700}
@@ -371,7 +371,8 @@
     <nav class="rail">
       <button class="navbtn on" data-nav="dash" title="Dashboard (⌘1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span class="cnt hidden" id="railcount">0</span></button>
       <button class="navbtn" data-nav="term" title="Terminal (⌘2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></button>
-      <button class="navbtn" data-nav="set" title="Settings (⌘3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button>
+      <button class="navbtn" data-nav="shell" title="Shell (⌘3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg></button>
+      <button class="navbtn" data-nav="set" title="Settings (⌘4)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button>
       <div class="sep"></div>
       <button class="navbtn" data-cmd="palette" title="Command palette (⌘K)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v6H3M15 21v-6h6M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4"/></svg></button>
       <button class="avatar" id="avatar" aria-haspopup="menu" aria-expanded="false" aria-controls="usermenu" title="Signed in">M</button>
@@ -444,6 +445,22 @@
           </div>
           <div class="term-screen"><div id="xterm-host"></div><button class="btn sm jump hidden" id="jumpbtn">↓ Jump to bottom</button></div>
           <div class="term-input"><span class="pr">captain ›</span><input id="terminput" placeholder="type a message to the first mate and press Enter…"></div>
+        </div>
+      </section>
+
+      <!-- SHELL (real PTY, true scrollback) -->
+      <section class="view pad0 hidden" data-view-panel="shell">
+        <div class="term-wrap">
+          <div class="term-bar">
+            <div class="title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg> shell · real terminal</div>
+            <span class="term-conn" id="shconn"><span class="led warn"></span> connecting</span>
+            <button class="btn sm ghost hidden" id="shreconnectbtn" title="Reconnect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> Reconnect</button>
+            <div class="grow"></div>
+            <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input id="shsearch" placeholder="Search output  (⌘F)"><span class="cnt" id="shsearchcount"></span></label>
+            <div class="seg" title="Text size"><button data-zoom="-">A−</button><button data-zoom="+">A+</button></div>
+            <button class="btn sm ghost" id="shcopybtn" title="Copy terminal selection / screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+          </div>
+          <div class="term-screen"><div id="xterm-shell-host"></div><button class="btn sm jump hidden" id="shjumpbtn">↓ Jump to bottom</button></div>
         </div>
       </section>
 
@@ -532,6 +549,8 @@
   /* terminal state declared up-front: setTheme() (run during init) reads `term`
      and `termThemeName`, so they must exist before the theme section runs. */
   let term=null, fitAddon=null, termWs=null, termBooted=false, termConnState='connecting', termReconnectTimer=null;
+  // Shell tab: a second, independent xterm bound to a real PTY (/ws/shell).
+  let shTerm=null, shFit=null, shWs=null, shBooted=false, shConnState='connecting', shReconnectTimer=null;
   let termFontSize = parseFloat(localStorage.getItem('fm-term-font')) || 13;
   let termThemeName = localStorage.getItem('fm-term-theme') || 'match';
 
@@ -556,7 +575,7 @@
     $('#themedd-label').textContent=t.nm;
     $('#themedd-sw').style.background=t.c[2];
     $$('#themedd-menu .themedd-item').forEach(b=>b.classList.toggle('on',b.dataset.t===id));
-    if(term && termThemeName==='match') applyTermTheme();  // match-app follows the theme
+    if((term||shTerm) && termThemeName==='match') applyTermTheme();  // match-app follows the theme
   }
   const pick=$('#themepick');
   THEMES.forEach(t=>{ const el=document.createElement('div'); el.className='swatch'; el.dataset.t=t.id;
@@ -588,6 +607,7 @@
     $$('.rail .navbtn').forEach(b=>b.classList.toggle('on',b.dataset.nav===v));
     $$('[data-view-panel]').forEach(p=>p.classList.toggle('hidden',p.dataset.viewPanel!==v));
     if(v==='term'){ openTerm(); }
+    if(v==='shell'){ openShell(); }
     if(v==='set'){ loadSettings(); }
     closePalette();
   }
@@ -622,7 +642,7 @@
   async function doLogout(){
     try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
     closeUserMenu();
-    closeTerm(); $('#drawer').classList.remove('on'); closePalette();
+    closeTerm(); closeShell(); $('#drawer').classList.remove('on'); closePalette();
     showLogin();
     toast('Signed out.','ok');
   }
@@ -917,8 +937,9 @@
   const CMDS=[
     {t:'Go to Dashboard',kbd:'⌘1',nav:'dash',ic:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/>'},
     {t:'Open Terminal',kbd:'⌘2',nav:'term',ic:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/>'},
+    {t:'Open Shell',kbd:'⌘3',nav:'shell',ic:'<path d="M4 17l6-6-6-6M12 19h8"/>'},
     {t:'New task for the first mate',kbd:'⏎',run:()=>{go('term');setTimeout(()=>$('#terminput').focus(),120);},ic:'<path d="M12 5v14M5 12h14"/>'},
-    {t:'Settings',kbd:'⌘3',nav:'set',ic:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3"/>'},
+    {t:'Settings',kbd:'⌘4',nav:'set',ic:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3"/>'},
     {t:'Switch to Charcoal + Amber',run:()=>setTheme('charcoal'),ic:'<circle cx="12" cy="12" r="4"/>'},
     {t:'Switch to Obsidian + Ember',run:()=>setTheme('ember'),ic:'<circle cx="12" cy="12" r="4"/>'},
     {t:'Switch to Graphite + Indigo',run:()=>setTheme('graphite'),ic:'<circle cx="12" cy="12" r="4"/>'},
@@ -941,8 +962,9 @@
     if($('#login') && !$('#login').classList.contains('hide')) return;  // no shortcuts on login
     if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){ e.preventDefault(); openPalette(); }
     else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='f'&&root.dataset.view==='term'){ e.preventDefault(); $('#termsearch').focus(); $('#termsearch').select(); }
+    else if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='f'&&root.dataset.view==='shell'){ e.preventDefault(); $('#shsearch').focus(); $('#shsearch').select(); }
     else if(e.key==='Escape'){ closePalette(); $('#drawer').classList.remove('on'); if($('#usermenu').classList.contains('on')){ closeUserMenu(); $('#avatar').focus(); } if($('#themedd-menu').classList.contains('on')){ closeThemeMenu(); $('#themedd-btn').focus(); } }
-    else if((e.metaKey||e.ctrlKey)&&['1','2','3'].includes(e.key)){ e.preventDefault(); go({'1':'dash','2':'term','3':'set'}[e.key]); }
+    else if((e.metaKey||e.ctrlKey)&&['1','2','3','4'].includes(e.key)){ e.preventDefault(); go({'1':'dash','2':'term','3':'shell','4':'set'}[e.key]); }
   });
 
   /* ---------- terminal (real xterm.js ↔ tmux over /ws/terminal) ---------- */
@@ -988,12 +1010,17 @@
      foreground (truecolor included) to ~4.5:1 against the bg. We only raise it for light
      terminals; dark terminals keep 1 (off) so they render exactly as before. */
   function contrastFloorFor(name){ return isLightBg(themeFor(name).background) ? 4.5 : 1; }
-  function applyTermTheme(){ if(!term) return; term.options.theme=themeFor(termThemeName); term.options.minimumContrastRatio=contrastFloorFor(termThemeName); }
+  function applyTermTheme(){
+    const th=themeFor(termThemeName), floor=contrastFloorFor(termThemeName);
+    if(term){ term.options.theme=th; term.options.minimumContrastRatio=floor; }
+    if(shTerm){ shTerm.options.theme=th; shTerm.options.minimumContrastRatio=floor; }
+  }
 
   function safeFit(){ try{ fitAddon && fitAddon.fit(); }catch(e){} }
   function sendTermResize(){ if(term&&termWs&&termWs.readyState===1) termWs.send(JSON.stringify({type:'resize',rows:term.rows,cols:term.cols})); }
   function setTermFont(fs){ termFontSize=Math.max(9,Math.min(24,fs)); localStorage.setItem('fm-term-font',termFontSize);
     if(term){ term.options.fontSize=termFontSize; safeFit(); sendTermResize(); }
+    if(shTerm){ shTerm.options.fontSize=termFontSize; shSafeFit(); shSendResize(); }
     $$('#fontset button').forEach(b=>b.classList.toggle('on',+b.dataset.fs===termFontSize)); }
   $$('[data-zoom]').forEach(b=>b.addEventListener('click',()=>setTermFont(termFontSize+(b.dataset.zoom==='+'?1:-1))));
 
@@ -1048,6 +1075,111 @@
   }
   function closeTerm(){ clearTimeout(termReconnectTimer); if(termWs){ try{termWs.close();}catch(e){} termWs=null; } }
   function reconnectTerm(){ closeTerm(); setTermConn('reconnecting'); connectTerm(); }
+
+  /* ---------- shell (real PTY ↔ /ws/shell, true scrollback) ---------- */
+  // Same xterm wiring as the mirror above, minus the first-mate chrome. The one
+  // deliberate difference is the wheel handler: a real PTY keeps real scrollback,
+  // so we let the mouse wheel scroll natively on the normal buffer and only fall
+  // back to PageUp/PageDown when a full-screen (alternate-screen) app is focused.
+  function shSafeFit(){ try{ shFit && shFit.fit(); }catch(e){} }
+  function shSendResize(){ if(shTerm&&shWs&&shWs.readyState===1) shWs.send(JSON.stringify({type:'resize',rows:shTerm.rows,cols:shTerm.cols})); }
+  function setShConn(state){ shConnState=state;
+    const map={ connecting:['warn','connecting'], connected:['','connected'], reconnecting:['warn','reconnecting…'], off:['off','disconnected'] };
+    const [cls,txt]=map[state]||map.connecting;
+    const el=$('#shconn'); el.querySelector('.led').className='led '+cls; el.childNodes[el.childNodes.length-1].textContent=' '+txt;
+    $('#shreconnectbtn').classList.toggle('hidden', state==='connected'||state==='connecting');
+  }
+  $('#shreconnectbtn').addEventListener('click',reconnectShell);
+
+  function initShell(){
+    if(shTerm || typeof Terminal==='undefined') return;
+    shTerm=new Terminal({ fontSize:termFontSize, fontFamily:'ui-monospace, SFMono-Regular, Menlo, monospace', cursorBlink:true, scrollback:8000, theme:themeFor(termThemeName), minimumContrastRatio:contrastFloorFor(termThemeName) });
+    shFit=new FitAddon.FitAddon(); shTerm.loadAddon(shFit);
+    shTerm.open($('#xterm-shell-host'));
+    shTerm.onData(d=>{ if(shWs&&shWs.readyState===1) shWs.send(new TextEncoder().encode(d)); });
+    shTerm.onResize(({rows,cols})=>{ if(shWs&&shWs.readyState===1) shWs.send(JSON.stringify({type:'resize',rows,cols})); });
+    shTerm.attachCustomWheelEventHandler((e)=>{
+      // Alternate screen (a focused full-screen TUI) has no scrollback - page it.
+      if(shTerm.buffer.active.type==='alternate'){
+        if(shWs&&shWs.readyState===1){ shWs.send(new TextEncoder().encode(e.deltaY<0?'\x1b[5~':'\x1b[6~')); }
+        return false;
+      }
+      return true;  // normal buffer: let xterm scroll its own scrollback natively
+    });
+    window.addEventListener('resize',()=>{ if(root.dataset.view==='shell') shSafeFit(); });
+    try{ new ResizeObserver(()=>{ if(root.dataset.view==='shell') shSafeFit(); }).observe($('#xterm-shell-host')); }catch(e){}
+    let firstRender=true;
+    shTerm.onRender(()=>{ if(firstRender){ firstRender=false; requestAnimationFrame(()=>{ if(root.dataset.view==='shell') shSafeFit(); }); } });
+    shTerm.onScroll(()=>shUpdateJump());
+  }
+  function connectShell(){
+    if(shWs&&(shWs.readyState===0||shWs.readyState===1)) return;
+    setShConn(shConnState==='off'?'reconnecting':'connecting');
+    const proto=location.protocol==='https:'?'wss':'ws';
+    shWs=new WebSocket(proto+'://'+location.host+'/ws/shell'); shWs.binaryType='arraybuffer';
+    shWs.onopen=()=>{ setShConn('connected'); shSafeFit(); shSendResize(); [120,350,700].forEach(t=>setTimeout(()=>{ if(root.dataset.view==='shell'){ shSafeFit(); shSendResize(); } },t)); };
+    shWs.onmessage=(e)=>{ if(typeof e.data==='string'){ try{ const j=JSON.parse(e.data); if(j.type==='fatal') shTerm.write('\r\n\x1b[33m[cockpit] '+j.msg+'\x1b[0m\r\n'); }catch(_){}} else shTerm.write(new Uint8Array(e.data)); };
+    shWs.onclose=(ev)=>{ shWs=null; if(ev.code===1008){ setShConn('off'); showLogin(); return; }
+      setShConn('off');
+      if(autoReconnectOn() && root.dataset.view==='shell'){ clearTimeout(shReconnectTimer); shReconnectTimer=setTimeout(()=>{ setShConn('reconnecting'); connectShell(); },1800); } };
+    shWs.onerror=()=>{ try{shWs.close();}catch(e){} };
+  }
+  function openShell(){
+    if(typeof Terminal==='undefined') return;
+    initShell(); connectShell();
+    const doFit=()=>{ if(root.dataset.view==='shell') shSafeFit(); };
+    requestAnimationFrame(()=>requestAnimationFrame(doFit));
+    [150,400,700].forEach(t=>setTimeout(doFit,t));
+    setTimeout(()=>{ try{shTerm.focus();}catch(e){} },360);
+    shBooted=true;
+  }
+  function closeShell(){ clearTimeout(shReconnectTimer); if(shWs){ try{shWs.close();}catch(e){} shWs=null; } }
+  function reconnectShell(){ closeShell(); setShConn('reconnecting'); connectShell(); }
+
+  // shell: jump to bottom
+  function shUpdateJump(){ if(!shTerm) return; const b=shTerm.buffer.active; const atBottom=b.viewportY>=b.baseY-1;
+    $('#shjumpbtn').classList.toggle('hidden', atBottom); }
+  $('#shjumpbtn').addEventListener('click',()=>{ if(shTerm){ shTerm.scrollToBottom(); shUpdateJump(); } });
+
+  // shell: copy visible/selected output
+  $('#shcopybtn').addEventListener('click',async()=>{
+    if(!shTerm) return;
+    let text=shTerm.getSelection();
+    if(!text){ const b=shTerm.buffer.active; const lines=[];
+      for(let i=0;i<shTerm.rows;i++){ const ln=b.getLine(b.viewportY+i); if(ln) lines.push(ln.translateToString(true)); }
+      text=lines.join('\n').replace(/\s+$/,'');
+    }
+    try{ await navigator.clipboard.writeText(text); toast('Copied terminal output to clipboard.','ok'); }
+    catch(e){ toast('Copy blocked by the browser.','bad'); }
+  });
+
+  // shell: in-terminal search
+  let shMatches=[], shIdx=-1, shQuery='';
+  function shRunSearch(q, forward=true){
+    if(!shTerm) return;
+    q=q.trim();
+    if(q!==shQuery){ shQuery=q; shBuildMatches(q); shIdx=forward?-1:shMatches.length; }
+    if(!q){ $('#shsearchcount').textContent=''; shTerm.clearSelection(); return; }
+    if(!shMatches.length){ $('#shsearchcount').textContent='0/0'; shTerm.clearSelection(); return; }
+    shIdx = forward ? (shIdx+1)%shMatches.length : (shIdx-1+shMatches.length)%shMatches.length;
+    const m=shMatches[shIdx];
+    shTerm.select(m.col, m.row, q.length);
+    shTerm.scrollToLine(Math.max(0, m.row - Math.floor(shTerm.rows/2)));
+    $('#shsearchcount').textContent=(shIdx+1)+'/'+shMatches.length;
+  }
+  function shBuildMatches(q){
+    shMatches=[];
+    if(!q || !shTerm) return;
+    const needle=q.toLowerCase(); const b=shTerm.buffer.active; const total=b.length;
+    for(let r=0;r<total;r++){ const ln=b.getLine(r); if(!ln) continue;
+      const s=ln.translateToString(true).toLowerCase();
+      let idx=s.indexOf(needle);
+      while(idx!==-1){ shMatches.push({row:r,col:idx}); idx=s.indexOf(needle, idx+1); }
+    }
+  }
+  $('#shsearch').addEventListener('input',e=>{ shQuery=''; shRunSearch(e.target.value, true); });
+  $('#shsearch').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); shRunSearch(e.target.value, !e.shiftKey); }
+    else if(e.key==='Escape'){ e.target.value=''; shQuery=''; shMatches=[]; $('#shsearchcount').textContent=''; if(shTerm){ shTerm.clearSelection(); shTerm.focus(); } } });
 
   // terminal palette (independent of app theme)
   $('#termtheme').addEventListener('change',e=>{ termThemeName=e.target.value; localStorage.setItem('fm-term-theme',termThemeName); applyTermTheme(); });
