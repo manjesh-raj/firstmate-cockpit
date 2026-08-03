@@ -1,0 +1,4 @@
+# SwiftPM build output
+.build/
+*.xcodeproj
+.swiftpm/
