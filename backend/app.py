@@ -61,6 +61,36 @@ async def require_session(request: Request, call_next):
     return await call_next(request)
 
 
+# --- cache-buster ------------------------------------------------------------
+#
+# The desktop app is a WKWebView, which aggressively caches the HTML page and the
+# /static assets - so a quit+relaunch could still paint a stale UI even after the
+# bundle shipped new markup/JS. Stamp no-store on the served page and every
+# static asset so the webview can never reuse a cached copy. This is the whole UI
+# surface (index.html + the vendored xterm/CSS), so serving it fresh each load is
+# cheap and correct; only the /api data endpoints are left cacheable-by-default
+# (they already fetch live).
+
+_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+def _is_ui_asset(path: str) -> bool:
+    return path in ("/", "/index.html") or path.startswith("/static/")
+
+
+@app.middleware("http")
+async def no_store_ui(request: Request, call_next):
+    response = await call_next(request)
+    if _is_ui_asset(request.url.path):
+        for key, value in _NO_STORE_HEADERS.items():
+            response.headers[key] = value
+    return response
+
+
 # --- auth endpoints ----------------------------------------------------------
 
 class LoginBody(BaseModel):
