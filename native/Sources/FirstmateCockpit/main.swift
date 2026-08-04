@@ -49,9 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///    which resolves to the focused terminal's `paste(_:)` - the screenshot-
     ///    paste-into-Claude flow. A plain `swift run` executable has no Paste
     ///    action otherwise (the old WKWebView got one for free from the browser).
-    ///  - Edit > Find and the View items target the responder chain, resolving to
-    ///    `ConsoleController` (the window's content view controller), so ⌘F /
-    ///    ⌘1 / ⌘2 / ⌘R / zoom / theme all work from the keyboard.
+    ///  - Edit > Find, the Tab items, and the View items target the responder
+    ///    chain, resolving to `ConsoleController` (the window's content view
+    ///    controller), so ⌘F / ⌘T / ⌘D / ⌘W / ⌘R / ⌘1…⌘9 / zoom / theme all work
+    ///    from the keyboard.
     func buildMenu() {
         let mainMenu = NSMenu()
 
@@ -78,16 +79,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(ConsoleController.showFind), keyEquivalent: "f")
 
-        // View menu - tabs, reconnect, zoom, theme (all resolve to ConsoleController).
+        // Tab menu - the dynamic tab collection: new / duplicate / rename / close,
+        // reconnect, and ⌘1…⌘9 to jump to a tab. All resolve to ConsoleController.
+        let tabMenuItem = NSMenuItem()
+        mainMenu.addItem(tabMenuItem)
+        let tabMenu = NSMenu(title: "Tab")
+        tabMenuItem.submenu = tabMenu
+        tabMenu.addItem(withTitle: "New Tab", action: #selector(ConsoleController.newShellTab), keyEquivalent: "t")
+        tabMenu.addItem(withTitle: "Duplicate Tab", action: #selector(ConsoleController.duplicateCurrentTab), keyEquivalent: "d")
+        let renameItem = NSMenuItem(title: "Rename Tab…", action: #selector(ConsoleController.renameCurrentTab), keyEquivalent: "r")
+        renameItem.keyEquivalentModifierMask = [.command, .shift]
+        tabMenu.addItem(renameItem)
+        tabMenu.addItem(withTitle: "Close Tab", action: #selector(ConsoleController.closeCurrentTab), keyEquivalent: "w")
+        tabMenu.addItem(NSMenuItem.separator())
+        tabMenu.addItem(withTitle: "Reconnect Tab", action: #selector(ConsoleController.reconnectActive), keyEquivalent: "r")
+        tabMenu.addItem(NSMenuItem.separator())
+        // ⌘1…⌘9 select the Nth tab; the tag carries the 1-based index.
+        for n in 1...9 {
+            let item = NSMenuItem(title: "Select Tab \(n)", action: #selector(ConsoleController.selectTabByShortcut(_:)), keyEquivalent: "\(n)")
+            item.tag = n
+            tabMenu.addItem(item)
+        }
+
+        // View menu - zoom + theme (all resolve to ConsoleController).
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
         viewMenuItem.submenu = viewMenu
-        viewMenu.addItem(withTitle: "Shell Tab", action: #selector(ConsoleController.selectShellTab), keyEquivalent: "1")
-        viewMenu.addItem(withTitle: "Mirror Tab", action: #selector(ConsoleController.selectMirrorTab), keyEquivalent: "2")
-        viewMenu.addItem(NSMenuItem.separator())
-        viewMenu.addItem(withTitle: "Reconnect Tab", action: #selector(ConsoleController.reconnectActive), keyEquivalent: "r")
-        viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "Zoom In", action: #selector(ConsoleController.zoomIn), keyEquivalent: "+")
         viewMenu.addItem(withTitle: "Zoom Out", action: #selector(ConsoleController.zoomOut), keyEquivalent: "-")
         viewMenu.addItem(withTitle: "Actual Size", action: #selector(ConsoleController.zoomReset), keyEquivalent: "0")
