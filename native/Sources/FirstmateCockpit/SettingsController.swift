@@ -38,6 +38,12 @@ final class SettingsController: NSViewController {
 
     private var theme: HelmTheme = ThemeManager.shared.theme
 
+    // Header (Fix 1, cockpit-native-settings-compact): the topbar already
+    // shows "Settings" as the destination title, so this only carries the
+    // descriptive subtitle - mirrors the web app's page-head `.greet` line
+    // without duplicating the title text.
+    private let subtitleLabel = NSTextField(labelWithString: "Connection, appearance, and terminal - stored locally on this machine.")
+
     // Connection
     private let mirrorTargetField = NSTextField()
     private let sessionsStatusLabel = NSTextField(wrappingLabelWithString: "")
@@ -73,24 +79,27 @@ final class SettingsController: NSViewController {
             self?.refreshFromSettings()
         }
 
+        let header = buildHeader()
         let connection = card(icon: "network", title: "Connection", content: buildConnectionSection())
         let appearance = card(icon: "paintpalette", title: "Appearance", content: buildAppearanceSection())
         let terminal = card(icon: "terminal", title: "Terminal", content: buildTerminalSection())
 
-        let stack = NSStackView(views: [connection, appearance, terminal])
+        let stack = NSStackView(views: [header, connection, appearance, terminal])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 18
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(16, after: header)
 
         let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             connection.widthAnchor.constraint(equalTo: stack.widthAnchor),
             appearance.widthAnchor.constraint(equalTo: stack.widthAnchor),
             terminal.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -130,6 +139,14 @@ final class SettingsController: NSViewController {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
+    // MARK: Header
+
+    private func buildHeader() -> NSView {
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        return subtitleLabel
+    }
+
     // MARK: Card chrome
 
     /// A section's card shell: an icon + title header, then its content,
@@ -156,7 +173,7 @@ final class SettingsController: NSViewController {
         let inner = NSStackView(views: [header, content])
         inner.orientation = .vertical
         inner.alignment = .leading
-        inner.spacing = 16
+        inner.spacing = 12
         inner.translatesAutoresizingMaskIntoConstraints = false
         content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
 
@@ -166,10 +183,10 @@ final class SettingsController: NSViewController {
         background.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(inner)
         NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -18),
+            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
+            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
         ])
         cardBackgroundViews.append(background)
         return background
@@ -202,7 +219,7 @@ final class SettingsController: NSViewController {
         let row = NSStackView(views: [textStack, trailing])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 14
+        row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
     }
@@ -254,13 +271,13 @@ final class SettingsController: NSViewController {
 
         sessionsStack.orientation = .vertical
         sessionsStack.alignment = .leading
-        sessionsStack.spacing = 6
+        sessionsStack.spacing = 4
         sessionsStack.translatesAutoresizingMaskIntoConstraints = false
 
         let mirrorGroup = NSStackView(views: [label, desc, fieldRow, sessionsStatusLabel, sessionsStack])
         mirrorGroup.orientation = .vertical
         mirrorGroup.alignment = .leading
-        mirrorGroup.spacing = 8
+        mirrorGroup.spacing = 6
         fieldRow.widthAnchor.constraint(equalTo: mirrorGroup.widthAnchor).isActive = true
         sessionsStack.widthAnchor.constraint(equalTo: mirrorGroup.widthAnchor).isActive = true
 
@@ -278,7 +295,7 @@ final class SettingsController: NSViewController {
         let section = NSStackView(views: [mirrorGroup, separator(), cwdGroup])
         section.orientation = .vertical
         section.alignment = .leading
-        section.spacing = 16
+        section.spacing = 12
         mirrorGroup.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         cwdGroup.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
@@ -324,7 +341,7 @@ final class SettingsController: NSViewController {
 
     private func sessionCard(_ s: TmuxMirror.SessionInfo, isSelected: Bool) -> NSView {
         let targetLabel = NSTextField(labelWithString: s.target)
-        targetLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        targetLabel.font = .monospacedSystemFont(ofSize: 11.5, weight: .semibold)
 
         var titleViews: [NSView] = [targetLabel]
         if s.isHome { titleViews.append(pillView(text: "home", colorHex: theme.accentHex)) }
@@ -336,18 +353,19 @@ final class SettingsController: NSViewController {
         var subBits = [s.command]
         if !s.path.isEmpty { subBits.append(s.path) }
         let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
-        subLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        subLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         subLabel.textColor = .secondaryLabelColor
         subLabel.lineBreakMode = .byTruncatingMiddle
 
         let textStack = NSStackView(views: [titleRow, subLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 1
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let check = NSImageView()
-        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
+        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
         check.contentTintColor = HelmTheme.nsColor(theme.accentHex)
         check.isHidden = !isSelected
         check.translatesAutoresizingMaskIntoConstraints = false
@@ -355,21 +373,21 @@ final class SettingsController: NSViewController {
 
         let row = NSStackView(views: [textStack, check])
         row.orientation = .horizontal
-        row.spacing = 10
+        row.spacing = 8
         row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 9
+        card.layer?.cornerRadius = 8
         card.layer?.borderWidth = isSelected ? 1.5 : 1
         card.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
-            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -6),
         ])
         card.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
         card.layer?.borderColor = (isSelected ? HelmTheme.nsColor(theme.accentHex) : HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)).cgColor
@@ -411,13 +429,13 @@ final class SettingsController: NSViewController {
 
         appearanceContainer.orientation = .vertical
         appearanceContainer.alignment = .leading
-        appearanceContainer.spacing = 10
+        appearanceContainer.spacing = 8
         appearanceContainer.translatesAutoresizingMaskIntoConstraints = false
 
         let section = NSStackView(views: [desc, appearanceContainer])
         section.orientation = .vertical
         section.alignment = .leading
-        section.spacing = 12
+        section.spacing = 10
         appearanceContainer.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
     }
@@ -431,7 +449,7 @@ final class SettingsController: NSViewController {
         for group in [HelmTheme.allThemes.filter { $0.mode == .dark }, HelmTheme.allThemes.filter { $0.mode == .light }] {
             let row = NSStackView(views: group.map { themeCard($0, active: $0.id == activeID) })
             row.orientation = .horizontal
-            row.spacing = 12
+            row.spacing = 8
             row.translatesAutoresizingMaskIntoConstraints = false
             appearanceContainer.addArrangedSubview(row)
         }
@@ -457,23 +475,24 @@ final class SettingsController: NSViewController {
         preview.addSubview(bar1)
         preview.addSubview(bar2)
         NSLayoutConstraint.activate([
-            bar1.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 9),
-            bar1.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -9),
-            bar1.topAnchor.constraint(equalTo: preview.topAnchor, constant: 10),
-            bar1.heightAnchor.constraint(equalToConstant: 7),
-            bar2.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 9),
-            bar2.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -34),
-            bar2.topAnchor.constraint(equalTo: bar1.bottomAnchor, constant: 6),
-            bar2.heightAnchor.constraint(equalToConstant: 7),
-            preview.heightAnchor.constraint(equalToConstant: 52),
+            bar1.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 7),
+            bar1.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -7),
+            bar1.topAnchor.constraint(equalTo: preview.topAnchor, constant: 8),
+            bar1.heightAnchor.constraint(equalToConstant: 6),
+            bar2.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 7),
+            bar2.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -26),
+            bar2.topAnchor.constraint(equalTo: bar1.bottomAnchor, constant: 5),
+            bar2.heightAnchor.constraint(equalToConstant: 6),
+            preview.heightAnchor.constraint(equalToConstant: 40),
         ])
 
         let nameLabel = NSTextField(labelWithString: t.name)
-        nameLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        nameLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let check = NSImageView()
-        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
+        check.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
         check.contentTintColor = HelmTheme.nsColor(t.accentHex)
         check.isHidden = !active
         check.translatesAutoresizingMaskIntoConstraints = false
@@ -483,13 +502,13 @@ final class SettingsController: NSViewController {
         nameRow.addSubview(nameLabel)
         nameRow.addSubview(check)
         NSLayoutConstraint.activate([
-            nameLabel.leadingAnchor.constraint(equalTo: nameRow.leadingAnchor, constant: 10),
+            nameLabel.leadingAnchor.constraint(equalTo: nameRow.leadingAnchor, constant: 8),
             nameLabel.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
-            check.trailingAnchor.constraint(equalTo: nameRow.trailingAnchor, constant: -10),
+            check.trailingAnchor.constraint(equalTo: nameRow.trailingAnchor, constant: -8),
             check.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
-            check.widthAnchor.constraint(equalToConstant: 14),
-            check.heightAnchor.constraint(equalToConstant: 14),
-            nameRow.heightAnchor.constraint(equalToConstant: 30),
+            check.widthAnchor.constraint(equalToConstant: 12),
+            check.heightAnchor.constraint(equalToConstant: 12),
+            nameRow.heightAnchor.constraint(equalToConstant: 24),
         ])
 
         let stack = NSStackView(views: [preview, nameRow])
@@ -499,7 +518,7 @@ final class SettingsController: NSViewController {
 
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.cornerRadius = 11
+        card.layer?.cornerRadius = 10
         card.layer?.borderWidth = active ? 1.5 : 1
         card.layer?.borderColor = (active ? HelmTheme.nsColor(t.accentHex) : HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)).cgColor
         card.layer?.masksToBounds = true
@@ -510,7 +529,7 @@ final class SettingsController: NSViewController {
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             stack.topAnchor.constraint(equalTo: card.topAnchor),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            card.widthAnchor.constraint(equalToConstant: 138),
+            card.widthAnchor.constraint(equalToConstant: 108),
         ])
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(themeCardClicked(_:)))
@@ -557,7 +576,7 @@ final class SettingsController: NSViewController {
         let section = NSStackView(views: [fontRow, separator(), reconnectRow, separator(), notifyRow, separator(), loggingRow])
         section.orientation = .vertical
         section.alignment = .leading
-        section.spacing = 14
+        section.spacing = 12
         for row in [fontRow, reconnectRow, notifyRow, loggingRow] {
             row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         }
@@ -628,6 +647,7 @@ final class SettingsController: NSViewController {
     private func applyTheme() {
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
+        subtitleLabel.textColor = HelmTheme.mutedInk(theme)
         for v in cardBackgroundViews {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
             v.layer?.borderWidth = 1
