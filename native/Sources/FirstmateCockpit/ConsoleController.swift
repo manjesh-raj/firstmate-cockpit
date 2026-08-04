@@ -57,8 +57,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: Theme + font
 
-    private var theme: HelmTheme = .dark
-    private var fontSize: CGFloat = 13
+    /// Mirrors `ThemeManager.shared.theme` - kept as a local var so the many
+    /// call sites below don't all become `ThemeManager.shared.theme`, but the
+    /// manager (not this property) is the source of truth: `toggleTheme`
+    /// writes through it, and every window that needs to match (Hosts/Keys/
+    /// Snippets) observes the same manager instead of tracking its own copy.
+    private var theme: HelmTheme = ThemeManager.shared.theme
+    private var fontSize: CGFloat = AppSettings.shared.fontSize
     private let minFont: CGFloat = 8
     private let maxFont: CGFloat = 28
 
@@ -80,13 +85,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var logButton = NSButton()
     private let separator = NSView()
 
-    /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5): when set, every newly started
-    /// tab begins logging automatically, matching the env-var-driven defaults
-    /// already used for the mirror target and shell cwd.
-    private lazy var defaultLoggingEnabled: Bool = {
-        let v = ProcessInfo.processInfo.environment["FM_LOG_SESSIONS_DEFAULT"]?.lowercased()
-        return v == "1" || v == "true" || v == "yes"
-    }()
+    /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5), then Settings > General's
+    /// "Log sessions by default" toggle: when set, every newly started tab
+    /// begins logging automatically. Re-read on every tab start (not cached)
+    /// so a Settings change applies to the next tab without a restart.
+    private var defaultLoggingEnabled: Bool {
+        if let v = ProcessInfo.processInfo.environment["FM_LOG_SESSIONS_DEFAULT"]?.lowercased() {
+            return v == "1" || v == "true" || v == "yes"
+        }
+        return AppSettings.shared.sessionLoggingDefault
+    }
 
     // MARK: Lifecycle
 
@@ -112,16 +120,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        // The starting set: Shell + Mirror, matching the previous behaviour. Their
-        // processes start in `viewDidAppear` (once the view is on screen).
-        let s = shellArgv()
-        let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
-        addTab(launch: shell, name: shell.defaultName, select: false)
-        let mirror = TabLaunch.mirror(target: mirrorTarget())
-        addTab(launch: mirror, name: mirror.defaultName, select: false)
+        // The starting set: the pinned "Firstmate" host's Shell + Mirror pair,
+        // matching the previous fixed-tabs behaviour (Fix 4: this is now also
+        // reachable from the Hosts sidebar's pinned entry, but the app still
+        // lands here automatically on launch). Their processes start in
+        // `viewDidAppear` (once the view is on screen).
+        openFirstmateHost(focus: false)
 
-        applyTheme()
-        if let first = tabs.first { select(tabID: first.id, focus: false) }
+        // Follow the shared Helm theme (Fix 2) rather than a private copy, so
+        // toggling it from the toolbar, ⌘⌥T, or Settings all land here.
+        ThemeManager.shared.observe { [weak self] theme in
+            self?.theme = theme
+            self?.applyTheme()
+        }
     }
 
     override func viewDidAppear() {
@@ -278,6 +289,26 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         tab.started = true
         if defaultLoggingEnabled { startLogging(tab) }
+    }
+
+    // MARK: The pinned "Firstmate" host (Fix 4)
+
+    /// Open the built-in Shell + Mirror pair - the connect action for the
+    /// Hosts sidebar's pinned, non-deletable "Firstmate" entry
+    /// (`HostsSidebarController`), and also what `loadView` calls to land the
+    /// app on this pair at startup so the initial state is unchanged from
+    /// before this pair lived in the Hosts list. Like every other host,
+    /// connecting always opens a fresh tab pair rather than reusing an
+    /// existing one - the same mental model as SSH hosts and ⌘T.
+    @discardableResult
+    func openFirstmateHost(focus: Bool = true) -> TabModel {
+        let s = shellArgv()
+        let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
+        let shellTab = addTab(launch: shell, name: shell.defaultName, select: false)
+        let mirror = TabLaunch.mirror(target: mirrorTarget())
+        addTab(launch: mirror, name: mirror.defaultName, select: false)
+        select(tabID: shellTab.id, focus: focus)
+        return shellTab
     }
 
     // MARK: SSH (Phase 1 hosts, Phase 2 keys, Phase 3 startup snippet)
@@ -483,8 +514,9 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     // MARK: Theme
 
     @objc func toggleTheme() {
-        theme = (theme.mode == .dark) ? .light : .dark
-        applyTheme()
+        ThemeManager.shared.toggle()
+        // `applyTheme()` runs via the `observe` callback registered in
+        // `loadView`, so nothing else is needed here.
     }
 
     private func applyTheme() {
@@ -524,8 +556,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     @objc func zoomOut() { setFontSize(fontSize - 1) }
     @objc func zoomReset() { setFontSize(13) }
 
+    /// The Settings panel's font-size stepper (Fix 3) - same clamping and
+    /// persistence as the toolbar/menu zoom actions above.
+    func stepFontSize(by delta: CGFloat) { setFontSize(fontSize + delta) }
+    var currentFontSize: CGFloat { fontSize }
+
     private func setFontSize(_ size: CGFloat) {
         fontSize = min(maxFont, max(minFont, size))
+        AppSettings.shared.fontSize = fontSize
         let f = currentFont()
         for tab in tabs { tab.terminal.font = f }
     }

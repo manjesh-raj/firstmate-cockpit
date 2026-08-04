@@ -32,6 +32,10 @@ final class KeyEditorController: NSViewController {
     /// "leave the stored passphrase untouched."
     var onUpdate: ((SSHKey, String?) -> Void)?
     var onDelete: ((UUID) -> Void)?
+    /// Fired when the sheet is dismissed via Cancel (not Save/Delete) - lets a
+    /// caller that changed state just to open this sheet (the host editor's
+    /// inline "+ New Key…", Fix 5) revert it.
+    var onCancel: (() -> Void)?
 
     // MARK: Shared fields
 
@@ -483,6 +487,7 @@ final class KeyEditorController: NSViewController {
     }
 
     @objc private func cancel() {
+        onCancel?()
         dismiss(self)
     }
 

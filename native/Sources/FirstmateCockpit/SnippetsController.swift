@@ -36,6 +36,12 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
         root.blendingMode = .behindWindow
         root.state = .followsWindowActiveState
         view = root
+        // Follow the app's Helm theme rather than the system appearance,
+        // same fix as the Hosts sidebar (Fix 2) - this window uses the
+        // identical `NSVisualEffectView` pattern and had the identical bug.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
 
         let title = NSTextField(labelWithString: "Snippets")
         title.font = .systemFont(ofSize: 15, weight: .semibold)

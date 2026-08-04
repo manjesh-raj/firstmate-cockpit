@@ -27,9 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var sidebar = HostsSidebarController(store: hostStore, keyStore: keyStore, snippetStore: snippetStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
+    lazy var settingsController = SettingsController()
     var split: NSSplitViewController!
     var keysWindow: NSWindow?
     var snippetsWindow: NSWindow?
+    var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Connect action from the sidebar (saved host or ad-hoc quick-connect)
@@ -40,10 +42,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebar.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
             self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
         }
+        // The pinned "Firstmate" entry (Fix 4) - the same Shell + Mirror pair
+        // the console has always opened at startup, now also reachable from
+        // the Hosts list.
+        sidebar.onConnectPinned = { [weak self] in
+            self?.console.openFirstmateHost()
+        }
         // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
         // console's active tab.
         snippetsController.onRun = { [weak self] snippet in
             self?.console.runSnippetInActiveTab(snippet)
+        }
+        // Settings > Terminal's font-size stepper (Fix 3) talks straight to
+        // the live console; Appearance goes through `ThemeManager` directly
+        // since every theme-aware view already observes it.
+        settingsController.onFontSizeStep = { [weak self] delta in
+            self?.console.stepFontSize(by: delta)
         }
 
         // A Hosts sidebar on the left, the tabbed console on the right (Termius
@@ -51,9 +65,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Tab / View menu shortcuts still resolve to the focused terminal.
         split = NSSplitViewController()
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
+        // Termius-proportioned sidebar (Fix 1): previously capped at 380pt,
+        // wide enough that it visually crowded the console. 220-260pt is the
+        // range real connection-manager apps use for a host list this dense.
         sidebarItem.minimumThickness = 220
-        sidebarItem.maximumThickness = 380
+        sidebarItem.maximumThickness = 260
         sidebarItem.canCollapse = true
+        // Low holding priority: on window resize, the console (not the
+        // sidebar) absorbs the extra/removed width, so the sidebar stays put
+        // at whatever the user last set it to rather than creeping wider.
+        sidebarItem.holdingPriority = .defaultLow
         let consoleItem = NSSplitViewItem(viewController: console)
         split.addSplitViewItem(sidebarItem)
         split.addSplitViewItem(consoleItem)
@@ -70,6 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Firstmate Cockpit"
         window.center()
         window.contentViewController = split
+        // Pin the initial divider position explicitly (Fix 1) rather than
+        // trusting whatever width the sidebar's view happened to be created
+        // with - this is what the captain actually saw as "too wide".
+        split.splitView.setPosition(240, ofDividerAt: 0)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -83,6 +108,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// not left behind after the app quits.
     func applicationWillTerminate(_ notification: Notification) {
         console.shutdown()
+    }
+
+    // MARK: Settings window (Fix 3)
+
+    /// Open (or bring forward) the "Settings" screen - a separate window, in
+    /// the same App-menu / ⌘, spot every macOS app puts it, matching how the
+    /// Keys and Snippets screens (below) are kept out of the main split-view.
+    @objc func showSettingsWindow() {
+        if settingsWindow == nil {
+            let win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
+                styleMask: [.titled, .closable, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            win.title = "Settings"
+            win.contentViewController = settingsController
+            win.isReleasedWhenClosed = false
+            win.center()
+            settingsWindow = win
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: Keys window (Phase 2)
@@ -163,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenuItem.submenu = appMenu
         let appName = ProcessInfo.processInfo.processName
         appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettingsWindow), keyEquivalent: ",")
+            .target = self
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

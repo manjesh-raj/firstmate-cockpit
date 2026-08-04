@@ -36,6 +36,12 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
         root.blendingMode = .behindWindow
         root.state = .followsWindowActiveState
         view = root
+        // Follow the app's Helm theme rather than the system appearance,
+        // same fix as the Hosts sidebar (Fix 2) - this window uses the
+        // identical `NSVisualEffectView` pattern and had the identical bug.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
 
         let title = NSTextField(labelWithString: "SSH Keys")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -230,16 +236,11 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
         presentAsSheet(editor)
     }
 
-    /// Create mode: write the private key (and passphrase, if given) to the
-    /// Keychain *before* adding the metadata to `store` - so a Keychain
-    /// failure never leaves a key listed with no secret behind it.
+    /// Create mode: `SSHKeyStore.addNew` writes the Keychain secrets before
+    /// adding the metadata.
     private func persistNewKey(_ key: SSHKey, privateKeyData: Data, passphrase: String?) {
         do {
-            try KeychainKeyStore.savePrivateKey(id: key.id, data: privateKeyData)
-            if let passphrase {
-                try KeychainKeyStore.savePassphrase(id: key.id, passphrase: passphrase)
-            }
-            store.add(key)
+            try store.addNew(key, privateKeyData: privateKeyData, passphrase: passphrase)
         } catch {
             presentError(error, context: "Couldn't save \"\(key.label)\" to the Keychain")
         }

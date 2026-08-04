@@ -45,6 +45,19 @@ final class SSHKeyStore {
         persist()
     }
 
+    /// Create a brand-new key: write its Keychain secrets *before* adding the
+    /// metadata to this store, so a Keychain failure never leaves a key
+    /// listed with no secret behind it. Shared by the Keys screen
+    /// (`KeysSidebarController`) and the host editor's inline "+ New Key…"
+    /// (Fix 5), so both go through the same save order.
+    func addNew(_ key: SSHKey, privateKeyData: Data, passphrase: String?) throws {
+        try KeychainKeyStore.savePrivateKey(id: key.id, data: privateKeyData)
+        if let passphrase {
+            try KeychainKeyStore.savePassphrase(id: key.id, passphrase: passphrase)
+        }
+        add(key)
+    }
+
     /// Replace the key with the same id in place (keeps ordering).
     func update(_ key: SSHKey) {
         guard let idx = keys.firstIndex(where: { $0.id == key.id }) else {
