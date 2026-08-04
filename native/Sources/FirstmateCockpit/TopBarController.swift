@@ -7,9 +7,9 @@
 // and its theme-picker button (`#theme-btn`/`.theme-menu`).
 //
 // Search has no command-palette destination natively (no fleet/task data to
-// search), so it maps onto this app's actual equivalent: revealing the Hosts
-// panel and focusing its quick-connect field, which is already wired to ⌘K
-// via the Hosts menu (`HostsSidebarController.focusQuickConnect`).
+// search), so it maps onto this app's actual equivalent (Fix 4): an
+// in-terminal find, the same action the console toolbar's own
+// magnifying-glass icon triggers (`AppShellController.activateConsoleFind`).
 
 import AppKit
 

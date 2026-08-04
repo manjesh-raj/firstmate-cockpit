@@ -41,13 +41,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `startupSnippetID`, when set, is resolved through the snippet
         // library (Phase 3).
         hostsPanel.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
-            self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+            guard let self else { return }
+            self.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+            // Hosts and Console are decoupled destinations now (Fix 2) - bring
+            // Console forward so the new tab is actually visible.
+            self.appShell.show(.console)
         }
         // The pinned "Firstmate" entry (Fix 4) - the same Shell + Mirror pair
         // the console has always opened at startup, now also reachable from
         // the Hosts list.
         hostsPanel.onConnectPinned = { [weak self] in
-            self?.console.openFirstmateHost()
+            guard let self else { return }
+            self.console.openFirstmateHost()
+            self.appShell.show(.console)
         }
         // Nav-redesign task, item 3: Add/Edit Host is a dedicated full-page
         // window, not a sheet on this ~240pt-wide panel.
@@ -66,6 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.console.stepFontSize(by: delta)
         }
 
+        // Settings > Terminal's "Bell & notifications" toggle (Fix 3): start
+        // the background poll now if it was already on from a previous
+        // launch, and again whenever the toggle flips.
+        FleetNotifier.shared.setEnabled(AppSettings.shared.notifyOnNeedsDecision)
+
         buildMenu()
 
         let frame = NSRect(x: 0, y: 0, width: 1220, height: 720)
@@ -78,10 +89,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Firstmate Cockpit"
         window.center()
         window.contentViewController = appShell
-        // Pin the initial hosts/console divider position explicitly (PR #14's
-        // Fix 1) rather than trusting whatever width the panel's view
-        // happened to be created with.
-        appShell.pinInitialDividerPosition()
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -241,14 +248,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(ConsoleController.showFind), keyEquivalent: "f")
+        // Fix 4: ⌘K is the topbar Search control's shortcut too - both invoke
+        // the exact same in-terminal find action, targeted explicitly at the
+        // app shell (not the responder chain) so it works regardless of
+        // which destination or view currently has focus.
+        let findInTerminalItem = NSMenuItem(title: "Find in Terminal", action: #selector(AppShellController.activateConsoleFind), keyEquivalent: "k")
+        findInTerminalItem.target = appShell
+        editMenu.addItem(findInTerminalItem)
 
         // Hosts menu - the Phase 1 connection manager. New Host targets the
         // panel directly (so it works regardless of focus - the editor now
-        // opens as its own window, so this doesn't need the Console
-        // destination on screen); Quick Connect and the sidebar toggle route
-        // through the shell so the Console destination (and, for Quick
-        // Connect, an uncollapsed panel) is showing first. The panel's own
-        // Connect opens an ssh tab in the console.
+        // opens as its own window, so this doesn't need the Hosts
+        // destination on screen); Show Hosts and Quick Connect route through
+        // the shell so the Hosts destination is showing first. The panel's
+        // own Connect opens an ssh tab in the console and switches to it
+        // (Fix 2: Hosts and Console are decoupled destinations now).
         let hostsMenuItem = NSMenuItem()
         mainMenu.addItem(hostsMenuItem)
         let hostsMenu = NSMenu(title: "Hosts")
@@ -256,14 +270,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let newHostItem = NSMenuItem(title: "New Host…", action: #selector(HostsSidebarController.newHost), keyEquivalent: "n")
         newHostItem.target = hostsPanel
         hostsMenu.addItem(newHostItem)
-        let quickConnectItem = NSMenuItem(title: "Quick Connect", action: #selector(AppShellController.revealHostsQuickConnect), keyEquivalent: "k")
+        // No keyboard shortcut (⌘K now belongs to Find in Terminal above) -
+        // reachable via this menu item or by clicking the Hosts rail icon.
+        let quickConnectItem = NSMenuItem(title: "Quick Connect", action: #selector(AppShellController.revealHostsQuickConnect), keyEquivalent: "")
         quickConnectItem.target = appShell
         hostsMenu.addItem(quickConnectItem)
         hostsMenu.addItem(NSMenuItem.separator())
-        let toggleSidebarItem = NSMenuItem(title: "Toggle Hosts Sidebar", action: #selector(AppShellController.toggleHostsSidebar(_:)), keyEquivalent: "s")
-        toggleSidebarItem.keyEquivalentModifierMask = [.command, .control]
-        toggleSidebarItem.target = appShell
-        hostsMenu.addItem(toggleSidebarItem)
+        let showHostsItem = NSMenuItem(title: "Show Hosts", action: #selector(AppShellController.selectHosts), keyEquivalent: "s")
+        showHostsItem.keyEquivalentModifierMask = [.command, .control]
+        showHostsItem.target = appShell
+        hostsMenu.addItem(showHostsItem)
 
         // Keys menu - the Phase 2 Keychain screen. Both items target the app
         // delegate directly (so they work regardless of focus, like the Hosts

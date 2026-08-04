@@ -14,17 +14,19 @@
 import AppKit
 
 /// The rail's five destinations, in the same left-to-right/top-to-bottom
-/// order as the web app's icon set: Fleet-equivalent, overview, console,
-/// review, settings. Unlike the web rail, this one also has a dedicated
-/// "Home" (anchor) entry for the pinned Firstmate quick-connect, since that
-/// concept has no web-app analogue.
+/// order as the web app's icon set, plus a dedicated "Hosts" entry (Fix 2):
+/// the connection manager is now a first-class destination, parallel to
+/// Settings, rather than something only reachable by nesting it inside
+/// Console. The old "Home" destination (a collapsed-hosts view of the same
+/// split Console used) is gone - once Hosts and Console are decoupled, it
+/// would just be a second, identical way to reach an empty console.
 enum RailDestination: CaseIterable {
-    case home, overview, console, review, settings
+    case overview, hosts, console, review, settings
 
     var symbol: String {
         switch self {
-        case .home: return "anchor"
         case .overview: return "square.grid.2x2"
+        case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
         case .settings: return "gearshape"
@@ -33,8 +35,8 @@ enum RailDestination: CaseIterable {
 
     var title: String {
         switch self {
-        case .home: return "Home"
         case .overview: return "Overview"
+        case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
         case .settings: return "Settings"

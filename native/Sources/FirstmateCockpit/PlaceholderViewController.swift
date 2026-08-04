@@ -1,11 +1,10 @@
 // Firstmate Cockpit - native macOS app.
 //
-// A "coming soon" destination for rail entries with no native content yet
-// (Overview, Review - nav-redesign task, item 1). The confirmed design
-// explicitly allows the Review/git-branch icon to be a placeholder "if
-// there's nothing to show yet natively"; Overview gets the same treatment
-// since there is no fleet/PR data source in the native app either. Both are
-// real, clickable rail destinations - only their content is a stub.
+// A "coming soon" destination for rail entries with no native content yet.
+// Overview graduated out of this (Fix 1: `FleetController` is a real fleet/PR
+// dashboard now); Review is still a stub, since pull-request review has no
+// native data source yet - it is a real, clickable rail destination, only its
+// content is a placeholder.
 
 import AppKit
 
