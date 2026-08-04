@@ -13,9 +13,12 @@
 
 import AppKit
 
-/// The rail's five destinations. Order (captain correction, theme-audit
-/// task): Overview, Console, Hosts, then Review, then Settings - overriding
-/// fixes4 Fix 2's Console/Hosts-first ordering.
+/// The rail's five destinations. Switching order (captain correction,
+/// theme-audit task): Overview, Console, Hosts, then Review, then Settings -
+/// overriding fixes4 Fix 2's Console/Hosts-first ordering. Note that this is
+/// the *switching* order only - Settings' *visual* position in the rail is
+/// moved to after the dynamic per-host icon block (see `loadView`), directly
+/// above the avatar.
 enum RailDestination: CaseIterable {
     case overview, console, hosts, review, settings
 
@@ -115,7 +118,7 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases {
+        for dest in RailDestination.allCases where dest != .settings {
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -125,6 +128,16 @@ final class IconRailController: NSViewController {
         hostsStack.spacing = 4
         hostsStack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(hostsStack)
+
+        // Settings sits below the dynamic per-host icon block, directly
+        // above the avatar - the captain wants it last among the rail's
+        // clickable destinations regardless of how many hosts are pinned.
+        // Still a `RailDestination` case for switching purposes; only its
+        // vertical position moves out of `navStack`.
+        let settingsButton = railButton(for: .settings)
+        buttons[.settings] = settingsButton
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(settingsButton)
 
         avatar.title = "M"
         avatar.isBordered = false
@@ -154,10 +167,14 @@ final class IconRailController: NSViewController {
             hostsStack.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 10),
             hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
+            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+
             avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
+            settingsButton.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -14),
         ])
 
         restyle(ThemeManager.shared.theme)
