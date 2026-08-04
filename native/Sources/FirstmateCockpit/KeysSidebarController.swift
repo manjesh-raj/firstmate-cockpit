@@ -31,16 +31,20 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: Layout
 
     override func loadView() {
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 380, height: 520))
-        root.material = .sidebar
-        root.blendingMode = .behindWindow
-        root.state = .followsWindowActiveState
+        // Theme-audit task: this was `NSVisualEffectView(.sidebar,
+        // .behindWindow)`, the same material/blending pair that rendered an
+        // incorrect tint for both the Hosts sidebar (Fix 6, already fixed)
+        // and the icon rail (this task) - `.behindWindow` blending composites
+        // against whatever is behind the *window*, not other content inside
+        // it, which is wrong for a standalone window's own root. A plain,
+        // theme-driven solid background matches every other full-size
+        // destination/window in this app.
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 520))
+        root.wantsLayer = true
         view = root
-        // Follow the app's Helm theme rather than the system appearance,
-        // same fix as the Hosts sidebar (Fix 2) - this window uses the
-        // identical `NSVisualEffectView` pattern and had the identical bug.
         ThemeManager.shared.observe { [weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
         }
 
         let title = NSTextField(labelWithString: "SSH Keys")

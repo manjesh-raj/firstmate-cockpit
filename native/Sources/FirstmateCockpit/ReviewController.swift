@@ -1,0 +1,423 @@
+// Firstmate Cockpit - native macOS app.
+//
+// Fix 3 (theme-audit task): the real Review destination, replacing the
+// "coming soon" `PlaceholderViewController`. Same data source as Overview's
+// "Ready to merge" section (`OpenPRsSource.fetch()` + `FleetDataSource.
+// mergedPRs`, the native port of `backend/openprs.py`) - that call already
+// returns the complete, de-duplicated union of every open PR discovered
+// across the captain's project clones and every PR a tracked task points
+// at, so nothing here narrows it further. Rows are grouped by forge
+// (github/bitbucket), matching the web cockpit's Review view
+// (`backend/static/index.html`), each with title, repo, PR number, checks
+// state, and the same Review/Merge actions Overview's list already wires up.
+
+import AppKit
+
+final class ReviewController: NSViewController {
+
+    private let scroll = NSScrollView()
+    private let contentStack = NSStackView()
+
+    private let titleLabel = NSTextField(labelWithString: "Review")
+    private let subtitleLabel = NSTextField(labelWithString: "")
+    private let refreshButton = NSButton()
+
+    private let githubHeader = NSTextField(labelWithString: "")
+    private let githubStack = NSStackView()
+    private let bitbucketHeader = NSTextField(labelWithString: "")
+    private let bitbucketStack = NSStackView()
+    private let otherHeader = NSTextField(labelWithString: "")
+    private let otherStack = NSStackView()
+    /// The "Other" section (forge-less, task-tracked PRs the forge scan
+    /// hasn't matched yet) only renders when non-empty - unlike GitHub/
+    /// Bitbucket, which always show (matching `FleetController`'s "In
+    /// flight"/"Ready to merge" sections, always visible with their own
+    /// empty-state card), this bucket has no meaning for a shop that only
+    /// uses supported forges and would otherwise be permanent visual noise.
+    private var otherSection = NSView()
+
+    private var theme: HelmTheme = ThemeManager.shared.theme
+    private var isLoading = false
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 940, height: 720))
+        root.wantsLayer = true
+        view = root
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+
+        let header = buildHeader()
+        let githubSection = buildSection(header: githubHeader, iconSymbol: "chevron.left.forwardslash.chevron.right", title: "GitHub", stack: githubStack)
+        let bitbucketSection = buildSection(header: bitbucketHeader, iconSymbol: "water.waves", title: "Bitbucket", stack: bitbucketStack)
+        otherSection = buildSection(header: otherHeader, iconSymbol: "arrow.triangle.branch", title: "Other", stack: otherStack)
+
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 22
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.addArrangedSubview(header)
+        contentStack.addArrangedSubview(githubSection)
+        contentStack.addArrangedSubview(bitbucketSection)
+        contentStack.addArrangedSubview(otherSection)
+
+        content.addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            githubSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            bitbucketSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            otherSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+        ])
+
+        scroll.documentView = content
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+        ])
+
+        ThemeManager.shared.observe { [weak self, weak root] theme in
+            self?.theme = theme
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.applyTheme()
+        }
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        refresh()
+    }
+
+    // MARK: Building the static chrome
+
+    private func buildHeader() -> NSView {
+        titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        refreshButton.title = ""
+        refreshButton.isBordered = false
+        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshTapped)
+        refreshButton.toolTip = "Refresh open PRs"
+        refreshButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [titleLabel, subtitleLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 4
+
+        let row = NSStackView(views: [textStack, refreshButton])
+        row.orientation = .horizontal
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> NSView {
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: title)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        header.font = .systemFont(ofSize: 14, weight: .semibold)
+        header.stringValue = title
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerRow = NSStackView(views: [icon, header])
+        headerRow.orientation = .horizontal
+        headerRow.spacing = 8
+        headerRow.alignment = .firstBaseline
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let section = NSStackView(views: [headerRow, stack])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 10
+        section.translatesAutoresizingMaskIntoConstraints = false
+        stack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    // MARK: Refresh
+
+    @objc private func refreshTapped() { refresh() }
+
+    private func refresh() {
+        guard !isLoading else { return }
+        isLoading = true
+        refreshButton.isEnabled = false
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tasks = FleetDataSource.parseTasks()
+            let openPRs = OpenPRsSource.fetch()
+            let merged = FleetDataSource.mergedPRs(openPRs: openPRs, tasks: tasks)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isLoading = false
+                self.refreshButton.isEnabled = true
+                self.render(merged)
+            }
+        }
+    }
+
+    // MARK: Rendering
+
+    private func render(_ prs: [MergedPR]) {
+        rowContainers.removeAll()
+        emptyStateParts.removeAll()
+
+        let sorted = prs.sorted { ($0.repo, $0.number ?? 0) < ($1.repo, $1.number ?? 0) }
+        let github = sorted.filter { $0.forge == "github" }
+        let bitbucket = sorted.filter { $0.forge == "bitbucket" }
+        let other = sorted.filter { $0.forge != "github" && $0.forge != "bitbucket" }
+
+        subtitleLabel.stringValue = "\(prs.count) open pull request\(prs.count == 1 ? "" : "s") across your projects"
+
+        rebuildRows(into: githubStack, prs: github)
+        githubHeader.stringValue = "GitHub (\(github.count))"
+        rebuildRows(into: bitbucketStack, prs: bitbucket)
+        bitbucketHeader.stringValue = "Bitbucket (\(bitbucket.count))"
+        otherSection.isHidden = other.isEmpty
+        if !other.isEmpty {
+            rebuildRows(into: otherStack, prs: other)
+            otherHeader.stringValue = "Other (\(other.count))"
+        }
+
+        applyTheme()
+    }
+
+    private func rebuildRows(into stack: NSStackView, prs: [MergedPR]) {
+        for v in stack.arrangedSubviews {
+            stack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        if prs.isEmpty {
+            stack.addArrangedSubview(emptyStateView(title: "No open PRs here", body: "This forge has nothing waiting on you right now."))
+            return
+        }
+        for pr in prs {
+            let row = prRowView(pr)
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    private func emptyStateView(title: String, body: String) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        let bodyLabel = NSTextField(labelWithString: body)
+        bodyLabel.font = .systemFont(ofSize: 11)
+        let stack = NSStackView(views: [titleLabel, bodyLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 9
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+        ])
+        emptyStateParts.append((container, titleLabel, bodyLabel))
+        return container
+    }
+
+    private var emptyStateParts: [(NSView, NSTextField, NSTextField)] = []
+
+    /// One compact row: title, "repo · PR #N" subtitle, a checks pill, and
+    /// Review (always) + Merge (only for a task-tracked PR) - the identical
+    /// actions Overview's "Ready to merge" list already wires up
+    /// (`reviewPR`/`mergePR` below mirror `FleetController`'s one-for-one).
+    private func prRowView(_ pr: MergedPR) -> NSView {
+        let iconView = NSImageView()
+        iconView.image = NSImage(systemSymbolName: "arrow.triangle.pull", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
+        iconView.contentTintColor = HelmTheme.nsColor(theme.accentHex)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let heading = pr.title.isEmpty ? (pr.number != nil ? "PR #\(pr.number!)" : "PR") : pr.title
+        let titleLabel = NSTextField(labelWithString: heading)
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        var subBits: [String] = []
+        if !pr.repo.isEmpty { subBits.append(pr.repo) }
+        subBits.append(pr.number != nil ? "PR #\(pr.number!)" : "PR")
+        let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
+        subLabel.font = .systemFont(ofSize: 10.5)
+        subLabel.textColor = HelmTheme.mutedInk(theme)
+        subLabel.lineBreakMode = .byTruncatingTail
+
+        let textStack = NSStackView(views: [titleLabel, subLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let (checksLabel, checksColorHex) = checksVisuals(pr.checks)
+        let checksPill = pillLabelView(text: checksLabel, colorHex: checksColorHex)
+
+        let reviewButton = NSButton(title: "Review", target: self, action: #selector(reviewPR(_:)))
+        reviewButton.bezelStyle = .rounded
+        reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
+
+        var trailing: [NSView] = [checksPill, reviewButton]
+        if pr.source == "work", let taskID = pr.taskID {
+            let mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergePR(_:)))
+            mergeButton.bezelStyle = .rounded
+            mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
+            trailing.append(mergeButton)
+        }
+
+        let row = NSStackView(views: [iconView, textStack] + trailing)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        for t in trailing { t.setContentHuggingPriority(.required, for: .horizontal) }
+
+        return wrapRow(row, minHeight: 40)
+    }
+
+    private func checksVisuals(_ checks: String) -> (label: String, colorHex: String) {
+        switch checks {
+        case "green": return ("checks pass", theme.ansiHex[2])
+        case "red": return ("checks failing", theme.ansiHex[1])
+        case "pending": return ("checks running", theme.ansiHex[3])
+        default: return ("no checks", theme.chromeInkHex)
+        }
+    }
+
+    private func pillLabelView(text: String, colorHex: String) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = HelmTheme.nsColor(colorHex)
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3),
+        ])
+        return container
+    }
+
+    private func wrapRow(_ row: NSStackView, minHeight: CGFloat) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 9
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -7),
+            container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight),
+        ])
+        rowContainers.append(container)
+        return container
+    }
+
+    private var rowContainers: [NSView] = []
+
+    // MARK: Actions (identical to `FleetController.reviewPR`/`mergePR`)
+
+    @objc private func reviewPR(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue, let url = URL(string: raw) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func mergePR(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue else { return }
+        let parts = raw.components(separatedBy: "\u{0}")
+        guard parts.count == 2 else { return }
+        let prURL = parts[1]
+
+        let alert = NSAlert()
+        alert.messageText = "Merge this PR?"
+        alert.informativeText = prURL
+        alert.addButton(withTitle: "Merge")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        sender.isEnabled = false
+        sender.title = "Merging\u{2026}"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = FleetDataSource.mergePR(url: prURL)
+            DispatchQueue.main.async {
+                if result.ok {
+                    self?.refresh()
+                } else {
+                    sender.isEnabled = true
+                    sender.title = "Merge"
+                    let failAlert = NSAlert()
+                    failAlert.messageText = "Merge failed"
+                    failAlert.informativeText = result.message
+                    failAlert.alertStyle = .warning
+                    failAlert.runModal()
+                }
+            }
+        }
+    }
+
+    // MARK: Theme
+
+    private func applyTheme() {
+        view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+        let muted = HelmTheme.mutedInk(theme)
+
+        titleLabel.textColor = ink
+        subtitleLabel.textColor = muted
+        refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
+        githubHeader.textColor = ink
+        bitbucketHeader.textColor = ink
+        otherHeader.textColor = ink
+
+        for (container, titleLabel, bodyLabel) in emptyStateParts {
+            container.layer?.backgroundColor = surface.cgColor
+            container.layer?.borderWidth = 1
+            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
+            titleLabel.textColor = ink
+            bodyLabel.textColor = muted
+        }
+        for container in rowContainers {
+            container.layer?.backgroundColor = surface.cgColor
+            container.layer?.borderWidth = 1
+            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
+        }
+    }
+}

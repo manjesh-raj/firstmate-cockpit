@@ -10,8 +10,9 @@
 //     exactly like Settings is.
 //   - .console shows `ConsoleController` alone: just the terminal/tabs area,
 //     with no Hosts panel required to be visible alongside it.
-//   - .review shows a `PlaceholderViewController` (no native content source
-//     yet).
+//   - .review shows `ReviewController` (Fix 3, theme-audit task): the real,
+//     data-backed PR review list, replacing the earlier "coming soon"
+//     `PlaceholderViewController`.
 //   - .settings shows `SettingsController` directly, in the body area rather
 //     than a separate floating window, matching how the web app's Settings
 //     is a `view`, not a window.
@@ -39,11 +40,7 @@ final class AppShellController: NSViewController {
     private let console: ConsoleController
     private let settings: SettingsController
     private let overview: FleetController
-    private let review = PlaceholderViewController(
-        symbol: "arrow.triangle.branch",
-        title: "Review",
-        subtitle: "Pull-request review lives in the web cockpit today. This destination is reserved for when that view lands natively."
-    )
+    private let review = ReviewController()
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
