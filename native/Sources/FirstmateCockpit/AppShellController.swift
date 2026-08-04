@@ -168,4 +168,12 @@ final class AppShellController: NSViewController {
     @objc func selectHosts() {
         show(.hosts)
     }
+
+    /// Fix 5: a host save closes its own (separate) editor window
+    /// immediately, so the confirmation has to live somewhere that's still
+    /// around afterward - the main window, regardless of which destination
+    /// happens to be showing.
+    func showToast(_ message: String) {
+        Toast.show(in: view, message: message)
+    }
 }

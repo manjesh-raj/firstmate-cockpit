@@ -85,8 +85,16 @@ final class FleetController: NSViewController {
             content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
 
-        ThemeManager.shared.observe { [weak self] theme in
+        ThemeManager.shared.observe { [weak self, weak root] theme in
             self?.theme = theme
+            // Fix 8 (fixes4): this view never forced its appearance to the
+            // active Helm theme, so every system-semantic color used below
+            // (`.secondaryLabelColor` on PR/task subtitles) resolved against
+            // the OS's actual light/dark setting instead - producing
+            // near-invisible text whenever that setting disagreed with the
+            // chosen Helm theme (e.g. system Light + a dark Helm theme gives
+            // light-mode dark text on a dark background).
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             self?.applyTheme()
         }
     }
@@ -416,7 +424,7 @@ final class FleetController: NSViewController {
         let subBits = [task.repo, task.detail.isEmpty ? "source: \(task.source)" : task.detail].compactMap { $0 }.filter { !$0.isEmpty }
         let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
         subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.textColor = .secondaryLabelColor
+        subLabel.textColor = HelmTheme.mutedInk(theme)
         subLabel.lineBreakMode = .byTruncatingTail
 
         let textStack = NSStackView(views: [idLabel, subLabel])
@@ -466,7 +474,7 @@ final class FleetController: NSViewController {
         if let forge = pr.forge { subBits.append(forge) }
         let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
         subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.textColor = .secondaryLabelColor
+        subLabel.textColor = HelmTheme.mutedInk(theme)
         subLabel.lineBreakMode = .byTruncatingTail
 
         let textStack = NSStackView(views: [titleLabel, subLabel])
@@ -597,15 +605,21 @@ final class FleetController: NSViewController {
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
 
+        // Fix 8 (fixes4): every "muted" text style below now routes through
+        // `HelmTheme.mutedInk`, not its own ad hoc alpha - `0.55`/`0.6` looked
+        // fine in the dark palettes but measured below WCAG AA (as low as
+        // 3.33:1) in all four light ones. See `mutedInk`'s doc comment for
+        // the measured numbers.
+        let muted = HelmTheme.mutedInk(theme)
         greetingLabel.textColor = ink
-        subtitleLabel.textColor = ink.withAlphaComponent(0.6)
+        subtitleLabel.textColor = muted
         refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
 
         let bannerColorHex = bannerIsAlert ? theme.ansiHex[3] : theme.ansiHex[2]
         let bannerColor = HelmTheme.nsColor(bannerColorHex)
         bannerView.layer?.backgroundColor = bannerColor.withAlphaComponent(0.12).cgColor
         bannerTitle.textColor = ink
-        bannerBody.textColor = ink.withAlphaComponent(0.7)
+        bannerBody.textColor = muted
 
         inFlightHeader.textColor = ink
         readyHeader.textColor = ink
@@ -616,7 +630,7 @@ final class FleetController: NSViewController {
             container.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
             iconView.contentTintColor = ink.withAlphaComponent(0.65)
             valueLabel.textColor = ink
-            nameLabel.textColor = ink.withAlphaComponent(0.55)
+            nameLabel.textColor = muted
         }
         for (container, iconView, titleLabel, bodyLabel) in emptyStateLabels {
             container.layer?.backgroundColor = surface.cgColor
@@ -624,7 +638,7 @@ final class FleetController: NSViewController {
             container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
             iconView.contentTintColor = ink.withAlphaComponent(0.4)
             titleLabel.textColor = ink
-            bodyLabel.textColor = ink.withAlphaComponent(0.6)
+            bodyLabel.textColor = muted
         }
         for container in rowContainers {
             container.layer?.backgroundColor = surface.cgColor

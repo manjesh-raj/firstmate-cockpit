@@ -60,6 +60,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.onPresentHostEditor = { [weak self] host in
             self?.presentHostEditor(for: host)
         }
+        // Fix 3 (fixes4): a pinned rail icon per saved host, kept live via
+        // `HostStore.observe` - the same add/rename/delete signal the Hosts
+        // list itself reloads from. Clicking one connects exactly like the
+        // Hosts list's own Connect action.
+        appShell.rail.setHosts(hostStore.hosts)
+        hostStore.observe { [weak self] in
+            guard let self else { return }
+            self.appShell.rail.setHosts(self.hostStore.hosts)
+        }
+        appShell.rail.onConnectHost = { [weak self] host in
+            guard let self else { return }
+            self.console.openSSH(
+                label: host.label, args: host.sshArguments(allHosts: self.hostStore.hosts),
+                accentHex: host.accentHex, keyID: host.keyID, startupSnippetID: host.startupSnippetID
+            )
+            self.appShell.show(.console)
+        }
         // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
         // console's active tab.
         snippetsController.onRun = { [weak self] snippet in
@@ -120,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self.hostStore.add(saved)
             }
+            self.appShell.showToast("\u{201C}\(saved.label)\u{201D} saved")
         }
         editor.onDelete = { [weak self] id in
             self?.hostStore.delete(id: id)

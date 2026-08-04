@@ -241,6 +241,7 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
     private func persistNewKey(_ key: SSHKey, privateKeyData: Data, passphrase: String?) {
         do {
             try store.addNew(key, privateKeyData: privateKeyData, passphrase: passphrase)
+            Toast.show(in: view, message: "\u{201C}\(key.label)\u{201D} saved")
         } catch {
             presentError(error, context: "Couldn't save \"\(key.label)\" to the Keychain")
         }
@@ -258,6 +259,7 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
             }
         }
         store.update(key)
+        Toast.show(in: view, message: "\u{201C}\(key.label)\u{201D} saved")
     }
 
     private func presentError(_ error: Error, context: String) {

@@ -98,7 +98,19 @@ final class HostEditorController: NSViewController {
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 760))
         root.autoresizingMask = [.width, .height]
+        root.wantsLayer = true
         view = root
+        // Fix 8 (fixes4): this window (and the Port Forwarding / "+ New Key"
+        // sheets presented on top of it) never forced its appearance to the
+        // active Helm theme, so `.secondaryLabelColor`/`.tertiaryLabelColor`
+        // below resolved against the *system* light/dark setting instead -
+        // wrong-direction (e.g. light-mode dark text on a dark Helm
+        // background) whenever the two disagree. Same root cause as the
+        // Overview dashboard's low-contrast PR text; same fix.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Host" : "Edit Host")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -162,8 +174,8 @@ final class HostEditorController: NSViewController {
         grid.rowSpacing = 12
         grid.columnSpacing = 12
         grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).width = 130
         grid.column(at: 1).xPlacement = .fill
-        grid.column(at: 1).width = 320
 
         // Bottom bar: Delete on the left (editing only), Cancel + Save on the right.
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
@@ -201,6 +213,7 @@ final class HostEditorController: NSViewController {
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
             credCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
             jumpCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -221,14 +234,14 @@ final class HostEditorController: NSViewController {
     private func rowLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: 12)
-        l.textColor = .secondaryLabelColor
+        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         return l
     }
 
     private func caption(_ text: String) -> NSTextField {
         let l = NSTextField(wrappingLabelWithString: text)
         l.font = .systemFont(ofSize: 11)
-        l.textColor = .tertiaryLabelColor
+        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         l.translatesAutoresizingMaskIntoConstraints = false
         return l
     }
@@ -417,7 +430,7 @@ final class HostEditorController: NSViewController {
         let accent = HelmTheme.nsColor(selectedAccent)
         for b in iconButtons {
             let isSel = b.identifier?.rawValue == selectedIcon
-            b.contentTintColor = isSel ? accent : .secondaryLabelColor
+            b.contentTintColor = isSel ? accent : HelmTheme.mutedInk(ThemeManager.shared.theme)
             b.layer?.backgroundColor = (isSel ? accent.withAlphaComponent(0.18) : .clear).cgColor
         }
     }

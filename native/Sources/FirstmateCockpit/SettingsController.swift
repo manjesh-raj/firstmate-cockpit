@@ -57,6 +57,11 @@ final class SettingsController: NSViewController {
     /// their section refreshes.
     private var cardBackgroundViews: [NSView] = []
 
+    /// Fix 4: kept so `viewWillAppear` can force the scroll position back to
+    /// the top on every visit - see `FlippedView` below for why a fresh
+    /// layout can otherwise land scrolled to the bottom.
+    private var scrollView: NSScrollView!
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
         root.wantsLayer = true
@@ -78,7 +83,7 @@ final class SettingsController: NSViewController {
         stack.spacing = 18
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let content = NSView()
+        let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -104,6 +109,7 @@ final class SettingsController: NSViewController {
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
         ])
+        scrollView = scroll
 
         refreshFromSettings()
     }
@@ -111,6 +117,17 @@ final class SettingsController: NSViewController {
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshFromSettings()
+        scrollToTop()
+    }
+
+    /// Fix 4: the document view (`content`, a `FlippedView`) puts y=0 at its
+    /// top, but a freshly laid-out `NSScrollView` can still leave the clip
+    /// view's bounds wherever the last layout pass settled - so force it
+    /// back explicitly on every appearance rather than trusting the default.
+    private func scrollToTop() {
+        guard let scroll = scrollView else { return }
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     // MARK: Card chrome
@@ -627,4 +644,13 @@ extension SettingsController: NSTextFieldDelegate {
         guard let field = obj.object as? NSTextField else { return }
         textFieldChanged(field)
     }
+}
+
+/// Fix 4: a plain `NSView` used as a scroll view's document view puts y=0 at
+/// the *bottom* (AppKit's default, unflipped coordinate space), so a fresh
+/// layout can present as scrolled to the end. Flipping the document view is
+/// the standard fix - y=0 becomes the top, matching how the content's own
+/// Auto Layout constraints are written (top-down, via `stack.topAnchor`).
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
