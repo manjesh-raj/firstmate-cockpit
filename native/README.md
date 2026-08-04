@@ -11,6 +11,24 @@ This is the growing native macOS cockpit: a Swift + SwiftTerm app that replaces 
 
 It builds directly on the merged Phase 1 code. Phase 1 was a single-window proof of terminal feel and screenshot-paste. That terminal, including the paste-hardening `CockpitTerminalView` subclass, is preserved verbatim as the Shell tab.
 
+## Dynamic tabs (connection-manager foundation)
+
+The console's tabs are now a **flexible collection** (`[TabModel]`), not the old fixed `enum Tab { case shell, mirror }`. This is Phase 0 of turning the native cockpit into a Termius/WezTerm-style connection manager (design doc: `data/cockpit-ssh-manager-research/report.md`, Section A4/A5 and Section D Phase 0). It ships the tab operations every terminal manager needs, and it is the primitive that later phases reuse to open SSH host sessions.
+
+- **New tab** (`⌘T` or the `+` button) - a fresh login shell.
+- **Duplicate tab** (`⌘D`, or right-click -> Duplicate) - a new tab running the **same argv** as the current tab. Duplicating the shell gives you a second independent shell; later this is how you open another session to the same host.
+- **Rename tab** (double-click a tab, `⌘⇧R`, or right-click -> Rename) - edit the tab's display name inline. The name is per-tab and never touches the underlying process.
+- **Close tab** (`⌘W` or the `×` on the tab). Closing the **last** tab does not leave an empty window - it opens a fresh Shell tab in its place.
+- **Select tab** (`⌘1`…`⌘9`) - jump to the Nth tab.
+
+Each tab owns its own `CockpitTerminalView` (so screenshot-paste works on every tab) and a `TabLaunch` recipe describing how to (re)start its process. That recipe is what makes duplicate and reconnect one-liners, and adding a `.ssh(...)` case later is how hosts plug in.
+
+The initial set is still **Shell + Mirror**, so nothing from Phase 2 regresses.
+
+### Scrolling and scrollback
+
+Shell tabs scroll **smoothly and content-wise** (line by line, to the exact line) on trackpad and mouse wheel - the WezTerm feel. That comes from the pinned SwiftTerm 1.15's `scrollWheel`, which accumulates precise trackpad deltas and converts them to whole lines 1:1 with no page-jumps (`scrollSensitivity` defaults to a native `1.0`). Every terminal is given a **10,000-line scrollback** (SwiftTerm defaults to only 500) so history that scrolls off the top stays reachable. The **Mirror** tab runs tmux on the alternate screen, so it pages rather than smooth-scrolls - that is inherent to full-screen apps, not something to force.
+
 The design and the exact API shapes used here come from the native design scout report at `data/cockpit-native-design-scout/report.md` (Phase 2 is section 7, terminal attach is 4.3, feature mapping is section 6, the Helm visual language is section 9).
 
 ## What is and is not in Phase 2
@@ -30,9 +48,11 @@ One AppKit window whose content is a `ConsoleController`. All terminal behaviour
 
 | File | Responsibility |
 |---|---|
-| `main.swift` | App entry, window, main menu (Edit + View), lifecycle. |
-| `ConsoleController.swift` | The tabbed surface: two terminals, tab switching, theming, zoom, find, copy, reconnect. |
-| `CockpitTerminalView.swift` | The Phase 1 paste-hardening `LocalProcessTerminalView` subclass, verbatim. Both tabs use it. |
+| `main.swift` | App entry, window, main menu (Edit + Tab + View), lifecycle. |
+| `ConsoleController.swift` | The tabbed surface: the `[TabModel]` collection, dynamic tab bar, new/duplicate/rename/close, tab switching, theming, zoom, find, copy, reconnect. |
+| `TabModel.swift` | One tab: its terminal, display name, and `TabLaunch` (re)start recipe. |
+| `TabChipView.swift` | A tab-bar chip: click to select, double-click / right-click to rename, `×` to close. |
+| `CockpitTerminalView.swift` | The Phase 1 paste-hardening `LocalProcessTerminalView` subclass, verbatim. Every tab uses it. |
 | `TerminalEnvironment.swift` | How a terminal child is spawned (`$SHELL -l`, cwd, UTF-8 env), and the mirror target. |
 | `TmuxMirror.swift` | The grouped-session setup/teardown ported from `backend/terminal.py`. |
 | `HelmTheme.swift` | The Helm dark/light palettes as SwiftTerm colours (OKLCH tokens pre-converted to sRGB). |
@@ -91,7 +111,11 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 
 | Shortcut | Action |
 |---|---|
-| `⌘1` / `⌘2` | Shell tab / Mirror tab |
+| `⌘T` | New shell tab (also the `+` button) |
+| `⌘D` | Duplicate the current tab (same argv) |
+| `⌘⇧R` | Rename the current tab (also double-click / right-click -> Rename) |
+| `⌘W` | Close the current tab (last tab is replaced by a fresh shell) |
+| `⌘1`…`⌘9` | Select the Nth tab |
 | `⌘F` | Find in the active terminal |
 | `⌘+` / `⌘−` / `⌘0` | Zoom in / out / reset |
 | `⌘⌥T` | Toggle Helm light/dark |
@@ -99,7 +123,7 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 | `⌘V` | Paste (drives screenshot-paste into Claude) |
 | `⌘C` | Copy selection |
 
-The same actions are on the top bar of the console and in the **View** menu.
+The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, and the top bar carries the tab chips, the `+` button, find, zoom, and theme.
 
 ## Captain validation checklist
 
@@ -115,7 +139,19 @@ This app **cannot be validated headlessly** - the whole point is runtime behavio
 - [ ] If you mirror a different session, launch with `FM_MIRROR_TARGET=<target>`.
 
 **(c) Tab switching is clean**
-- [ ] Switching Shell ↔ Mirror with `⌘1` / `⌘2` (or the top-bar tabs) is instant, keeps each tab's state, and focus lands in the shown terminal.
+- [ ] Switching Shell ↔ Mirror by clicking the tab chips (or `⌘1` / `⌘2`) is instant, keeps each tab's state, and focus lands in the shown terminal.
+
+**(c2) Dynamic tabs - the foundation work**
+- [ ] `⌘T` (or the `+` button) opens a new Shell tab; run commands in it to confirm it is a live, independent shell.
+- [ ] `⌘D` duplicates the current tab - e.g. from a shell, you get a second shell running the same `$SHELL -l`. Both tabs work at the same time (type in one, switch, type in the other).
+- [ ] Double-click a tab (or `⌘⇧R`, or right-click -> Rename) and type a new name; `↵` commits, `Esc` cancels. The name changes but the process keeps running (its scrollback/history is intact).
+- [ ] `⌘W` closes the current tab. Close down to one tab, then `⌘W` again - the window is **not** left empty; a fresh Shell tab takes its place.
+- [ ] Open several tabs and jump between them with `⌘1`…`⌘9`.
+
+**(c3) Smooth, content-wise scrolling (the captain's ask)**
+- [ ] In a **Shell** tab, print a lot of output (e.g. `seq 1 500` or `ls -R /usr`), then scroll up with the trackpad/mouse wheel. Scrolling is **smooth and line-by-line to the exact line** (WezTerm feel), not page-at-a-time.
+- [ ] Scroll all the way back up - history well past one screen is retained (10,000-line scrollback).
+- [ ] Note: the **Mirror** tab (tmux, alt-screen) pages instead of smooth-scrolling. That is expected for a full-screen app.
 
 **(d) Search / zoom / copy work**
 - [ ] `⌘F` opens the find bar in the active terminal; typing highlights matches; `↵` / `⇧↵` step through them.

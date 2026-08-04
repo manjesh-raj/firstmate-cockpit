@@ -1,16 +1,24 @@
 // Firstmate Cockpit - native macOS app.
 //
-// The Phase 2 console: one surface, two SwiftTerm terminals as tabs.
+// The console: one surface hosting a **flexible collection of tabs**, each a
+// SwiftTerm terminal. This is Phase 0 of the connection-manager work (design
+// report `data/cockpit-ssh-manager-research/report.md`, Section A4/A5 + Section D
+// Phase 0): the old fixed `enum Tab { case shell, mirror }` is gone, replaced by
+// `[TabModel]` rendered in a dynamic tab bar that grows and shrinks.
 //
-//   - Shell  (⌘1): the Phase 1 terminal, `$SHELL -l`, unchanged in behaviour.
-//   - Mirror (⌘2): a live view of the first mate's tmux session, attached via a
-//                  grouped session set up in Swift (see `TmuxMirror`).
+// What the tab model buys us:
+//   - **New tab** (⌘T / the "+" button): a fresh login shell.
+//   - **Duplicate** (⌘D): a new tab running the *same* argv as the current one -
+//     the primitive that will later duplicate a host session.
+//   - **Rename** (double-click a tab, ⌘⇧R, or right-click -> Rename): per-tab
+//     name that never touches the process.
+//   - **Close** (⌘W / the "×"): with the last-tab edge case handled - closing the
+//     final tab opens a fresh shell so the window is never empty.
 //
-// Both tabs are the paste-hardening `CockpitTerminalView`, so screenshot-paste
-// into Claude works identically on either. The top bar carries the tab switch
-// plus the section-6 terminal polish: Helm dark/light theming, font zoom, find,
-// and copy. All of it is also on the main menu (see `App.swift`) with the usual
-// keyboard shortcuts.
+// The initial set is still Shell + Mirror, so nothing regresses. Every tab is a
+// paste-hardening `CockpitTerminalView`, so screenshot-paste into Claude works on
+// all of them, and every terminal gets Helm theming, font zoom, find, copy, a
+// generous scrollback, and smooth native scrolling.
 
 import AppKit
 import SwiftTerm
@@ -19,19 +27,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: Tabs
 
-    enum Tab { case shell, mirror }
+    private var tabs: [TabModel] = []
+    private var currentTab: TabModel?
+    private var hasAppeared = false
 
-    private var currentTab: Tab = .shell
-
-    // MARK: Terminals
-
-    private let shellTerm = CockpitTerminalView(frame: .zero)
-    private let mirrorTerm = CockpitTerminalView(frame: .zero)
-
-    /// The active grouped-session mirror, if connected. Torn down on reconnect
-    /// and on app shutdown.
-    private var mirror: TmuxMirror?
-    private var startedProcesses = false
+    /// Scrollback retained per normal-screen terminal. SwiftTerm defaults to 500
+    /// lines; a shell session wants much more so history that scrolls off the top
+    /// stays reachable.
+    private let scrollbackLines = 10_000
 
     // MARK: Theme + font
 
@@ -49,8 +52,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     private let tabBar = NSView()
     private let content = NSView()
-    private var shellTabButton = NSButton()
-    private var mirrorTabButton = NSButton()
+    private let tabsStack = NSStackView()
+    private var plusButton = NSButton()
     private var themeButton = NSButton()
     private var findButton = NSButton()
     private var zoomInButton = NSButton()
@@ -69,19 +72,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         content.wantsLayer = true
         root.addSubview(content)
 
-        for term in [shellTerm, mirrorTerm] {
-            term.translatesAutoresizingMaskIntoConstraints = false
-            term.processDelegate = self
-            term.font = currentFont()
-            content.addSubview(term)
-            NSLayoutConstraint.activate([
-                term.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                term.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                term.topAnchor.constraint(equalTo: content.topAnchor),
-                term.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            ])
-        }
-
         NSLayoutConstraint.activate([
             tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -94,14 +84,23 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
+        // The starting set: Shell + Mirror, matching the previous behaviour. Their
+        // processes start in `viewDidAppear` (once the view is on screen).
+        let s = shellArgv()
+        let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
+        addTab(launch: shell, name: shell.defaultName, select: false)
+        let mirror = TabLaunch.mirror(target: mirrorTarget())
+        addTab(launch: mirror, name: mirror.defaultName, select: false)
+
         applyTheme()
-        selectTab(.shell, focus: false)
+        if let first = tabs.first { select(tabID: first.id, focus: false) }
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        startProcessesIfNeeded()
-        view.window?.makeFirstResponder(activeTerminal())
+        hasAppeared = true
+        for tab in tabs where !tab.started { startTab(tab) }
+        if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
     }
 
     // MARK: Building the top bar
@@ -121,13 +120,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             separator.heightAnchor.constraint(equalToConstant: 1),
         ])
 
-        shellTabButton = makeTabButton(title: "Shell", action: #selector(selectShellTab))
-        mirrorTabButton = makeTabButton(title: "Mirror", action: #selector(selectMirrorTab))
-        let tabs = NSStackView(views: [shellTabButton, mirrorTabButton])
-        tabs.orientation = .horizontal
-        tabs.spacing = 4
-        tabs.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabs)
+        tabsStack.orientation = .horizontal
+        tabsStack.spacing = 4
+        tabsStack.alignment = .centerY
+        tabsStack.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.addSubview(tabsStack)
+
+        plusButton = makeIconButton(symbol: "plus", tooltip: "New Shell Tab (⌘T)", action: #selector(newShellTab))
 
         findButton = makeIconButton(symbol: "magnifyingglass", tooltip: "Find (⌘F)", action: #selector(showFind))
         zoomOutButton = makeIconButton(symbol: "minus.magnifyingglass", tooltip: "Zoom Out (⌘−)", action: #selector(zoomOut))
@@ -140,22 +139,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tabBar.addSubview(tools)
 
         NSLayoutConstraint.activate([
-            tabs.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 12),
-            tabs.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            tabsStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 12),
+            tabsStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
+            tabsStack.trailingAnchor.constraint(lessThanOrEqualTo: tools.leadingAnchor, constant: -8),
             tools.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10),
             tools.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
         ])
-    }
-
-    private func makeTabButton(title: String, action: Selector) -> NSButton {
-        let b = NSButton(title: title, target: self, action: action)
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 7
-        b.setButtonType(.momentaryChange)
-        b.contentTintColor = nil
-        (b.cell as? NSButtonCell)?.imagePosition = .noImage
-        return b
     }
 
     private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> NSButton {
@@ -177,33 +166,95 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         return b
     }
 
-    // MARK: Starting the terminals
-
-    private func startProcessesIfNeeded() {
-        guard !startedProcesses else { return }
-        startedProcesses = true
-
-        let shell = shellArgv()
-        shellTerm.startProcess(
-            executable: shell.executable,
-            args: shell.args,
-            environment: childEnvironment(),
-            execName: nil,
-            currentDirectory: shellCwd()
-        )
-
-        connectMirror()
+    /// Re-lay the tab bar: one chip per tab, then the "+" button.
+    private func refreshTabBar() {
+        for v in tabsStack.arrangedSubviews {
+            tabsStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        for tab in tabs {
+            tabsStack.addArrangedSubview(tab.chip)
+        }
+        tabsStack.addArrangedSubview(plusButton)
+        styleChips()
     }
 
-    /// Set up the grouped session and attach the Mirror terminal to it. On
-    /// failure (no tmux, no such session) the error is written into the terminal
-    /// so it is visible rather than silent.
-    private func connectMirror() {
-        let target = mirrorTarget()
+    // MARK: Tab lifecycle
+
+    /// Create a terminal view wired for this console: the paste-hardening
+    /// subclass, this delegate, the current font + theme, and a generous
+    /// scrollback so history is retained (SwiftTerm's default is only 500 lines).
+    private func makeTerminal() -> CockpitTerminalView {
+        let term = CockpitTerminalView(frame: .zero)
+        term.translatesAutoresizingMaskIntoConstraints = false
+        term.processDelegate = self
+        term.font = currentFont()
+        // Retain a real scrollback so shells keep their history reachable.
+        // SwiftTerm 1.15's `scrollWheel` already scrolls a normal-screen buffer
+        // smoothly and content-wise: it accumulates precise trackpad deltas and
+        // converts them to whole lines 1:1 (no page-jumps), and its
+        // `scrollSensitivity` defaults to a native 1.0. So the WezTerm feel the
+        // captain wants is the shell tab's default here; we just give it history.
+        // (The Mirror tab runs tmux on the alternate screen and pages inherently.)
+        term.terminal?.changeScrollback(scrollbackLines)
+        content.addSubview(term)
+        NSLayoutConstraint.activate([
+            term.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            term.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            term.topAnchor.constraint(equalTo: content.topAnchor),
+            term.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        theme.apply(to: term)
+        return term
+    }
+
+    /// Add a tab for `launch`, build its chip, and (if the view is already on
+    /// screen) start its process. Returns the new tab.
+    @discardableResult
+    private func addTab(launch: TabLaunch, name: String, select: Bool) -> TabModel {
+        let term = makeTerminal()
+        let tab = TabModel(name: name, launch: launch, terminal: term)
+
+        let chip = TabChipView(tabID: tab.id, name: name)
+        let id = tab.id
+        chip.onSelect = { [weak self] in self?.select(tabID: id) }
+        chip.onClose = { [weak self] in self?.closeTab(id: id) }
+        chip.onDuplicate = { [weak self] in self?.duplicateTab(id: id) }
+        chip.onRename = { [weak self] newName in self?.renameTab(id: id, to: newName) }
+        tab.chip = chip
+
+        tabs.append(tab)
+        refreshTabBar()
+
+        if hasAppeared { startTab(tab) }
+        if select { self.select(tabID: tab.id) }
+        return tab
+    }
+
+    /// Start (or restart) a tab's child process from its launch spec.
+    private func startTab(_ tab: TabModel) {
+        switch tab.launch {
+        case .shell(let exe, let args, let cwd):
+            tab.terminal.startProcess(
+                executable: exe,
+                args: args,
+                environment: childEnvironment(),
+                execName: nil,
+                currentDirectory: cwd
+            )
+        case .mirror(let target):
+            connectMirror(tab, target: target)
+        }
+        tab.started = true
+    }
+
+    /// Set up a grouped session and attach `tab`'s terminal to it. On failure the
+    /// error is written into the terminal so it is visible rather than silent.
+    private func connectMirror(_ tab: TabModel, target: String) {
         switch TmuxMirror.setUp(target: target) {
         case .success(let m):
-            mirror = m
-            mirrorTerm.startProcess(
+            tab.mirror = m
+            tab.terminal.startProcess(
                 executable: m.tmuxPath,
                 args: m.attachArgs,
                 environment: childEnvironment(),
@@ -211,32 +262,94 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 currentDirectory: shellCwd()
             )
         case .failure(let err):
-            mirror = nil
-            mirrorTerm.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
-            mirrorTerm.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live tmux target, then press ⌘R to reconnect.\u{1b}[0m\r\n")
+            tab.mirror = nil
+            tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
+            tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live tmux target, then press ⌘R to reconnect.\u{1b}[0m\r\n")
         }
     }
 
-    private func disconnectMirror() {
-        mirror?.tearDown()
-        mirror = nil
+    // MARK: Tab commands (menu + chip)
+
+    /// ⌘T / the "+" button: a fresh login shell tab.
+    @objc func newShellTab() {
+        let s = shellArgv()
+        let launch = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
+        addTab(launch: launch, name: launch.defaultName, select: true)
     }
 
-    // MARK: Tab switching
-
-    private func activeTerminal() -> CockpitTerminalView {
-        currentTab == .shell ? shellTerm : mirrorTerm
+    /// ⌘D: a new tab running the same argv as the current one.
+    @objc func duplicateCurrentTab() {
+        if let tab = currentTab { duplicateTab(id: tab.id) }
     }
 
-    @objc func selectShellTab() { selectTab(.shell) }
-    @objc func selectMirrorTab() { selectTab(.mirror) }
+    private func duplicateTab(id: UUID) {
+        guard let src = tabs.first(where: { $0.id == id }) else { return }
+        addTab(launch: src.launch, name: src.name, select: true)
+    }
 
-    private func selectTab(_ tab: Tab, focus: Bool = true) {
+    /// ⌘W: close the current tab.
+    @objc func closeCurrentTab() {
+        if let tab = currentTab { closeTab(id: tab.id) }
+    }
+
+    private func closeTab(id: UUID) {
+        guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = tabs[idx]
+
+        tab.isClosing = true
+        tab.mirror?.tearDown()
+        tab.mirror = nil
+        tab.terminal.terminate()
+        tab.terminal.removeFromSuperview()
+        tabs.remove(at: idx)
+
+        // Last-tab edge case: never leave an empty window - open a fresh shell.
+        if tabs.isEmpty {
+            newShellTab()
+            return
+        }
+
+        refreshTabBar()
+        if currentTab === tab || currentTab == nil {
+            let neighbor = tabs[min(idx, tabs.count - 1)]
+            select(tabID: neighbor.id)
+        } else {
+            styleChips()
+        }
+    }
+
+    /// ⌘⇧R / double-click / right-click -> Rename: start editing the current tab's name.
+    @objc func renameCurrentTab() {
+        currentTab?.chip.beginRename()
+    }
+
+    private func renameTab(id: UUID, to newName: String) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        tab.name = trimmed.isEmpty ? tab.launch.defaultName : trimmed
+        tab.chip.setName(tab.name)
+        styleChips()
+        view.window?.makeFirstResponder(tab.terminal)
+    }
+
+    /// ⌘1…⌘9: select the Nth tab (menu items carry a 1-based tag).
+    @objc func selectTabByShortcut(_ sender: NSMenuItem) {
+        let idx = sender.tag - 1
+        guard idx >= 0, idx < tabs.count else { return }
+        select(tabID: tabs[idx].id)
+    }
+
+    // MARK: Selection
+
+    private func activeTerminal() -> CockpitTerminalView? { currentTab?.terminal }
+
+    private func select(tabID: UUID, focus: Bool = true) {
+        guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         currentTab = tab
-        shellTerm.isHidden = tab != .shell
-        mirrorTerm.isHidden = tab != .mirror
-        styleTabButtons()
-        if focus { view.window?.makeFirstResponder(activeTerminal()) }
+        for t in tabs { t.terminal.isHidden = (t !== tab) }
+        styleChips()
+        updateWindowTitle(from: tab)
+        if focus { view.window?.makeFirstResponder(tab.terminal) }
     }
 
     // MARK: Theme
@@ -247,8 +360,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     private func applyTheme() {
-        theme.apply(to: shellTerm)
-        theme.apply(to: mirrorTerm)
+        for tab in tabs { theme.apply(to: tab.terminal) }
 
         let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -258,35 +370,21 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         content.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
 
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        for b in [findButton, zoomInButton, zoomOutButton, themeButton] {
+        for b in [plusButton, findButton, zoomInButton, zoomOutButton, themeButton] {
             b.contentTintColor = ink
         }
-        styleTabButtons()
+        styleChips()
     }
 
-    private func styleTabButtons() {
+    private func styleChips() {
         let accent = HelmTheme.nsColor(theme.accentHex)
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = ink.withAlphaComponent(0.55)
         let tint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
-
-        style(tab: shellTabButton, title: "Shell", selected: currentTab == .shell,
-              accent: accent, ink: ink, muted: muted, tint: tint)
-        style(tab: mirrorTabButton, title: "Mirror", selected: currentTab == .mirror,
-              accent: accent, ink: ink, muted: muted, tint: tint)
-    }
-
-    private func style(tab button: NSButton, title: String, selected: Bool,
-                       accent: NSColor, ink: NSColor, muted: NSColor, tint: NSColor) {
-        let para = NSMutableParagraphStyle()
-        para.alignment = .center
-        let attrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: selected ? accent : muted,
-            .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .regular),
-            .paragraphStyle: para,
-        ]
-        button.attributedTitle = NSAttributedString(string: "  \(title)  ", attributes: attrs)
-        button.layer?.backgroundColor = selected ? tint.cgColor : NSColor.clear.cgColor
+        for tab in tabs {
+            tab.chip.applyStyle(selected: tab === currentTab, accent: accent, muted: muted, tint: tint)
+        }
+        plusButton.contentTintColor = ink
     }
 
     // MARK: Font zoom
@@ -298,8 +396,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private func setFontSize(_ size: CGFloat) {
         fontSize = min(maxFont, max(minFont, size))
         let f = currentFont()
-        shellTerm.font = f
-        mirrorTerm.font = f
+        for tab in tabs { tab.terminal.font = f }
     }
 
     // MARK: Find + copy (routed to the active terminal)
@@ -308,43 +405,54 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // Route to the active terminal's native find bar. SwiftTerm's
         // `performFindPanelAction` expects a menu item whose tag is the
         // NSFindPanelAction; showFindPanel == 1.
+        guard let term = activeTerminal() else { return }
         let item = NSMenuItem()
         item.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
-        view.window?.makeFirstResponder(activeTerminal())
-        activeTerminal().performFindPanelAction(item)
+        view.window?.makeFirstResponder(term)
+        term.performFindPanelAction(item)
     }
 
     @objc func copySelection() {
-        activeTerminal().copy(self)
+        activeTerminal()?.copy(self)
     }
 
     // MARK: Reconnect / restart
 
-    /// ⌘R: restart whichever terminal is in front. For the mirror this re-runs
-    /// the full grouped-session setup (a fresh attach); for the shell it forks a
-    /// new login shell.
+    /// ⌘R: restart whichever tab is in front from its launch spec. For a mirror
+    /// this re-runs the grouped-session setup (a fresh attach); for a shell it
+    /// forks a new login shell.
     @objc func reconnectActive() {
-        switch currentTab {
-        case .mirror:
-            disconnectMirror()
-            connectMirror()
-        case .shell:
-            let shell = shellArgv()
-            shellTerm.startProcess(
-                executable: shell.executable,
-                args: shell.args,
+        guard let tab = currentTab else { return }
+        switch tab.launch {
+        case .mirror(let target):
+            tab.mirror?.tearDown()
+            tab.mirror = nil
+            connectMirror(tab, target: target)
+        case .shell(let exe, let args, let cwd):
+            tab.terminal.startProcess(
+                executable: exe,
+                args: args,
                 environment: childEnvironment(),
                 execName: nil,
-                currentDirectory: shellCwd()
+                currentDirectory: cwd
             )
         }
-        view.window?.makeFirstResponder(activeTerminal())
+        view.window?.makeFirstResponder(tab.terminal)
     }
 
-    /// Tear down the grouped session so we don't leave a stale `cockpit_*`
-    /// session behind. Called from the app delegate on quit.
+    /// Tear down every mirror's grouped session so we don't leave stale
+    /// `cockpit_*` sessions behind. Called from the app delegate on quit.
     func shutdown() {
-        disconnectMirror()
+        for tab in tabs {
+            tab.mirror?.tearDown()
+            tab.mirror = nil
+        }
+    }
+
+    // MARK: Window title
+
+    private func updateWindowTitle(from tab: TabModel) {
+        view.window?.title = "Firstmate Cockpit - \(tab.name)"
     }
 
     // MARK: LocalProcessTerminalViewDelegate
@@ -352,21 +460,26 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        // Only the active terminal drives the window title.
-        guard source === activeTerminal() else { return }
-        view.window?.title = title.isEmpty ? "Firstmate Cockpit" : title
+        // Only the active terminal drives the window title; keep the tab name too.
+        guard source === currentTab?.terminal, let tab = currentTab else { return }
+        if title.isEmpty {
+            updateWindowTitle(from: tab)
+        } else {
+            view.window?.title = "\(tab.name) - \(title)"
+        }
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
-    /// A tab's process ended. Unlike P1 (which closed the window), the console
-    /// keeps running - the other tab may still be live - and shows a dim
-    /// "reconnect" hint in the tab that exited. The mirror also tears down its
-    /// grouped session here so nothing is left dangling.
+    /// A tab's process ended. The console keeps running (other tabs may be live)
+    /// and shows a dim "reconnect" hint in the tab that exited. A mirror tears
+    /// down its grouped session here so nothing is left dangling. A tab that is
+    /// being closed is skipped - its view is on its way out.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        if source === mirrorTerm {
-            disconnectMirror()
-        }
+        guard let tab = tabs.first(where: { $0.terminal === source }) else { return }
+        if tab.isClosing { return }
+        tab.mirror?.tearDown()
+        tab.mirror = nil
         let code = exitCode.map { " (exit \($0))" } ?? ""
         source.feed(text: "\r\n  \u{1b}[2m[process ended\(code) - press ⌘R to reconnect]\u{1b}[0m\r\n")
     }
