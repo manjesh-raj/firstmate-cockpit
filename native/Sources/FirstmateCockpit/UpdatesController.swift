@@ -148,16 +148,39 @@ final class UpdatesController: NSViewController {
 
     private let subtitleLabel = NSTextField(labelWithString: "Every tool in the fleet, checked against its real source - npm, Homebrew, herdr, no-mistakes, and firstmate's own upstream.")
 
+    /// Borderless icon button, matching `FleetController.refreshButton` /
+    /// `TopBarController`'s header-level icon actions - a page-header bulk
+    /// action in this app is a small icon button, not a labeled pill.
+    private let checkAllButton = NSButton()
+    private let checkAllProgressBar = NSProgressIndicator()
+    private let checkAllProgressLabel = NSTextField(labelWithString: "")
+    private var isCheckingAll = false
+
     private func buildHeader() -> NSView {
         let title = NSTextField(labelWithString: "Firstmate Latest Updates")
         title.font = .systemFont(ofSize: 20, weight: .semibold)
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.preferredMaxLayoutWidth = 560
 
-        let refreshButton = NSButton(title: "Check all", target: self, action: #selector(checkAllTapped))
-        refreshButton.bezelStyle = .rounded
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check all")
-        refreshButton.imagePosition = .imageLeading
+        checkAllButton.title = ""
+        checkAllButton.isBordered = false
+        checkAllButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check all")
+        checkAllButton.target = self
+        checkAllButton.action = #selector(checkAllTapped)
+        checkAllButton.toolTip = "Check all for updates"
+        checkAllButton.translatesAutoresizingMaskIntoConstraints = false
+
+        checkAllProgressBar.style = .bar
+        checkAllProgressBar.isIndeterminate = false
+        checkAllProgressBar.controlSize = .small
+        checkAllProgressBar.minValue = 0
+        checkAllProgressBar.isHidden = true
+        checkAllProgressBar.translatesAutoresizingMaskIntoConstraints = false
+        checkAllProgressBar.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        checkAllProgressLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        checkAllProgressLabel.isHidden = true
+        checkAllProgressLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let textStack = NSStackView(views: [title, subtitleLabel])
         textStack.orientation = .vertical
@@ -165,19 +188,63 @@ final class UpdatesController: NSViewController {
         textStack.spacing = 4
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [textStack, refreshButton])
+        let trailing = NSStackView(views: [checkAllProgressLabel, checkAllProgressBar, checkAllButton])
+        trailing.orientation = .horizontal
+        trailing.alignment = .centerY
+        trailing.spacing = 8
+        trailing.translatesAutoresizingMaskIntoConstraints = false
+        for v: NSView in [checkAllProgressLabel, checkAllProgressBar, checkAllButton] {
+            v.setContentHuggingPriority(.required, for: .horizontal)
+            v.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+
+        let row = NSStackView(views: [textStack, trailing])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
-        refreshButton.setContentHuggingPriority(.required, for: .horizontal)
         return row
     }
 
     @objc private func checkAllTapped() { checkAll() }
 
     private func checkAll() {
-        for row in rows { check(row) }
+        guard !isCheckingAll else { return }
+        isCheckingAll = true
+        checkAllButton.isHidden = true
+        checkAllProgressBar.isHidden = false
+        checkAllProgressLabel.isHidden = false
+
+        let total = rows.count
+        checkAllProgressBar.maxValue = Double(total)
+        checkAllProgressBar.doubleValue = 0
+        checkAllProgressLabel.stringValue = "Checking\u{2026} (0/\(total))"
+
+        var completed = 0
+        for row in rows {
+            check(row) { [weak self] in
+                guard let self else { return }
+                completed += 1
+                self.checkAllProgressBar.doubleValue = Double(completed)
+                self.checkAllProgressLabel.stringValue = "Checking\u{2026} (\(completed)/\(total))"
+                if completed == total { self.finishCheckAll() }
+            }
+        }
+    }
+
+    private func finishCheckAll() {
+        isCheckingAll = false
+        checkAllButton.isHidden = false
+        checkAllProgressBar.isHidden = true
+        checkAllProgressLabel.isHidden = true
+
+        let updateCount = rows.filter { $0.status.showsUpdateButton }.count
+        let message = updateCount > 0
+            ? "Checked \(rows.count) tools, \(updateCount) update\(updateCount == 1 ? "" : "s") available"
+            : "Checked \(rows.count) tools - all up to date"
+        if let container = view.window?.contentView {
+            Toast.show(in: container, message: message)
+        }
     }
 
     // MARK: Card chrome (mirrors SettingsController.card)
@@ -403,8 +470,14 @@ final class UpdatesController: NSViewController {
         check(row)
     }
 
-    private func check(_ row: UpdateRow) {
-        guard !row.isBusy else { return }
+    /// `completion` fires on the main queue once this row's check settles -
+    /// `checkAll` uses it to drive the header's "Checking… (N/M)" progress
+    /// and the completion toast without polling row state.
+    private func check(_ row: UpdateRow, completion: (() -> Void)? = nil) {
+        guard !row.isBusy else {
+            completion?()
+            return
+        }
         row.status = .checking
         row.detail = "Checking\u{2026}"
         row.checkButton.isEnabled = false
@@ -412,13 +485,17 @@ final class UpdatesController: NSViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = UpdatesSource.check(row.item)
             DispatchQueue.main.async {
-                guard self != nil else { return }
+                guard self != nil else {
+                    completion?()
+                    return
+                }
                 row.status = outcome.status
                 row.latestLabel = outcome.latestLabel
                 row.detail = outcome.detail
                 row.log = outcome.log
                 row.checkButton.isEnabled = true
                 self?.render(row)
+                completion?()
             }
         }
     }
@@ -571,6 +648,8 @@ final class UpdatesController: NSViewController {
 
     private func applyTheme() {
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
+        checkAllButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
+        checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         for v in cardBackgrounds {
