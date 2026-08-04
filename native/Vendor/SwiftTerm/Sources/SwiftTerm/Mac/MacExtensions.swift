@@ -66,6 +66,35 @@ extension NSColor {
         return NSColor(cgColor: cg)!
     }
 
+    /// Returns `self` (a literal 24-bit truecolor foreground) remapped, if
+    /// needed, to keep at least `Dimming.targetContrastRatio` against
+    /// `background`. See `Dimming.contrastFixBlendFraction`'s doc comment for
+    /// the full writeup (cockpit-native-fixes5) - unlike `dimmedColor(towards:)`
+    /// above, this blends *away* from `background` and is a no-op whenever the
+    /// color already has enough contrast.
+    func legibleColor (against background: NSColor) -> NSColor {
+        guard let fg = self.usingColorSpace(.sRGB),
+              let bg = background.usingColorSpace(.sRGB) else {
+            return self
+        }
+        var fRed: CGFloat = 0.0, fGreen: CGFloat = 0.0, fBlue: CGFloat = 0.0, fAlpha: CGFloat = 1.0
+        fg.getRed(&fRed, green: &fGreen, blue: &fBlue, alpha: &fAlpha)
+        var bRed: CGFloat = 0.0, bGreen: CGFloat = 0.0, bBlue: CGFloat = 0.0, bAlpha: CGFloat = 1.0
+        bg.getRed(&bRed, green: &bGreen, blue: &bBlue, alpha: &bAlpha)
+        let (fraction, towardWhite) = Dimming.contrastFixBlendFraction(
+            fgRed: Double(fRed), fgGreen: Double(fGreen), fgBlue: Double(fBlue),
+            bgRed: Double(bRed), bgGreen: Double(bGreen), bgBlue: Double(bBlue))
+        guard fraction > 0 else { return self }
+        let t = CGFloat(fraction)
+        let toward: CGFloat = towardWhite ? 1 : 0
+        let cg = CGColor(colorSpace: Self.srgbColorSpace,
+                         components: [fRed + (toward - fRed) * t,
+                                       fGreen + (toward - fGreen) * t,
+                                       fBlue + (toward - fBlue) * t,
+                                       fAlpha])!
+        return NSColor(cgColor: cg)!
+    }
+
     static func make (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> NSColor
     {
         let cg = CGColor(colorSpace: srgbColorSpace, components: [red, green, blue, alpha])!

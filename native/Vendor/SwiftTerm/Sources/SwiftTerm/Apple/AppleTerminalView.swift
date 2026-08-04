@@ -560,6 +560,17 @@ extension TerminalView {
         // Apply dim/faint attribute (SGR 2)
         if flags.contains (.dim) {
             fgColor = fgColor.dimmedColor (towards: bgColor)
+        } else if case .trueColor = fg {
+            // cockpit-native-fixes5: a literal 24-bit truecolor foreground has
+            // no theme awareness by construction (the child process picked
+            // concrete RGB bytes with no idea what background they'd render
+            // on) - some tools use this instead of SGR-2 dim for de-emphasised
+            // text, which the branch above never sees. See `Dimming.
+            // contrastFixBlendFraction`'s doc comment for the live evidence
+            // and why this needs a different (away-from-background) blend
+            // than the dim case. `legibleColor` no-ops when contrast is
+            // already sufficient, so normal bright truecolor text is untouched.
+            fgColor = fgColor.legibleColor (against: bgColor)
         }
         var nsattr: [NSAttributedString.Key:Any] = [
             .font: tf,

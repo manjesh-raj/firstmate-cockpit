@@ -83,4 +83,91 @@ enum Dimming {
         }
         return mid
     }
+
+    /// cockpit-native-fixes5: a literal 24-bit truecolor foreground (`ESC[38;2;r;g;bm`)
+    /// carries no theme awareness at all - unlike the SGR-2 "faint" attribute above,
+    /// which SwiftTerm itself blends toward the background, a truecolor value is
+    /// concrete RGB bytes chosen by the child process with no idea what background
+    /// they will ever land on. Verified live against this exact codebase's own
+    /// firstmate session (`tmux capture-pane -e`): Claude Code renders its own
+    /// de-emphasised status lines ("Searched for N files...", token/cost footers)
+    /// as `ESC[38;2;153;153;153m`, not SGR-2 dim - so the `dimmedColor` path above
+    /// never sees it. That gray measures ~7.4:1 against a near-black dark-theme
+    /// background (legible, the look the source app intended) but only ~2.85:1
+    /// against a light theme's near-white background - below the 4.5:1 WCAG floor.
+    ///
+    /// Reusing `blendFraction` above isn't right here: that bisection blends
+    /// *toward* the background (intentionally reducing contrast for a stylistic
+    /// dim look, capped so it never drops below `targetContrastRatio`). Here the
+    /// color already has *insufficient* contrast, so the fix must blend *away*
+    /// from the background instead - toward black if the foreground is the darker
+    /// of the two, toward white if it's the lighter - raising contrast only as
+    /// far as `targetContrastRatio` requires. Contrast rises monotonically as
+    /// `t` increases in this direction, the mirror image of the dim case, so the
+    /// bisection searches for the *smallest* `t` that clears the bar rather than
+    /// the largest one that still clears it.
+    ///
+    /// This intentionally has no separate "is this dim/ghost text vs. a genuine
+    /// color choice" gate: `NSColor.legibleColor(against:)`/`UIColor.legibleColor
+    /// (against:)` call this for every truecolor foreground unconditionally, and
+    /// it is self-gating - a foreground that already meets the target returns a
+    /// blend fraction of 0 (no visible change), which is what keeps normal bright
+    /// truecolor text, and any color already legible on the active theme,
+    /// untouched. Blending toward black/white also preserves hue (all channels
+    /// scale together), so a genuinely-chosen but low-contrast color (e.g. a
+    /// dusty diff-removal red, measured live at `38;2;220;90;90`) darkens or
+    /// lightens rather than desaturating into gray.
+    /// Returns the blend fraction (see doc comment above) plus which endpoint
+    /// it blends toward, so callers don't have to re-derive the direction
+    /// themselves with a second, potentially-inconsistent luminance formula.
+    ///
+    /// The direction is NOT simply "whichever side of the background the
+    /// foreground currently sits on" - that heuristic breaks when foreground
+    /// and background are both clustered near the same extreme (e.g. an
+    /// off-white foreground on a light-but-not-identical background): pushing
+    /// further toward white barely moves the contrast ratio, because there is
+    /// almost no headroom left between the foreground and pure white. Instead
+    /// this evaluates the contrast achievable at each endpoint (pure black and
+    /// pure white) and picks whichever one can actually reach further, then
+    /// bisects the minimal blend toward *that* endpoint to hit the target.
+    static func contrastFixBlendFraction(fgRed: Double, fgGreen: Double, fgBlue: Double,
+                                          bgRed: Double, bgGreen: Double, bgBlue: Double) -> (fraction: Double, towardWhite: Bool) {
+        let bgLuminance = relativeLuminance(bgRed, bgGreen, bgBlue)
+
+        func ratio (toward: Double, t: Double) -> Double {
+            let r = fgRed + (toward - fgRed) * t
+            let g = fgGreen + (toward - fgGreen) * t
+            let b = fgBlue + (toward - fgBlue) * t
+            return contrastRatio(relativeLuminance(r, g, b), bgLuminance)
+        }
+
+        let currentRatio = ratio(toward: 0, t: 0)
+        if currentRatio >= targetContrastRatio { return (0, false) }
+
+        let blackAchievable = ratio(toward: 0, t: 1)
+        let whiteAchievable = ratio(toward: 1, t: 1)
+        let towardWhite = whiteAchievable > blackAchievable
+        let toward: Double = towardWhite ? 1 : 0
+        let achievable = towardWhite ? whiteAchievable : blackAchievable
+
+        if achievable < targetContrastRatio {
+            // Foreground and background are too close together in luminance
+            // for any same-hue blend to separate them enough - use the full
+            // blend anyway, the most legible this exact hue can get here.
+            return (1, towardWhite)
+        }
+
+        var lo = 0.0
+        var hi = 1.0
+        var mid = hi
+        for _ in 0..<24 {
+            mid = (lo + hi) / 2
+            if ratio(toward: toward, t: mid) < targetContrastRatio {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        return (hi, towardWhite)
+    }
 }

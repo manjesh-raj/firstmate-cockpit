@@ -113,7 +113,7 @@ final class FleetController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
         ThemeManager.shared.observe { [weak self, weak root] theme in
@@ -132,6 +132,14 @@ final class FleetController: NSViewController {
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        // cockpit-native-fixes5: force the pending Auto Layout pass to run
+        // before reading/setting scroll position. On the very first
+        // appearance this view's constraints resolve for the first time in
+        // the same tick the automatic viewWillAppear fires (isHidden was
+        // true, so AppKit had no reason to lay it out earlier) - without this,
+        // `scrollToTop()` below could act on stale (pre-layout) geometry. On
+        // every later appearance this is a cheap no-op (already resolved).
+        view.layoutSubtreeIfNeeded()
         scrollToTop()
         refresh()
     }
@@ -382,6 +390,17 @@ final class FleetController: NSViewController {
         readyHeader.stringValue = "Ready to merge (\(mergedPRs.count))"
 
         applyTheme()
+
+        // cockpit-native-fixes5: the loading skeleton's content is much
+        // shorter than the real data (header + spinner only), so the first
+        // successful render() here can grow the document's height by several
+        // hundred points while the view is already visible - nothing else
+        // re-pins the scroll position after that resize. Re-run scrollToTop()
+        // defensively so a first-appearance visit that's still showing the
+        // skeleton when this lands can't end up scrolled anywhere but the top
+        // once the real content replaces it.
+        view.layoutSubtreeIfNeeded()
+        scrollToTop()
     }
 
     private func renderBanner(needs: [FleetTask], working: [FleetTask], readyCount: Int) {
