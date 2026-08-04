@@ -33,6 +33,15 @@ final class FleetController: NSViewController {
     private let readyHeader = NSTextField(labelWithString: "")
     private let readyStack = NSStackView()
 
+    /// Shown in place of the four data sections above until the first
+    /// `render(...)` lands - see the loading-state note on `buildLoadingState`.
+    private let loadingContainer = NSView()
+    private let loadingSpinner = NSProgressIndicator()
+    private let loadingLabel = NSTextField(labelWithString: "Loading fleet data\u{2026}")
+    private var inFlightSectionView: NSView!
+    private var readySectionView: NSView!
+    private var hasLoadedOnce = false
+
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var isLoading = false
 
@@ -41,24 +50,45 @@ final class FleetController: NSViewController {
         root.wantsLayer = true
         view = root
 
-        let content = NSView()
+        // `FlippedView` (not a plain `NSView`), matching `SettingsController`'s
+        // established Fix 4 pattern: a non-flipped document view puts y=0 at
+        // its *bottom*, so before data arrives - while the content is still
+        // shorter than the viewport, since `inFlightStack`/`readyStack` start
+        // with zero arranged subviews - AppKit rests it against the bottom of
+        // the clip view, leaving a blank gap the size of the shortfall sitting
+        // above it, with the header pushed down into (or past) that gap. Once
+        // rows are added and the content grows, it snaps back up - exactly the
+        // "empty area above the header for several seconds" bug. A flipped
+        // document view pins y=0 to the top always, so the header never moves.
+        let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
         buildBanner()
         buildStatsRow()
+        let loadingSection = buildLoadingState()
         let inFlightSection = buildSection(header: inFlightHeader, iconSymbol: "clock", title: "In flight", stack: inFlightStack)
         let readySection = buildSection(header: readyHeader, iconSymbol: "arrow.triangle.pull", title: "Ready to merge", stack: readyStack)
+        inFlightSectionView = inFlightSection
+        readySectionView = readySection
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 20
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
+        contentStack.addArrangedSubview(loadingSection)
         contentStack.addArrangedSubview(bannerView)
         contentStack.addArrangedSubview(statsRow)
         contentStack.addArrangedSubview(inFlightSection)
         contentStack.addArrangedSubview(readySection)
+
+        // The four data sections stay hidden behind the loading skeleton
+        // until the first successful `render(...)` - see `buildLoadingState`.
+        bannerView.isHidden = true
+        statsRow.isHidden = true
+        inFlightSection.isHidden = true
+        readySection.isHidden = true
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
@@ -66,6 +96,7 @@ final class FleetController: NSViewController {
             contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            loadingSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             bannerView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             statsRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             inFlightSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -101,7 +132,18 @@ final class FleetController: NSViewController {
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        scrollToTop()
         refresh()
+    }
+
+    /// The document view (`content`, a `FlippedView`) puts y=0 at its top,
+    /// but a freshly laid-out `NSScrollView` can still leave the clip view's
+    /// bounds wherever the last layout pass settled - so force it back
+    /// explicitly on every appearance rather than trusting the default.
+    /// Mirrors `SettingsController.scrollToTop`.
+    private func scrollToTop() {
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     // MARK: Building the static chrome
@@ -170,6 +212,40 @@ final class FleetController: NSViewController {
         statsRow.distribution = .fillEqually
         statsRow.spacing = 10
         statsRow.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// A skeleton that occupies the content area under the header from the
+    /// very first frame - the banner/stats/In flight/Ready to merge sections
+    /// stay hidden (and animation-free) until the first `render(...)` lands,
+    /// so there is never an interval where the page shows nothing but a
+    /// collapsed, empty-looking stack of cards while `refresh()`'s
+    /// background fetch (real `gh`/Bitbucket network calls) is in flight.
+    private func buildLoadingState() -> NSView {
+        loadingSpinner.style = .spinning
+        loadingSpinner.isIndeterminate = true
+        loadingSpinner.controlSize = .regular
+        loadingSpinner.translatesAutoresizingMaskIntoConstraints = false
+        loadingSpinner.startAnimation(nil)
+
+        loadingLabel.font = .systemFont(ofSize: 12)
+        loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [loadingSpinner, loadingLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        loadingContainer.wantsLayer = true
+        loadingContainer.layer?.cornerRadius = 10
+        loadingContainer.translatesAutoresizingMaskIntoConstraints = false
+        loadingContainer.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: loadingContainer.centerXAnchor),
+            stack.topAnchor.constraint(equalTo: loadingContainer.topAnchor, constant: 40),
+            stack.bottomAnchor.constraint(equalTo: loadingContainer.bottomAnchor, constant: -40),
+        ])
+        return loadingContainer
     }
 
     private func statTile(icon: String, value: String, label: String) -> NSView {
@@ -273,6 +349,16 @@ final class FleetController: NSViewController {
     // MARK: Rendering
 
     private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]) {
+        if !hasLoadedOnce {
+            hasLoadedOnce = true
+            loadingSpinner.stopAnimation(nil)
+            loadingContainer.isHidden = true
+            bannerView.isHidden = false
+            statsRow.isHidden = false
+            inFlightSectionView.isHidden = false
+            readySectionView.isHidden = false
+        }
+
         rowContainers.removeAll()
         emptyStateLabels.removeAll()
 
@@ -639,6 +725,11 @@ final class FleetController: NSViewController {
         greetingLabel.textColor = ink
         subtitleLabel.textColor = muted
         refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
+
+        loadingContainer.layer?.backgroundColor = surface.cgColor
+        loadingContainer.layer?.borderWidth = 1
+        loadingContainer.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
+        loadingLabel.textColor = muted
 
         let bannerColorHex = bannerIsAlert ? theme.ansiHex[3] : theme.ansiHex[2]
         let bannerColor = HelmTheme.nsColor(bannerColorHex)
