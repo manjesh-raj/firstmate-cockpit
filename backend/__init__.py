@@ -1,1 +1,0 @@
-"""firstmate-cockpit backend package."""

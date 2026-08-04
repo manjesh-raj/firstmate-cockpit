@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Build New-Firstmate.app: a plain macOS app-bundle wrapper around the native
-# Swift cockpit (native/, SwiftTerm-based). This is NOT the old web/WKWebView
-# app - that one is dist/Firstmate.app, built by ../build_app.sh via py2app.
-# The two are deliberately named and identified differently so they can't be
-# confused on disk or in the Dock. No py2app, no signing, no notarization:
+# Build Firstmate.app: a plain macOS app-bundle wrapper around the native
+# Swift cockpit (native/, SwiftTerm-based). No signing, no notarization:
 # this is a lightweight, unsigned, local-use bundle.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="New-Firstmate.app"
+APP_NAME="Firstmate.app"
 DIST_DIR="../dist"
 APP_DIR="$DIST_DIR/$APP_NAME"
 EXECUTABLE_NAME="FirstmateCockpit"
@@ -37,9 +34,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>New Firstmate</string>
+    <string>Firstmate</string>
     <key>CFBundleDisplayName</key>
-    <string>New Firstmate (Native Cockpit)</string>
+    <string>Firstmate</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>
