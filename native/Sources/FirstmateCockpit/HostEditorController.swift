@@ -535,22 +535,37 @@ final class HostEditorController: NSViewController {
         host.accentHex = selectedAccent
 
         onSave?(host)
-        dismiss(self)
+        closeEditor()
     }
 
     @objc private func deleteHost() {
         guard let id = editing?.id else { return }
         onDelete?(id)
-        dismiss(self)
+        closeEditor()
     }
 
     @objc private func cancel() {
-        dismiss(self)
+        closeEditor()
     }
 
     /// Briefly flash a required field's focus ring when it is empty.
     private func flag(_ field: NSTextField) {
         view.window?.makeFirstResponder(field)
         NSSound.beep()
+    }
+
+    /// cockpit-native-host-form-fixes, Fix 2: this editor is presented as its
+    /// own top-level window (`AppDelegate.presentHostEditor`), not via
+    /// `presentAsSheet`/`presentAsModalWindow` from a parent view controller
+    /// and not as a document-modal sheet either. `NSViewController.dismiss(_:)`
+    /// only acts in those two cases (or the `presentingViewController` case);
+    /// for a plain top-level window it is a documented no-op, which is why
+    /// Cancel silently did nothing. Closing the window directly works
+    /// regardless of how the view controller got there, and - since
+    /// `isReleasedWhenClosed` is `false` on this cached, reused window - it
+    /// still just orders out rather than deallocating, ready for the next
+    /// Add/Edit call to set a fresh `contentViewController` on it.
+    private func closeEditor() {
+        view.window?.close()
     }
 }
