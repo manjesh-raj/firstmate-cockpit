@@ -36,6 +36,15 @@ final class ReviewController: NSViewController {
     /// uses supported forges and would otherwise be permanent visual noise.
     private var otherSection = NSView()
 
+    /// Shown in place of the three forge sections above until the first
+    /// `render(...)` lands - see the loading-state note on `buildLoadingState`.
+    private let loadingContainer = NSView()
+    private let loadingSpinner = NSProgressIndicator()
+    private let loadingLabel = NSTextField(labelWithString: "Loading open PRs\u{2026}")
+    private var githubSectionView: NSView!
+    private var bitbucketSectionView: NSView!
+    private var hasLoadedOnce = false
+
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var isLoading = false
 
@@ -44,22 +53,43 @@ final class ReviewController: NSViewController {
         root.wantsLayer = true
         view = root
 
-        let content = NSView()
+        // `FlippedView` (not a plain `NSView`), matching `SettingsController`'s
+        // established Fix 4 pattern and now `FleetController`'s: a non-flipped
+        // document view puts y=0 at its *bottom*, so before data arrives -
+        // while content is still shorter than the viewport, since every
+        // forge stack starts with zero arranged subviews - AppKit rests it
+        // against the bottom of the clip view, leaving a blank gap the size
+        // of the shortfall sitting above it, with the header pushed down
+        // into (or past) that gap. Once rows are added and the content
+        // grows, it snaps back up - exactly the "empty area above the
+        // header for several seconds" bug. A flipped document view pins
+        // y=0 to the top always, so the header never moves.
+        let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
+        let loadingSection = buildLoadingState()
         let githubSection = buildSection(header: githubHeader, iconSymbol: "chevron.left.forwardslash.chevron.right", title: "GitHub", stack: githubStack)
         let bitbucketSection = buildSection(header: bitbucketHeader, iconSymbol: "water.waves", title: "Bitbucket", stack: bitbucketStack)
         otherSection = buildSection(header: otherHeader, iconSymbol: "arrow.triangle.branch", title: "Other", stack: otherStack)
+        githubSectionView = githubSection
+        bitbucketSectionView = bitbucketSection
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 22
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
+        contentStack.addArrangedSubview(loadingSection)
         contentStack.addArrangedSubview(githubSection)
         contentStack.addArrangedSubview(bitbucketSection)
         contentStack.addArrangedSubview(otherSection)
+
+        // The three forge sections stay hidden behind the loading skeleton
+        // until the first successful `render(...)` - see `buildLoadingState`.
+        githubSection.isHidden = true
+        bitbucketSection.isHidden = true
+        otherSection.isHidden = true
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
@@ -67,6 +97,7 @@ final class ReviewController: NSViewController {
             contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            loadingSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             githubSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             bitbucketSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             otherSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -94,7 +125,18 @@ final class ReviewController: NSViewController {
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        scrollToTop()
         refresh()
+    }
+
+    /// The document view (`content`, a `FlippedView`) puts y=0 at its top,
+    /// but a freshly laid-out `NSScrollView` can still leave the clip view's
+    /// bounds wherever the last layout pass settled - so force it back
+    /// explicitly on every appearance rather than trusting the default.
+    /// Mirrors `SettingsController.scrollToTop`.
+    private func scrollToTop() {
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     // MARK: Building the static chrome
@@ -124,6 +166,40 @@ final class ReviewController: NSViewController {
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
+    }
+
+    /// A skeleton that occupies the content area under the header from the
+    /// very first frame - the GitHub/Bitbucket/Other sections stay hidden
+    /// (and animation-free) until the first `render(...)` lands, so there is
+    /// never an interval where the page shows nothing but a collapsed,
+    /// empty-looking stack of cards while `refresh()`'s background fetch
+    /// (real `gh`/Bitbucket network calls) is in flight.
+    private func buildLoadingState() -> NSView {
+        loadingSpinner.style = .spinning
+        loadingSpinner.isIndeterminate = true
+        loadingSpinner.controlSize = .regular
+        loadingSpinner.translatesAutoresizingMaskIntoConstraints = false
+        loadingSpinner.startAnimation(nil)
+
+        loadingLabel.font = .systemFont(ofSize: 12)
+        loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [loadingSpinner, loadingLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        loadingContainer.wantsLayer = true
+        loadingContainer.layer?.cornerRadius = 10
+        loadingContainer.translatesAutoresizingMaskIntoConstraints = false
+        loadingContainer.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: loadingContainer.centerXAnchor),
+            stack.topAnchor.constraint(equalTo: loadingContainer.topAnchor, constant: 40),
+            stack.bottomAnchor.constraint(equalTo: loadingContainer.bottomAnchor, constant: -40),
+        ])
+        return loadingContainer
     }
 
     private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> NSView {
@@ -180,6 +256,14 @@ final class ReviewController: NSViewController {
     // MARK: Rendering
 
     private func render(_ prs: [MergedPR]) {
+        if !hasLoadedOnce {
+            hasLoadedOnce = true
+            loadingSpinner.stopAnimation(nil)
+            loadingContainer.isHidden = true
+            githubSectionView.isHidden = false
+            bitbucketSectionView.isHidden = false
+        }
+
         rowContainers.removeAll()
         emptyStateParts.removeAll()
 
@@ -403,6 +487,12 @@ final class ReviewController: NSViewController {
         titleLabel.textColor = ink
         subtitleLabel.textColor = muted
         refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
+
+        loadingContainer.layer?.backgroundColor = surface.cgColor
+        loadingContainer.layer?.borderWidth = 1
+        loadingContainer.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
+        loadingLabel.textColor = muted
+
         githubHeader.textColor = ink
         bitbucketHeader.textColor = ink
         otherHeader.textColor = ink
