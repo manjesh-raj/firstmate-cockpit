@@ -31,10 +31,10 @@ enum RailDestination: CaseIterable {
         case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
-        // A human/sailor silhouette - deliberately distinct from the
-        // "sailboat" brand mark at the top of the rail and from every other
-        // destination glyph, so it reads as "a human crewmate" rather than
-        // another instrument-panel icon.
+        // Unused for `.updates` - see `railButton(for:)`, which renders the
+        // captain's own artwork (`CaptainIcon`) for this destination instead
+        // of an SF Symbol. Kept as a fallback in case that asset ever fails
+        // to decode.
         case .updates: return "person.fill"
         case .settings: return "gearshape"
         }
@@ -205,9 +205,17 @@ final class IconRailController: NSViewController {
         button.wantsLayer = true
         button.layer?.cornerRadius = 11
         button.imageScaling = .scaleProportionallyDown
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        button.image = NSImage(systemSymbolName: dest.symbol, accessibilityDescription: dest.title)?
-            .withSymbolConfiguration(config)
+        if dest == .updates, let captain = CaptainIcon.templateImage {
+            // The captain's own artwork, not an SF Symbol - sized to the same
+            // ~16pt visual weight as the other rail glyphs via `image.size`
+            // (a template `NSImage` scales like any other button image).
+            captain.size = NSSize(width: 17, height: 17)
+            button.image = captain
+        } else {
+            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            button.image = NSImage(systemSymbolName: dest.symbol, accessibilityDescription: dest.title)?
+                .withSymbolConfiguration(config)
+        }
         button.toolTip = dest.title
         button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
         NSLayoutConstraint.activate([
