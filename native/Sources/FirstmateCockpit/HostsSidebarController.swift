@@ -19,31 +19,37 @@
 
 import AppKit
 
-/// One row in the host list: either a group section header or a host. Kept
-/// as a flat array (rather than switching to `NSOutlineView`) so the rest of
-/// the table plumbing - selection, double-click, context menu - stays exactly
-/// as it was before groups existed.
+/// One row in the host list: a group section header, a saved host, or the
+/// pinned built-in "Firstmate" entry (Fix 4 - unifies the old always-open
+/// Shell/Mirror tabs into the Hosts list). Kept as a flat array (rather than
+/// switching to `NSOutlineView`) so the rest of the table plumbing -
+/// selection, double-click, context menu - stays exactly as it was before
+/// groups existed.
 private enum HostListRow {
+    case pinned
     case header(String)
     case host(Host)
 }
 
-final class HostsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class HostsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate {
 
     private let store: HostStore
-    /// The saved-keys Keychain (Phase 2) - only read here, to populate the
-    /// editor's "Choose a key" popup. All secret handling lives in
-    /// `KeychainKeyStore` / `SSHKeyMaterializer`, not in this controller.
-    private let keyStore: SSHKeyStore
-    /// The snippet library (Phase 3) - only read here, to populate the
-    /// editor's "Startup snippet" popup and to hand the chosen id through to
-    /// `onConnect`; `ConsoleController` resolves it into command text.
-    private let snippetStore: SnippetStore
 
     /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key
     /// id, startup-snippet id). Wired by the app delegate to
     /// `ConsoleController.openSSH`.
     var onConnect: ((String, [String], String?, UUID?, UUID?) -> Void)?
+
+    /// Connect the pinned "Firstmate" entry (Fix 4). Wired by the app
+    /// delegate to `ConsoleController.openFirstmateHost`.
+    var onConnectPinned: (() -> Void)?
+
+    /// Add ("+"/⌘N) or edit (double-click/Edit) a host - `nil` for a new
+    /// host, a host for editing. Nav-redesign task, item 3: the editor is now
+    /// a dedicated full-page window (`AppDelegate.presentHostEditor`), not a
+    /// sheet cramped into this ~240pt-wide panel, so this view no longer
+    /// constructs `HostEditorController` itself.
+    var onAddOrEdit: ((Host?) -> Void)?
 
     // MARK: Views
 
@@ -63,10 +69,8 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     private var selectedTags: Set<String> = []
     private var tagButtons: [String: NSButton] = [:]
 
-    init(store: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    init(store: HostStore) {
         self.store = store
-        self.keyStore = keyStore
-        self.snippetStore = snippetStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -75,14 +79,20 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     // MARK: Layout
 
     override func loadView() {
-        // A translucent sidebar material so the pane reads as a native source
-        // list and adapts to light/dark on its own (independent of the terminal's
-        // Helm toggle).
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 260, height: 660))
+        // A translucent sidebar material, matching the terminal's Helm theme
+        // rather than the system appearance (Fix 2): forcing `appearance`
+        // below makes every system-semantic color used by this sidebar's
+        // subviews (label colors, table selection, etc.) resolve against the
+        // *Helm* mode, so toggling the in-app theme repaints this pane too
+        // instead of leaving it stuck in whatever the system appearance is.
+        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
         root.material = .sidebar
         root.blendingMode = .behindWindow
         root.state = .followsWindowActiveState
         view = root
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
 
         let title = NSTextField(labelWithString: "Hosts")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -188,6 +198,14 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
 
         store.onChange = { [weak self] in self?.reload() }
         reload()
+        // Land on the pinned "Firstmate" entry by default (Fix 4) - the
+        // console already opens its Shell + Mirror pair unconditionally at
+        // startup, so this just makes the sidebar's selection match what's
+        // already on screen. Only done once here, not inside `reload()`,
+        // which also fires on every host add/edit/delete and must not steal
+        // whatever the user has selected at that point.
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        updateButtons()
     }
 
     private func footerButton(_ title: String, symbol: String, action: Selector) -> NSButton {
@@ -207,7 +225,17 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         menu.addItem(NSMenuItem(title: "Edit…", action: #selector(editClicked), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Delete", action: #selector(deleteClicked), keyEquivalent: ""))
         for item in menu.items { item.target = self }
+        menu.delegate = self
         return menu
+    }
+
+    /// The pinned "Firstmate" entry (Fix 4) can only be connected to - it has
+    /// no host record to duplicate, edit, or delete.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let editable = !isPinnedClicked
+        for item in menu.items where item.action != #selector(connectClicked) {
+            item.isEnabled = editable
+        }
     }
 
     // MARK: Data
@@ -253,10 +281,12 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     /// Text filter (label/address/username/tags) + the tag-chip filter,
-    /// grouped into `HostListRow.header`/`.host` rows. Headers are skipped
-    /// entirely when every visible host shares the same group - the common
-    /// "I haven't set up groups yet" case - so this never adds visual noise
-    /// for a flat host list.
+    /// grouped into `HostListRow.header`/`.host` rows, with the pinned
+    /// "Firstmate" entry (Fix 4) always first and unaffected by either
+    /// filter - it is a permanent fixture, not a saved host. Headers are
+    /// skipped entirely when every visible host shares the same group - the
+    /// common "I haven't set up groups yet" case - so this never adds visual
+    /// noise for a flat host list.
     private func applyFilter(_ query: String) {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var hosts = store.hosts
@@ -272,12 +302,12 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             hosts = hosts.filter { !$0.tags.isEmpty && !selectedTags.isDisjoint(with: $0.tags) }
         }
 
+        var built: [HostListRow] = [.pinned]
         let groupKeys = Set(hosts.map { $0.group?.trimmingCharacters(in: .whitespacesAndNewlines) }.map { ($0?.isEmpty ?? true) ? nil : $0 })
         if groupKeys.count <= 1 {
-            rows = hosts.map { .host($0) }
+            built += hosts.map { .host($0) }
         } else {
             let named = groupKeys.compactMap { $0 }.sorted()
-            var built: [HostListRow] = []
             for name in named {
                 built.append(.header(name))
                 built += hosts.filter { $0.group?.trimmingCharacters(in: .whitespacesAndNewlines) == name }.map { .host($0) }
@@ -287,8 +317,8 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
                 built.append(.header("Ungrouped"))
                 built += ungrouped.map { .host($0) }
             }
-            rows = built
         }
+        rows = built
 
         table.reloadData()
         updateButtons()
@@ -299,7 +329,13 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         return h
     }
 
+    private func isPinnedRow(_ row: Int) -> Bool {
+        guard row >= 0, row < rows.count, case .pinned = rows[row] else { return false }
+        return true
+    }
+
     private var selectedHost: Host? { host(at: table.selectedRow) }
+    private var isPinnedSelected: Bool { isPinnedRow(table.selectedRow) }
 
     /// The host targeted by a context-menu click (the clicked row), falling back
     /// to the current selection.
@@ -307,9 +343,13 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         host(at: table.clickedRow) ?? selectedHost
     }
 
+    private var isPinnedClicked: Bool {
+        table.clickedRow >= 0 ? isPinnedRow(table.clickedRow) : isPinnedSelected
+    }
+
     private func updateButtons() {
         let has = selectedHost != nil
-        connectButton.isEnabled = has
+        connectButton.isEnabled = has || isPinnedSelected
         editButton.isEnabled = has
         deleteButton.isEnabled = has
     }
@@ -320,6 +360,11 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch rows[row] {
+        case .pinned:
+            let id = NSUserInterfaceItemIdentifier("FirstmateRow")
+            let cell = (tableView.makeView(withIdentifier: id, owner: self) as? FirstmateRowView) ?? FirstmateRowView()
+            cell.identifier = id
+            return cell
         case .header(let name):
             let id = NSUserInterfaceItemIdentifier("HostSectionHeader")
             let cell = (tableView.makeView(withIdentifier: id, owner: self) as? HostSectionHeaderView) ?? HostSectionHeaderView()
@@ -338,13 +383,13 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         switch rows[row] {
         case .header: return 22
-        case .host: return 46
+        case .pinned, .host: return 46
         }
     }
 
-    /// Section headers are not selectable rows - only hosts are.
+    /// Section headers are not selectable rows - the pinned entry and hosts are.
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        host(at: row) != nil
+        host(at: row) != nil || isPinnedRow(row)
     }
 
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
@@ -399,6 +444,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     @objc private func connectSelected() {
+        if isPinnedSelected { onConnectPinned?(); return }
         guard let host = selectedHost else { NSSound.beep(); return }
         connect(host)
     }
@@ -414,7 +460,10 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     // Context-menu variants act on the clicked row.
-    @objc private func connectClicked() { if let h = clickedHost { connect(h) } }
+    @objc private func connectClicked() {
+        if isPinnedClicked { onConnectPinned?(); return }
+        if let h = clickedHost { connect(h) }
+    }
     @objc private func editClicked() { if let h = clickedHost { presentEditor(for: h) } }
     @objc private func deleteClicked() { if let h = clickedHost { confirmDelete(h) } }
     @objc private func duplicateClicked() {
@@ -450,19 +499,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func presentEditor(for host: Host?) {
-        let editor = HostEditorController(host: host, keys: keyStore.keys, snippets: snippetStore.snippets)
-        editor.onSave = { [weak self] saved in
-            guard let self else { return }
-            if self.store.host(id: saved.id) != nil {
-                self.store.update(saved)
-            } else {
-                self.store.add(saved)
-            }
-        }
-        editor.onDelete = { [weak self] id in
-            self?.store.delete(id: id)
-        }
-        presentAsSheet(editor)
+        onAddOrEdit?(host)
     }
 
     // MARK: NSSearchFieldDelegate
@@ -567,5 +604,66 @@ final class HostRowView: NSTableCellView {
         icon.contentTintColor = HelmTheme.nsColor(host.accentHex)
         title.stringValue = host.label
         subtitle.stringValue = host.subtitle
+    }
+}
+
+// MARK: - Pinned "Firstmate" row (Fix 4)
+
+/// The permanent, non-deletable first row: an anchor glyph (visually distinct
+/// from every user-added host's SF Symbol choice) tinted with the Helm accent
+/// rather than a per-host colour, since there is no `Host` behind it.
+/// Connecting it opens the same Shell + Mirror pair the console has always
+/// opened at startup - see `ConsoleController.openFirstmateHost`.
+final class FirstmateRowView: NSTableCellView {
+
+    private let icon = NSImageView()
+    private let title = NSTextField(labelWithString: "Firstmate")
+    private let subtitle = NSTextField(labelWithString: "Shell + Mirror")
+
+    init() {
+        super.init(frame: .zero)
+        build()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func build() {
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        icon.image = NSImage(systemSymbolName: "anchor", accessibilityDescription: "Firstmate")
+        icon.contentTintColor = HelmTheme.nsColor(ThemeManager.shared.theme.accentHex)
+
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        subtitle.font = .systemFont(ofSize: 11)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.lineBreakMode = .byTruncatingTail
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(icon)
+        addSubview(title)
+        addSubview(subtitle)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
+
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            title.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+
+            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            subtitle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 1),
+        ])
+
+        ThemeManager.shared.observe { [weak self] theme in
+            self?.icon.contentTintColor = HelmTheme.nsColor(theme.accentHex)
+        }
     }
 }

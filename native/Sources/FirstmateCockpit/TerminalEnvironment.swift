@@ -20,17 +20,23 @@ func shellArgv() -> (executable: String, args: [String]) {
     return ("/bin/bash", ["-i"])
 }
 
-/// Where the shell opens: `FM_SHELL_CWD` if it is a directory, else `$HOME`.
-/// (The Python app also considers the firstmate home; the native console has no
-/// backend yet, so we keep just the honoured override plus home.)
+/// Where the shell opens: `FM_SHELL_CWD` if it is a directory, else the
+/// Settings > General "Default working directory" (if it is a directory),
+/// else `$HOME`. (The Python app also considers the firstmate home; the
+/// native console has no backend yet, so we keep just the honoured override,
+/// the Settings override, plus home.)
 func shellCwd() -> String {
-    let env = ProcessInfo.processInfo.environment
-    if let override = env["FM_SHELL_CWD"] {
-        let expanded = (override as NSString).expandingTildeInPath
+    func asDirectory(_ raw: String) -> String? {
+        let expanded = (raw as NSString).expandingTildeInPath
         var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
-            return expanded
-        }
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else { return nil }
+        return expanded
+    }
+    if let override = ProcessInfo.processInfo.environment["FM_SHELL_CWD"], let dir = asDirectory(override) {
+        return dir
+    }
+    if let saved = AppSettings.shared.defaultShellCwd, let dir = asDirectory(saved) {
+        return dir
     }
     return FileManager.default.homeDirectoryForCurrentUser.path
 }
@@ -58,13 +64,18 @@ func childEnvironmentDict() -> [String: String] {
 // MARK: - Mirror target
 
 /// The first mate's tmux target the Mirror tab attaches to. Configurable via
-/// `FM_MIRROR_TARGET` (e.g. `firstmate` or `firstmate:1`), defaulting to the
-/// `firstmate` session. Full target-detection UI is Phase 3; this is the simple
-/// single-target hook the brief asks for.
+/// `FM_MIRROR_TARGET` (e.g. `firstmate` or `firstmate:1`), then the Settings >
+/// General "Mirror target" field, defaulting to the `firstmate` session.
+/// Pointing this at a specific window (`firstmate:<N>`) is also today's
+/// workaround for the mirror showing the wrong window's chrome - see the
+/// `TmuxMirror` doc comment.
 func mirrorTarget() -> String {
     let env = ProcessInfo.processInfo.environment
     if let t = env["FM_MIRROR_TARGET"], !t.trimmingCharacters(in: .whitespaces).isEmpty {
         return t.trimmingCharacters(in: .whitespaces)
+    }
+    if let saved = AppSettings.shared.mirrorTarget, !saved.trimmingCharacters(in: .whitespaces).isEmpty {
+        return saved.trimmingCharacters(in: .whitespaces)
     }
     return "firstmate"
 }

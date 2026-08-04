@@ -1,7 +1,8 @@
 // Firstmate Cockpit - native macOS app (Phase 2 entry point).
 //
-// One AppKit window whose content is the tabbed `ConsoleController` (Shell +
-// live tmux Mirror). This file owns only the window, the main menu, and app
+// One AppKit window whose content is `AppShellController` - the nav-redesign
+// task's icon rail + topbar + swappable body (Console/Home, Overview,
+// Review, Settings). This file owns only the window, the main menu, and app
 // lifecycle - all terminal behaviour lives in `ConsoleController` and its
 // helpers. It builds ON Phase 1: the Shell tab is the P1 terminal unchanged, and
 // the load-bearing Edit > Paste wiring (which drives screenshot-paste into
@@ -12,8 +13,8 @@ import SwiftTerm
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
-    // Phase 1: saved SSH hosts + the sidebar that lists and connects them. The
-    // sidebar hands a `ssh` argv to the console, which opens it as a new tab.
+    // Phase 1: saved SSH hosts + the panel that lists and connects them. The
+    // panel hands a `ssh` argv to the console, which opens it as a new tab.
     let hostStore = HostStore()
     // Phase 2: the saved-keys Keychain. The console resolves a host's chosen
     // key through it at connect time; the Keys window (below) is where the
@@ -24,39 +25,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // window's "Run" sends a snippet straight to the active tab.
     let snippetStore = SnippetStore()
     lazy var console = ConsoleController(keyStore: keyStore, snippetStore: snippetStore)
-    lazy var sidebar = HostsSidebarController(store: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+    lazy var hostsPanel = HostsSidebarController(store: hostStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
-    var split: NSSplitViewController!
+    lazy var settingsController = SettingsController()
+    lazy var appShell = AppShellController(hostsPanel: hostsPanel, console: console, settings: settingsController)
     var keysWindow: NSWindow?
     var snippetsWindow: NSWindow?
+    var hostEditorWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Connect action from the sidebar (saved host or ad-hoc quick-connect)
+        // Connect action from the panel (saved host or ad-hoc quick-connect)
         // opens an ssh tab in the Phase 0 tab collection; `keyID`, when set, is
         // resolved through the Keychain by the console (Phase 2), and
         // `startupSnippetID`, when set, is resolved through the snippet
         // library (Phase 3).
-        sidebar.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
+        hostsPanel.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
             self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+        }
+        // The pinned "Firstmate" entry (Fix 4) - the same Shell + Mirror pair
+        // the console has always opened at startup, now also reachable from
+        // the Hosts list.
+        hostsPanel.onConnectPinned = { [weak self] in
+            self?.console.openFirstmateHost()
+        }
+        // Nav-redesign task, item 3: Add/Edit Host is a dedicated full-page
+        // window, not a sheet on this ~240pt-wide panel.
+        appShell.onPresentHostEditor = { [weak self] host in
+            self?.presentHostEditor(for: host)
         }
         // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
         // console's active tab.
         snippetsController.onRun = { [weak self] snippet in
             self?.console.runSnippetInActiveTab(snippet)
         }
-
-        // A Hosts sidebar on the left, the tabbed console on the right (Termius
-        // layout). Both view controllers join the responder chain, so the Edit /
-        // Tab / View menu shortcuts still resolve to the focused terminal.
-        split = NSSplitViewController()
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 220
-        sidebarItem.maximumThickness = 380
-        sidebarItem.canCollapse = true
-        let consoleItem = NSSplitViewItem(viewController: console)
-        split.addSplitViewItem(sidebarItem)
-        split.addSplitViewItem(consoleItem)
+        // Settings > Terminal's font-size stepper (Fix 3) talks straight to
+        // the live console; Appearance goes through `ThemeManager` directly
+        // since every theme-aware view already observes it.
+        settingsController.onFontSizeStep = { [weak self] delta in
+            self?.console.stepFontSize(by: delta)
+        }
 
         buildMenu()
 
@@ -69,7 +77,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Firstmate Cockpit"
         window.center()
-        window.contentViewController = split
+        window.contentViewController = appShell
+        // Pin the initial hosts/console divider position explicitly (PR #14's
+        // Fix 1) rather than trusting whatever width the panel's view
+        // happened to be created with.
+        appShell.pinInitialDividerPosition()
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -83,6 +95,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// not left behind after the app quits.
     func applicationWillTerminate(_ notification: Notification) {
         console.shutdown()
+    }
+
+    // MARK: Host editor window (nav-redesign task, item 3)
+
+    /// Open (or bring forward) the Add/Edit Host form as its own window -
+    /// the same visual weight as Settings, not a sheet cramped into the
+    /// narrow Hosts panel. `HostEditorController`'s fields and its inline
+    /// "+ New Key…" flow (which still opens as a sheet on top of *this*
+    /// window) are unchanged from PR #14.
+    func presentHostEditor(for host: Host?) {
+        let editor = HostEditorController(host: host, keyStore: keyStore, snippets: snippetStore.snippets)
+        editor.onSave = { [weak self] saved in
+            guard let self else { return }
+            if self.hostStore.host(id: saved.id) != nil {
+                self.hostStore.update(saved)
+            } else {
+                self.hostStore.add(saved)
+            }
+        }
+        editor.onDelete = { [weak self] id in
+            self?.hostStore.delete(id: id)
+        }
+
+        // Reuse one window across repeated Add/Edit calls (matching the Keys/
+        // Snippets windows below) rather than piling up a new one on every
+        // "+" click - only `contentViewController` needs to change since a
+        // fresh `HostEditorController` is built above for whichever host is
+        // being edited this time.
+        let win: NSWindow
+        if let existing = hostEditorWindow {
+            win = existing
+        } else {
+            win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 560, height: 780),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            win.isReleasedWhenClosed = false
+            hostEditorWindow = win
+        }
+        win.title = host == nil ? "New Host" : "Edit Host"
+        win.contentViewController = editor
+        win.center()
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: Keys window (Phase 2)
@@ -164,6 +222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appName = ProcessInfo.processInfo.processName
         appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
+        // Nav-redesign task, item 5: Settings is a rail destination in the
+        // main window now, not a separate window.
+        appMenu.addItem(withTitle: "Settings…", action: #selector(AppShellController.selectSettings), keyEquivalent: ",")
+            .target = appShell
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
@@ -179,23 +242,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(ConsoleController.showFind), keyEquivalent: "f")
 
-        // Hosts menu - the Phase 1 connection manager. New Host and Quick Connect
-        // target the sidebar directly (so they work regardless of focus); the
-        // sidebar's Connect opens an ssh tab in the console.
+        // Hosts menu - the Phase 1 connection manager. New Host targets the
+        // panel directly (so it works regardless of focus - the editor now
+        // opens as its own window, so this doesn't need the Console
+        // destination on screen); Quick Connect and the sidebar toggle route
+        // through the shell so the Console destination (and, for Quick
+        // Connect, an uncollapsed panel) is showing first. The panel's own
+        // Connect opens an ssh tab in the console.
         let hostsMenuItem = NSMenuItem()
         mainMenu.addItem(hostsMenuItem)
         let hostsMenu = NSMenu(title: "Hosts")
         hostsMenuItem.submenu = hostsMenu
         let newHostItem = NSMenuItem(title: "New Host…", action: #selector(HostsSidebarController.newHost), keyEquivalent: "n")
-        newHostItem.target = sidebar
+        newHostItem.target = hostsPanel
         hostsMenu.addItem(newHostItem)
-        let quickConnectItem = NSMenuItem(title: "Quick Connect", action: #selector(HostsSidebarController.focusQuickConnect), keyEquivalent: "k")
-        quickConnectItem.target = sidebar
+        let quickConnectItem = NSMenuItem(title: "Quick Connect", action: #selector(AppShellController.revealHostsQuickConnect), keyEquivalent: "k")
+        quickConnectItem.target = appShell
         hostsMenu.addItem(quickConnectItem)
         hostsMenu.addItem(NSMenuItem.separator())
-        let toggleSidebarItem = NSMenuItem(title: "Toggle Hosts Sidebar", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
+        let toggleSidebarItem = NSMenuItem(title: "Toggle Hosts Sidebar", action: #selector(AppShellController.toggleHostsSidebar(_:)), keyEquivalent: "s")
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .control]
-        toggleSidebarItem.target = split
+        toggleSidebarItem.target = appShell
         hostsMenu.addItem(toggleSidebarItem)
 
         // Keys menu - the Phase 2 Keychain screen. Both items target the app

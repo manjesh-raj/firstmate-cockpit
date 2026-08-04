@@ -21,6 +21,11 @@ import SwiftTerm
 struct HelmTheme {
     enum Mode { case dark, light }
 
+    /// Stable identifier, matching the web app's `data-theme` ids
+    /// (`backend/static/index.html`'s `THEMES` array) - used for persistence
+    /// (`ThemeManager`) and for the topbar/Settings theme pickers to look a
+    /// theme back up by id.
+    let id: String
     let mode: Mode
     let name: String
     /// Window / chrome colours so the AppKit shell around the terminal matches.
@@ -71,9 +76,10 @@ struct HelmTheme {
         return NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
 
-    // MARK: The two shipped Helm palettes
+    // MARK: The two original, hand-pinned Helm palettes
 
     static let dark = HelmTheme(
+        id: "helm-dark",
         mode: .dark,
         name: "Helm Dark",
         chromeBackgroundHex: "111820", // --surface
@@ -91,6 +97,7 @@ struct HelmTheme {
     )
 
     static let light = HelmTheme(
+        id: "helm-light",
         mode: .light,
         name: "Helm Light",
         chromeBackgroundHex: "fcfeff", // --surface
@@ -106,4 +113,142 @@ struct HelmTheme {
             "4e5661", "b3000d", "006c32", "9d5400", "005893", "852381", "006875", "212c3a",
         ]
     )
+}
+
+// MARK: - The 6 additional named palettes (nav-redesign task)
+
+extension HelmTheme {
+    /// `[L, C, hue]` in OKLCH, matching one CSS custom property.
+    private typealias Tok = (Double, Double, Double)
+
+    /// OKLCH -> sRGB hex, byte-for-byte the same math as
+    /// `scripts/verify-contrast.mjs`'s `hex()` (verified against every
+    /// hand-pinned value in `dark`/`light` above before use here) - the
+    /// single source of truth for this app's OKLCH token values. Only used
+    /// to derive the 6 palettes below from the same tokens as the web app's
+    /// CSS (`backend/static/index.html`); `dark`/`light` stay hand-pinned hex
+    /// so nothing already shipped shifts by a rounding hair.
+    private static func oklchHex(_ L: Double, _ C: Double, _ hDeg: Double) -> String {
+        let h = hDeg * .pi / 180
+        let a = C * cos(h), b = C * sin(h)
+        let l_ = L + 0.3963377774 * a + 0.2158037573 * b
+        let m_ = L - 0.1055613458 * a - 0.0638541728 * b
+        let s_ = L - 0.0894841775 * a - 1.2914855480 * b
+        let l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_
+        var r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+        var g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+        var bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+        func toSrgb(_ c: Double) -> Double {
+            let cc = min(1, max(0, c))
+            return cc <= 0.0031308 ? 12.92 * cc : 1.055 * pow(cc, 1 / 2.4) - 0.055
+        }
+        r = toSrgb(r); g = toSrgb(g); bl = toSrgb(bl)
+        func to255(_ c: Double) -> Int { Int((min(1, max(0, c)) * 255).rounded()) }
+        return String(format: "%02x%02x%02x", to255(r), to255(g), to255(bl))
+    }
+
+    /// Build a full theme from the same OKLCH tokens the web CSS defines.
+    /// Red/green/yellow ANSI slots (and black/white) are lifted straight
+    /// from `dark`/`light`'s own hand-tuned arrays - the underlying
+    /// `--bad`/`--ok`/`--need`/`--ink` tokens are identical or a hair apart
+    /// across every theme in a mode, per the CSS - so only the accent-linked
+    /// slots (blue/magenta/cyan, base + bright) are re-derived per theme,
+    /// alongside the chrome/cursor/selection colours.
+    private static func derived(
+        id: String, name: String, mode: Mode,
+        surface: Tok, line: Tok, ink: Tok,
+        accent: Tok, info: Tok, termBg: Tok
+    ) -> HelmTheme {
+        let base = mode == .dark ? HelmTheme.dark : HelmTheme.light
+        let accentHex = oklchHex(accent.0, accent.1, accent.2)
+        let blueHex = oklchHex(info.0, info.1, info.2)
+        let magentaHue = accent.2 + 100
+        let magentaHex = oklchHex(accent.0, accent.1, magentaHue)
+        // Dark brights lighten (+L); light "brights" deepen instead (-L, +C) -
+        // matching how the hand-tuned light ANSI set actually reads (its
+        // bright reds/greens are more saturated and slightly darker, not
+        // paler, so they still land against a light terminal background).
+        let dl: Double = mode == .dark ? 0.08 : -0.06
+        let dc: Double = mode == .dark ? 0 : 0.03
+        let brightCyanHex = oklchHex(min(0.97, accent.0 + dl), accent.1 + dc, accent.2)
+        let brightBlueHex = oklchHex(min(0.97, info.0 + dl), info.1 + dc, info.2)
+        let brightMagentaHex = oklchHex(min(0.97, accent.0 + dl), accent.1 + dc, magentaHue)
+
+        var ansi = base.ansiHex
+        ansi[4] = blueHex; ansi[12] = brightBlueHex
+        ansi[5] = magentaHex; ansi[13] = brightMagentaHex
+        ansi[6] = accentHex; ansi[14] = brightCyanHex
+
+        return HelmTheme(
+            id: id, mode: mode, name: name,
+            chromeBackgroundHex: oklchHex(surface.0, surface.1, surface.2),
+            chromeInkHex: oklchHex(ink.0, ink.1, ink.2),
+            chromeLineHex: oklchHex(line.0, line.1, line.2),
+            accentHex: accentHex,
+            foregroundHex: oklchHex(ink.0, ink.1, ink.2),
+            backgroundHex: oklchHex(termBg.0, termBg.1, termBg.2),
+            cursorHex: accentHex,
+            selectionHex: accentHex,
+            ansiHex: ansi
+        )
+    }
+
+    // Tokens copied verbatim from `backend/static/index.html`'s `:root[data-theme=...]`
+    // blocks - keep these in sync if a web theme's tokens change.
+    static let midnight = derived(
+        id: "midnight", name: "Midnight", mode: .dark,
+        surface: (0.20, 0.03, 262), line: (0.35, 0.032, 262), ink: (0.96, 0.01, 255),
+        accent: (0.78, 0.12, 242), info: (0.80, 0.10, 250), termBg: (0.13, 0.026, 262)
+    )
+    static let graphite = derived(
+        id: "graphite", name: "Graphite", mode: .dark,
+        surface: (0.215, 0.006, 285), line: (0.355, 0.009, 285), ink: (0.965, 0.003, 285),
+        accent: (0.80, 0.12, 300), info: (0.77, 0.10, 250), termBg: (0.145, 0.005, 285)
+    )
+    static let nocturne = derived(
+        id: "nocturne", name: "Nocturne", mode: .dark,
+        surface: (0.205, 0.02, 300), line: (0.345, 0.022, 300), ink: (0.965, 0.006, 320),
+        accent: (0.78, 0.13, 345), info: (0.77, 0.10, 255), termBg: (0.138, 0.016, 300)
+    )
+    static let paper = derived(
+        id: "paper", name: "Paper", mode: .light,
+        surface: (0.995, 0.004, 80), line: (0.87, 0.02, 80), ink: (0.30, 0.03, 70),
+        accent: (0.49, 0.15, 305), info: (0.51, 0.12, 290), termBg: (0.975, 0.008, 80)
+    )
+    static let frost = derived(
+        id: "frost", name: "Frost", mode: .light,
+        surface: (0.995, 0.003, 240), line: (0.87, 0.016, 240), ink: (0.29, 0.035, 250),
+        accent: (0.51, 0.14, 248), info: (0.51, 0.13, 248), termBg: (0.975, 0.005, 240)
+    )
+    static let linen = derived(
+        id: "linen", name: "Linen", mode: .light,
+        surface: (0.99, 0.006, 60), line: (0.865, 0.02, 60), ink: (0.29, 0.028, 55),
+        accent: (0.48, 0.11, 200), info: (0.51, 0.12, 250), termBg: (0.968, 0.008, 60)
+    )
+
+    /// All 8 palettes, in the same DARK-then-LIGHT, web-matching order as
+    /// `backend/static/index.html`'s `THEMES` array.
+    static let allThemes: [HelmTheme] = [dark, midnight, graphite, nocturne, light, paper, frost, linen]
+
+    static func theme(id: String) -> HelmTheme? {
+        allThemes.first { $0.id == id }
+    }
+
+    /// A small rounded two-tone swatch (chrome background + accent) for the
+    /// theme-picker menu, mirroring the web app's `.theme-item .sw` chip.
+    func swatchImage(size: NSSize = NSSize(width: 24, height: 14)) -> NSImage {
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let rect = NSRect(origin: .zero, size: size)
+        NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).addClip()
+        let left = NSRect(x: 0, y: 0, width: size.width / 2, height: size.height)
+        let right = NSRect(x: size.width / 2, y: 0, width: size.width / 2, height: size.height)
+        Self.nsColor(chromeBackgroundHex).setFill()
+        left.fill()
+        Self.nsColor(accentHex).setFill()
+        right.fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
 }

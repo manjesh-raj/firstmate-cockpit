@@ -11,6 +11,20 @@
 // suffix in the group name keeps two cockpit instances from fighting over one
 // shared mirror. This mirrors terminal.py exactly; only the transport differs
 // (SwiftTerm forks the PTY in-process instead of a websocket byte-pump).
+//
+// Known follow-up (captain report, not fixed here): when `target` names only a
+// session (e.g. the default `firstmate`, no `:<window>`), `setUp` below never
+// calls `select-window`, so the new group's active window is whatever window
+// happened to be active in the real session at the instant `new-session -t
+// session` ran - it is not necessarily the window running the first-mate
+// agent pane. If that session's other windows include herdr's own TUI (a
+// session-list/dashboard view), the mirror can end up showing that chrome
+// instead of a clean agent pane. This file has no visibility into how herdr
+// lays out its tmux windows, so it cannot reliably auto-pick "the agent
+// window" here. Today's workaround: set the mirror target to `firstmate:<N>`
+// (Settings > General > Mirror target, or `FM_MIRROR_TARGET`) to pin the exact
+// window; a real fix would need either a herdr-side convention for which
+// window/pane to mirror, or a way to identify the agent pane by content.
 
 import Foundation
 

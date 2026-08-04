@@ -1,9 +1,13 @@
 // Firstmate Cockpit - native macOS app.
 //
-// The host-details editor (design report A2/A3, Section D Phase 1). A sheet with
-// the Termius "New Host" fields - Label, Address, Port, Username, a credentials
-// section, and the A3 icon/colour pickers. Add, edit, and delete all route back
-// to the sidebar via closures; this view knows nothing about the host store.
+// The host-details editor (design report A2/A3, Section D Phase 1). The
+// Termius "New Host" fields - Label, Address, Port, Username, a credentials
+// section, and the A3 icon/colour pickers. Add, edit, and delete all route
+// back to the caller via closures; this view knows nothing about the host
+// store. Nav-redesign task, item 3: presented as its own top-level window
+// (`AppDelegate.presentHostEditor`) with the same visual weight as Settings,
+// not a sheet on the ~240pt Hosts panel - only the presentation container
+// changed, every field and the inline "+ New Key…" flow below are unchanged.
 //
 // Phase 2 replaces the raw "key file path" field with a "Choose a key" popup
 // sourced from the saved-keys Keychain (`SSHKeyStore`) - the host now carries
@@ -14,6 +18,14 @@
 // opens `PortForwardingController` as a nested sheet (B1); and a Startup
 // Snippet popup sourced from `SnippetStore`, matching the key popup's shape
 // (B2/B5).
+//
+// Fix 5 adds a "+ New Key…" entry at the bottom of the key popup, so a key
+// can be created without leaving this form: it opens the Phase-2
+// `KeyEditorController` sheet, persists through `SSHKeyStore.addNew` on
+// save, and rebuilds the popup selecting the new key. This is why the popup
+// now holds a live `SSHKeyStore` rather than a one-time snapshot of `keys` -
+// unlike the icon/colour catalogues, it has to reflect a key created while
+// this very sheet is still open.
 
 import AppKit
 
@@ -22,14 +34,20 @@ final class HostEditorController: NSViewController {
     /// The host being edited; `nil` for a brand-new host.
     private let editing: Host?
 
-    /// Saved keys to offer in the "Choose a key" popup - a snapshot taken when
-    /// the sheet opens (matches how the icon/colour catalogues are snapshotted
-    /// too; a key added while this sheet is open won't appear until reopened).
-    private let keys: [SSHKey]
+    /// The saved-keys Keychain (Phase 2) - read to populate the "Choose a
+    /// key" popup, and written to by the inline "+ New Key…" flow (Fix 5).
+    private let keyStore: SSHKeyStore
 
-    /// Saved snippets to offer in the "Startup snippet" popup - snapshotted
-    /// the same way `keys` is.
+    /// Saved snippets to offer in the "Startup snippet" popup - a snapshot
+    /// taken when the sheet opens (matches how the icon/colour catalogues
+    /// are snapshotted too; a snippet added while this sheet is open won't
+    /// appear until reopened - unlike `keyStore`, nothing in this sheet can
+    /// create a new snippet).
     private let snippets: [Snippet]
+
+    /// The key popup's "+ New Key…" sentinel item, used to detect that
+    /// selection (rather than a real key) in `keyPopupChanged`.
+    private var newKeyMenuItem: NSMenuItem!
 
     /// Called with the assembled host on Save. The caller persists it.
     var onSave: ((Host) -> Void)?
@@ -63,9 +81,9 @@ final class HostEditorController: NSViewController {
 
     // MARK: Init
 
-    init(host: Host?, keys: [SSHKey], snippets: [Snippet]) {
+    init(host: Host?, keyStore: SSHKeyStore, snippets: [Snippet]) {
         self.editing = host
-        self.keys = keys
+        self.keyStore = keyStore
         self.snippets = snippets
         self.portForwards = host?.portForwards ?? []
         self.selectedIcon = host?.iconSymbol ?? HostCatalog.defaultIcon
@@ -90,6 +108,9 @@ final class HostEditorController: NSViewController {
         portField.formatter = intFormatter()
         configure(usernameField, placeholder: "Username", value: editing?.username)
         configure(passwordField, placeholder: "Password (optional)", value: editing?.password)
+        keyPopup.translatesAutoresizingMaskIntoConstraints = false
+        keyPopup.target = self
+        keyPopup.action = #selector(keyPopupChanged)
         buildKeyPopup()
 
         let credCaption = caption("Password is used for this session only and never written to disk. "
@@ -220,22 +241,72 @@ final class HostEditorController: NSViewController {
         return f
     }
 
-    // MARK: Key popup (Phase 2)
+    // MARK: Key popup (Phase 2, + Fix 5's inline "New Key…")
 
-    /// "None" plus every saved key, by label; selection carries the key's
-    /// `UUID` as `representedObject` so `save()` reads it back directly.
-    private func buildKeyPopup() {
-        keyPopup.translatesAutoresizingMaskIntoConstraints = false
+    /// "None" plus every saved key (by label), then a separator and
+    /// "+ New Key…" (Fix 5). Real-key selection carries the key's `UUID` as
+    /// `representedObject` so `save()` reads it back directly; the "+ New
+    /// Key…" item is identified by identity (`newKeyMenuItem`), not by a
+    /// representedObject, since it isn't a key. Re-callable so a key created
+    /// inline can be spliced into the same live popup - `selectedID` picks
+    /// up where `editing?.keyID` otherwise would.
+    private func buildKeyPopup(selecting selectedID: UUID? = nil) {
+        keyPopup.removeAllItems()
         keyPopup.addItem(withTitle: "None (use system ssh agent)")
-        for key in keys {
+        for key in keyStore.keys {
             keyPopup.addItem(withTitle: "\(key.label) (\(key.type.displayName))")
             keyPopup.lastItem?.representedObject = key.id
         }
-        if let id = editing?.keyID, let item = keyPopup.itemArray.first(where: { ($0.representedObject as? UUID) == id }) {
+        keyPopup.menu?.addItem(.separator())
+        let newItem = NSMenuItem(title: "+ New Key…", action: nil, keyEquivalent: "")
+        keyPopup.menu?.addItem(newItem)
+        newKeyMenuItem = newItem
+
+        let target = selectedID ?? editing?.keyID
+        if let target, let item = keyPopup.itemArray.first(where: { ($0.representedObject as? UUID) == target }) {
             keyPopup.select(item)
         } else {
             keyPopup.selectItem(at: 0)
         }
+    }
+
+    /// The popup's selection changed - only the "+ New Key…" sentinel needs
+    /// handling here; picking a real key (or "None") just sits there until
+    /// `save()` reads it.
+    @objc private func keyPopupChanged() {
+        guard keyPopup.selectedItem === newKeyMenuItem else { return }
+        presentNewKeySheet()
+    }
+
+    /// Fix 5: create a key without leaving the host form. Opens the same
+    /// Phase-2 sheet the Keys screen uses; on save, persists through
+    /// `SSHKeyStore.addNew` and rebuilds the popup with the new key selected.
+    /// On cancel (or a Keychain failure), reverts the popup to whatever was
+    /// selected before "+ New Key…" was picked, so it never sticks on the
+    /// sentinel item.
+    private func presentNewKeySheet() {
+        let previousIndex = keyPopup.indexOfSelectedItem
+        let editor = KeyEditorController(key: nil)
+        editor.onCancel = { [weak self] in self?.keyPopup.selectItem(at: previousIndex) }
+        editor.onSave = { [weak self] newKey, privateKeyData, passphrase in
+            guard let self else { return }
+            do {
+                try self.keyStore.addNew(newKey, privateKeyData: privateKeyData, passphrase: passphrase)
+                self.buildKeyPopup(selecting: newKey.id)
+            } catch {
+                self.presentKeyStoreError(error, label: newKey.label)
+                self.keyPopup.selectItem(at: previousIndex)
+            }
+        }
+        presentAsSheet(editor)
+    }
+
+    private func presentKeyStoreError(_ error: Error, label: String) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't save \"\(label)\" to the Keychain"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .critical
+        alert.runModal()
     }
 
     // MARK: Snippet popup + port forwarding (Phase 3)
