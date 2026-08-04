@@ -302,11 +302,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// existing one - the same mental model as SSH hosts and ⌘T.
     @discardableResult
     func openFirstmateHost(focus: Bool = true) -> TabModel {
+        // Mirror first, Shell second (fixes3) - both the tab bar order and
+        // the ⌘1…⌘9 shortcut numbering follow `tabs`' append order, so the
+        // mirror tab must be created before the shell tab.
+        let mirror = TabLaunch.mirror(target: mirrorTarget())
+        addTab(launch: mirror, name: mirror.defaultName, select: false)
         let s = shellArgv()
         let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
         let shellTab = addTab(launch: shell, name: shell.defaultName, select: false)
-        let mirror = TabLaunch.mirror(target: mirrorTarget())
-        addTab(launch: mirror, name: mirror.defaultName, select: false)
         select(tabID: shellTab.id, focus: focus)
         return shellTab
     }

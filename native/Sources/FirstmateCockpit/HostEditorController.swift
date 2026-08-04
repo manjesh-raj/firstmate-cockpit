@@ -97,6 +97,7 @@ final class HostEditorController: NSViewController {
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 760))
+        root.autoresizingMask = [.width, .height]
         view = root
 
         let title = NSTextField(labelWithString: editing == nil ? "New Host" : "Edit Host")

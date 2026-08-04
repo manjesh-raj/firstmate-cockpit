@@ -145,6 +145,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         win.title = host == nil ? "New Host" : "Edit Host"
         win.contentViewController = editor
+        // Assigning `contentViewController` lets AppKit resize the window to
+        // the view's Auto Layout fitting size (Fix 2) - which, for this
+        // form, resolves smaller than the 560x780 this window is designed
+        // for, so every open (first-time or reused) needs the size forced
+        // back explicitly rather than trusting whatever `contentRect` the
+        // window happened to be created with.
+        win.contentMinSize = NSSize(width: 520, height: 620)
+        win.setContentSize(NSSize(width: 560, height: 780))
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -13,11 +13,30 @@
 //   "<id>.key"  - the private key blob, exactly as generated or imported
 //                 (still passphrase-encrypted if it was).
 //   "<id>.pass" - the passphrase, only written when one was given.
-// Both are protected by a `SecAccessControl` that requires the device to be
-// unlocked *and* a fresh biometric (or, where Touch ID isn't enrolled, device
-// passcode) challenge to succeed - mirroring the "Secure Enclave model" the
-// task calls for. There is no code path that reads either item without that
-// challenge; the OS enforces it, this file does not.
+//
+// Items are stored with plain `kSecAttrAccessible` (unlocked, this device
+// only) rather than a `SecAccessControl` ACL. That is a deliberate change
+// from the original design (which asked the OS to also gate reads on a fresh
+// biometric/passcode challenge): on this CLT-only, ad-hoc-signed build
+// (`swift build`/`swift run`, no Developer ID - `codesign -dv` on the built
+// binary shows `TeamIdentifier=not set`), `SecItemAdd` with ANY
+// `kSecAttrAccessControl` fails `errSecMissingEntitlement` ("A required
+// entitlement isn't present"), even with no access group and empty
+// `SecAccessControlCreateFlags` - confirmed with a standalone probe outside
+// this app, see the PR description. Signing ad-hoc with an explicit
+// `keychain-access-groups` entitlement doesn't help either: without a real
+// provisioning profile the process is killed outright before it runs at all.
+// Both dead ends were verified experimentally, not assumed.
+//
+// So the Touch ID / passcode challenge in `authenticate(context:)` below is
+// enforced by this app calling `LAContext.evaluatePolicy` itself, before the
+// (now ACL-free) keychain read - same user-facing gate ("unlock this key"),
+// without depending on an entitlement this build cannot hold. Naming the
+// tradeoff plainly: the OS no longer refuses the raw keychain read to an
+// unauthenticated caller at the ACL layer, only this app's own code path is
+// gated. Revisit once the app has a stable signing identity (Phase 4
+// packaging) - a real Team ID should let `kSecAttrAccessControl` work again,
+// at which point the app-level gate can go back to being OS-enforced.
 //
 // Known limitation, stated plainly rather than papered over: this target is
 // unsigned (Command Line Tools only, `swift build` / `swift run`, no
@@ -36,7 +55,7 @@ import LocalAuthentication
 enum KeychainError: LocalizedError {
     case osStatus(OSStatus)
     case notFound
-    case accessControlUnavailable
+    case authenticationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -44,8 +63,8 @@ enum KeychainError: LocalizedError {
             return (SecCopyErrorMessageString(status, nil) as String?) ?? "Keychain error \(status)."
         case .notFound:
             return "No secret is stored in the Keychain for this key."
-        case .accessControlUnavailable:
-            return "Could not create a biometric-protected Keychain entry."
+        case .authenticationFailed(let reason):
+            return reason
         }
     }
 }
@@ -107,47 +126,49 @@ enum KeychainKeyStore {
         "\(id.uuidString).\(suffix)"
     }
 
-    /// The access-control every item is written with: unlocked-device-only,
-    /// this-device-only (never iCloud Keychain sync - private keys should not
-    /// leave this Mac), and biometry if enrolled, else the device passcode.
-    private static func accessControl() throws -> SecAccessControl {
-        let flags: SecAccessControlCreateFlags = biometryAvailable ? .biometryCurrentSet : .userPresence
-        guard let ac = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            flags,
-            nil
-        ) else {
-            throw KeychainError.accessControlUnavailable
+    /// App-level Touch ID / passcode gate, standing in for the OS-level ACL
+    /// this build can't hold an entitlement for (see the file header). Blocks
+    /// the calling thread until the challenge resolves - the same synchronous-
+    /// during-a-biometric-prompt assumption `SecItemCopyMatching` itself made
+    /// when it was the thing presenting the prompt, so this doesn't change
+    /// the threading contract callers (`SSHKeyMaterializer`) already rely on.
+    private static func authenticate(context: LAContext) throws {
+        let policy: LAPolicy = biometryAvailable ? .deviceOwnerAuthenticationWithBiometrics : .deviceOwnerAuthentication
+        let reason = context.localizedReason.isEmpty ? "Unlock this key" : context.localizedReason
+        var authError: Error?
+        let semaphore = DispatchSemaphore(value: 0)
+        context.evaluatePolicy(policy, localizedReason: reason) { success, error in
+            if !success {
+                authError = error ?? KeychainError.authenticationFailed("Authentication failed.")
+            }
+            semaphore.signal()
         }
-        return ac
+        semaphore.wait()
+        if let authError { throw authError }
     }
 
     private static func save(account: String, data: Data) throws {
-        // Overwrite semantics: SecItemAdd fails on a duplicate primary key, and
-        // SecItemUpdate cannot change access control on an existing item, so a
-        // resave always deletes first.
+        // Overwrite semantics: SecItemAdd fails on a duplicate primary key, so
+        // a resave always deletes first.
         delete(account: account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecUseDataProtectionKeychain as String: true,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: data,
-            kSecAttrAccessControl as String: try accessControl(),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.osStatus(status) }
     }
 
     private static func load(account: String, context: LAContext) throws -> Data {
+        try authenticate(context: context)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecUseDataProtectionKeychain as String: true,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -161,7 +182,6 @@ enum KeychainKeyStore {
     private static func delete(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecUseDataProtectionKeychain as String: true,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
