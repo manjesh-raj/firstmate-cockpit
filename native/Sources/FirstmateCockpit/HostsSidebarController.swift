@@ -35,10 +35,15 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
 
     private let store: HostStore
 
-    /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key
-    /// id, startup-snippet id). Wired by the app delegate to
-    /// `ConsoleController.openSSH`.
-    var onConnect: ((String, [String], String?, UUID?, UUID?) -> Void)?
+    /// Open an ssh session: (saved host id - `nil` for an ad-hoc quick
+    /// connect with no saved identity, tab label, ssh argv, host accent hex,
+    /// saved-key id, startup-snippet id). Fix 1: wired by the app delegate to
+    /// the same per-host dedicated-page connect the rail's pinned host icons
+    /// use, so this list's own "Connect" reaches the exact same page rather
+    /// than a second, inconsistent path into the shared Console. An ad-hoc
+    /// quick connect (no saved host, so no id to pin a page to) still opens
+    /// as a plain tab in the shared Firstmate console.
+    var onConnect: ((UUID?, String, [String], String?, UUID?, UUID?) -> Void)?
 
     /// Connect the pinned "Firstmate" entry (Fix 4). Wired by the app
     /// delegate to `ConsoleController.openFirstmateHost`.
@@ -433,7 +438,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             return
         }
         if let parsed = HostCatalog.parseQuickConnect(raw) {
-            onConnect?(parsed.label, parsed.args, nil, nil, nil)
+            onConnect?(nil, parsed.label, parsed.args, nil, nil, nil)
             searchField.stringValue = ""
             applyFilter("")
             return
@@ -442,7 +447,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func connect(_ host: Host) {
-        onConnect?(host.label, host.sshArguments(allHosts: store.hosts), host.accentHex, host.keyID, host.startupSnippetID)
+        onConnect?(host.id, host.label, host.sshArguments(allHosts: store.hosts), host.accentHex, host.keyID, host.startupSnippetID)
     }
 
     @objc private func connectSelected() {

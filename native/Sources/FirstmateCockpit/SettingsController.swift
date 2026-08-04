@@ -651,6 +651,9 @@ extension SettingsController: NSTextFieldDelegate {
 /// layout can present as scrolled to the end. Flipping the document view is
 /// the standard fix - y=0 becomes the top, matching how the content's own
 /// Auto Layout constraints are written (top-down, via `stack.topAnchor`).
-private final class FlippedView: NSView {
+/// Not file-private: `HostEditorController`'s scroll view (cockpit-native-
+/// host-pages Fix 2) hits the exact same issue and shares this type rather
+/// than a second copy.
+final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }

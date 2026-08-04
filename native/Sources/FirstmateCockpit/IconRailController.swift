@@ -54,6 +54,12 @@ final class IconRailController: NSViewController {
     var onConnectHost: ((Host) -> Void)?
 
     private(set) var active: RailDestination = .console
+
+    /// Fix 1 (dedicated host pages): set instead of `active` while a host's
+    /// own page is showing, so `restyle` can un-highlight every fixed
+    /// destination and highlight that host's icon instead. `nil` whenever a
+    /// fixed `RailDestination` is current.
+    private(set) var activeHostID: UUID?
     private var buttons: [RailDestination: NSButton] = [:]
     private let avatar = NSButton()
 
@@ -215,6 +221,14 @@ final class IconRailController: NSViewController {
     /// to programmatically land on a destination (e.g. at launch).
     func setActive(_ dest: RailDestination) {
         active = dest
+        activeHostID = nil
+        restyle(ThemeManager.shared.theme)
+    }
+
+    /// Fix 1: a host's dedicated page is showing - highlight its icon
+    /// instead of any fixed destination.
+    func setActiveHost(_ id: UUID) {
+        activeHostID = id
         restyle(ThemeManager.shared.theme)
     }
 
@@ -223,12 +237,16 @@ final class IconRailController: NSViewController {
         let accent = HelmTheme.nsColor(theme.accentHex)
         let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
         for (dest, button) in buttons {
-            let isActive = dest == active
+            let isActive = activeHostID == nil && dest == active
             button.contentTintColor = isActive ? accent : ink.withAlphaComponent(0.65)
             button.layer?.backgroundColor = (isActive ? accentTint : .clear).cgColor
         }
         for host in hosts {
-            hostButtons[host.id]?.contentTintColor = HelmTheme.nsColor(host.accentHex)
+            guard let button = hostButtons[host.id] else { continue }
+            let hostAccent = HelmTheme.nsColor(host.accentHex)
+            let isActive = host.id == activeHostID
+            button.contentTintColor = hostAccent
+            button.layer?.backgroundColor = (isActive ? hostAccent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14) : .clear).cgColor
         }
         avatar.contentTintColor = ink
         avatar.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4).cgColor

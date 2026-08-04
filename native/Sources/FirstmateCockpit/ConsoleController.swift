@@ -36,9 +36,25 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// panel's "Run" action.
     private let snippetStore: SnippetStore
 
-    init(keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    /// Fix 1 (dedicated host pages): `false` for a per-host console
+    /// (`AppShellController.connectHost`'s `makeHostConsole` factory), which
+    /// governs two related behaviours instead of one - both express "this is
+    /// the one shared, general-purpose console, not a page dedicated to a
+    /// single host": (1) `loadView` only opens the Shell + Mirror pair on
+    /// launch when this is `true`; (2) `closeTab`'s "never leave the window
+    /// empty" fallback only applies when this is `true` - a dedicated host
+    /// page is allowed to end up with zero tabs after its one ssh tab is
+    /// closed, since `ConsoleController.connectSSHIfNeeded` re-opens it the
+    /// next time the host is connected to. Getting (2) wrong was a real bug:
+    /// falling back to a generic shell tab left `tabs` non-empty, which made
+    /// `connectSSHIfNeeded`'s `tabs.isEmpty` guard permanently skip
+    /// reconnecting that host.
+    private let isFirstmateConsole: Bool
+
+    init(keyStore: SSHKeyStore, snippetStore: SnippetStore, isFirstmateConsole: Bool = true) {
         self.keyStore = keyStore
         self.snippetStore = snippetStore
+        self.isFirstmateConsole = isFirstmateConsole
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -124,16 +140,27 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // matching the previous fixed-tabs behaviour (Fix 4: this is now also
         // reachable from the Hosts sidebar's pinned entry, but the app still
         // lands here automatically on launch). Their processes start in
-        // `viewDidAppear` (once the view is on screen).
-        openFirstmateHost(focus: false)
+        // `viewDidAppear` (once the view is on screen). A per-host console
+        // (Fix 1) opts out - its one tab is added on demand by
+        // `connectSSHIfNeeded` instead.
+        if isFirstmateConsole {
+            openFirstmateHost(focus: false)
+        }
 
         // Follow the shared Helm theme (Fix 2) rather than a private copy, so
-        // toggling it from the toolbar, ⌘⌥T, or Settings all land here.
-        ThemeManager.shared.observe { [weak self] theme in
+        // toggling it from the toolbar, ⌘⌥T, or Settings all land here. The
+        // token is kept (not discarded, unlike every other observer in this
+        // app) because - since Fix 1 - a `ConsoleController` isn't
+        // necessarily permanent: a per-host page is deallocated when its
+        // host is deleted, and without unregistering here that would leak a
+        // dead closure into `ThemeManager` forever (see `shutdown()`).
+        themeObservation = ThemeManager.shared.observe { [weak self] theme in
             self?.theme = theme
             self?.applyTheme()
         }
     }
+
+    private var themeObservation: ThemeObservation?
 
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -335,6 +362,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
     }
 
+    /// Fix 1 (dedicated host pages): the connect action for a saved host's
+    /// own page (`AppShellController.connectHost`). Opens the one ssh tab
+    /// this console is dedicated to only the first time it's called - every
+    /// later call (a re-click of the host's rail icon, or its Hosts sidebar
+    /// Connect button) is a no-op, since `tabs` is no longer empty. That's
+    /// what fixes the duplicate-tab bug: re-connecting to an already-open
+    /// host just shows its existing page (`AppShellController` handles that
+    /// part) instead of implicitly stacking a second tab. A deliberate
+    /// second session to the same host still works via the tab chip's own
+    /// Duplicate affordance (⌘D / `duplicateTab`).
+    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?) {
+        guard tabs.isEmpty else { return }
+        openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+    }
+
+    /// Re-focus whichever tab is already current, without touching the tab
+    /// set - used when a host's dedicated page is shown again after its one
+    /// ssh tab was already opened by an earlier `connectSSHIfNeeded` call.
+    func focusCurrentTab() {
+        guard let tab = currentTab else { return }
+        view.window?.makeFirstResponder(tab.terminal)
+    }
+
     /// Start an ssh tab's process. If `keyID` names a saved key, it is resolved
     /// through the Keychain into a fresh temp `-i <path>` (`SSHKeyMaterializer`)
     /// - the Touch ID / passcode prompt happens inside that call. Any temp file
@@ -464,9 +514,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.terminal.removeFromSuperview()
         tabs.remove(at: idx)
 
-        // Last-tab edge case: never leave an empty window - open a fresh shell.
+        // Last-tab edge case. The shared Firstmate console never leaves the
+        // window empty - open a fresh shell. A dedicated host page (Fix 1)
+        // is allowed to end up with zero tabs: falling back to a generic
+        // shell tab here would leave `tabs` non-empty, which would make
+        // `connectSSHIfNeeded`'s `tabs.isEmpty` guard think this host is
+        // still connected and permanently skip reopening it.
         if tabs.isEmpty {
-            newShellTab()
+            if isFirstmateConsole {
+                newShellTab()
+            } else {
+                currentTab = nil
+                refreshTabBar()
+            }
             return
         }
 
@@ -662,14 +722,22 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     /// Tear down every mirror's grouped session, every materialized ssh key
-    /// temp file, and every open session log so nothing is left dangling.
-    /// Called from the app delegate on quit.
+    /// temp file, every open session log, and the theme observer registered
+    /// in `loadView` - so nothing is left dangling. Called from the app
+    /// delegate on quit for the shared Firstmate console, and (Fix 1) from
+    /// `AppShellController.removeHostConsole` when a host's dedicated page
+    /// is torn down mid-session, which is why unregistering the theme
+    /// observer here (not just at quit) matters.
     func shutdown() {
         for tab in tabs {
             tab.mirror?.tearDown()
             tab.mirror = nil
             cleanupSSHKeyTempFile(tab)
             tab.terminal.stopLogging()
+        }
+        if let themeObservation {
+            ThemeManager.shared.unobserve(themeObservation)
+            self.themeObservation = nil
         }
     }
 

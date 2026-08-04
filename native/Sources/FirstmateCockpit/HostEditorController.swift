@@ -31,6 +31,11 @@ import AppKit
 
 final class HostEditorController: NSViewController {
 
+    /// Fix 2 (third round): the form's content column never grows past this,
+    /// regardless of window width - a typical macOS dialog reading width,
+    /// centered in whatever space the window actually has (see `loadView`).
+    private static let maxContentWidth: CGFloat = 520
+
     /// The host being edited; `nil` for a brand-new host.
     private let editing: Host?
 
@@ -203,17 +208,71 @@ final class HostEditorController: NSViewController {
         stack.alignment = .leading
         stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(stack)
 
+        // Fix 2 (third round): `stack` used to be pinned to `root` on all
+        // four edges. The trailing pin made every field stretch to the full
+        // window width (the reported "~2000pt fields"). The bottom pin
+        // forced `stack`'s height to exactly fill the window, and since
+        // nothing below the grid has a fixed height, Auto Layout resolved
+        // that slack by inflating a single row inside `grid` instead of the
+        // visible bottom margin - verified with a live frame dump (temporary
+        // debug probe, reverted before commit): at content width 900 the
+        // "Icon" row's controls measured only 28pt tall but the next row
+        // ("Color") didn't start until 237pt further down - not a rowSpacing
+        // bug, just that one row silently absorbing all the forced slack.
+        //
+        // The fix caps and centers `stack` with `<=`/`>=`/centerX rather than
+        // an exact-fill `==`, and drops it into a scroll view (matching
+        // `SettingsController`'s `FlippedView` + `NSScrollView` pattern) so
+        // height is never force-stretched either. This distinction mattered
+        // in practice: an earlier attempt centered `stack` with a required
+        // `==` width tie (content-width minus margins) capped by a `<=520`,
+        // and that combination made AppKit's window-auto-fit-to-content
+        // machinery (installed the moment `contentViewController` is
+        // assigned) treat 568pt - the exact width where that tie has zero
+        // slack - as the window's "true" size, snapping back to it within
+        // one layout pass even after an explicit user resize. Swapping that
+        // one `==` for inequalities removed the trap: verified live that the
+        // window now holds any width the user drags it to. AppKit still
+        // enforces 568pt (520 + 24pt margin per side) as a hard floor - a
+        // window narrower than that would clip the capped column - which is
+        // exactly why `presentHostEditor`'s `contentMinSize` gives it a hair
+        // of headroom above that floor rather than matching it exactly.
+        let content = FlippedView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
+            stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxContentWidth),
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
             credCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
             jumpCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+
+        let scroll = NSScrollView()
+        scroll.documentView = content
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            // `scroll.contentView` (the clip view), not `scroll` itself: a
+            // non-overlay vertical scroller (e.g. "Show scroll bars: Always"
+            // in System Settings, the default with a mouse attached)
+            // reserves a real ~15pt track that narrows the clip view without
+            // narrowing `scroll`'s own frame - pinning to `scroll.widthAnchor`
+            // would let the form's trailing edge (fields, swatches, the
+            // Cancel/Save row) render underneath that track.
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
     }
 

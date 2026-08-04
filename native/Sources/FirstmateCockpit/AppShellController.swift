@@ -16,9 +16,18 @@
 //     than a separate floating window, matching how the web app's Settings
 //     is a `view`, not a window.
 //
-// All five destination views are added as children up front and just have
-// their `isHidden` flipped - never rebuilt - so nothing here can drop a
-// running terminal session or its tabs.
+// Fix 1 (dedicated host pages) adds a sixth kind of destination that isn't
+// part of the fixed `RailDestination` enum: one independent `ConsoleController`
+// per connected host, holding only that host's own ssh tab(s) - never mixed
+// with the Firstmate console's Mirror/Shell tabs. These are built lazily via
+// `makeHostConsole` the first time `connectHost` sees a given host id, then
+// kept around (and re-shown, not re-opened) for as long as that host stays
+// saved - see `connectHost`/`removeHostConsole` below.
+//
+// Every destination view - the five fixed ones and any host page - is added
+// as a child up front (or lazily for host pages) and just has its `isHidden`
+// flipped, never rebuilt, so nothing here can drop a running terminal session
+// or its tabs.
 
 import AppKit
 
@@ -36,16 +45,43 @@ final class AppShellController: NSViewController {
         subtitle: "Pull-request review lives in the web cockpit today. This destination is reserved for when that view lands natively."
     )
 
+    /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
+    /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
+    /// Injected so this controller doesn't need to know about
+    /// `SSHKeyStore`/`SnippetStore`, matching how it already knows nothing
+    /// about host persistence (see `onPresentHostEditor` below).
+    private let makeHostConsole: () -> ConsoleController
+
+    /// One dedicated page per connected host, keyed by `Host.id`. Built
+    /// lazily by `connectHost`, torn down by `removeHostConsole` when a host
+    /// is deleted from the store.
+    private var hostConsoles: [UUID: ConsoleController] = [:]
+
+    /// The body area every destination view (fixed or host page) is added
+    /// to - a stored property (rather than a `loadView`-local `let`) so
+    /// `connectHost`/`removeHostConsole` can add and remove host pages after
+    /// the initial layout pass.
+    private let bodyContainer = NSView()
+
+    /// Set while a host's dedicated page is showing; `nil` whenever a fixed
+    /// `RailDestination` is current. Mirrors `IconRailController.activeHostID`
+    /// so `removeHostConsole` knows whether to navigate away.
+    private var activeHostID: UUID?
+
     /// Add/Edit Host, requested from the Hosts panel - forwarded to whoever
     /// owns the host store (the app delegate), since this controller only
     /// arranges views and knows nothing about persistence.
     var onPresentHostEditor: ((Host?) -> Void)?
 
-    init(hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController) {
+    init(
+        hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
+        makeHostConsole: @escaping () -> ConsoleController
+    ) {
         self.hostsPanel = hostsPanel
         self.console = console
         self.settings = settings
         self.overview = FleetController()
+        self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -60,7 +96,6 @@ final class AppShellController: NSViewController {
         rail.view.translatesAutoresizingMaskIntoConstraints = false
         rail.onSelect = { [weak self] dest in self?.show(dest) }
 
-        let bodyContainer = NSView()
         bodyContainer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(bodyContainer)
 
@@ -79,14 +114,7 @@ final class AppShellController: NSViewController {
         addChild(settings)
 
         for destinationView in [hostsPanel.view, console.view, overview.view, review.view, settings.view] {
-            destinationView.translatesAutoresizingMaskIntoConstraints = false
-            bodyContainer.addSubview(destinationView)
-            NSLayoutConstraint.activate([
-                destinationView.leadingAnchor.constraint(equalTo: bodyContainer.leadingAnchor),
-                destinationView.trailingAnchor.constraint(equalTo: bodyContainer.trailingAnchor),
-                destinationView.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
-                destinationView.bottomAnchor.constraint(equalTo: bodyContainer.bottomAnchor),
-            ])
+            embed(destinationView)
         }
 
         NSLayoutConstraint.activate([
@@ -110,17 +138,26 @@ final class AppShellController: NSViewController {
         show(.console)
     }
 
+    /// Pin a destination view to fill `bodyContainer` below the top bar -
+    /// the same anchors every fixed destination and every host page use.
+    private func embed(_ destinationView: NSView) {
+        destinationView.translatesAutoresizingMaskIntoConstraints = false
+        bodyContainer.addSubview(destinationView)
+        NSLayoutConstraint.activate([
+            destinationView.leadingAnchor.constraint(equalTo: bodyContainer.leadingAnchor),
+            destinationView.trailingAnchor.constraint(equalTo: bodyContainer.trailingAnchor),
+            destinationView.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
+            destinationView.bottomAnchor.constraint(equalTo: bodyContainer.bottomAnchor),
+        ])
+    }
+
     // MARK: Destination switching
 
     /// Internal (not `private`): the app delegate also calls this directly
-    /// after connecting a host, so the new tab is visible immediately
-    /// instead of landing silently in the background Console destination.
+    /// after connecting the Firstmate console, so the new tab is visible
+    /// immediately instead of landing silently in the background.
     func show(_ dest: RailDestination) {
-        hostsPanel.view.isHidden = true
-        console.view.isHidden = true
-        overview.view.isHidden = true
-        review.view.isHidden = true
-        settings.view.isHidden = true
+        hideAllDestinations()
 
         switch dest {
         case .overview:
@@ -142,6 +179,63 @@ final class AppShellController: NSViewController {
         rail.setActive(dest)
     }
 
+    /// Fix 1: connect to `host` (its own dedicated page). The first call for
+    /// a given host builds its `ConsoleController` (via `makeHostConsole`),
+    /// embeds it, and opens its one ssh tab; every later call for the same
+    /// host just brings that already-built page forward and re-focuses its
+    /// current tab - `ConsoleController.connectSSHIfNeeded` is what actually
+    /// makes the "open a tab" half of that a no-op after the first time.
+    /// `args` is the host's resolved `ssh` argv (`Host.sshArguments(allHosts:)`)
+    /// - built by the caller, since this controller knows nothing about the
+    /// host store, matching `onPresentHostEditor` above.
+    func connectHost(_ host: Host, args: [String]) {
+        let controller: ConsoleController
+        if let existing = hostConsoles[host.id] {
+            controller = existing
+        } else {
+            controller = makeHostConsole()
+            hostConsoles[host.id] = controller
+            addChild(controller)
+            embed(controller.view)
+            controller.view.isHidden = true
+        }
+        controller.connectSSHIfNeeded(
+            label: host.label, args: args, accentHex: host.accentHex,
+            keyID: host.keyID, startupSnippetID: host.startupSnippetID
+        )
+
+        hideAllDestinations()
+        controller.view.isHidden = false
+        topBar.setTitle(host.label)
+        activeHostID = host.id
+        rail.setActiveHost(host.id)
+        controller.focusCurrentTab()
+    }
+
+    /// A host was deleted from the store - tear down its dedicated page
+    /// (if it was ever connected to) so a stale, unreachable-from-the-rail
+    /// destination can't linger. Navigates back to the Firstmate console if
+    /// the deleted host's page happened to be the one showing.
+    func removeHostConsole(id: UUID) {
+        guard let controller = hostConsoles.removeValue(forKey: id) else { return }
+        controller.shutdown()
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
+        if activeHostID == id {
+            show(.console)
+        }
+    }
+
+    private func hideAllDestinations() {
+        hostsPanel.view.isHidden = true
+        console.view.isHidden = true
+        overview.view.isHidden = true
+        review.view.isHidden = true
+        settings.view.isHidden = true
+        for controller in hostConsoles.values { controller.view.isHidden = true }
+        activeHostID = nil
+    }
+
     /// The Hosts menu's "Quick Connect" (⌘K): reveal the Hosts destination
     /// and focus its quick-connect field, regardless of which destination
     /// was active. No longer shared with the topbar Search control (Fix 4).
@@ -150,10 +244,20 @@ final class AppShellController: NSViewController {
         hostsPanel.focusQuickConnect()
     }
 
-    /// The topbar Search pill / its own ⌘K: bring Console forward (so the
-    /// find bar it triggers is actually visible) and invoke the exact same
-    /// find action the console toolbar's magnifying-glass icon uses.
+    /// The topbar Search pill / its own ⌘K: invoke the exact same find
+    /// action the console toolbar's magnifying-glass icon uses, on whichever
+    /// console is actually on screen. Fix 1: if a host's dedicated page is
+    /// showing, find there rather than yanking the captain over to the
+    /// unrelated shared Firstmate console just because that's this method's
+    /// historical default - otherwise a host page's ⌘K would silently
+    /// navigate away from the session being read and search the wrong
+    /// terminal. With no host page active, the original behaviour holds:
+    /// bring Console forward (so the find bar it triggers is visible) first.
     @objc func activateConsoleFind() {
+        if let activeHostID, let controller = hostConsoles[activeHostID] {
+            controller.showFind()
+            return
+        }
         show(.console)
         console.showFind()
     }
@@ -175,5 +279,13 @@ final class AppShellController: NSViewController {
     /// happens to be showing.
     func showToast(_ message: String) {
         Toast.show(in: view, message: message)
+    }
+
+    /// Fix 1: mirrors what `AppDelegate.applicationWillTerminate` already
+    /// does for the shared Firstmate `console` - tear down every host
+    /// page's mirrors/materialized keys/session logs on quit, not just the
+    /// destination that happened to be visible.
+    func shutdownAllHostConsoles() {
+        for controller in hostConsoles.values { controller.shutdown() }
     }
 }
