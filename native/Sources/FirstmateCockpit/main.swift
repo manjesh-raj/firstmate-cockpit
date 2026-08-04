@@ -13,11 +13,34 @@ import SwiftTerm
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     let console = ConsoleController()
+    // Phase 1: saved SSH hosts + the sidebar that lists and connects them. The
+    // sidebar hands a `ssh` argv to the console, which opens it as a new tab.
+    let hostStore = HostStore()
+    lazy var sidebar = HostsSidebarController(store: hostStore)
+    var split: NSSplitViewController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Connect action from the sidebar (saved host or ad-hoc quick-connect)
+        // opens an ssh tab in the Phase 0 tab collection.
+        sidebar.onConnect = { [weak self] label, args, accentHex in
+            self?.console.openSSH(label: label, args: args, accentHex: accentHex)
+        }
+
+        // A Hosts sidebar on the left, the tabbed console on the right (Termius
+        // layout). Both view controllers join the responder chain, so the Edit /
+        // Tab / View menu shortcuts still resolve to the focused terminal.
+        split = NSSplitViewController()
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
+        sidebarItem.minimumThickness = 220
+        sidebarItem.maximumThickness = 380
+        sidebarItem.canCollapse = true
+        let consoleItem = NSSplitViewItem(viewController: console)
+        split.addSplitViewItem(sidebarItem)
+        split.addSplitViewItem(consoleItem)
+
         buildMenu()
 
-        let frame = NSRect(x: 0, y: 0, width: 980, height: 660)
+        let frame = NSRect(x: 0, y: 0, width: 1220, height: 720)
         window = NSWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -26,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Firstmate Cockpit"
         window.center()
-        window.contentViewController = console
+        window.contentViewController = split
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -78,6 +101,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(ConsoleController.showFind), keyEquivalent: "f")
+
+        // Hosts menu - the Phase 1 connection manager. New Host and Quick Connect
+        // target the sidebar directly (so they work regardless of focus); the
+        // sidebar's Connect opens an ssh tab in the console.
+        let hostsMenuItem = NSMenuItem()
+        mainMenu.addItem(hostsMenuItem)
+        let hostsMenu = NSMenu(title: "Hosts")
+        hostsMenuItem.submenu = hostsMenu
+        let newHostItem = NSMenuItem(title: "New Host…", action: #selector(HostsSidebarController.newHost), keyEquivalent: "n")
+        newHostItem.target = sidebar
+        hostsMenu.addItem(newHostItem)
+        let quickConnectItem = NSMenuItem(title: "Quick Connect", action: #selector(HostsSidebarController.focusQuickConnect), keyEquivalent: "k")
+        quickConnectItem.target = sidebar
+        hostsMenu.addItem(quickConnectItem)
+        hostsMenu.addItem(NSMenuItem.separator())
+        let toggleSidebarItem = NSMenuItem(title: "Toggle Hosts Sidebar", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .control]
+        toggleSidebarItem.target = split
+        hostsMenu.addItem(toggleSidebarItem)
 
         // Tab menu - the dynamic tab collection: new / duplicate / rename / close,
         // reconnect, and ⌘1…⌘9 to jump to a tab. All resolve to ConsoleController.

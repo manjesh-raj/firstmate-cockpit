@@ -31,6 +31,18 @@ Shell tabs scroll **smoothly and content-wise** (line by line, to the exact line
 
 The design and the exact API shapes used here come from the native design scout report at `data/cockpit-native-design-scout/report.md` (Phase 2 is section 7, terminal attach is 4.3, feature mapping is section 6, the Helm visual language is section 9).
 
+## Hosts: the SSH connection manager (Phase 1)
+
+Phase 1 turns the console into a **Termius-style host manager** on top of the Phase 0 tab model (design doc: `data/cockpit-ssh-manager-research/report.md`, Sections A2/A3, C1, and Section D Phase 1). The window now has a **Hosts sidebar** on the left and the tabbed console on the right.
+
+- **Save hosts.** A host has a Label, Address, Port (default 22), Username, an optional credentials section, and a **per-host icon + accent colour** (A3). Hosts are `Codable` and persisted to `~/Library/Application Support/FirstmateCockpit/hosts.json` (override with `FM_HOSTS_FILE`). This is the native app's first on-disk persistence.
+- **Secrets stay off disk.** Phase 1 does **not** ship a secure key store (that is Phase 2's Keychain / Secure Enclave work). The only persisted credential is a *path* to an on-disk private key (`ssh -i`); a typed-in password is held in memory for the session only and never written to the JSON file. With no key set, `ssh` falls back to the system agent / `known_hosts` and prompts interactively on the PTY.
+- **Per-host icons.** Each host picks an SF Symbol and a Helm accent colour, shown in the sidebar row and carried onto the connected tab's chip.
+- **Quick-connect.** The "Find a host or `ssh user@host`" field matches a saved host (by label, or the single filtered result) or parses an ad-hoc `[user@]host[:port]` and connects it.
+- **Connect opens a tab.** Double-clicking a host, the **Connect** button, or quick-connect opens a **new console tab** whose process is `ssh` with the host's argv - the near-drop-in from Section C1. SwiftTerm forks the PTY; `ssh` owns the transport and interactive auth. The tab defaults to the host label (Phase 0 rename still works), and **duplicating** it (⌘D) opens a second session to the same host.
+
+Screenshot-paste into Claude works on ssh tabs too - every tab, including ssh, is a `CockpitTerminalView`.
+
 ## What is and is not in Phase 2
 
 **In scope (built here):**
@@ -56,6 +68,10 @@ One AppKit window whose content is a `ConsoleController`. All terminal behaviour
 | `TerminalEnvironment.swift` | How a terminal child is spawned (`$SHELL -l`, cwd, UTF-8 env), and the mirror target. |
 | `TmuxMirror.swift` | The grouped-session setup/teardown ported from `backend/terminal.py`. |
 | `HelmTheme.swift` | The Helm dark/light palettes as SwiftTerm colours (OKLCH tokens pre-converted to sRGB). |
+| `Host.swift` | The saved-SSH-host value type, the icon/colour catalogue, and the `ssh` argv builder + quick-connect parser (Phase 1). |
+| `HostStore.swift` | Host persistence: a JSON file of profiles under Application Support. Secrets are never written (Phase 2 owns the key store). |
+| `HostsSidebarController.swift` | The Termius-style Hosts sidebar: list with per-host icons, quick-connect, add/edit/delete. Hands a `ssh` argv to the console. |
+| `HostEditorController.swift` | The add/edit host sheet: Label, Address, Port, Username, credentials, and the icon/colour pickers. |
 
 ### How the terminals attach
 
@@ -122,8 +138,11 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 | `⌘R` | Reconnect the active tab (re-attach the mirror, or restart the shell) |
 | `⌘V` | Paste (drives screenshot-paste into Claude) |
 | `⌘C` | Copy selection |
+| `⌘N` | New host (opens the host editor) |
+| `⌘K` | Focus the quick-connect field |
+| `⌘⌃S` | Toggle the Hosts sidebar |
 
-The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, and the top bar carries the tab chips, the `+` button, find, zoom, and theme.
+The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, the host operations are on the **Hosts** menu, and the top bar carries the tab chips, the `+` button, find, zoom, and theme.
 
 ## Captain validation checklist
 
@@ -165,9 +184,21 @@ This app **cannot be validated headlessly** - the whole point is runtime behavio
 - [ ] In a tab, run `claude` (Claude Code). Take a screenshot to the clipboard (`⌘⌃⇧4`, then select a region). With the window focused, `⌘V`. Confirm Claude Code registers a pasted image.
 - [ ] Repeat on the other tab - both share the same paste wiring.
 
-If those pass, Phase 2 is validated and Phase 3 (the dashboard surfaces + embedded backend) can begin.
+**(g) Hosts - the SSH connection manager (Phase 1)**
+- [ ] The **Hosts** sidebar shows on the left. `⌘N` (or the `+` in the sidebar header) opens the host editor.
+- [ ] Add a host: fill Label, Address, Username, pick an **icon** and an **accent colour**, Save. The host appears in the sidebar with that icon tinted in the chosen colour, and it **persists across a relaunch** (quit and reopen - it is still there). Confirm the file at `~/Library/Application Support/FirstmateCockpit/hosts.json` exists and contains **no password** (secrets stay off disk).
+- [ ] **Connect over SSH:** double-click the host (or select it and click **Connect**). A **new tab** opens whose process is `ssh` to that host - you land at the remote login/auth prompt. The tab is named after the host label and its chip carries the host's accent colour.
+- [ ] **Quick-connect a saved host:** type part of a host's label in the "Find a host…" field; the list filters. Press `↵` to connect the match.
+- [ ] **Quick-connect ad-hoc:** type `ssh user@somehost` (or `user@somehost:2222`) in the field and press `↵` - a new ssh tab opens to that destination without saving a host.
+- [ ] **Duplicate a host tab** (`⌘D` on a connected ssh tab) opens a **second** independent session to the same host.
+- [ ] **Edit** a host (select -> Edit, or right-click -> Edit…): change its icon/colour/fields and Save; the sidebar row updates. **Delete** removes it (with a confirm) and does not disturb any running session.
+- [ ] Key path: for a host that needs a key, use **Choose…** to point at an on-disk key (e.g. `~/.ssh/id_ed25519`); Connect passes `ssh -i <path>`. With no key, `ssh` uses your agent / prompts as usual.
+- [ ] Screenshot-paste (`⌘V`) still works inside an ssh tab.
+
+If those pass, Phase 1 (hosts) is validated. Phase 2 (the secure Keychain / Secure Enclave key store) is next; Phase 3 is the dashboard surfaces + embedded backend.
 
 ## Scope guardrails
 
-- Console only. No dashboard, backend spawning, auth, or packaging.
+- Console + the Hosts sidebar only. No dashboard, backend spawning, auth, or packaging.
+- No secure key store yet: secrets stay off disk (Phase 2 adds the Keychain / Secure Enclave key store). Phase 1 references an on-disk key path or uses the system ssh agent.
 - Does not touch the existing Python cockpit (`backend/`, `desktop.py`). The native app is a separate, growing surface under `native/`.
