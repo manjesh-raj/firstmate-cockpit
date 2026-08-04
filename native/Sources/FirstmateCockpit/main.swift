@@ -198,6 +198,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             win.isReleasedWhenClosed = false
+            // cockpit-native-host-form-fixes, Fix 1: without this, opening
+            // Add/Edit Host while the main `AppShellController` window is
+            // full screen makes macOS treat this second regular window as a
+            // tile to dock into that same full-screen Space (its default
+            // behavior for a second standard window), stretching the
+            // centered form back out to full width - the exact regression
+            // the centered-form fix (PR #20) was meant to close, just gated
+            // behind full-screen mode. `.fullScreenAuxiliary` tells AppKit
+            // this window is allowed to float over a full-screen Space
+            // instead of tiling into it; `.moveToActiveSpace` matters
+            // because this window is cached and reused (`hostEditorWindow`)
+            // for the app's whole lifetime, so a later reopen always
+            // surfaces on whichever Space (full-screen or not) is active at
+            // that moment, not the Space it happened to be in last time.
+            // `.floating` keeps it visually above the full-screen window's
+            // own content - Space membership alone doesn't guarantee that.
+            win.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+            win.level = .floating
             hostEditorWindow = win
         }
         win.title = host == nil ? "New Host" : "Edit Host"
