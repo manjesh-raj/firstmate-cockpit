@@ -41,6 +41,7 @@ final class AppShellController: NSViewController {
     private let settings: SettingsController
     private let overview: FleetController
     private let review = ReviewController()
+    private let updates = UpdatesController()
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
@@ -108,9 +109,10 @@ final class AppShellController: NSViewController {
         addChild(console)
         addChild(overview)
         addChild(review)
+        addChild(updates)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, updates.view, settings.view] {
             embed(destinationView)
         }
 
@@ -169,6 +171,9 @@ final class AppShellController: NSViewController {
         case .review:
             review.view.isHidden = false
             topBar.setTitle("Review")
+        case .updates:
+            updates.view.isHidden = false
+            topBar.setTitle("Firstmate Latest Updates")
         case .settings:
             settings.view.isHidden = false
             topBar.setTitle("Settings")
@@ -228,6 +233,7 @@ final class AppShellController: NSViewController {
         console.view.isHidden = true
         overview.view.isHidden = true
         review.view.isHidden = true
+        updates.view.isHidden = true
         settings.view.isHidden = true
         for controller in hostConsoles.values { controller.view.isHidden = true }
         activeHostID = nil
