@@ -113,7 +113,7 @@ final class ReviewController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
         ThemeManager.shared.observe { [weak self, weak root] theme in
@@ -125,6 +125,12 @@ final class ReviewController: NSViewController {
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        // cockpit-native-fixes5: force the pending Auto Layout pass before
+        // touching scroll position - see FleetController.viewWillAppear's
+        // matching comment for why this matters specifically on the very
+        // first appearance (isHidden was true, so this view was never laid
+        // out until right now, in the same tick as this call).
+        view.layoutSubtreeIfNeeded()
         scrollToTop()
         refresh()
     }
@@ -285,6 +291,14 @@ final class ReviewController: NSViewController {
         }
 
         applyTheme()
+
+        // cockpit-native-fixes5: the loading skeleton's content is much
+        // shorter than the real data, so the first successful render() here
+        // can grow the document's height substantially while the view is
+        // already visible - re-pin the scroll position defensively, matching
+        // FleetController.render's identical fix.
+        view.layoutSubtreeIfNeeded()
+        scrollToTop()
     }
 
     private func rebuildRows(into stack: NSStackView, prs: [MergedPR]) {

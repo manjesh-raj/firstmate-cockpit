@@ -45,9 +45,28 @@ extension UIColor {
                         alpha: fAlpha)
     }
 
+    /// See the AppKit twin (`NSColor.legibleColor(against:)` in
+    /// `Mac/MacExtensions.swift`) for the full writeup (cockpit-native-fixes5).
+    func legibleColor (against background: UIColor) -> UIColor {
+        var fRed: CGFloat = 0.0, fGreen: CGFloat = 0.0, fBlue: CGFloat = 0.0, fAlpha: CGFloat = 1.0
+        self.getRed(&fRed, green: &fGreen, blue: &fBlue, alpha: &fAlpha)
+        var bRed: CGFloat = 0.0, bGreen: CGFloat = 0.0, bBlue: CGFloat = 0.0, bAlpha: CGFloat = 1.0
+        background.getRed(&bRed, green: &bGreen, blue: &bBlue, alpha: &bAlpha)
+        let (fraction, towardWhite) = Dimming.contrastFixBlendFraction(
+            fgRed: Double(fRed), fgGreen: Double(fGreen), fgBlue: Double(fBlue),
+            bgRed: Double(bRed), bgGreen: Double(bGreen), bgBlue: Double(bBlue))
+        guard fraction > 0 else { return self }
+        let t = CGFloat(fraction)
+        let toward: CGFloat = towardWhite ? 1 : 0
+        return UIColor (red: fRed + (toward - fRed) * t,
+                        green: fGreen + (toward - fGreen) * t,
+                        blue: fBlue + (toward - fBlue) * t,
+                        alpha: fAlpha)
+    }
+
     static func make (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> TTColor
     {
-        
+
         return UIColor(red: red,
                        green: green,
                        blue: blue,
