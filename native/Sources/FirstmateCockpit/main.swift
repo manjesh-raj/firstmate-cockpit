@@ -129,6 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Firstmate Cockpit"
         window.center()
         window.contentViewController = appShell
+        // Theme-audit task: the window's own chrome (title bar) has no view
+        // to force `.appearance` on, so without this it always follows the
+        // OS's actual light/dark setting rather than the active Helm theme.
+        window.followHelmTheme()
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -216,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // own content - Space membership alone doesn't guarantee that.
             win.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
             win.level = .floating
+            win.followHelmTheme()
             hostEditorWindow = win
         }
         win.title = host == nil ? "New Host" : "Edit Host"
@@ -256,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.title = "SSH Keys"
             win.contentViewController = keysController
             win.isReleasedWhenClosed = false
+            win.followHelmTheme()
             win.center()
             keysWindow = win
         }
@@ -284,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.title = "Snippets"
             win.contentViewController = snippetsController
             win.isReleasedWhenClosed = false
+            win.followHelmTheme()
             win.center()
             snippetsWindow = win
         }

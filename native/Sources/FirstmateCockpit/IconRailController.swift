@@ -13,12 +13,11 @@
 
 import AppKit
 
-/// The rail's five destinations. Order (fixes4 Fix 2): Console and Hosts -
-/// the two most-used destinations - lead right after the "Home" sailboat
-/// mark at the top of the rail, with Overview, Review, and Settings
-/// following in their previous relative order.
+/// The rail's five destinations. Order (captain correction, theme-audit
+/// task): Overview, Console, Hosts, then Review, then Settings - overriding
+/// fixes4 Fix 2's Console/Hosts-first ordering.
 enum RailDestination: CaseIterable {
-    case console, hosts, overview, review, settings
+    case overview, console, hosts, review, settings
 
     var symbol: String {
         switch self {
@@ -73,14 +72,34 @@ final class IconRailController: NSViewController {
     private let hostsStack = NSStackView()
     private var hostButtons: [UUID: NSButton] = [:]
 
+    /// Theme-audit task: this used to be `NSVisualEffectView(.sidebar,
+    /// .behindWindow)` - the exact material/blending pair `HostsSidebarController`
+    /// already diagnosed and ripped out (its Fix 6 comment) for rendering an
+    /// incorrect tint, since `.behindWindow` blending composites against
+    /// whatever is behind the *window* (desktop/other apps), not other
+    /// content inside it. That's what the captain's screenshot caught here:
+    /// the rail rendering peach/salmon instead of the active Helm theme. A
+    /// plain, theme-driven solid background - what every other full-size
+    /// destination in this app already uses - is the fix.
+    private let edgeLine = NSView()
+
     override func loadView() {
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 660))
-        root.material = .sidebar
-        root.blendingMode = .behindWindow
-        root.state = .followsWindowActiveState
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 660))
+        root.wantsLayer = true
         view = root
+        edgeLine.wantsLayer = true
+        edgeLine.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(edgeLine)
+        NSLayoutConstraint.activate([
+            edgeLine.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            edgeLine.topAnchor.constraint(equalTo: root.topAnchor),
+            edgeLine.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            edgeLine.widthAnchor.constraint(equalToConstant: 1),
+        ])
         ThemeManager.shared.observe { [weak self, weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+            self?.edgeLine.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
             self?.restyle(theme)
         }
 

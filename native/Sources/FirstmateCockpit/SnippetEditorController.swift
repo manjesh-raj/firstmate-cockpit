@@ -28,6 +28,13 @@ final class SnippetEditorController: NSViewController {
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 320))
         view = root
+        // Theme-audit task: force this sheet's own appearance so its
+        // system-semantic colors (`.secondaryLabelColor`, `.tertiaryLabelColor`)
+        // resolve against the active Helm theme's mode instead of whatever
+        // the OS happens to be set to.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Snippet" : "Edit Snippet")
         title.font = .systemFont(ofSize: 15, weight: .semibold)

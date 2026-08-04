@@ -90,6 +90,15 @@ final class KeyEditorController: NSViewController {
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 620))
         view = root
+        // Theme-audit task: this sheet only ever used system-semantic colors
+        // (`.secondaryLabelColor`, etc.), which is fine as long as its own
+        // appearance is forced to match the active Helm theme's mode - it
+        // was never doing that, so those colors resolved against whichever
+        // window presented this sheet, which itself never set `.appearance`
+        // either, leaving everything on the OS's actual light/dark setting.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Key" : "Edit Key")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
