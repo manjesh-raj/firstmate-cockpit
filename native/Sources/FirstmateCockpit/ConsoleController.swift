@@ -211,9 +211,9 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Add a tab for `launch`, build its chip, and (if the view is already on
     /// screen) start its process. Returns the new tab.
     @discardableResult
-    private func addTab(launch: TabLaunch, name: String, select: Bool) -> TabModel {
+    private func addTab(launch: TabLaunch, name: String, select: Bool, accentHex: String? = nil) -> TabModel {
         let term = makeTerminal()
-        let tab = TabModel(name: name, launch: launch, terminal: term)
+        let tab = TabModel(name: name, launch: launch, terminal: term, accentHex: accentHex)
 
         let chip = TabChipView(tabID: tab.id, name: name)
         let id = tab.id
@@ -244,8 +244,30 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             )
         case .mirror(let target):
             connectMirror(tab, target: target)
+        case .ssh(_, let exe, let args):
+            tab.terminal.startProcess(
+                executable: exe,
+                args: args,
+                environment: childEnvironment(),
+                execName: nil,
+                currentDirectory: shellCwd()
+            )
         }
         tab.started = true
+    }
+
+    // MARK: SSH (Phase 1 - hosts)
+
+    /// Open a new tab that runs `ssh` with the given argv - the connect action for
+    /// a saved host or an ad-hoc quick-connect (design report C1). The tab's name
+    /// defaults to the host label (rename still works), and `accentHex` tints its
+    /// chip with the host colour (A3). Duplicating this tab (Phase 0) re-runs the
+    /// same `ssh` argv, giving a second session to the same host.
+    func openSSH(label: String, args: [String], accentHex: String?) {
+        let launch = TabLaunch.ssh(label: label, executable: HostCatalog.sshExecutable, args: args)
+        addTab(launch: launch, name: label, select: true, accentHex: accentHex)
+        // Bring the console forward if the user was in the sidebar.
+        if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
     }
 
     /// Set up a grouped session and attach `tab`'s terminal to it. On failure the
@@ -284,7 +306,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     private func duplicateTab(id: UUID) {
         guard let src = tabs.first(where: { $0.id == id }) else { return }
-        addTab(launch: src.launch, name: src.name, select: true)
+        addTab(launch: src.launch, name: src.name, select: true, accentHex: src.accentHex)
     }
 
     /// ⌘W: close the current tab.
@@ -380,9 +402,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         let accent = HelmTheme.nsColor(theme.accentHex)
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = ink.withAlphaComponent(0.55)
-        let tint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
         for tab in tabs {
-            tab.chip.applyStyle(selected: tab === currentTab, accent: accent, muted: muted, tint: tint)
+            // Host tabs carry their own accent (A3); other tabs use the theme accent.
+            let chipAccent = tab.accentHex.map(HelmTheme.nsColor) ?? accent
+            let chipTint = chipAccent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
+            tab.chip.applyStyle(selected: tab === currentTab, accent: chipAccent, muted: muted, tint: chipTint)
         }
         plusButton.contentTintColor = ink
     }
@@ -435,6 +459,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 environment: childEnvironment(),
                 execName: nil,
                 currentDirectory: cwd
+            )
+        case .ssh(_, let exe, let args):
+            tab.terminal.startProcess(
+                executable: exe,
+                args: args,
+                environment: childEnvironment(),
+                execName: nil,
+                currentDirectory: shellCwd()
             )
         }
         view.window?.makeFirstResponder(tab.terminal)

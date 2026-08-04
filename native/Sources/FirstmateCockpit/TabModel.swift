@@ -22,12 +22,18 @@ enum TabLaunch {
     /// own grouped session on launch (see `TmuxMirror`), so duplicating a mirror
     /// is safe - the two get different `cockpit_*` group names.
     case mirror(target: String)
+    /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
+    /// manager. `ssh` is just another interactive PTY child (design report C1),
+    /// so this reuses the same `startProcess` path as `shell`. The resolved argv
+    /// is carried so duplicate and reconnect re-run the exact same connection.
+    case ssh(label: String, executable: String, args: [String])
 
     /// The default display name for a freshly created tab of this kind.
     var defaultName: String {
         switch self {
         case .shell: return "Shell"
         case .mirror: return "Mirror"
+        case .ssh(let label, _, _): return label
         }
     }
 }
@@ -64,9 +70,14 @@ final class TabModel {
     /// The tab bar chip for this tab, created alongside it.
     var chip: TabChipView!
 
-    init(name: String, launch: TabLaunch, terminal: CockpitTerminalView) {
+    /// Optional per-tab accent (sRGB hex), set for host sessions so the tab chip
+    /// carries the host's colour (A3). `nil` falls back to the theme accent.
+    var accentHex: String?
+
+    init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name
         self.launch = launch
         self.terminal = terminal
+        self.accentHex = accentHex
     }
 }
