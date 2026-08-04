@@ -2,9 +2,12 @@
 //
 // The host-details editor (design report A2/A3, Section D Phase 1). A sheet with
 // the Termius "New Host" fields - Label, Address, Port, Username, a credentials
-// section (session password + on-disk key path), and the A3 icon/colour pickers.
-// Add, edit, and delete all route back to the sidebar via closures; this view
-// knows nothing about the store.
+// section, and the A3 icon/colour pickers. Add, edit, and delete all route back
+// to the sidebar via closures; this view knows nothing about the host store.
+//
+// Phase 2 replaces the raw "key file path" field with a "Choose a key" popup
+// sourced from the saved-keys Keychain (`SSHKeyStore`) - the host now carries
+// a `keyID` reference, never a path, per design report Section A2/C3.
 
 import AppKit
 
@@ -12,6 +15,11 @@ final class HostEditorController: NSViewController {
 
     /// The host being edited; `nil` for a brand-new host.
     private let editing: Host?
+
+    /// Saved keys to offer in the "Choose a key" popup - a snapshot taken when
+    /// the sheet opens (matches how the icon/colour catalogues are snapshotted
+    /// too; a key added while this sheet is open won't appear until reopened).
+    private let keys: [SSHKey]
 
     /// Called with the assembled host on Save. The caller persists it.
     var onSave: ((Host) -> Void)?
@@ -25,7 +33,7 @@ final class HostEditorController: NSViewController {
     private let portField = NSTextField()
     private let usernameField = NSTextField()
     private let passwordField = NSSecureTextField()
-    private let keyPathField = NSTextField()
+    private let keyPopup = NSPopUpButton()
 
     /// Current icon/colour selection, seeded from the host (or the defaults).
     private var selectedIcon: String
@@ -35,8 +43,9 @@ final class HostEditorController: NSViewController {
 
     // MARK: Init
 
-    init(host: Host?) {
+    init(host: Host?, keys: [SSHKey]) {
         self.editing = host
+        self.keys = keys
         self.selectedIcon = host?.iconSymbol ?? HostCatalog.defaultIcon
         self.selectedAccent = host?.accentHex ?? HostCatalog.defaultAccent
         super.init(nibName: nil, bundle: nil)
@@ -59,17 +68,11 @@ final class HostEditorController: NSViewController {
         portField.formatter = intFormatter()
         configure(usernameField, placeholder: "Username", value: editing?.username)
         configure(passwordField, placeholder: "Password (optional)", value: editing?.password)
-        configure(keyPathField, placeholder: "Private key path (optional)", value: editing?.keyPath)
-
-        let chooseKey = NSButton(title: "Choose…", target: self, action: #selector(chooseKeyFile))
-        chooseKey.bezelStyle = .rounded
-        let keyRow = NSStackView(views: [keyPathField, chooseKey])
-        keyRow.orientation = .horizontal
-        keyRow.spacing = 8
-        keyPathField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        buildKeyPopup()
 
         let credCaption = caption("Password is used for this session only and never written to disk. "
-            + "A key path or the system ssh agent is the persisted credential.")
+            + "A chosen key is resolved from the Keychain at connect time (see the Keys screen, ⌘⇧K); "
+            + "with no key set, ssh falls back to the system agent.")
 
         let iconRow = buildIconPicker()
         let colorRow = buildColorPicker()
@@ -80,7 +83,7 @@ final class HostEditorController: NSViewController {
             [rowLabel("Port"), portField],
             [rowLabel("Username"), usernameField],
             [rowLabel("Password"), passwordField],
-            [rowLabel("Key file"), keyRow],
+            [rowLabel("Key"), keyPopup],
             [rowLabel("Icon"), iconRow],
             [rowLabel("Color"), colorRow],
         ])
@@ -167,6 +170,24 @@ final class HostEditorController: NSViewController {
         return f
     }
 
+    // MARK: Key popup (Phase 2)
+
+    /// "None" plus every saved key, by label; selection carries the key's
+    /// `UUID` as `representedObject` so `save()` reads it back directly.
+    private func buildKeyPopup() {
+        keyPopup.translatesAutoresizingMaskIntoConstraints = false
+        keyPopup.addItem(withTitle: "None (use system ssh agent)")
+        for key in keys {
+            keyPopup.addItem(withTitle: "\(key.label) (\(key.type.displayName))")
+            keyPopup.lastItem?.representedObject = key.id
+        }
+        if let id = editing?.keyID, let item = keyPopup.itemArray.first(where: { ($0.representedObject as? UUID) == id }) {
+            keyPopup.select(item)
+        } else {
+            keyPopup.selectItem(at: 0)
+        }
+    }
+
     // MARK: Icon + colour pickers (A3)
 
     private func buildIconPicker() -> NSView {
@@ -249,20 +270,6 @@ final class HostEditorController: NSViewController {
 
     // MARK: Actions
 
-    @objc private func chooseKeyFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a private key file (referenced by path; not copied)."
-        // ~/.ssh is where keys usually live; show hidden files so it is reachable.
-        panel.showsHiddenFiles = true
-        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
-        if panel.runModal() == .OK, let url = panel.url {
-            keyPathField.stringValue = url.path
-        }
-    }
-
     @objc private func save() {
         let label = labelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let address = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -277,8 +284,7 @@ final class HostEditorController: NSViewController {
         host.username = usernameField.stringValue.trimmingCharacters(in: .whitespaces)
         let pw = passwordField.stringValue
         host.password = pw.isEmpty ? nil : pw
-        let kp = keyPathField.stringValue.trimmingCharacters(in: .whitespaces)
-        host.keyPath = kp.isEmpty ? nil : kp
+        host.keyID = keyPopup.selectedItem?.representedObject as? UUID
         host.iconSymbol = selectedIcon
         host.accentHex = selectedAccent
 

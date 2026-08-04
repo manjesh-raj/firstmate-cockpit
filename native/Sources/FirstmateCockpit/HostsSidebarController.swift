@@ -13,10 +13,14 @@ import AppKit
 final class HostsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
 
     private let store: HostStore
+    /// The saved-keys Keychain (Phase 2) - only read here, to populate the
+    /// editor's "Choose a key" popup. All secret handling lives in
+    /// `KeychainKeyStore` / `SSHKeyMaterializer`, not in this controller.
+    private let keyStore: SSHKeyStore
 
-    /// Open an ssh session: (tab label, ssh argv, host accent hex). Wired by the
-    /// app delegate to `ConsoleController.openSSH`.
-    var onConnect: ((String, [String], String?) -> Void)?
+    /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key id).
+    /// Wired by the app delegate to `ConsoleController.openSSH`.
+    var onConnect: ((String, [String], String?, UUID?) -> Void)?
 
     // MARK: Views
 
@@ -29,8 +33,9 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     /// The hosts currently shown (filtered by the search text).
     private var filtered: [Host] = []
 
-    init(store: HostStore) {
+    init(store: HostStore, keyStore: SSHKeyStore) {
         self.store = store
+        self.keyStore = keyStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -228,7 +233,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             return
         }
         if let parsed = HostCatalog.parseQuickConnect(raw) {
-            onConnect?(parsed.label, parsed.args, nil)
+            onConnect?(parsed.label, parsed.args, nil, nil)
             searchField.stringValue = ""
             applyFilter("")
             return
@@ -237,7 +242,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func connect(_ host: Host) {
-        onConnect?(host.label, host.sshArguments(), host.accentHex)
+        onConnect?(host.label, host.sshArguments(), host.accentHex, host.keyID)
     }
 
     @objc private func connectSelected() {
@@ -292,7 +297,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func presentEditor(for host: Host?) {
-        let editor = HostEditorController(host: host)
+        let editor = HostEditorController(host: host, keys: keyStore.keys)
         editor.onSave = { [weak self] saved in
             guard let self else { return }
             if self.store.host(id: saved.id) != nil {

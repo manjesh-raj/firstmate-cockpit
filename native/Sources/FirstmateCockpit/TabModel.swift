@@ -24,16 +24,20 @@ enum TabLaunch {
     case mirror(target: String)
     /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
     /// manager. `ssh` is just another interactive PTY child (design report C1),
-    /// so this reuses the same `startProcess` path as `shell`. The resolved argv
-    /// is carried so duplicate and reconnect re-run the exact same connection.
-    case ssh(label: String, executable: String, args: [String])
+    /// so this reuses the same `startProcess` path as `shell`. `hostArgs` is
+    /// the non-secret part of the argv (port + destination); `keyID`, when
+    /// set, is a saved key (Phase 2) that `ConsoleController` resolves through
+    /// the Keychain into a temporary `-i <path>` on every start/reconnect -
+    /// never baked into `hostArgs` itself, so duplicating or reconnecting this
+    /// tab always re-resolves the key rather than reusing a stale temp file.
+    case ssh(label: String, executable: String, hostArgs: [String], keyID: UUID?)
 
     /// The default display name for a freshly created tab of this kind.
     var defaultName: String {
         switch self {
         case .shell: return "Shell"
         case .mirror: return "Mirror"
-        case .ssh(let label, _, _): return label
+        case .ssh(let label, _, _, _): return label
         }
     }
 }
@@ -73,6 +77,11 @@ final class TabModel {
     /// Optional per-tab accent (sRGB hex), set for host sessions so the tab chip
     /// carries the host's colour (A3). `nil` falls back to the theme accent.
     var accentHex: String?
+
+    /// The scratch path of a Phase 2 materialized key, when this tab's `.ssh`
+    /// launch resolved a saved key - set by `ConsoleController.connectSSH`, torn
+    /// down by `cleanupSSHKeyTempFile` on close, reconnect, and process exit.
+    var sshKeyTempPath: String?
 
     init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name

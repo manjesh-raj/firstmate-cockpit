@@ -1,8 +1,10 @@
-# Firstmate Cockpit - Native (Phase 2)
+# Firstmate Cockpit - Native
 
 This is the growing native macOS cockpit: a Swift + SwiftTerm app that replaces the web (xterm.js-in-WKWebView) terminal with a real, native one.
 
-**Phase 2** turns the single Phase 1 terminal into a proper **tabbed console** with both terminal modes and terminal-level polish:
+"Phase N" below refers to the connection-manager phases in the design report (`data/cockpit-ssh-manager-research/report.md`, Section D): Phase 0 the tab collection, Phase 1 hosts, Phase 2 the SSH keychain (this section), Phase 3+ dashboard/backend/packaging.
+
+**The tabbed console** turns a single terminal into a proper tabbed console with both terminal modes and terminal-level polish:
 
 - **Shell** tab - the Phase 1 terminal (`$SHELL -l`), unchanged in behaviour.
 - **Mirror** tab - a live view of the first mate's tmux session, attached through a grouped session.
@@ -23,7 +25,7 @@ The console's tabs are now a **flexible collection** (`[TabModel]`), not the old
 
 Each tab owns its own `CockpitTerminalView` (so screenshot-paste works on every tab) and a `TabLaunch` recipe describing how to (re)start its process. That recipe is what makes duplicate and reconnect one-liners, and adding a `.ssh(...)` case later is how hosts plug in.
 
-The initial set is still **Shell + Mirror**, so nothing from Phase 2 regresses.
+The initial set is still **Shell + Mirror**, so nothing from the tabbed console above regresses.
 
 ### Scrolling and scrollback
 
@@ -36,19 +38,29 @@ The design and the exact API shapes used here come from the native design scout 
 Phase 1 turns the console into a **Termius-style host manager** on top of the Phase 0 tab model (design doc: `data/cockpit-ssh-manager-research/report.md`, Sections A2/A3, C1, and Section D Phase 1). The window now has a **Hosts sidebar** on the left and the tabbed console on the right.
 
 - **Save hosts.** A host has a Label, Address, Port (default 22), Username, an optional credentials section, and a **per-host icon + accent colour** (A3). Hosts are `Codable` and persisted to `~/Library/Application Support/FirstmateCockpit/hosts.json` (override with `FM_HOSTS_FILE`). This is the native app's first on-disk persistence.
-- **Secrets stay off disk.** Phase 1 does **not** ship a secure key store (that is Phase 2's Keychain / Secure Enclave work). The only persisted credential is a *path* to an on-disk private key (`ssh -i`); a typed-in password is held in memory for the session only and never written to the JSON file. With no key set, `ssh` falls back to the system agent / `known_hosts` and prompts interactively on the PTY.
+- **Secrets stay off disk.** A host's credential is either a **saved key** chosen from the Phase 2 Keychain (a `keyID` reference, resolved at connect time - see below) or nothing, in which case `ssh` falls back to the system agent / `known_hosts` and prompts interactively on the PTY. A typed-in password is held in memory for the session only and never written to the JSON file.
 - **Per-host icons.** Each host picks an SF Symbol and a Helm accent colour, shown in the sidebar row and carried onto the connected tab's chip.
 - **Quick-connect.** The "Find a host or `ssh user@host`" field matches a saved host (by label, or the single filtered result) or parses an ad-hoc `[user@]host[:port]` and connects it.
 - **Connect opens a tab.** Double-clicking a host, the **Connect** button, or quick-connect opens a **new console tab** whose process is `ssh` with the host's argv - the near-drop-in from Section C1. SwiftTerm forks the PTY; `ssh` owns the transport and interactive auth. The tab defaults to the host label (Phase 0 rename still works), and **duplicating** it (⌘D) opens a second session to the same host.
 
 Screenshot-paste into Claude works on ssh tabs too - every tab, including ssh, is a `CockpitTerminalView`.
 
-## What is and is not in Phase 2
+## SSH Keys: the Keychain (Phase 2)
+
+Phase 2 replaces Phase 1's "on-disk key path" credential with a real saved-key store (design doc Sections A1, C3, Section D Phase 2). **Keys menu -> Manage Keys…** (`⌘⇧K`) opens a separate "SSH Keys" window - a source-list screen in the same visual language as the Hosts sidebar - for browsing, adding, editing, and deleting saved keys.
+
+- **New Key** (Keys menu -> New Key…, `⌘⇧N`, or the `+` in the Keys window): Label, then either **Generate** (Ed25519 default, RSA 3072-bit option, optional passphrase) or **Import** (paste into a text box, drag a key file onto the drop zone, or use "Import from Key File…"). PEM and OpenSSH-format private keys are supported; `.ppk` (PuTTY) files are detected and rejected with a clear message pointing at `puttygen ... -O private-openssh` rather than a half-working parse. An optional Certificate can be pasted alongside either path. There is no "paste your public key" field - matching the real Termius flow, the public key is **derived** (via `ssh-keygen`) and shown read-only with a Copy button.
+- **Saved-keys list**: each row shows the Label, a type badge ("Ed25519" / "RSA"), and a truncated fingerprint, tinted per-type from the Helm palette.
+- **Secure storage.** Private key bytes and any passphrase are written to the **macOS Keychain** (`Security.framework`, `SecItemAdd`/`SecItemCopyMatching`/`SecItemDelete` in `KeychainKeyStore.swift`) - never to `keys.json`, which holds only non-secret metadata (label, type, the derived public key, fingerprint, certificate). Every Keychain item's `SecAccessControl` requires the device to be unlocked and a fresh **Touch ID** challenge (or the device passcode, where biometry isn't enrolled) to succeed, and is `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` - it never syncs to iCloud Keychain. See `KeychainKeyStore.swift`'s header comment for the one known caveat: an **unsigned** `swift build`/`swift run` binary has no stable code-signing identity, so a rebuild can occasionally trigger an extra Keychain-access prompt or, rarely, be unable to re-read an item an earlier build wrote. That resolves once the app is signed (Phase 4 packaging) and is not a flaw in the storage design.
+- **No hand-rolled crypto.** Generation and import both shell out to the system `/usr/bin/ssh-keygen` (`SSHKeyGenerator.swift`) rather than reimplementing the OpenSSH private-key format or its bcrypt-pbkdf passphrase KDF in Swift - the same "delegate, don't reimplement" principle the design report applies to host-key trust. All work happens in a private `0700` scratch directory deleted immediately after the bytes are read into memory.
+- **Wiring hosts to keys.** The host editor's credential section is a "Choose a key" popup sourced from the saved-keys list (`keyID` on `Host`, replacing Phase 1's raw path field). At connect time, `ConsoleController.connectSSH` resolves the chosen key through `SSHKeyMaterializer`: a Keychain read (the Touch ID prompt happens here) into a private, `0600` temp file under a fresh `0700` scratch directory, passed as `ssh -i <path>` (plus an adjacent `-cert.pub` if the key carries a certificate). That scratch directory is deleted on tab close, on reconnect (before making a new one), on process exit, and on quit - it never outlives the connection that needed it.
+
+## What is and is not in this build
 
 **In scope (built here):**
 
 - A two-tab console surface hosting two SwiftTerm terminals.
-- The tmux grouped-session lifecycle, **ported to Swift** (`Process`) so Phase 2 needs **no Python backend running** (that is Phase 3).
+- The tmux grouped-session lifecycle, **ported to Swift** (`Process`) so the console needs **no Python backend running** (that is Phase 3).
 - Helm dark + light palettes applied to the terminal colour set (foreground/background/cursor/selection + a full 16-colour ANSI set).
 - Native find bar, font zoom, and copy-to-`NSPasteboard`, all on the top bar and the main menu.
 
@@ -68,10 +80,17 @@ One AppKit window whose content is a `ConsoleController`. All terminal behaviour
 | `TerminalEnvironment.swift` | How a terminal child is spawned (`$SHELL -l`, cwd, UTF-8 env), and the mirror target. |
 | `TmuxMirror.swift` | The grouped-session setup/teardown ported from `backend/terminal.py`. |
 | `HelmTheme.swift` | The Helm dark/light palettes as SwiftTerm colours (OKLCH tokens pre-converted to sRGB). |
-| `Host.swift` | The saved-SSH-host value type, the icon/colour catalogue, and the `ssh` argv builder + quick-connect parser (Phase 1). |
-| `HostStore.swift` | Host persistence: a JSON file of profiles under Application Support. Secrets are never written (Phase 2 owns the key store). |
-| `HostsSidebarController.swift` | The Termius-style Hosts sidebar: list with per-host icons, quick-connect, add/edit/delete. Hands a `ssh` argv to the console. |
-| `HostEditorController.swift` | The add/edit host sheet: Label, Address, Port, Username, credentials, and the icon/colour pickers. |
+| `Host.swift` | The saved-SSH-host value type (`keyID` reference, no path/secret), the icon/colour catalogue, and the `ssh` argv builder + quick-connect parser (Phase 1). |
+| `HostStore.swift` | Host persistence: a JSON file of profiles under Application Support. Secrets are never written. |
+| `HostsSidebarController.swift` | The Termius-style Hosts sidebar: list with per-host icons, quick-connect, add/edit/delete. Hands a `ssh` argv + `keyID` to the console. |
+| `HostEditorController.swift` | The add/edit host sheet: Label, Address, Port, Username, credentials (incl. the "Choose a key" popup), and the icon/colour pickers. |
+| `SSHKey.swift` | Non-secret key metadata (label, type, derived public key, fingerprint, certificate) - Phase 2. |
+| `SSHKeyStore.swift` | Key metadata persistence: a JSON file under Application Support, mirroring `HostStore`. |
+| `KeychainKeyStore.swift` | The secret store: private key bytes + passphrase in the macOS Keychain, gated by a Touch ID / passcode `SecAccessControl`. |
+| `SSHKeyGenerator.swift` | Generate (Ed25519/RSA) and inspect (PEM/OpenSSH import validation, fingerprint, type) by shelling out to `ssh-keygen`. |
+| `SSHKeyMaterializer.swift` | Resolves a saved key into a private `0600` temp file for `ssh -i` at connect time, and cleans it up after. |
+| `KeysSidebarController.swift` | The "SSH Keys" screen: a saved-keys list in its own window, matching the Hosts sidebar's visual language. |
+| `KeyEditorController.swift` | The New/Edit Key sheet: Generate vs. Import, drag-and-drop, passphrase, certificate, and the read-only derived public key. |
 
 ### How the terminals attach
 
@@ -141,6 +160,8 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 | `⌘N` | New host (opens the host editor) |
 | `⌘K` | Focus the quick-connect field |
 | `⌘⌃S` | Toggle the Hosts sidebar |
+| `⌘⇧N` | New key (opens the "SSH Keys" window and its New Key sheet) |
+| `⌘⇧K` | Manage Keys… (opens/brings forward the "SSH Keys" window) |
 
 The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, the host operations are on the **Hosts** menu, and the top bar carries the tab chips, the `+` button, find, zoom, and theme.
 
@@ -192,13 +213,26 @@ This app **cannot be validated headlessly** - the whole point is runtime behavio
 - [ ] **Quick-connect ad-hoc:** type `ssh user@somehost` (or `user@somehost:2222`) in the field and press `↵` - a new ssh tab opens to that destination without saving a host.
 - [ ] **Duplicate a host tab** (`⌘D` on a connected ssh tab) opens a **second** independent session to the same host.
 - [ ] **Edit** a host (select -> Edit, or right-click -> Edit…): change its icon/colour/fields and Save; the sidebar row updates. **Delete** removes it (with a confirm) and does not disturb any running session.
-- [ ] Key path: for a host that needs a key, use **Choose…** to point at an on-disk key (e.g. `~/.ssh/id_ed25519`); Connect passes `ssh -i <path>`. With no key, `ssh` uses your agent / prompts as usual.
 - [ ] Screenshot-paste (`⌘V`) still works inside an ssh tab.
 
-If those pass, Phase 1 (hosts) is validated. Phase 2 (the secure Keychain / Secure Enclave key store) is next; Phase 3 is the dashboard surfaces + embedded backend.
+**(h) SSH Keys - the Keychain (Phase 2)**
+- [ ] **Keys menu -> Manage Keys…** (`⌘⇧K`) opens the "SSH Keys" window. `⌘⇧N` (or the `+` in that window) opens the New Key sheet.
+- [ ] **Generate a key:** Label, leave Generate/Ed25519 selected, optionally set a passphrase, click **Generate**. The derived public key appears read-only with a fingerprint; **Copy** puts it on the clipboard (paste it elsewhere to confirm). Save - the key appears in the list with an "Ed25519" badge.
+- [ ] **Generate an RSA key** the same way with the RSA segment selected; confirm the badge reads "RSA".
+- [ ] **Import a real PEM file via drag-and-drop:** switch to Import, drag an existing private key file (e.g. `~/.ssh/id_ed25519` or a `.pem`) onto the drop zone. It should auto-verify and show the derived public key; if the key has a passphrase, type it and click **Verify** to see a green "Verified" status. Save - it appears in the saved-keys list.
+- [ ] **Import via the file picker** ("Import from Key File…") as an alternative to drag-and-drop, same result.
+- [ ] **Import via paste:** paste private key text directly into the "Or paste the private key" box and click Verify.
+- [ ] **Reject a `.ppk` file** cleanly: dropping/importing a PuTTY key shows the "convert with `puttygen`" message rather than a confusing failure.
+- [ ] **Edit a host to pick a key:** open a host (New Host or Edit), the credentials section now shows a **"Key"** popup listing "None" plus every saved key by label/type; choose one and Save.
+- [ ] **Connect using it:** Connect that host. Confirm a **Touch ID (or passcode) prompt** appears at connect time (this is the Keychain read in `SSHKeyMaterializer`), and that `ssh` receives `-i <path>` (e.g. by watching for the identity file being tried, or by using a key you know matches the remote's `authorized_keys`).
+- [ ] Confirm `~/Library/Application Support/FirstmateCockpit/keys.json` exists and contains **no private key bytes or passphrase** - only label/type/public key/fingerprint/certificate.
+- [ ] **Edit** a key: rename it, add/change a certificate, and optionally set a new passphrase (leaving it blank keeps the existing one) - no Touch ID prompt unless you actually typed a new passphrase. **Delete** a key (with a confirm) and confirm a host that referenced it now shows "None" and falls back to the system agent on connect.
+- [ ] **Duplicate/reconnect a connected ssh tab that uses a key** (`⌘D`, `⌘R`) and confirm each resolves the key independently (a fresh Touch ID prompt / temp file per tab-start), not a stale/shared one.
+
+If those pass, all five of the captain's original connection-manager requirements (keychain, hosts, per-host icons, duplicate tabs, rename tabs) are validated end to end. Phase 3 (dashboard surfaces + embedded backend) is next.
 
 ## Scope guardrails
 
-- Console + the Hosts sidebar only. No dashboard, backend spawning, auth, or packaging.
-- No secure key store yet: secrets stay off disk (Phase 2 adds the Keychain / Secure Enclave key store). Phase 1 references an on-disk key path or uses the system ssh agent.
+- Console + the Hosts sidebar + the SSH Keys window only. No dashboard, backend spawning, auth, or packaging.
+- Secrets (private key bytes, passphrases) live only in the macOS Keychain, Touch-ID/passcode gated (`KeychainKeyStore.swift`). Non-secret metadata (hosts, key labels/public keys/fingerprints) lives in plain JSON under Application Support. `.ppk` (PuTTY) import is explicitly unsupported, not silently mishandled - see the Keys section above.
 - Does not touch the existing Python cockpit (`backend/`, `desktop.py`). The native app is a separate, growing surface under `native/`.

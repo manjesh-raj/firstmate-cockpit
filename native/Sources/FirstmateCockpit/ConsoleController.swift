@@ -25,6 +25,19 @@ import SwiftTerm
 
 final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegate {
 
+    /// The saved-keys Keychain (Phase 2) - consulted only to resolve a host's
+    /// `.ssh` tab into a live `-i <path>` at start/reconnect time
+    /// (`connectSSH`); everything secret stays inside `KeychainKeyStore` /
+    /// `SSHKeyMaterializer`.
+    private let keyStore: SSHKeyStore
+
+    init(keyStore: SSHKeyStore) {
+        self.keyStore = keyStore
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     // MARK: Tabs
 
     private var tabs: [TabModel] = []
@@ -244,30 +257,63 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             )
         case .mirror(let target):
             connectMirror(tab, target: target)
-        case .ssh(_, let exe, let args):
-            tab.terminal.startProcess(
-                executable: exe,
-                args: args,
-                environment: childEnvironment(),
-                execName: nil,
-                currentDirectory: shellCwd()
-            )
+        case .ssh(_, let exe, let hostArgs, let keyID):
+            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID)
         }
         tab.started = true
     }
 
-    // MARK: SSH (Phase 1 - hosts)
+    // MARK: SSH (Phase 1 hosts, Phase 2 keys)
 
     /// Open a new tab that runs `ssh` with the given argv - the connect action for
     /// a saved host or an ad-hoc quick-connect (design report C1). The tab's name
     /// defaults to the host label (rename still works), and `accentHex` tints its
     /// chip with the host colour (A3). Duplicating this tab (Phase 0) re-runs the
-    /// same `ssh` argv, giving a second session to the same host.
-    func openSSH(label: String, args: [String], accentHex: String?) {
-        let launch = TabLaunch.ssh(label: label, executable: HostCatalog.sshExecutable, args: args)
+    /// same connection, re-resolving `keyID` independently for the new tab.
+    func openSSH(label: String, args: [String], accentHex: String?, keyID: UUID?) {
+        let launch = TabLaunch.ssh(label: label, executable: HostCatalog.sshExecutable, hostArgs: args, keyID: keyID)
         addTab(launch: launch, name: label, select: true, accentHex: accentHex)
         // Bring the console forward if the user was in the sidebar.
         if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
+    }
+
+    /// Start an ssh tab's process. If `keyID` names a saved key, it is resolved
+    /// through the Keychain into a fresh temp `-i <path>` (`SSHKeyMaterializer`)
+    /// - the Touch ID / passcode prompt happens inside that call. Any temp file
+    /// from a previous start of this tab is cleaned up first, so reconnect never
+    /// piles up scratch directories. A resolution failure (deleted key,
+    /// cancelled prompt, Keychain error) does not block the connection - `ssh`
+    /// still starts without `-i`, falling back to the system agent, with the
+    /// error surfaced in the terminal so it is visible rather than silent.
+    private func connectSSH(_ tab: TabModel, executable: String, hostArgs: [String], keyID: UUID?) {
+        cleanupSSHKeyTempFile(tab)
+        var args = hostArgs
+        if let keyID, let key = keyStore.key(id: keyID) {
+            do {
+                let materialized = try SSHKeyMaterializer.materialize(key: key)
+                tab.sshKeyTempPath = materialized.privateKeyPath
+                args = ["-i", materialized.privateKeyPath] + args
+            } catch {
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m \(error.localizedDescription)\r\n")
+                tab.terminal.feed(text: "  \u{1b}[2mConnecting without the saved key. Press ⌘R to retry.\u{1b}[0m\r\n")
+            }
+        }
+        tab.terminal.startProcess(
+            executable: executable,
+            args: args,
+            environment: childEnvironment(),
+            execName: nil,
+            currentDirectory: shellCwd()
+        )
+    }
+
+    /// Delete a tab's materialized key scratch dir, if it has one. Called
+    /// before every (re)start, on close, and on quit - never left for a crash
+    /// to clean up.
+    private func cleanupSSHKeyTempFile(_ tab: TabModel) {
+        guard let path = tab.sshKeyTempPath else { return }
+        SSHKeyMaterializer.cleanup(privateKeyPath: path)
+        tab.sshKeyTempPath = nil
     }
 
     /// Set up a grouped session and attach `tab`'s terminal to it. On failure the
@@ -321,6 +367,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.isClosing = true
         tab.mirror?.tearDown()
         tab.mirror = nil
+        cleanupSSHKeyTempFile(tab)
         tab.terminal.terminate()
         tab.terminal.removeFromSuperview()
         tabs.remove(at: idx)
@@ -460,24 +507,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 execName: nil,
                 currentDirectory: cwd
             )
-        case .ssh(_, let exe, let args):
-            tab.terminal.startProcess(
-                executable: exe,
-                args: args,
-                environment: childEnvironment(),
-                execName: nil,
-                currentDirectory: shellCwd()
-            )
+        case .ssh(_, let exe, let hostArgs, let keyID):
+            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID)
         }
         view.window?.makeFirstResponder(tab.terminal)
     }
 
-    /// Tear down every mirror's grouped session so we don't leave stale
-    /// `cockpit_*` sessions behind. Called from the app delegate on quit.
+    /// Tear down every mirror's grouped session and every materialized ssh key
+    /// temp file so nothing is left dangling. Called from the app delegate on quit.
     func shutdown() {
         for tab in tabs {
             tab.mirror?.tearDown()
             tab.mirror = nil
+            cleanupSSHKeyTempFile(tab)
         }
     }
 
@@ -512,6 +554,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if tab.isClosing { return }
         tab.mirror?.tearDown()
         tab.mirror = nil
+        cleanupSSHKeyTempFile(tab)
         let code = exitCode.map { " (exit \($0))" } ?? ""
         source.feed(text: "\r\n  \u{1b}[2m[process ended\(code) - press ⌘R to reconnect]\u{1b}[0m\r\n")
     }
