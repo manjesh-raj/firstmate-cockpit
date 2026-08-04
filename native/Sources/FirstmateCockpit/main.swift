@@ -29,27 +29,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
     lazy var settingsController = SettingsController()
-    lazy var appShell = AppShellController(hostsPanel: hostsPanel, console: console, settings: settingsController)
+    // Fix 1: `makeHostConsole` builds a fresh, host-scoped console (no
+    // Mirror/Shell tabs) for `AppShellController.connectHost` - captured as
+    // local constants (not `self`) so this closure, which `appShell` holds
+    // onto for its whole lifetime, can't form a retain cycle with `self`.
+    lazy var appShell: AppShellController = {
+        let keyStore = self.keyStore
+        let snippetStore = self.snippetStore
+        return AppShellController(
+            hostsPanel: hostsPanel, console: console, settings: settingsController,
+            makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
+        )
+    }()
     var keysWindow: NSWindow?
     var snippetsWindow: NSWindow?
     var hostEditorWindow: NSWindow?
+    /// Fix 1: last-seen saved-host ids, so `hostStore.observe` below can
+    /// detect a delete (a host id present last time but missing now) and
+    /// tear down that host's dedicated page rather than leaving it stranded.
+    private var knownHostIDs: Set<UUID> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Connect action from the panel (saved host or ad-hoc quick-connect)
-        // opens an ssh tab in the Phase 0 tab collection; `keyID`, when set, is
-        // resolved through the Keychain by the console (Phase 2), and
-        // `startupSnippetID`, when set, is resolved through the snippet
-        // library (Phase 3).
-        hostsPanel.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
+        // Connect action from the panel: a saved host (has an id) reaches its
+        // own dedicated page (Fix 1) - the same one its rail icon opens, via
+        // `connectToHost` below; an ad-hoc quick-connect (no saved identity to
+        // pin a page to) still opens as a plain tab in the shared Firstmate
+        // console, same as before Fix 1.
+        hostsPanel.onConnect = { [weak self] hostID, label, args, accentHex, keyID, startupSnippetID in
             guard let self else { return }
-            self.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
-            // Hosts and Console are decoupled destinations now (Fix 2) - bring
-            // Console forward so the new tab is actually visible.
-            self.appShell.show(.console)
+            if let hostID, let host = self.hostStore.host(id: hostID) {
+                self.connectToHost(host)
+            } else {
+                self.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+                self.appShell.show(.console)
+            }
         }
         // The pinned "Firstmate" entry (Fix 4) - the same Shell + Mirror pair
         // the console has always opened at startup, now also reachable from
-        // the Hosts list.
+        // the Hosts list. Unaffected by Fix 1: it's the one destination that
+        // deliberately stays on the shared `console`, never a dedicated page.
         hostsPanel.onConnectPinned = { [weak self] in
             guard let self else { return }
             self.console.openFirstmateHost()
@@ -63,19 +81,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Fix 3 (fixes4): a pinned rail icon per saved host, kept live via
         // `HostStore.observe` - the same add/rename/delete signal the Hosts
         // list itself reloads from. Clicking one connects exactly like the
-        // Hosts list's own Connect action.
+        // Hosts list's own Connect action (Fix 1: both now reach the same
+        // dedicated per-host page via `connectToHost`).
         appShell.rail.setHosts(hostStore.hosts)
+        knownHostIDs = Set(hostStore.hosts.map { $0.id })
         hostStore.observe { [weak self] in
             guard let self else { return }
+            let currentIDs = Set(self.hostStore.hosts.map { $0.id })
+            // Fix 1: a host id that was known last time but isn't anymore was
+            // deleted - tear down its dedicated page so the rail (which just
+            // lost that host's icon) can't leave it stranded.
+            for removedID in self.knownHostIDs.subtracting(currentIDs) {
+                self.appShell.removeHostConsole(id: removedID)
+            }
+            self.knownHostIDs = currentIDs
             self.appShell.rail.setHosts(self.hostStore.hosts)
         }
         appShell.rail.onConnectHost = { [weak self] host in
-            guard let self else { return }
-            self.console.openSSH(
-                label: host.label, args: host.sshArguments(allHosts: self.hostStore.hosts),
-                accentHex: host.accentHex, keyID: host.keyID, startupSnippetID: host.startupSnippetID
-            )
-            self.appShell.show(.console)
+            self?.connectToHost(host)
         }
         // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
         // console's active tab.
@@ -116,9 +139,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Tear down the mirror's grouped tmux session so a `cockpit_*` session is
-    /// not left behind after the app quits.
+    /// not left behind after the app quits - the shared Firstmate console and
+    /// (Fix 1) every host's own dedicated console.
     func applicationWillTerminate(_ notification: Notification) {
         console.shutdown()
+        appShell.shutdownAllHostConsoles()
+    }
+
+    // MARK: Host connect (Fix 1: dedicated per-host pages)
+
+    /// The one place a saved host is actually connected to - reached from
+    /// both the Hosts sidebar's own "Connect" and a pinned rail icon click,
+    /// so there's exactly one behavior for "connect to this saved host"
+    /// regardless of entry point. `AppShellController.connectHost` owns the
+    /// "open the first time, just focus after that" logic
+    /// (`ConsoleController.connectSSHIfNeeded`); this method's only job is
+    /// resolving the host's full `ssh` argv, which needs `hostStore.hosts`
+    /// for jump-chain resolution (`Host.sshArguments(allHosts:)`).
+    private func connectToHost(_ host: Host) {
+        appShell.connectHost(host, args: host.sshArguments(allHosts: hostStore.hosts))
     }
 
     // MARK: Host editor window (nav-redesign task, item 3)
@@ -153,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win = existing
         } else {
             win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 560, height: 780),
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 780),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
@@ -163,14 +202,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         win.title = host == nil ? "New Host" : "Edit Host"
         win.contentViewController = editor
-        // Assigning `contentViewController` lets AppKit resize the window to
-        // the view's Auto Layout fitting size (Fix 2) - which, for this
-        // form, resolves smaller than the 560x780 this window is designed
-        // for, so every open (first-time or reused) needs the size forced
-        // back explicitly rather than trusting whatever `contentRect` the
-        // window happened to be created with.
-        win.contentMinSize = NSSize(width: 520, height: 620)
-        win.setContentSize(NSSize(width: 560, height: 780))
+        // Fix 2 (third round): the form's content column caps at 520pt and
+        // centers (`HostEditorController.maxContentWidth`), so 568pt
+        // (520 + 24pt margin each side) is the narrowest width that shows the
+        // whole column without horizontal clipping - AppKit enforces that as
+        // a live floor via the content view controller's fitting size (verified
+        // with a live probe: dragging the window narrower than 568 settles
+        // back to 568 on the next layout pass, same as any AppKit dialog
+        // window whose content can't shrink further). 580 leaves a hair of
+        // margin above that floor; 640 is the default so the centering is
+        // visibly obvious - not flush with the window edges - without the
+        // captain having to widen it by hand. Height has no such floor (the
+        // form scrolls vertically), so 620 stays the height floor unchanged.
+        win.contentMinSize = NSSize(width: 580, height: 620)
+        win.setContentSize(NSSize(width: 640, height: 780))
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
