@@ -12,18 +12,25 @@ import SwiftTerm
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
-    let console = ConsoleController()
     // Phase 1: saved SSH hosts + the sidebar that lists and connects them. The
     // sidebar hands a `ssh` argv to the console, which opens it as a new tab.
     let hostStore = HostStore()
-    lazy var sidebar = HostsSidebarController(store: hostStore)
+    // Phase 2: the saved-keys Keychain. The console resolves a host's chosen
+    // key through it at connect time; the Keys window (below) is where the
+    // captain generates/imports/browses them.
+    let keyStore = SSHKeyStore()
+    lazy var console = ConsoleController(keyStore: keyStore)
+    lazy var sidebar = HostsSidebarController(store: hostStore, keyStore: keyStore)
+    lazy var keysController = KeysSidebarController(store: keyStore)
     var split: NSSplitViewController!
+    var keysWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Connect action from the sidebar (saved host or ad-hoc quick-connect)
-        // opens an ssh tab in the Phase 0 tab collection.
-        sidebar.onConnect = { [weak self] label, args, accentHex in
-            self?.console.openSSH(label: label, args: args, accentHex: accentHex)
+        // opens an ssh tab in the Phase 0 tab collection; `keyID`, when set, is
+        // resolved through the Keychain by the console (Phase 2).
+        sidebar.onConnect = { [weak self] label, args, accentHex, keyID in
+            self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID)
         }
 
         // A Hosts sidebar on the left, the tabbed console on the right (Termius
@@ -63,6 +70,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// not left behind after the app quits.
     func applicationWillTerminate(_ notification: Notification) {
         console.shutdown()
+    }
+
+    // MARK: Keys window (Phase 2)
+
+    /// Open (or bring forward) the "SSH Keys" screen. A separate window rather
+    /// than a third split-view pane, since keys are managed far less often
+    /// than hosts are connected to (design report Section A1: "a keychain
+    /// screen the captain can browse").
+    @objc func showKeysWindow() {
+        if keysWindow == nil {
+            let win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            win.title = "SSH Keys"
+            win.contentViewController = keysController
+            win.isReleasedWhenClosed = false
+            win.center()
+            keysWindow = win
+        }
+        keysWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func newKeyFromMenu() {
+        showKeysWindow()
+        keysController.newKey()
     }
 
     // MARK: Menu
@@ -120,6 +156,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .control]
         toggleSidebarItem.target = split
         hostsMenu.addItem(toggleSidebarItem)
+
+        // Keys menu - the Phase 2 Keychain screen. Both items target the app
+        // delegate directly (so they work regardless of focus, like the Hosts
+        // menu's New Host / Quick Connect above).
+        let keysMenuItem = NSMenuItem()
+        mainMenu.addItem(keysMenuItem)
+        let keysMenu = NSMenu(title: "Keys")
+        keysMenuItem.submenu = keysMenu
+        keysMenu.addItem(withTitle: "New Key…", action: #selector(AppDelegate.newKeyFromMenu), keyEquivalent: "n")
+            .keyEquivalentModifierMask = [.command, .shift]
+        keysMenu.addItem(withTitle: "Manage Keys…", action: #selector(AppDelegate.showKeysWindow), keyEquivalent: "k")
+            .keyEquivalentModifierMask = [.command, .shift]
+        for item in keysMenu.items { item.target = self }
 
         // Tab menu - the dynamic tab collection: new / duplicate / rename / close,
         // reconnect, and ⌘1…⌘9 to jump to a tab. All resolve to ConsoleController.

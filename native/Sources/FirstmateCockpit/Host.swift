@@ -6,10 +6,11 @@
 // `HostStore`; this file is just the value type, the icon/colour catalogue, and
 // the `ssh` argv builder.
 //
-// Secrets stay OFF disk in Phase 1 (Phase 2 adds the Keychain / Secure Enclave
-// key store). So the only credential a host **persists** is a *path* to an
-// on-disk private key (a path, not the key material) or nothing at all (fall back
-// to the system ssh agent / `known_hosts`). A typed-in `password` is held in
+// Phase 2 replaces the Phase 1 "on-disk key path" credential with a real
+// saved-key reference (`keyID`, into `SSHKeyStore` / `KeychainKeyStore`) - the
+// only thing persisted here is a `UUID`, never key material. With no key
+// chosen, `ssh` falls back to the system agent / `known_hosts` and prompts
+// interactively on the PTY, same as Phase 1. A typed-in `password` is held in
 // memory for the session and is deliberately excluded from `Codable`.
 
 import Foundation
@@ -28,10 +29,10 @@ struct Host: Codable, Identifiable, Equatable {
     /// Login user. When empty, `ssh` uses the current local user.
     var username: String = ""
 
-    /// Optional path to an on-disk private key (passed as `ssh -i`). A path is
-    /// not secret, so it is safe to persist here; the key material itself is
-    /// never stored by the cockpit in Phase 1.
-    var keyPath: String?
+    /// Optional reference to a saved key in `SSHKeyStore` (Phase 2). The
+    /// key's secret material is resolved through `SSHKeyMaterializer` at
+    /// connect time - a host never carries anything more sensitive than this id.
+    var keyID: UUID?
 
     /// SF Symbol name for this host's row/tab icon (A3). Defaults sensibly.
     var iconSymbol: String = HostCatalog.defaultIcon
@@ -50,17 +51,17 @@ struct Host: Codable, Identifiable, Equatable {
 
     /// Everything persisted - note `password` is intentionally absent.
     private enum CodingKeys: String, CodingKey {
-        case id, label, address, port, username, keyPath, iconSymbol, accentHex, group, tags
+        case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags
     }
 
-    /// The `ssh` argument vector for this host: optional identity file, optional
-    /// non-default port, then the `[user@]address` destination. `ssh` owns the
-    /// transport and interactive auth (design report C1).
+    /// The `ssh` argument vector for this host, minus any identity file: an
+    /// optional non-default port, then the `[user@]address` destination.
+    /// `ssh` owns the transport and interactive auth (design report C1). The
+    /// `-i <path>` for `keyID`, if set, is prepended separately by
+    /// `ConsoleController` once the key is materialized (it needs a live
+    /// Keychain read, which does not belong in a value type).
     func sshArguments() -> [String] {
         var args: [String] = []
-        if let kp = keyPath?.trimmingCharacters(in: .whitespaces), !kp.isEmpty {
-            args += ["-i", (kp as NSString).expandingTildeInPath]
-        }
         if port != 22 { args += ["-p", String(port)] }
         args.append(destination)
         return args
