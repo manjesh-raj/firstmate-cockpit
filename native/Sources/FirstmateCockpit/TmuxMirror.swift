@@ -129,6 +129,46 @@ struct TmuxMirror {
         return nil
     }
 
+    /// One discovered tmux pane - the Settings > Connection session picker's
+    /// card data (Fix 3), mirroring `scripts.tmux_panes()` / `/api/targets`.
+    struct SessionInfo {
+        let target: String
+        let session: String
+        let command: String
+        let path: String
+        let isHome: Bool
+    }
+
+    /// List every tmux pane across every session, tagging ones whose cwd is
+    /// inside the firstmate home (the "home" badge) and sorting home panes
+    /// first - mirrors `backend/app.py`'s `_scan_candidates`. Returns `nil`
+    /// when no tmux server is reachable. Internal `cockpit_*` mirror groups
+    /// are excluded, same as the web app.
+    static func listSessions() -> [SessionInfo]? {
+        guard let tmux = resolveTmux() else { return nil }
+        let env = childEnvironmentDict()
+        let sep = "|FM|"
+        let fmt = ["#{session_name}", "#{window_index}", "#{pane_index}", "#{pane_current_command}", "#{pane_current_path}"].joined(separator: sep)
+        let result = run(tmux, ["list-panes", "-a", "-F", fmt], env: env)
+        guard result.status == 0 else { return nil }
+        let home = FirstmateHome.root.path
+        var out: [SessionInfo] = []
+        for line in result.stdout.split(separator: "\n") {
+            let parts = line.components(separatedBy: sep)
+            guard parts.count >= 5 else { continue }
+            let session = parts[0]
+            if session.hasPrefix("cockpit_") { continue }
+            let path = parts[4]
+            let isHome = path == home || path.hasPrefix(home + "/")
+            out.append(SessionInfo(target: "\(session):\(parts[1]).\(parts[2])", session: session, command: parts[3], path: path, isHome: isHome))
+        }
+        out.sort { a, b in
+            if a.isHome != b.isHome { return a.isHome && !b.isHome }
+            return a.target < b.target
+        }
+        return out
+    }
+
     /// Run a tmux command and capture its result. The Swift analogue of the
     /// `_tmux(...)` `subprocess.run` helper in `backend/terminal.py`.
     @discardableResult

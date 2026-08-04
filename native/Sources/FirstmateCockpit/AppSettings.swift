@@ -20,6 +20,8 @@ final class AppSettings {
         static let defaultShellCwd = "fm.defaultShellCwd"
         static let mirrorTarget = "fm.mirrorTarget"
         static let sessionLoggingDefault = "fm.sessionLoggingDefault"
+        static let autoReconnect = "fm.autoReconnect"
+        static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
     }
 
     private init() {}
@@ -54,5 +56,24 @@ final class AppSettings {
     var sessionLoggingDefault: Bool {
         get { defaults.bool(forKey: Keys.sessionLoggingDefault) }
         set { defaults.set(newValue, forKey: Keys.sessionLoggingDefault) }
+    }
+
+    /// Settings > Terminal's "Reconnect automatically" toggle (Fix 3) -
+    /// `ConsoleController.processTerminated` schedules a real reconnect of a
+    /// tab whose process exited unexpectedly when this is on, rather than
+    /// just showing the "press ⌘R to reconnect" hint. Defaults to on, since
+    /// a dropped connection auto-recovering is the least surprising default.
+    var autoReconnect: Bool {
+        get { defaults.object(forKey: Keys.autoReconnect) == nil ? true : defaults.bool(forKey: Keys.autoReconnect) }
+        set { defaults.set(newValue, forKey: Keys.autoReconnect) }
+    }
+
+    /// Settings > Terminal's "Bell & notifications" toggle (Fix 3) - when on,
+    /// `FleetNotifier` posts a real macOS notification the moment a task
+    /// newly needs the captain's decision. Off by default so a fresh launch
+    /// never surprises anyone with a notification-permission prompt.
+    var notifyOnNeedsDecision: Bool {
+        get { defaults.bool(forKey: Keys.notifyOnNeedsDecision) }
+        set { defaults.set(newValue, forKey: Keys.notifyOnNeedsDecision) }
     }
 }

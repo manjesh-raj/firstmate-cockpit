@@ -1,19 +1,20 @@
 // Firstmate Cockpit - native macOS app.
 //
-// The window's root content view controller for the nav-redesign task: a
-// fixed `IconRailController` on the left, and to its right a `TopBarController`
-// (always visible) above a body area that swaps between destinations:
+// The window's root content view controller: a fixed `IconRailController` on
+// the left, and to its right a `TopBarController` (always visible) above a
+// body area that swaps between five destinations:
 //
-//   - .home / .console both show the same nested hosts-panel/console split
-//     (`ConsoleController` and its running tabs are never torn down when you
-//     navigate away - only hidden), just with the hosts panel collapsed for
-//     Home and expanded for Console (item 2: "opens... defaults to open when
-//     the Console icon is active").
-//   - .overview / .review show a `PlaceholderViewController` (item 1: these
-//     have no native content source yet).
+//   - .overview shows `FleetController` (Fix 1): the real fleet/PR dashboard.
+//   - .hosts shows `HostsSidebarController` (Fix 2) as its own full
+//     destination - no longer nested inside Console, so it's reachable
+//     exactly like Settings is.
+//   - .console shows `ConsoleController` alone: just the terminal/tabs area,
+//     with no Hosts panel required to be visible alongside it.
+//   - .review shows a `PlaceholderViewController` (no native content source
+//     yet).
 //   - .settings shows `SettingsController` directly, in the body area rather
-//     than a separate floating window - the rail's "destination" model
-//     (item 5), matching how the web app's Settings is a `view`, not a window.
+//     than a separate floating window, matching how the web app's Settings
+//     is a `view`, not a window.
 //
 // All five destination views are added as children up front and just have
 // their `isHidden` flipped - never rebuilt - so nothing here can drop a
@@ -28,19 +29,12 @@ final class AppShellController: NSViewController {
     private let hostsPanel: HostsSidebarController
     private let console: ConsoleController
     private let settings: SettingsController
-    private let overview = PlaceholderViewController(
-        symbol: "square.grid.2x2",
-        title: "Overview",
-        subtitle: "A fleet-wide overview lives in the web cockpit today. This destination is reserved for when that view lands natively."
-    )
+    private let overview: FleetController
     private let review = PlaceholderViewController(
         symbol: "arrow.triangle.branch",
         title: "Review",
         subtitle: "Pull-request review lives in the web cockpit today. This destination is reserved for when that view lands natively."
     )
-
-    private var consoleSplit: NSSplitViewController!
-    private var hostsSplitItem: NSSplitViewItem!
 
     /// Add/Edit Host, requested from the Hosts panel - forwarded to whoever
     /// owns the host store (the app delegate), since this controller only
@@ -51,6 +45,7 @@ final class AppShellController: NSViewController {
         self.hostsPanel = hostsPanel
         self.console = console
         self.settings = settings
+        self.overview = FleetController()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -72,27 +67,18 @@ final class AppShellController: NSViewController {
         addChild(topBar)
         bodyContainer.addSubview(topBar.view)
         topBar.view.translatesAutoresizingMaskIntoConstraints = false
-        topBar.onSearchTapped = { [weak self] in self?.revealHostsQuickConnect() }
+        // Fix 4: the topbar Search control performs an in-terminal find
+        // (the same action the console toolbar's magnifying-glass icon
+        // triggers), not anything host-related.
+        topBar.onSearchTapped = { [weak self] in self?.activateConsoleFind() }
 
-        consoleSplit = NSSplitViewController()
-        let hostsItem = NSSplitViewItem(sidebarWithViewController: hostsPanel)
-        // Termius-proportioned panel (PR #14's Fix 1 width, reused here): wide
-        // enough for label + subtitle + icon, narrow enough not to crowd the
-        // console.
-        hostsItem.minimumThickness = 220
-        hostsItem.maximumThickness = 260
-        hostsItem.canCollapse = true
-        hostsItem.holdingPriority = .defaultLow
-        hostsSplitItem = hostsItem
-        consoleSplit.addSplitViewItem(hostsItem)
-        consoleSplit.addSplitViewItem(NSSplitViewItem(viewController: console))
-        addChild(consoleSplit)
-
+        addChild(hostsPanel)
+        addChild(console)
         addChild(overview)
         addChild(review)
         addChild(settings)
 
-        for destinationView in [consoleSplit.view, overview.view, review.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, settings.view] {
             destinationView.translatesAutoresizingMaskIntoConstraints = false
             bodyContainer.addSubview(destinationView)
             NSLayoutConstraint.activate([
@@ -124,34 +110,28 @@ final class AppShellController: NSViewController {
         show(.console)
     }
 
-    /// Called once after the window is on screen, to pin the nested
-    /// hosts/console divider - mirrors PR #14's explicit
-    /// `setPosition(240, ofDividerAt: 0)` fix so a fresh launch never shows
-    /// whatever width the sidebar's view happened to be created with.
-    func pinInitialDividerPosition() {
-        consoleSplit.splitView.setPosition(240, ofDividerAt: 0)
-    }
-
     // MARK: Destination switching
 
-    private func show(_ dest: RailDestination) {
-        consoleSplit.view.isHidden = true
+    /// Internal (not `private`): the app delegate also calls this directly
+    /// after connecting a host, so the new tab is visible immediately
+    /// instead of landing silently in the background Console destination.
+    func show(_ dest: RailDestination) {
+        hostsPanel.view.isHidden = true
+        console.view.isHidden = true
         overview.view.isHidden = true
         review.view.isHidden = true
         settings.view.isHidden = true
 
         switch dest {
-        case .home:
-            consoleSplit.view.isHidden = false
-            hostsSplitItem.isCollapsed = true
-            topBar.setTitle("Home")
-        case .console:
-            consoleSplit.view.isHidden = false
-            hostsSplitItem.isCollapsed = false
-            topBar.setTitle("Console")
         case .overview:
             overview.view.isHidden = false
             topBar.setTitle("Overview")
+        case .hosts:
+            hostsPanel.view.isHidden = false
+            topBar.setTitle("Hosts")
+        case .console:
+            console.view.isHidden = false
+            topBar.setTitle("Console")
         case .review:
             review.view.isHidden = false
             topBar.setTitle("Review")
@@ -162,12 +142,20 @@ final class AppShellController: NSViewController {
         rail.setActive(dest)
     }
 
-    /// The topbar Search pill / ⌘K (Hosts menu "Quick Connect"): make sure
-    /// the panel that owns the quick-connect field is actually on screen
-    /// before focusing it, regardless of which destination was active.
+    /// The Hosts menu's "Quick Connect" (⌘K): reveal the Hosts destination
+    /// and focus its quick-connect field, regardless of which destination
+    /// was active. No longer shared with the topbar Search control (Fix 4).
     @objc func revealHostsQuickConnect() {
-        show(.console)
+        show(.hosts)
         hostsPanel.focusQuickConnect()
+    }
+
+    /// The topbar Search pill / its own ⌘K: bring Console forward (so the
+    /// find bar it triggers is actually visible) and invoke the exact same
+    /// find action the console toolbar's magnifying-glass icon uses.
+    @objc func activateConsoleFind() {
+        show(.console)
+        console.showFind()
     }
 
     /// The App menu's "Settings…" (⌘,): select the Settings rail destination
@@ -176,9 +164,8 @@ final class AppShellController: NSViewController {
         show(.settings)
     }
 
-    /// "Toggle Hosts Sidebar" (⌘⌃S): only meaningful while the Console
-    /// destination is showing the split, but harmless to invoke otherwise.
-    @objc func toggleHostsSidebar(_ sender: Any?) {
-        consoleSplit.toggleSidebar(sender)
+    /// The Hosts menu's "Show Hosts": select the Hosts rail destination.
+    @objc func selectHosts() {
+        show(.hosts)
     }
 }

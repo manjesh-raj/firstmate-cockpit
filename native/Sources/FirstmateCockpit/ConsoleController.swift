@@ -696,6 +696,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// and shows a dim "reconnect" hint in the tab that exited. A mirror tears
     /// down its grouped session here so nothing is left dangling. A tab that is
     /// being closed is skipped - its view is on its way out.
+    ///
+    /// Settings > Terminal's "Reconnect automatically" (Fix 3): when on, this
+    /// also schedules a real reconnect of the same tab after a short delay
+    /// (mirroring `reconnectActive()`'s per-launch-kind restart), instead of
+    /// only showing the hint and waiting for ⌘R.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         guard let tab = tabs.first(where: { $0.terminal === source }) else { return }
         if tab.isClosing { return }
@@ -703,6 +708,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.mirror = nil
         cleanupSSHKeyTempFile(tab)
         let code = exitCode.map { " (exit \($0))" } ?? ""
-        source.feed(text: "\r\n  \u{1b}[2m[process ended\(code) - press ⌘R to reconnect]\u{1b}[0m\r\n")
+        let hint = AppSettings.shared.autoReconnect ? "reconnecting…" : "press ⌘R to reconnect"
+        source.feed(text: "\r\n  \u{1b}[2m[process ended\(code) - \(hint)]\u{1b}[0m\r\n")
+
+        if AppSettings.shared.autoReconnect {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak tab] in
+                guard let self, let tab, !tab.isClosing, self.tabs.contains(where: { $0 === tab }) else { return }
+                self.startTab(tab)
+            }
+        }
     }
 }
