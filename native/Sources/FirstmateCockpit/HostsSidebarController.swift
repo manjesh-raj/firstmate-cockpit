@@ -7,8 +7,26 @@
 //
 // The sidebar is decoupled from the terminal: it takes a `HostStore` and an
 // `onConnect` closure. It never touches `ConsoleController` or SwiftTerm.
+//
+// Phase 3 (design report Section B4, Section D Phase 3) adds groups and tags:
+// hosts are grouped into labeled sections in the list, and a row of tag
+// chips beneath the search field filters the list to hosts carrying the
+// tapped tag(s) (in addition to the search field already matching tags by
+// text). Connect now also resolves the full Phase 3 argv (agent forwarding,
+// jump chain, port forwards - `Host.sshArguments(allHosts:)`) and passes the
+// host's startup snippet id through, since that also only makes sense at
+// connect time.
 
 import AppKit
+
+/// One row in the host list: either a group section header or a host. Kept
+/// as a flat array (rather than switching to `NSOutlineView`) so the rest of
+/// the table plumbing - selection, double-click, context menu - stays exactly
+/// as it was before groups existed.
+private enum HostListRow {
+    case header(String)
+    case host(Host)
+}
 
 final class HostsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
 
@@ -17,25 +35,38 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     /// editor's "Choose a key" popup. All secret handling lives in
     /// `KeychainKeyStore` / `SSHKeyMaterializer`, not in this controller.
     private let keyStore: SSHKeyStore
+    /// The snippet library (Phase 3) - only read here, to populate the
+    /// editor's "Startup snippet" popup and to hand the chosen id through to
+    /// `onConnect`; `ConsoleController` resolves it into command text.
+    private let snippetStore: SnippetStore
 
-    /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key id).
-    /// Wired by the app delegate to `ConsoleController.openSSH`.
-    var onConnect: ((String, [String], String?, UUID?) -> Void)?
+    /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key
+    /// id, startup-snippet id). Wired by the app delegate to
+    /// `ConsoleController.openSSH`.
+    var onConnect: ((String, [String], String?, UUID?, UUID?) -> Void)?
 
     // MARK: Views
 
     private let searchField = NSSearchField()
+    private let tagsScroll = NSScrollView()
+    private let tagsStack = NSStackView()
     private let table = NSTableView()
     private var connectButton = NSButton()
     private var editButton = NSButton()
     private var deleteButton = NSButton()
 
-    /// The hosts currently shown (filtered by the search text).
-    private var filtered: [Host] = []
+    /// The rows currently shown (filtered by search text + selected tags,
+    /// then grouped into header/host rows).
+    private var rows: [HostListRow] = []
+    /// Tags currently toggled on in the chip row; a host must carry at least
+    /// one to pass (in addition to the text filter).
+    private var selectedTags: Set<String> = []
+    private var tagButtons: [String: NSButton] = [:]
 
-    init(store: HostStore, keyStore: SSHKeyStore) {
+    init(store: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
         self.store = store
         self.keyStore = keyStore
+        self.snippetStore = snippetStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -70,6 +101,26 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         // (`control(_:textView:doCommandBy:)`). Deliberately no target/action -
         // an NSSearchField would otherwise fire it mid-typing.
 
+        // Tag filter chips (B4) - a horizontally scrolling row of toggle
+        // buttons, one per distinct tag across all hosts. Rebuilt on every
+        // `reload()` since the tag set changes as hosts are edited.
+        tagsStack.orientation = .horizontal
+        tagsStack.spacing = 4
+        tagsStack.translatesAutoresizingMaskIntoConstraints = false
+        tagsScroll.documentView = tagsStack
+        tagsScroll.hasHorizontalScroller = false
+        tagsScroll.hasVerticalScroller = false
+        tagsScroll.drawsBackground = false
+        tagsScroll.translatesAutoresizingMaskIntoConstraints = false
+        // No trailing constraint - the stack sizes to its content (the
+        // buttons built in `rebuildTagChips`) and the clip view scrolls
+        // horizontally once that content is wider than the visible row.
+        NSLayoutConstraint.activate([
+            tagsStack.leadingAnchor.constraint(equalTo: tagsScroll.contentView.leadingAnchor),
+            tagsStack.topAnchor.constraint(equalTo: tagsScroll.contentView.topAnchor),
+            tagsStack.bottomAnchor.constraint(equalTo: tagsScroll.contentView.bottomAnchor),
+        ])
+
         // Host list.
         table.headerView = nil
         table.style = .sourceList
@@ -103,6 +154,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         root.addSubview(title)
         root.addSubview(addButton)
         root.addSubview(searchField)
+        root.addSubview(tagsScroll)
         root.addSubview(scroll)
         root.addSubview(footer)
 
@@ -119,9 +171,14 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             searchField.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             searchField.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
 
+            tagsScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            tagsScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            tagsScroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
+            tagsScroll.heightAnchor.constraint(equalToConstant: 22),
+
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 10),
+            scroll.topAnchor.constraint(equalTo: tagsScroll.bottomAnchor, constant: 8),
             scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
 
             footer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
@@ -156,37 +213,98 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     // MARK: Data
 
     private func reload() {
+        rebuildTagChips()
         applyFilter(searchField.stringValue)
     }
 
+    /// One toggle button per distinct tag across all hosts, sorted for a
+    /// stable layout. Rebuilding on every `reload()` is cheap (a handful of
+    /// hosts, a handful of tags) and keeps this in sync with host edits
+    /// without a separate change-tracking path.
+    private func rebuildTagChips() {
+        for v in tagsStack.arrangedSubviews {
+            tagsStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        tagButtons.removeAll()
+        let allTags = Set(store.hosts.flatMap(\.tags)).sorted()
+        selectedTags.formIntersection(allTags)
+        for tag in allTags {
+            let b = NSButton(title: tag, target: self, action: #selector(tagChipClicked(_:)))
+            b.bezelStyle = .inline
+            b.setButtonType(.pushOnPushOff)
+            b.state = selectedTags.contains(tag) ? .on : .off
+            b.font = .systemFont(ofSize: 10)
+            b.identifier = NSUserInterfaceItemIdentifier(tag)
+            tagButtons[tag] = b
+            tagsStack.addArrangedSubview(b)
+        }
+        tagsScroll.isHidden = allTags.isEmpty
+    }
+
+    @objc private func tagChipClicked(_ sender: NSButton) {
+        guard let tag = sender.identifier?.rawValue else { return }
+        if sender.state == .on {
+            selectedTags.insert(tag)
+        } else {
+            selectedTags.remove(tag)
+        }
+        applyFilter(searchField.stringValue)
+    }
+
+    /// Text filter (label/address/username/tags) + the tag-chip filter,
+    /// grouped into `HostListRow.header`/`.host` rows. Headers are skipped
+    /// entirely when every visible host shares the same group - the common
+    /// "I haven't set up groups yet" case - so this never adds visual noise
+    /// for a flat host list.
     private func applyFilter(_ query: String) {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if q.isEmpty {
-            filtered = store.hosts
-        } else {
-            filtered = store.hosts.filter { host in
+        var hosts = store.hosts
+        if !q.isEmpty {
+            hosts = hosts.filter { host in
                 host.label.lowercased().contains(q)
                     || host.address.lowercased().contains(q)
                     || host.username.lowercased().contains(q)
                     || host.tags.contains { $0.lowercased().contains(q) }
             }
         }
+        if !selectedTags.isEmpty {
+            hosts = hosts.filter { !$0.tags.isEmpty && !selectedTags.isDisjoint(with: $0.tags) }
+        }
+
+        let groupKeys = Set(hosts.map { $0.group?.trimmingCharacters(in: .whitespacesAndNewlines) }.map { ($0?.isEmpty ?? true) ? nil : $0 })
+        if groupKeys.count <= 1 {
+            rows = hosts.map { .host($0) }
+        } else {
+            let named = groupKeys.compactMap { $0 }.sorted()
+            var built: [HostListRow] = []
+            for name in named {
+                built.append(.header(name))
+                built += hosts.filter { $0.group?.trimmingCharacters(in: .whitespacesAndNewlines) == name }.map { .host($0) }
+            }
+            let ungrouped = hosts.filter { ($0.group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty }
+            if !ungrouped.isEmpty {
+                built.append(.header("Ungrouped"))
+                built += ungrouped.map { .host($0) }
+            }
+            rows = built
+        }
+
         table.reloadData()
         updateButtons()
     }
 
-    private var selectedHost: Host? {
-        let row = table.selectedRow
-        guard row >= 0, row < filtered.count else { return nil }
-        return filtered[row]
+    private func host(at row: Int) -> Host? {
+        guard row >= 0, row < rows.count, case .host(let h) = rows[row] else { return nil }
+        return h
     }
+
+    private var selectedHost: Host? { host(at: table.selectedRow) }
 
     /// The host targeted by a context-menu click (the clicked row), falling back
     /// to the current selection.
     private var clickedHost: Host? {
-        let row = table.clickedRow
-        if row >= 0, row < filtered.count { return filtered[row] }
-        return selectedHost
+        host(at: table.clickedRow) ?? selectedHost
     }
 
     private func updateButtons() {
@@ -198,14 +316,40 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
 
     // MARK: NSTableView
 
-    func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = NSUserInterfaceItemIdentifier("HostRow")
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? HostRowView) ?? HostRowView()
-        cell.identifier = id
-        cell.configure(with: filtered[row])
-        return cell
+        switch rows[row] {
+        case .header(let name):
+            let id = NSUserInterfaceItemIdentifier("HostSectionHeader")
+            let cell = (tableView.makeView(withIdentifier: id, owner: self) as? HostSectionHeaderView) ?? HostSectionHeaderView()
+            cell.identifier = id
+            cell.configure(name: name)
+            return cell
+        case .host(let host):
+            let id = NSUserInterfaceItemIdentifier("HostRow")
+            let cell = (tableView.makeView(withIdentifier: id, owner: self) as? HostRowView) ?? HostRowView()
+            cell.identifier = id
+            cell.configure(with: host)
+            return cell
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        switch rows[row] {
+        case .header: return 22
+        case .host: return 46
+        }
+    }
+
+    /// Section headers are not selectable rows - only hosts are.
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        host(at: row) != nil
+    }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        if case .header = rows[row] { return true }
+        return false
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -213,6 +357,14 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     // MARK: Connect
+
+    /// The hosts currently visible (unwrapping `.host` rows, skipping headers).
+    private var visibleHosts: [Host] {
+        rows.compactMap { row in
+            if case .host(let h) = row { return h }
+            return nil
+        }
+    }
 
     /// Return in the quick-connect field: match a saved host, else parse an
     /// ad-hoc `[user@]host[:port]`.
@@ -228,12 +380,13 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             connect(exact)
             return
         }
-        if filtered.count == 1 {
-            connect(filtered[0])
+        let visible = visibleHosts
+        if visible.count == 1 {
+            connect(visible[0])
             return
         }
         if let parsed = HostCatalog.parseQuickConnect(raw) {
-            onConnect?(parsed.label, parsed.args, nil, nil)
+            onConnect?(parsed.label, parsed.args, nil, nil, nil)
             searchField.stringValue = ""
             applyFilter("")
             return
@@ -242,7 +395,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func connect(_ host: Host) {
-        onConnect?(host.label, host.sshArguments(), host.accentHex, host.keyID)
+        onConnect?(host.label, host.sshArguments(allHosts: store.hosts), host.accentHex, host.keyID, host.startupSnippetID)
     }
 
     @objc private func connectSelected() {
@@ -297,7 +450,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func presentEditor(for host: Host?) {
-        let editor = HostEditorController(host: host, keys: keyStore.keys)
+        let editor = HostEditorController(host: host, keys: keyStore.keys, snippets: snippetStore.snippets)
         editor.onSave = { [weak self] saved in
             guard let self else { return }
             if self.store.host(id: saved.id) != nil {
@@ -326,6 +479,34 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         }
         quickConnectFromField()
         return true
+    }
+}
+
+// MARK: - Section header row
+
+/// A group section header (B4): a small-caps label, matching the
+/// `NSTableView.style = .sourceList` header look elsewhere in AppKit.
+final class HostSectionHeaderView: NSTableCellView {
+
+    private let label = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(name: String) {
+        label.stringValue = name.uppercased()
     }
 }
 

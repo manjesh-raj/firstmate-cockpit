@@ -3,6 +3,16 @@
 // The paste-hardening terminal view. This is the Phase 1 subclass kept verbatim
 // (design report section 5.3): both Phase 2 tabs - the Shell and the tmux Mirror
 // - use it, so the screenshot-paste-into-Claude flow behaves identically on both.
+//
+// Phase 3 (design report Section B5, Section D Phase 3) adds session logging
+// here too: `dataReceived` is SwiftTerm's one choke point for "bytes the host
+// sent, before they are fed to the terminal emulator" (see
+// `LocalProcessTerminalView.dataReceived` in the vendored package), so tee-ing
+// it to a file is a small override, not a reimplementation of anything
+// SwiftTerm already owns. This deliberately does not reuse SwiftTerm's own
+// `setHostLogging(directory:)` - that writes one file per read syscall
+// (`log-0`, `log-1`, ...), not the single chronological transcript per
+// session the brief asks for.
 
 import AppKit
 import SwiftTerm
@@ -31,5 +41,35 @@ final class CockpitTerminalView: LocalProcessTerminalView {
             return
         }
         super.paste(sender)
+    }
+
+    // MARK: Session logging (B5)
+
+    private var logHandle: FileHandle?
+
+    var isLogging: Bool { logHandle != nil }
+
+    /// Start (or restart) appending this terminal's host output, as raw
+    /// bytes, to `url`. The file is created empty first so a fresh, empty
+    /// transcript exists even if the session produces no further output.
+    func startLogging(to url: URL) throws {
+        stopLogging()
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        logHandle = try FileHandle(forWritingTo: url)
+    }
+
+    func stopLogging() {
+        try? logHandle?.close()
+        logHandle = nil
+    }
+
+    /// Every byte the host sends passes through here on its way to the
+    /// terminal emulator (`feed`) - the single right place to tee a
+    /// transcript without touching anything SwiftTerm already owns.
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        if let logHandle {
+            logHandle.write(Data(slice))
+        }
+        super.dataReceived(slice: slice)
     }
 }

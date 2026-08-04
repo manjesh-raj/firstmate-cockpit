@@ -8,6 +8,12 @@
 // Phase 2 replaces the raw "key file path" field with a "Choose a key" popup
 // sourced from the saved-keys Keychain (`SSHKeyStore`) - the host now carries
 // a `keyID` reference, never a path, per design report Section A2/C3.
+//
+// Phase 3 (Section B1/B2/B4, Section D Phase 3) adds: Group + Tags (B4);
+// Agent Forwarding and Jump Via (B1); a "Port Forwarding\u{2026}" button that
+// opens `PortForwardingController` as a nested sheet (B1); and a Startup
+// Snippet popup sourced from `SnippetStore`, matching the key popup's shape
+// (B2/B5).
 
 import AppKit
 
@@ -20,6 +26,10 @@ final class HostEditorController: NSViewController {
     /// the sheet opens (matches how the icon/colour catalogues are snapshotted
     /// too; a key added while this sheet is open won't appear until reopened).
     private let keys: [SSHKey]
+
+    /// Saved snippets to offer in the "Startup snippet" popup - snapshotted
+    /// the same way `keys` is.
+    private let snippets: [Snippet]
 
     /// Called with the assembled host on Save. The caller persists it.
     var onSave: ((Host) -> Void)?
@@ -34,6 +44,16 @@ final class HostEditorController: NSViewController {
     private let usernameField = NSTextField()
     private let passwordField = NSSecureTextField()
     private let keyPopup = NSPopUpButton()
+    private let groupField = NSTextField()
+    private let tagsField = NSTextField()
+    private let agentForwardCheckbox = NSButton(checkboxWithTitle: "Forward SSH agent (-A)", target: nil, action: nil)
+    private let jumpViaField = NSTextField()
+    private let portForwardingButton = NSButton()
+    private let snippetPopup = NSPopUpButton()
+
+    /// Edited in the nested `PortForwardingController` sheet, carried here
+    /// until Save.
+    private var portForwards: [PortForwardRule]
 
     /// Current icon/colour selection, seeded from the host (or the defaults).
     private var selectedIcon: String
@@ -43,9 +63,11 @@ final class HostEditorController: NSViewController {
 
     // MARK: Init
 
-    init(host: Host?, keys: [SSHKey]) {
+    init(host: Host?, keys: [SSHKey], snippets: [Snippet]) {
         self.editing = host
         self.keys = keys
+        self.snippets = snippets
+        self.portForwards = host?.portForwards ?? []
         self.selectedIcon = host?.iconSymbol ?? HostCatalog.defaultIcon
         self.selectedAccent = host?.accentHex ?? HostCatalog.defaultAccent
         super.init(nibName: nil, bundle: nil)
@@ -56,7 +78,7 @@ final class HostEditorController: NSViewController {
     // MARK: Layout
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 520))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 760))
         view = root
 
         let title = NSTextField(labelWithString: editing == nil ? "New Host" : "Edit Host")
@@ -77,6 +99,27 @@ final class HostEditorController: NSViewController {
         let iconRow = buildIconPicker()
         let colorRow = buildColorPicker()
 
+        configure(groupField, placeholder: "Group (e.g. Production)", value: editing?.group)
+        configure(tagsField, placeholder: "Tags, comma separated (e.g. prod, us-east)", value: editing?.tags.joined(separator: ", "))
+
+        agentForwardCheckbox.target = self
+        agentForwardCheckbox.action = #selector(agentForwardToggled)
+        agentForwardCheckbox.state = (editing?.agentForward ?? false) ? .on : .off
+        agentForwardCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
+        configure(jumpViaField, placeholder: "Jump via (host label or user@bastion)", value: editing?.jumpVia)
+
+        portForwardingButton.target = self
+        portForwardingButton.action = #selector(editPortForwarding)
+        portForwardingButton.bezelStyle = .rounded
+        portForwardingButton.translatesAutoresizingMaskIntoConstraints = false
+        updatePortForwardingButtonTitle()
+
+        buildSnippetPopup()
+
+        let jumpCaption = caption("Chains through another saved host's own jump host automatically. "
+            + "Agent forwarding and port-forwarding rules apply to this host's own connection.")
+
         let grid = NSGridView(views: [
             [rowLabel("Label"), labelField],
             [rowLabel("Address"), addressField],
@@ -86,6 +129,12 @@ final class HostEditorController: NSViewController {
             [rowLabel("Key"), keyPopup],
             [rowLabel("Icon"), iconRow],
             [rowLabel("Color"), colorRow],
+            [rowLabel("Group"), groupField],
+            [rowLabel("Tags"), tagsField],
+            [rowLabel(""), agentForwardCheckbox],
+            [rowLabel("Jump via"), jumpViaField],
+            [rowLabel("Forwarding"), portForwardingButton],
+            [rowLabel("Startup snippet"), snippetPopup],
         ])
         grid.translatesAutoresizingMaskIntoConstraints = false
         grid.rowSpacing = 12
@@ -115,7 +164,7 @@ final class HostEditorController: NSViewController {
         bottom.orientation = .horizontal
         bottom.spacing = 10
 
-        let stack = NSStackView(views: [title, grid, credCaption, bottom])
+        let stack = NSStackView(views: [title, grid, credCaption, jumpCaption, bottom])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 16
@@ -129,6 +178,7 @@ final class HostEditorController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
             credCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            jumpCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -186,6 +236,47 @@ final class HostEditorController: NSViewController {
         } else {
             keyPopup.selectItem(at: 0)
         }
+    }
+
+    // MARK: Snippet popup + port forwarding (Phase 3)
+
+    /// "None" plus every saved snippet, by label - the same shape as
+    /// `buildKeyPopup`, so a startup snippet is picked the same way a key is.
+    private func buildSnippetPopup() {
+        snippetPopup.translatesAutoresizingMaskIntoConstraints = false
+        snippetPopup.addItem(withTitle: "None")
+        for snippet in snippets {
+            snippetPopup.addItem(withTitle: snippet.label)
+            snippetPopup.lastItem?.representedObject = snippet.id
+        }
+        if let id = editing?.startupSnippetID,
+           let item = snippetPopup.itemArray.first(where: { ($0.representedObject as? UUID) == id }) {
+            snippetPopup.select(item)
+        } else {
+            snippetPopup.selectItem(at: 0)
+        }
+    }
+
+    private func updatePortForwardingButtonTitle() {
+        portForwardingButton.title = portForwards.isEmpty
+            ? "Port Forwarding\u{2026}"
+            : "Port Forwarding (\(portForwards.count))\u{2026}"
+    }
+
+    @objc private func agentForwardToggled() {
+        // Nothing to react to beyond the checkbox's own state; read at Save.
+    }
+
+    /// Open the rules sheet on top of this one (a sheet-on-sheet, which
+    /// AppKit supports); the edited list only lands on `portForwards` - and
+    /// therefore on the host - when that sheet's own Save is clicked.
+    @objc private func editPortForwarding() {
+        let editor = PortForwardingController(rules: portForwards)
+        editor.onSave = { [weak self] rules in
+            self?.portForwards = rules
+            self?.updatePortForwardingButtonTitle()
+        }
+        presentAsSheet(editor)
     }
 
     // MARK: Icon + colour pickers (A3)
@@ -285,6 +376,17 @@ final class HostEditorController: NSViewController {
         let pw = passwordField.stringValue
         host.password = pw.isEmpty ? nil : pw
         host.keyID = keyPopup.selectedItem?.representedObject as? UUID
+        let group = groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        host.group = group.isEmpty ? nil : group
+        host.tags = tagsField.stringValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        host.agentForward = agentForwardCheckbox.state == .on
+        let jumpVia = jumpViaField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        host.jumpVia = jumpVia.isEmpty ? nil : jumpVia
+        host.portForwards = portForwards
+        host.startupSnippetID = snippetPopup.selectedItem?.representedObject as? UUID
         host.iconSymbol = selectedIcon
         host.accentHex = selectedAccent
 

@@ -12,6 +12,14 @@
 // chosen, `ssh` falls back to the system agent / `known_hosts` and prompts
 // interactively on the PTY, same as Phase 1. A typed-in `password` is held in
 // memory for the session and is deliberately excluded from `Codable`.
+//
+// Phase 3 (design report Section B1/B4/B5, Section D Phase 3) adds the
+// "power features" that make this usable against real infra, all as extra
+// non-secret fields plus extra `ssh` argv - never new transport code:
+// agent forwarding (`-A`), a jump-host chain (`-J`, `jumpVia`), local/remote/
+// dynamic port-forwarding rules, and an optional startup snippet. `group` and
+// `tags` (B4) already existed as unused fields; Phase 3 is what wires them
+// into the sidebar.
 
 import Foundation
 
@@ -40,9 +48,34 @@ struct Host: Codable, Identifiable, Equatable {
     /// connected tab's chip.
     var accentHex: String = HostCatalog.defaultAccent
 
-    /// Optional organisation, kept for later phases (groups/tags, Section B4).
+    /// Organisation (B4): a free-form folder name the sidebar groups hosts
+    /// under. `nil`/empty hosts land in the "Ungrouped" section.
     var group: String?
+    /// Free-form filter labels (B4), searchable from quick-connect and
+    /// selectable as chips in the sidebar.
     var tags: [String] = []
+
+    /// Agent forwarding (B1): adds `-A` to the `ssh` invocation so the
+    /// *system* agent's keys (via the inherited `SSH_AUTH_SOCK`, see
+    /// `childEnvironmentDict`) are usable on the remote host without ever
+    /// putting them in this app's own Keychain store.
+    var agentForward: Bool = false
+
+    /// Jump host / ProxyJump (B1): either another saved host's `label`, or a
+    /// raw `user@bastion[:port]`. Resolved - and, if that host itself has a
+    /// `jumpVia`, chained - into a `-J a,b,c` argument by
+    /// `HostCatalog.proxyJumpChain`, which needs the full host list, so it is
+    /// resolved outside this value type at connect time.
+    var jumpVia: String?
+
+    /// Local/remote/dynamic port-forwarding rules (B1), turned into `-L`/`-R`/
+    /// `-D` flags by `PortForwardRule.sshArguments`.
+    var portForwards: [PortForwardRule] = []
+
+    /// Optional saved snippet (B2/B5) auto-run once this host's session looks
+    /// ready. Resolved through `SnippetStore` by `ConsoleController` - a host
+    /// only ever carries the id, never the command text.
+    var startupSnippetID: UUID?
 
     /// A typed-in password. **Session-only** - excluded from `CodingKeys`, so it
     /// is never written to disk (Phase 2 owns secure secret storage). Plain
@@ -51,17 +84,28 @@ struct Host: Codable, Identifiable, Equatable {
 
     /// Everything persisted - note `password` is intentionally absent.
     private enum CodingKeys: String, CodingKey {
-        case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags
+        case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags,
+             agentForward, jumpVia, portForwards, startupSnippetID
     }
 
-    /// The `ssh` argument vector for this host, minus any identity file: an
-    /// optional non-default port, then the `[user@]address` destination.
-    /// `ssh` owns the transport and interactive auth (design report C1). The
-    /// `-i <path>` for `keyID`, if set, is prepended separately by
-    /// `ConsoleController` once the key is materialized (it needs a live
-    /// Keychain read, which does not belong in a value type).
-    func sshArguments() -> [String] {
+    /// The full `ssh` argument vector for this host, minus any identity file
+    /// (added separately by `ConsoleController` once a saved key is
+    /// materialized - that needs a live Keychain read, which does not belong
+    /// in a value type). Order: agent forwarding, the resolved jump chain,
+    /// port-forwarding rules, an optional non-default port, then the
+    /// `[user@]address` destination last. `ssh` owns the transport and
+    /// interactive auth throughout (design report C1) - this method only ever
+    /// appends flags, never re-implements what they do.
+    ///
+    /// - Parameter allHosts: the full saved-host list, needed to resolve
+    ///   `jumpVia` when it names another saved host rather than a raw
+    ///   `user@bastion`. Pass `[]` for an ad-hoc host with no jump chain.
+    func sshArguments(allHosts: [Host] = []) -> [String] {
         var args: [String] = []
+        if agentForward { args.append("-A") }
+        let chain = HostCatalog.proxyJumpChain(for: self, hosts: allHosts)
+        if !chain.isEmpty { args += ["-J", chain.joined(separator: ",")] }
+        for rule in portForwards { args += rule.sshArguments }
         if port != 22 { args += ["-p", String(port)] }
         args.append(destination)
         return args
@@ -79,6 +123,58 @@ struct Host: Codable, Identifiable, Equatable {
         var s = destination
         if port != 22 { s += ":\(port)" }
         return s
+    }
+}
+
+/// A single port-forwarding rule (B1): Local (`-L`), Remote (`-R`), or
+/// Dynamic/SOCKS (`-D`). `Codable` and persisted as part of `Host.portForwards`
+/// - none of this is secret, it is just `ssh` argv shaped as data so the
+/// editor can list/add/remove rules.
+struct PortForwardRule: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable, CaseIterable {
+        case local, remote, dynamic
+
+        var displayName: String {
+            switch self {
+            case .local: return "Local"
+            case .remote: return "Remote"
+            case .dynamic: return "Dynamic (SOCKS)"
+            }
+        }
+    }
+
+    var id = UUID()
+    var kind: Kind = .local
+
+    /// Optional bind address, e.g. `127.0.0.1` or `*`. Empty means `ssh`'s
+    /// own default bind for the flag in question.
+    var bindAddress: String = ""
+    var listenPort: Int = 8080
+    /// Unused for `.dynamic` - a SOCKS proxy has no destination, only a
+    /// listening port.
+    var destHost: String = ""
+    var destPort: Int = 80
+
+    private var listenSpec: String {
+        bindAddress.isEmpty ? String(listenPort) : "\(bindAddress):\(listenPort)"
+    }
+
+    /// The `ssh` flag(s) for this rule, e.g. `["-L", "8080:localhost:80"]`.
+    var sshArguments: [String] {
+        switch kind {
+        case .local: return ["-L", "\(listenSpec):\(destHost):\(destPort)"]
+        case .remote: return ["-R", "\(listenSpec):\(destHost):\(destPort)"]
+        case .dynamic: return ["-D", listenSpec]
+        }
+    }
+
+    /// A short human-readable summary for list rows, e.g. `"L 8080 -> localhost:80"`.
+    var summary: String {
+        switch kind {
+        case .local: return "L \(listenSpec) \u{2192} \(destHost):\(destPort)"
+        case .remote: return "R \(listenSpec) \u{2192} \(destHost):\(destPort)"
+        case .dynamic: return "D \(listenSpec) (SOCKS)"
+        }
     }
 }
 
@@ -142,5 +238,30 @@ enum HostCatalog {
         if port != 22 { args += ["-p", String(port)] }
         args.append(dest)
         return (dest, args)
+    }
+
+    /// Resolve `host.jumpVia` into an ordered `-J` chain (B1: "Support
+    /// chaining if the jump host itself has a jump host"). Each hop is either
+    /// a saved host's `destination` (looked up by label, case-insensitively,
+    /// then followed through *its* `jumpVia`) or, once a hop fails to match
+    /// any saved host, taken verbatim as a raw `user@bastion[:port]` and the
+    /// chain stops there (a raw hop has no further `jumpVia` to follow).
+    /// A hop count cap guards against a label cycle (e.g. two hosts pointing
+    /// at each other) turning into an infinite loop.
+    static func proxyJumpChain(for host: Host, hosts: [Host]) -> [String] {
+        var chain: [String] = []
+        var next = host.jumpVia
+        var hops = 0
+        while let via = next?.trimmingCharacters(in: .whitespacesAndNewlines), !via.isEmpty, hops < 8 {
+            hops += 1
+            if let match = hosts.first(where: { $0.label.caseInsensitiveCompare(via) == .orderedSame }) {
+                chain.append(match.destination)
+                next = match.jumpVia
+            } else {
+                chain.append(via)
+                next = nil
+            }
+        }
+        return chain
     }
 }
