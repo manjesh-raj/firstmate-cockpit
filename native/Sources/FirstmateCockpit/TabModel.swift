@@ -25,19 +25,23 @@ enum TabLaunch {
     /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
     /// manager. `ssh` is just another interactive PTY child (design report C1),
     /// so this reuses the same `startProcess` path as `shell`. `hostArgs` is
-    /// the non-secret part of the argv (port + destination); `keyID`, when
-    /// set, is a saved key (Phase 2) that `ConsoleController` resolves through
-    /// the Keychain into a temporary `-i <path>` on every start/reconnect -
-    /// never baked into `hostArgs` itself, so duplicating or reconnecting this
-    /// tab always re-resolves the key rather than reusing a stale temp file.
-    case ssh(label: String, executable: String, hostArgs: [String], keyID: UUID?)
+    /// the non-secret part of the argv (agent forwarding, jump chain, port
+    /// forwards, port + destination - see `Host.sshArguments(allHosts:)`);
+    /// `keyID`, when set, is a saved key (Phase 2) that `ConsoleController`
+    /// resolves through the Keychain into a temporary `-i <path>` on every
+    /// start/reconnect - never baked into `hostArgs` itself, so duplicating or
+    /// reconnecting this tab always re-resolves the key rather than reusing a
+    /// stale temp file. `startupSnippetID` (Phase 3, B2/B5) is a saved
+    /// snippet `ConsoleController` sends into the shell, best-effort, once
+    /// the session looks ready.
+    case ssh(label: String, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID?)
 
     /// The default display name for a freshly created tab of this kind.
     var defaultName: String {
         switch self {
         case .shell: return "Shell"
         case .mirror: return "Mirror"
-        case .ssh(let label, _, _, _): return label
+        case .ssh(let label, _, _, _, _): return label
         }
     }
 }

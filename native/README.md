@@ -55,6 +55,18 @@ Phase 2 replaces Phase 1's "on-disk key path" credential with a real saved-key s
 - **No hand-rolled crypto.** Generation and import both shell out to the system `/usr/bin/ssh-keygen` (`SSHKeyGenerator.swift`) rather than reimplementing the OpenSSH private-key format or its bcrypt-pbkdf passphrase KDF in Swift - the same "delegate, don't reimplement" principle the design report applies to host-key trust. All work happens in a private `0700` scratch directory deleted immediately after the bytes are read into memory.
 - **Wiring hosts to keys.** The host editor's credential section is a "Choose a key" popup sourced from the saved-keys list (`keyID` on `Host`, replacing Phase 1's raw path field). At connect time, `ConsoleController.connectSSH` resolves the chosen key through `SSHKeyMaterializer`: a Keychain read (the Touch ID prompt happens here) into a private, `0600` temp file under a fresh `0700` scratch directory, passed as `ssh -i <path>` (plus an adjacent `-cert.pub` if the key carries a certificate). That scratch directory is deleted on tab close, on reconnect (before making a new one), on process exit, and on quit - it never outlives the connection that needed it.
 
+## Power features (Phase 3)
+
+Phase 3 (design doc Sections B1, B2, B4, B5, Section D Phase 3) adds the features that make this usable against real infra, on top of the Phase 0-2 tab/host/key model. All of it is either extra `Host` fields or extra `ssh` argv - no new transport code, per the "delegate to `ssh`, don't reimplement" principle already used for keys and host-key trust.
+
+- **Jump hosts / ProxyJump.** The host editor's **Jump via** field takes either another saved host's label or a raw `user@bastion[:port]`. `HostCatalog.proxyJumpChain` resolves it at connect time and, if *that* host also has a `Jump via`, follows it transitively, building a `-J a,b,c` chain (capped at 8 hops against a label cycle).
+- **SSH agent forwarding.** A **"Forward SSH agent (-A)"** checkbox on the host editor. The system agent's own keys (via `SSH_AUTH_SOCK`, already inherited into every child's environment by `childEnvironmentDict`) become usable on the remote host without ever putting them in this app's Keychain store.
+- **Known-hosts surfacing.** No new UI - verified by inspection rather than reimplemented: `connectSSH` never passes `-o StrictHostKeyChecking=...`, and no output filtering sits between the child's PTY and the terminal on the ssh path (the same `startProcess`/`dataReceived` path the Shell tab already uses). The interactive "authenticity of host" and "REMOTE HOST IDENTIFICATION HAS CHANGED" prompts render and are answerable in the terminal exactly as in Terminal.app, driven entirely by the system `ssh` and `~/.ssh/known_hosts`.
+- **Groups + tags.** `Host.group`/`Host.tags` (present since Phase 1 but unused) now drive the sidebar: hosts are grouped into labeled sections (skipped entirely when every visible host shares one group, so a flat list stays flat), and a row of tag chips beneath the search field filters the list to hosts carrying the tapped tag(s) - in addition to the search field already matching tags by text.
+- **Port forwarding.** A **"Port Forwarding…"** button on the host editor opens `PortForwardingController` as a nested sheet: add/remove Local (`-L`), Remote (`-R`), and Dynamic/SOCKS (`-D`) rules, each with bind address, listen port, and (for Local/Remote) a destination host/port. Saved per host as `Host.portForwards`.
+- **Snippets.** A saved-command library (`SnippetStore`, `snippets.json`), managed from its own **Snippets** window (Snippets menu, `⌘⌥N` / `⌘⌥P`) - Label + command text, and a **Run** that sends the command plus Enter to the console's active tab. A host can also name one as its **Startup snippet**; `ConsoleController.runStartupSnippet` sends it a fixed 1.5s after the ssh process starts - there is no protocol-level "the remote shell is ready" signal to hook, so this is deliberately best-effort, matching the design doc's "best-effort timing is fine for v1."
+- **Session logging.** The toolbar's record-circle icon (also `⌘⇧L` / Tab menu -> Toggle Session Logging) toggles a plain-text transcript of the active tab's host output to `~/Library/Application Support/FirstmateCockpit/logs/<tab>-<timestamp>.log`. Implemented as a `dataReceived` override in `CockpitTerminalView` that tees raw bytes to a `FileHandle` before feeding the terminal - not SwiftTerm's own `setHostLogging(directory:)`, which writes one file per read syscall rather than a single chronological transcript. `FM_LOG_SESSIONS_DEFAULT=1` turns logging on for every newly started tab by default.
+
 ## What is and is not in this build
 
 **In scope (built here):**
@@ -63,8 +75,9 @@ Phase 2 replaces Phase 1's "on-disk key path" credential with a real saved-key s
 - The tmux grouped-session lifecycle, **ported to Swift** (`Process`) so the console needs **no Python backend running** (that is Phase 3).
 - Helm dark + light palettes applied to the terminal colour set (foreground/background/cursor/selection + a full 16-colour ANSI set).
 - Native find bar, font zoom, and copy-to-`NSPasteboard`, all on the top bar and the main menu.
+- Jump hosts, agent forwarding, known-hosts surfacing, groups/tags, port forwarding, snippets, and session logging (Phase 3, see above).
 
-**Deliberately out of scope (later phases):** no dashboard / fleet view / PR list (P3), no Python backend spawning or embedding (P3), no auth (P3), no packaging / signing / notarization (P4). This is the console only.
+**Deliberately out of scope (later phases):** no dashboard / fleet view / PR list, no Python backend spawning or embedding, no auth, no packaging / signing / notarization, no SFTP browser, no split panes, no encrypted cross-device sync (Phase 4). This is the console + connection manager only.
 
 ## Architecture
 
@@ -91,6 +104,11 @@ One AppKit window whose content is a `ConsoleController`. All terminal behaviour
 | `SSHKeyMaterializer.swift` | Resolves a saved key into a private `0600` temp file for `ssh -i` at connect time, and cleans it up after. |
 | `KeysSidebarController.swift` | The "SSH Keys" screen: a saved-keys list in its own window, matching the Hosts sidebar's visual language. |
 | `KeyEditorController.swift` | The New/Edit Key sheet: Generate vs. Import, drag-and-drop, passphrase, certificate, and the read-only derived public key. |
+| `PortForwardingController.swift` | Phase 3: the "Port Forwarding" sheet - add/remove Local/Remote/Dynamic rules for a host. |
+| `Snippet.swift` | Phase 3: the saved-command value type (label + command text). |
+| `SnippetStore.swift` | Phase 3: snippet persistence, mirroring `HostStore`/`SSHKeyStore`. |
+| `SnippetsController.swift` | Phase 3: the "Snippets" screen - list, Run (to the active tab), edit, delete. |
+| `SnippetEditorController.swift` | Phase 3: the New/Edit Snippet sheet. |
 
 ### How the terminals attach
 
@@ -162,8 +180,11 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 | `⌘⌃S` | Toggle the Hosts sidebar |
 | `⌘⇧N` | New key (opens the "SSH Keys" window and its New Key sheet) |
 | `⌘⇧K` | Manage Keys… (opens/brings forward the "SSH Keys" window) |
+| `⌘⇧L` | Toggle session logging for the active tab |
+| `⌘⌥N` | New snippet (opens the "Snippets" window and its New Snippet sheet) |
+| `⌘⌥P` | Manage Snippets… (opens/brings forward the "Snippets" window) |
 
-The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, the host operations are on the **Hosts** menu, and the top bar carries the tab chips, the `+` button, find, zoom, and theme.
+The tab operations are on the **Tab** menu, zoom + theme are on the **View** menu, the host operations are on the **Hosts** menu, snippets are on the **Snippets** menu, and the top bar carries the tab chips, the `+` button, find, zoom, theme, and the session-log toggle.
 
 ## Captain validation checklist
 
@@ -229,10 +250,45 @@ This app **cannot be validated headlessly** - the whole point is runtime behavio
 - [ ] **Edit** a key: rename it, add/change a certificate, and optionally set a new passphrase (leaving it blank keeps the existing one) - no Touch ID prompt unless you actually typed a new passphrase. **Delete** a key (with a confirm) and confirm a host that referenced it now shows "None" and falls back to the system agent on connect.
 - [ ] **Duplicate/reconnect a connected ssh tab that uses a key** (`⌘D`, `⌘R`) and confirm each resolves the key independently (a fresh Touch ID prompt / temp file per tab-start), not a stale/shared one.
 
-If those pass, all five of the captain's original connection-manager requirements (keychain, hosts, per-host icons, duplicate tabs, rename tabs) are validated end to end. Phase 3 (dashboard surfaces + embedded backend) is next.
+If those pass, all five of the captain's original connection-manager requirements (keychain, hosts, per-host icons, duplicate tabs, rename tabs) are validated end to end.
+
+**(i) Jump hosts (Phase 3)**
+- [ ] Add a bastion host (e.g. `bastion`), then add a target host whose **Jump via** field is set to the bastion's label. Connect the target - the `ssh` invocation includes `-J <bastion destination>` (confirm by watching the connection prompt for the bastion, or via a key you know is bastion-only).
+- [ ] Set the bastion's own **Jump via** to a second bastion (or a raw `user@other-bastion`) and reconnect the target - the chain is now two hops (`-J a,b`).
+- [ ] A raw `user@bastion[:port]` in **Jump via** (no matching saved host) works the same way without needing a saved host.
+
+**(j) Agent forwarding (Phase 3)**
+- [ ] With a key loaded in your local `ssh-agent` (`ssh-add -l` shows it) and a host that has **that** key set up in `authorized_keys`, enable **"Forward SSH agent (-A)"** on a *different* host that chains to it, and confirm you can `ssh` onward from the remote shell using the forwarded agent (e.g. `ssh-add -l` on the remote shows the same key).
+
+**(k) Known-hosts prompts (Phase 3)**
+- [ ] Connect to a host you have never connected to before (or `ssh-keygen -R <host>` first to force it) - the "authenticity of host … can't be established" prompt appears **inside the tab** and typing `yes` + Return proceeds normally.
+- [ ] If a remote host's key ever changes, confirm the loud "REMOTE HOST IDENTIFICATION HAS CHANGED" warning also renders in the tab (safe to test by editing a stale `known_hosts` line's key to a bogus value for a host you control, then reconnecting).
+
+**(l) Groups + tags (Phase 3)**
+- [ ] Give two hosts different **Group** values (and leave a third blank) - the sidebar now shows labeled sections (named groups, then "Ungrouped"), sorted alphabetically. With everything in one (or no) group, no headers appear.
+- [ ] Add **Tags** (comma-separated) to a couple of hosts - a row of tag chips appears under the search field. Click a chip - the list filters to hosts carrying that tag; click it again to clear.
+- [ ] Typing a tag name directly into the search field also filters (this already worked before Phase 3 - confirm it still does).
+
+**(m) Port forwarding (Phase 3)**
+- [ ] Open a host's editor, click **"Port Forwarding…"**, add a Local rule (e.g. listen `8080` -> `localhost:80` on the remote), Save both sheets, then Connect. Confirm `curl localhost:8080` on your Mac reaches the remote's port 80.
+- [ ] Add a Dynamic rule (e.g. listen `1080`) and confirm a SOCKS-aware client (e.g. `curl --socks5 localhost:1080 ...`) can route through it.
+- [ ] The rule count shows on the editor's button (`"Port Forwarding (2)…"`) and rules persist across a relaunch.
+
+**(n) Snippets (Phase 3)**
+- [ ] Snippets menu -> **New Snippet…**, give it a Label and a command (e.g. `echo hello`), Save. It appears in the Snippets window's list.
+- [ ] With a terminal tab focused, select the snippet and click **Run** (or double-click it) - the command runs in that tab.
+- [ ] Set a host's **Startup snippet** to a saved snippet, Connect, and confirm the snippet's command runs automatically in the new ssh tab shortly after the shell prompt appears (best-effort timing - if the connection is unusually slow, it may fire before the prompt; this is a known v1 tradeoff).
+
+**(o) Session logging (Phase 3)**
+- [ ] Click the record-circle icon in the toolbar (or `⌘⇧L`) on an active tab - it turns solid red. Run a few commands, toggle it off. Confirm a new file appeared under `~/Library/Application Support/FirstmateCockpit/logs/` named after the tab and a timestamp, containing the raw terminal output.
+- [ ] Toggling logging on again on the same tab starts a **new** file rather than appending to the old one.
+- [ ] Relaunch with `FM_LOG_SESSIONS_DEFAULT=1` and confirm a fresh log file appears for every tab opened, without touching the toggle.
 
 ## Scope guardrails
 
-- Console + the Hosts sidebar + the SSH Keys window only. No dashboard, backend spawning, auth, or packaging.
-- Secrets (private key bytes, passphrases) live only in the macOS Keychain, Touch-ID/passcode gated (`KeychainKeyStore.swift`). Non-secret metadata (hosts, key labels/public keys/fingerprints) lives in plain JSON under Application Support. `.ppk` (PuTTY) import is explicitly unsupported, not silently mishandled - see the Keys section above.
+- Console + the Hosts sidebar + the SSH Keys window + the Snippets window only. No dashboard, backend spawning, auth, or packaging.
+- Secrets (private key bytes, passphrases) live only in the macOS Keychain, Touch-ID/passcode gated (`KeychainKeyStore.swift`). Non-secret metadata (hosts, key labels/public keys/fingerprints, port-forward rules, snippets) lives in plain JSON under Application Support. `.ppk` (PuTTY) import is explicitly unsupported, not silently mishandled - see the Keys section above.
+- Session logs are plain text under Application Support, not sanitized or redacted - a logged session's transcript can contain anything the remote host printed. Treat the `logs/` directory the same way you would treat terminal scrollback.
+- Jump hosts, port forwarding, and agent forwarding are all just extra `ssh` argv - this app does not re-implement any part of the SSH protocol, host-key trust, or the SSH agent protocol.
+- Deferred out of this pass: SFTP, split panes, encrypted cross-device sync/vault, broadcast-snippet-to-all-tabs (Phase 4 / nice-to-have).
 - Does not touch the existing Python cockpit (`backend/`, `desktop.py`). The native app is a separate, growing surface under `native/`.

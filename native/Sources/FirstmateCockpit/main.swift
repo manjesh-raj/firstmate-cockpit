@@ -19,18 +19,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // key through it at connect time; the Keys window (below) is where the
     // captain generates/imports/browses them.
     let keyStore = SSHKeyStore()
-    lazy var console = ConsoleController(keyStore: keyStore)
-    lazy var sidebar = HostsSidebarController(store: hostStore, keyStore: keyStore)
+    // Phase 3: the saved-command library (B2/B5). The console resolves a
+    // host's startup snippet through it at connect time, and the Snippets
+    // window's "Run" sends a snippet straight to the active tab.
+    let snippetStore = SnippetStore()
+    lazy var console = ConsoleController(keyStore: keyStore, snippetStore: snippetStore)
+    lazy var sidebar = HostsSidebarController(store: hostStore, keyStore: keyStore, snippetStore: snippetStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
+    lazy var snippetsController = SnippetsController(store: snippetStore)
     var split: NSSplitViewController!
     var keysWindow: NSWindow?
+    var snippetsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Connect action from the sidebar (saved host or ad-hoc quick-connect)
         // opens an ssh tab in the Phase 0 tab collection; `keyID`, when set, is
-        // resolved through the Keychain by the console (Phase 2).
-        sidebar.onConnect = { [weak self] label, args, accentHex, keyID in
-            self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID)
+        // resolved through the Keychain by the console (Phase 2), and
+        // `startupSnippetID`, when set, is resolved through the snippet
+        // library (Phase 3).
+        sidebar.onConnect = { [weak self] label, args, accentHex, keyID, startupSnippetID in
+            self?.console.openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+        }
+        // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
+        // console's active tab.
+        snippetsController.onRun = { [weak self] snippet in
+            self?.console.runSnippetInActiveTab(snippet)
         }
 
         // A Hosts sidebar on the left, the tabbed console on the right (Termius
@@ -99,6 +112,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func newKeyFromMenu() {
         showKeysWindow()
         keysController.newKey()
+    }
+
+    // MARK: Snippets window (Phase 3, B2/B5)
+
+    /// Open (or bring forward) the "Snippets" screen - a separate window,
+    /// matching how the Keys screen (above) is kept out of the main
+    /// split-view rather than added as a third pane.
+    @objc func showSnippetsWindow() {
+        if snippetsWindow == nil {
+            let win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 360, height: 480),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            win.title = "Snippets"
+            win.contentViewController = snippetsController
+            win.isReleasedWhenClosed = false
+            win.center()
+            snippetsWindow = win
+        }
+        snippetsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func newSnippetFromMenu() {
+        showSnippetsWindow()
+        snippetsController.newSnippet()
     }
 
     // MARK: Menu
@@ -170,6 +211,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .keyEquivalentModifierMask = [.command, .shift]
         for item in keysMenu.items { item.target = self }
 
+        // Snippets menu - the Phase 3 saved-command library (B2/B5). Same
+        // shape as the Keys menu above.
+        let snippetsMenuItem = NSMenuItem()
+        mainMenu.addItem(snippetsMenuItem)
+        let snippetsMenu = NSMenu(title: "Snippets")
+        snippetsMenuItem.submenu = snippetsMenu
+        snippetsMenu.addItem(withTitle: "New Snippet…", action: #selector(AppDelegate.newSnippetFromMenu), keyEquivalent: "n")
+            .keyEquivalentModifierMask = [.command, .option]
+        snippetsMenu.addItem(withTitle: "Manage Snippets…", action: #selector(AppDelegate.showSnippetsWindow), keyEquivalent: "p")
+            .keyEquivalentModifierMask = [.command, .option]
+        for item in snippetsMenu.items { item.target = self }
+
         // Tab menu - the dynamic tab collection: new / duplicate / rename / close,
         // reconnect, and ⌘1…⌘9 to jump to a tab. All resolve to ConsoleController.
         let tabMenuItem = NSMenuItem()
@@ -184,6 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tabMenu.addItem(withTitle: "Close Tab", action: #selector(ConsoleController.closeCurrentTab), keyEquivalent: "w")
         tabMenu.addItem(NSMenuItem.separator())
         tabMenu.addItem(withTitle: "Reconnect Tab", action: #selector(ConsoleController.reconnectActive), keyEquivalent: "r")
+        let loggingItem = NSMenuItem(title: "Toggle Session Logging", action: #selector(ConsoleController.toggleLoggingForActiveTab), keyEquivalent: "l")
+        loggingItem.keyEquivalentModifierMask = [.command, .shift]
+        tabMenu.addItem(loggingItem)
         tabMenu.addItem(NSMenuItem.separator())
         // ⌘1…⌘9 select the Nth tab; the tag carries the 1-based index.
         for n in 1...9 {

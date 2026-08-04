@@ -31,8 +31,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// `SSHKeyMaterializer`.
     private let keyStore: SSHKeyStore
 
-    init(keyStore: SSHKeyStore) {
+    /// The snippet library (Phase 3, B2/B5) - consulted to resolve a host's
+    /// startup-snippet id, and by `runSnippetInActiveTab` for the Snippets
+    /// panel's "Run" action.
+    private let snippetStore: SnippetStore
+
+    init(keyStore: SSHKeyStore, snippetStore: SnippetStore) {
         self.keyStore = keyStore
+        self.snippetStore = snippetStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -71,7 +77,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var findButton = NSButton()
     private var zoomInButton = NSButton()
     private var zoomOutButton = NSButton()
+    private var logButton = NSButton()
     private let separator = NSView()
+
+    /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5): when set, every newly started
+    /// tab begins logging automatically, matching the env-var-driven defaults
+    /// already used for the mirror target and shell cwd.
+    private lazy var defaultLoggingEnabled: Bool = {
+        let v = ProcessInfo.processInfo.environment["FM_LOG_SESSIONS_DEFAULT"]?.lowercased()
+        return v == "1" || v == "true" || v == "yes"
+    }()
 
     // MARK: Lifecycle
 
@@ -145,7 +160,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         zoomOutButton = makeIconButton(symbol: "minus.magnifyingglass", tooltip: "Zoom Out (⌘−)", action: #selector(zoomOut))
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
-        let tools = NSStackView(views: [findButton, zoomOutButton, zoomInButton, themeButton])
+        logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
+        let tools = NSStackView(views: [findButton, zoomOutButton, zoomInButton, themeButton, logButton])
         tools.orientation = .horizontal
         tools.spacing = 2
         tools.translatesAutoresizingMaskIntoConstraints = false
@@ -257,21 +273,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             )
         case .mirror(let target):
             connectMirror(tab, target: target)
-        case .ssh(_, let exe, let hostArgs, let keyID):
-            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID)
+        case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
+            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
         tab.started = true
+        if defaultLoggingEnabled { startLogging(tab) }
     }
 
-    // MARK: SSH (Phase 1 hosts, Phase 2 keys)
+    // MARK: SSH (Phase 1 hosts, Phase 2 keys, Phase 3 startup snippet)
 
     /// Open a new tab that runs `ssh` with the given argv - the connect action for
-    /// a saved host or an ad-hoc quick-connect (design report C1). The tab's name
-    /// defaults to the host label (rename still works), and `accentHex` tints its
-    /// chip with the host colour (A3). Duplicating this tab (Phase 0) re-runs the
-    /// same connection, re-resolving `keyID` independently for the new tab.
-    func openSSH(label: String, args: [String], accentHex: String?, keyID: UUID?) {
-        let launch = TabLaunch.ssh(label: label, executable: HostCatalog.sshExecutable, hostArgs: args, keyID: keyID)
+    /// a saved host or an ad-hoc quick-connect (design report C1). `args` already
+    /// carries the host's agent-forwarding/jump-chain/port-forwarding flags
+    /// (`Host.sshArguments(allHosts:)`, Phase 3 B1) - this method only adds the
+    /// resolved key. The tab's name defaults to the host label (rename still
+    /// works), and `accentHex` tints its chip with the host colour (A3).
+    /// Duplicating this tab (Phase 0) re-runs the same connection, re-resolving
+    /// `keyID` independently for the new tab. `startupSnippetID` (B2/B5), when
+    /// set, is sent into the shell once the session looks ready.
+    func openSSH(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID? = nil) {
+        let launch = TabLaunch.ssh(
+            label: label, executable: HostCatalog.sshExecutable, hostArgs: args,
+            keyID: keyID, startupSnippetID: startupSnippetID
+        )
         addTab(launch: launch, name: label, select: true, accentHex: accentHex)
         // Bring the console forward if the user was in the sidebar.
         if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
@@ -285,7 +309,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// cancelled prompt, Keychain error) does not block the connection - `ssh`
     /// still starts without `-i`, falling back to the system agent, with the
     /// error surfaced in the terminal so it is visible rather than silent.
-    private func connectSSH(_ tab: TabModel, executable: String, hostArgs: [String], keyID: UUID?) {
+    private func connectSSH(_ tab: TabModel, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID? = nil) {
         cleanupSSHKeyTempFile(tab)
         var args = hostArgs
         if let keyID, let key = keyStore.key(id: keyID) {
@@ -298,6 +322,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 tab.terminal.feed(text: "  \u{1b}[2mConnecting without the saved key. Press ⌘R to retry.\u{1b}[0m\r\n")
             }
         }
+        // No output filtering happens on this path: `startProcess` forks a
+        // genuine PTY and every byte the host sends reaches the terminal
+        // untouched (design report B1 "known hosts" - the interactive
+        // "authenticity of host"/"REMOTE HOST IDENTIFICATION HAS CHANGED"
+        // prompts render and are answerable here exactly as in Terminal.app,
+        // since this is the same `startProcess` path the Shell tab already
+        // uses, with no `-o StrictHostKeyChecking=...` override anywhere in
+        // this app).
         tab.terminal.startProcess(
             executable: executable,
             args: args,
@@ -305,6 +337,31 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             execName: nil,
             currentDirectory: shellCwd()
         )
+        if let startupSnippetID {
+            runStartupSnippet(startupSnippetID, in: tab)
+        }
+    }
+
+    /// Best-effort startup snippet (B2/B5): "attach tmux, cd to the
+    /// project" style commands a host wants run once its shell prompt is up.
+    /// There is no reliable, protocol-level "the remote shell is now ready"
+    /// signal to hook - the report is explicit that best-effort timing is
+    /// fine for v1 - so this sends the snippet text after a fixed delay from
+    /// process start, long enough for `ssh` to authenticate and the remote
+    /// shell to print its prompt on a typical connection.
+    private func runStartupSnippet(_ id: UUID, in tab: TabModel) {
+        guard let snippet = snippetStore.snippet(id: id) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak tab] in
+            guard let tab, !tab.isClosing else { return }
+            tab.terminal.send(txt: snippet.command + "\n")
+        }
+    }
+
+    /// The Snippets panel's "Run" action (B2): send a snippet to whichever
+    /// tab is currently in front. A no-op with no tabs, which cannot happen
+    /// in practice (closing the last tab always opens a fresh one).
+    func runSnippetInActiveTab(_ snippet: Snippet) {
+        currentTab?.terminal.send(txt: snippet.command + "\n")
     }
 
     /// Delete a tab's materialized key scratch dir, if it has one. Called
@@ -368,6 +425,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.mirror?.tearDown()
         tab.mirror = nil
         cleanupSSHKeyTempFile(tab)
+        tab.terminal.stopLogging()
         tab.terminal.terminate()
         tab.terminal.removeFromSuperview()
         tabs.remove(at: idx)
@@ -418,6 +476,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         for t in tabs { t.terminal.isHidden = (t !== tab) }
         styleChips()
         updateWindowTitle(from: tab)
+        updateLogButton()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
     }
 
@@ -443,6 +502,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             b.contentTintColor = ink
         }
         styleChips()
+        updateLogButton()
     }
 
     private func styleChips() {
@@ -468,6 +528,53 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         fontSize = min(maxFont, max(minFont, size))
         let f = currentFont()
         for tab in tabs { tab.terminal.font = f }
+    }
+
+    // MARK: Session logging (B5)
+
+    /// ⌘⇧L / the toolbar icon: toggle a plain-text transcript of the active
+    /// tab's host output. Off -> on opens a fresh timestamped file; on -> off
+    /// just closes it - a later toggle back on starts a new file rather than
+    /// appending to the old one, so each "recording" is its own transcript.
+    @objc func toggleLoggingForActiveTab() {
+        guard let tab = currentTab else { return }
+        if tab.terminal.isLogging {
+            tab.terminal.stopLogging()
+        } else {
+            startLogging(tab)
+        }
+        updateLogButton()
+    }
+
+    /// `~/Library/Application Support/FirstmateCockpit/logs/<tab>-<timestamp>.log`.
+    /// Best-effort: a failure (unwritable disk, sandboxing) is surfaced in the
+    /// terminal rather than silently discarding the toggle.
+    private func startLogging(_ tab: TabModel) {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FirstmateCockpit", isDirectory: true)
+            .appendingPathComponent("logs", isDirectory: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let slug = tab.name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+        let fileName = "\(String(slug))-\(formatter.string(from: Date())).log"
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try tab.terminal.startLogging(to: dir.appendingPathComponent(fileName))
+        } catch {
+            tab.terminal.feed(text: "\r\n  \u{1b}[2m[session log]\u{1b}[0m \(error.localizedDescription)\r\n")
+        }
+    }
+
+    /// Restyle the toolbar icon for the active tab's current logging state -
+    /// filled and red while recording, outline and theme-tinted otherwise.
+    private func updateLogButton() {
+        let isLogging = currentTab?.terminal.isLogging ?? false
+        logButton.image = NSImage(
+            systemSymbolName: isLogging ? "record.circle.fill" : "record.circle",
+            accessibilityDescription: "Session Log"
+        )
+        logButton.contentTintColor = isLogging ? .systemRed : HelmTheme.nsColor(theme.chromeInkHex)
+        logButton.toolTip = isLogging ? "Stop Session Log (⌘⇧L)" : "Log This Session (⌘⇧L)"
     }
 
     // MARK: Find + copy (routed to the active terminal)
@@ -507,19 +614,21 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 execName: nil,
                 currentDirectory: cwd
             )
-        case .ssh(_, let exe, let hostArgs, let keyID):
-            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID)
+        case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
+            connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
         view.window?.makeFirstResponder(tab.terminal)
     }
 
-    /// Tear down every mirror's grouped session and every materialized ssh key
-    /// temp file so nothing is left dangling. Called from the app delegate on quit.
+    /// Tear down every mirror's grouped session, every materialized ssh key
+    /// temp file, and every open session log so nothing is left dangling.
+    /// Called from the app delegate on quit.
     func shutdown() {
         for tab in tabs {
             tab.mirror?.tearDown()
             tab.mirror = nil
             cleanupSSHKeyTempFile(tab)
+            tab.terminal.stopLogging()
         }
     }
 
