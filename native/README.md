@@ -134,7 +134,7 @@ cd native
 swift build
 ```
 
-First build takes ~90s because it compiles SwiftTerm from source. The dependency is pinned in `Package.resolved` to SwiftTerm `1.15.0`. The product is a `Mach-O arm64` executable at `.build/debug/FirstmateCockpit`.
+First build takes ~90s because it compiles SwiftTerm from source. SwiftTerm is vendored at `Vendor/SwiftTerm/` (pinned to upstream `1.15.0`, with a small local patch - see `Vendor/SwiftTerm/README.md`), not fetched over SPM, so there's no `Package.resolved` and no network access needed to build. The product is a `Mach-O arm64` executable at `.build/debug/FirstmateCockpit`.
 
 ## Run
 
