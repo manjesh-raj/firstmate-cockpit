@@ -13,15 +13,12 @@
 
 import AppKit
 
-/// The rail's five destinations, in the same left-to-right/top-to-bottom
-/// order as the web app's icon set, plus a dedicated "Hosts" entry (Fix 2):
-/// the connection manager is now a first-class destination, parallel to
-/// Settings, rather than something only reachable by nesting it inside
-/// Console. The old "Home" destination (a collapsed-hosts view of the same
-/// split Console used) is gone - once Hosts and Console are decoupled, it
-/// would just be a second, identical way to reach an empty console.
+/// The rail's five destinations. Order (fixes4 Fix 2): Console and Hosts -
+/// the two most-used destinations - lead right after the "Home" sailboat
+/// mark at the top of the rail, with Overview, Review, and Settings
+/// following in their previous relative order.
 enum RailDestination: CaseIterable {
-    case overview, hosts, console, review, settings
+    case console, hosts, overview, review, settings
 
     var symbol: String {
         switch self {
@@ -52,9 +49,23 @@ final class IconRailController: NSViewController {
 
     var onSelect: ((RailDestination) -> Void)?
 
+    /// Fix 3 (fixes4): clicking a saved host's pinned rail icon connects to
+    /// it directly, same as the Hosts list's own Connect action.
+    var onConnectHost: ((Host) -> Void)?
+
     private(set) var active: RailDestination = .console
     private var buttons: [RailDestination: NSButton] = [:]
     private let avatar = NSButton()
+
+    /// The saved hosts currently pinned to the rail, and the vertical stack
+    /// they render into - below the fixed destinations, above the avatar.
+    /// Rebuilt wholesale on every `setHosts` call (via `HostStore.observe`),
+    /// which keeps this trivially correct on add/rename/delete at the cost
+    /// of a full rebuild - fine for the handful of hosts a rail like this is
+    /// meant to hold.
+    private var hosts: [Host] = []
+    private let hostsStack = NSStackView()
+    private var hostButtons: [UUID: NSButton] = [:]
 
     override func loadView() {
         let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 660))
@@ -85,6 +96,11 @@ final class IconRailController: NSViewController {
             navStack.addArrangedSubview(button)
         }
 
+        hostsStack.orientation = .vertical
+        hostsStack.spacing = 4
+        hostsStack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(hostsStack)
+
         avatar.title = "M"
         avatar.isBordered = false
         avatar.wantsLayer = true
@@ -109,6 +125,9 @@ final class IconRailController: NSViewController {
 
             navStack.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 14),
             navStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+
+            hostsStack.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 10),
+            hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
             avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -144,6 +163,50 @@ final class IconRailController: NSViewController {
         onSelect?(dest)
     }
 
+    /// Fix 3 (fixes4): rebuild the per-host icon list. Called once at
+    /// startup and on every `HostStore.observe` firing (add/rename/delete),
+    /// so the rail never drifts from the Hosts list.
+    func setHosts(_ hosts: [Host]) {
+        self.hosts = hosts
+        for v in hostsStack.arrangedSubviews {
+            hostsStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        hostButtons.removeAll()
+        for host in hosts {
+            let button = hostRailButton(for: host)
+            hostButtons[host.id] = button
+            hostsStack.addArrangedSubview(button)
+        }
+        restyle(ThemeManager.shared.theme)
+    }
+
+    private func hostRailButton(for host: Host) -> NSButton {
+        let button = NSButton(title: "", target: self, action: #selector(hostClicked(_:)))
+        button.isBordered = false
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 11
+        button.imageScaling = .scaleProportionallyDown
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        button.image = (NSImage(systemSymbolName: host.iconSymbol, accessibilityDescription: host.label)
+            ?? NSImage(systemSymbolName: HostCatalog.defaultIcon, accessibilityDescription: host.label))?
+            .withSymbolConfiguration(config)
+        button.toolTip = host.label
+        button.identifier = NSUserInterfaceItemIdentifier(host.id.uuidString)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 44),
+            button.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        return button
+    }
+
+    @objc private func hostClicked(_ sender: NSButton) {
+        guard let idString = sender.identifier?.rawValue,
+              let id = UUID(uuidString: idString),
+              let host = hosts.first(where: { $0.id == id }) else { return }
+        onConnectHost?(host)
+    }
+
     @objc private func avatarClicked() {
         NSApp.orderFrontStandardAboutPanel(nil)
     }
@@ -163,6 +226,9 @@ final class IconRailController: NSViewController {
             let isActive = dest == active
             button.contentTintColor = isActive ? accent : ink.withAlphaComponent(0.65)
             button.layer?.backgroundColor = (isActive ? accentTint : .clear).cgColor
+        }
+        for host in hosts {
+            hostButtons[host.id]?.contentTintColor = HelmTheme.nsColor(host.accentHex)
         }
         avatar.contentTintColor = ink
         avatar.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4).cgColor

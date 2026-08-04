@@ -59,13 +59,18 @@ final class PlaceholderViewController: NSViewController {
             subtitleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 340),
         ])
 
-        ThemeManager.shared.observe { [weak self] theme in self?.applyTheme(theme) }
+        ThemeManager.shared.observe { [weak self, weak root] theme in
+            // Fix 8 (fixes4): force appearance too, same as every other
+            // destination - see `FleetController`'s Fix 8 comment for why.
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.applyTheme(theme)
+        }
     }
 
     private func applyTheme(_ theme: HelmTheme) {
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         icon.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.55)
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        subtitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.6)
+        subtitleLabel.textColor = HelmTheme.mutedInk(theme)
     }
 }

@@ -79,19 +79,21 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     // MARK: Layout
 
     override func loadView() {
-        // A translucent sidebar material, matching the terminal's Helm theme
-        // rather than the system appearance (Fix 2): forcing `appearance`
-        // below makes every system-semantic color used by this sidebar's
-        // subviews (label colors, table selection, etc.) resolve against the
-        // *Helm* mode, so toggling the in-app theme repaints this pane too
-        // instead of leaving it stuck in whatever the system appearance is.
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
-        root.material = .sidebar
-        root.blendingMode = .behindWindow
-        root.state = .followsWindowActiveState
+        // Fix 6 (fixes4): this used to be a narrow, translucent sidebar
+        // material (`.sidebar` + `.behindWindow`) from when Hosts was a
+        // ~240pt panel living inside a split view alongside opaque terminal
+        // content. Now that Hosts is a full-width standalone destination
+        // rendered directly in the body container (see `AppShellController`),
+        // that blend-behind-the-window material has nothing correct to blend
+        // against and can render as a mismatched/incorrect tint. A plain,
+        // theme-driven solid background - exactly what Settings and the
+        // terminal already use - is what a full-page destination needs.
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
+        root.wantsLayer = true
         view = root
         ThemeManager.shared.observe { [weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         }
 
         let title = NSTextField(labelWithString: "Hosts")
@@ -196,7 +198,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
             footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
         ])
 
-        store.onChange = { [weak self] in self?.reload() }
+        store.observe { [weak self] in self?.reload() }
         reload()
         // Land on the pinned "Firstmate" entry by default (Fix 4) - the
         // console already opens its Shell + Mirror pair unconditionally at

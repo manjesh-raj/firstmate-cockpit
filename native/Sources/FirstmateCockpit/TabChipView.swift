@@ -115,7 +115,16 @@ final class TabChipView: NSView, NSTextFieldDelegate {
         label.drawsBackground = true
         label.backgroundColor = .textBackgroundColor
         label.textColor = .labelColor
-        window?.makeFirstResponder(label)
+        // Fix 9 (fixes4): `selectText(nil)` alone already makes an editable
+        // field first responder and starts its editing session. Calling
+        // `window.makeFirstResponder(label)` first (as this used to) makes
+        // AppKit think a session is already active and needs ending before
+        // `selectText` can start its own - which fires a spurious
+        // `controlTextDidEndEditing` with the *pre-edit* text right here,
+        // permanently flipping `isRenaming` false before the user types a
+        // single character. The real commit later (Return) then hits the
+        // `guard isRenaming` in `endRename` and is silently dropped - the
+        // rename UI looks like it worked, but the typed name never lands.
         label.selectText(nil)
     }
 

@@ -89,6 +89,19 @@ struct HelmTheme {
         return NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
 
+    /// The one "muted/secondary text" tone every destination should use
+    /// instead of picking its own opacity ad hoc (Fix 8, fixes4). Alpha-
+    /// blending `chromeInkHex` looks fine in the dark palettes at much lower
+    /// opacity, but the same opacity can silently drop below WCAG AA (4.5:1)
+    /// in the light ones - that's exactly how the Overview dashboard's PR
+    /// text and timestamps went near-invisible. 0.7 is the measured floor:
+    /// checked against every theme's `backgroundHex` and `chromeBackgroundHex`
+    /// (the two surfaces text actually sits on), the worst case across all 8
+    /// palettes is ~5.06:1 (Paper), comfortably clear of 4.5:1.
+    static func mutedInk(_ theme: HelmTheme) -> NSColor {
+        nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
+    }
+
     // MARK: The two original, hand-pinned Helm palettes
 
     static let dark = HelmTheme(

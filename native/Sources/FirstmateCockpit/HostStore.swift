@@ -17,8 +17,15 @@ final class HostStore {
 
     private(set) var hosts: [Host] = []
 
-    /// Fired after any mutation so the sidebar can reload. Set by the UI.
-    var onChange: (() -> Void)?
+    /// Fired after any mutation - the Hosts sidebar and the rail's per-host
+    /// icons (Fix 3, fixes4) both need to hear about every add/rename/delete,
+    /// so this is a list of observers rather than a single overwritable
+    /// closure (matching `ThemeManager.observe`'s shape).
+    private var changeHandlers: [() -> Void] = []
+
+    func observe(_ handler: @escaping () -> Void) {
+        changeHandlers.append(handler)
+    }
 
     private let fileURL: URL
 
@@ -90,6 +97,6 @@ final class HostStore {
         } catch {
             NSLog("[cockpit] failed to persist hosts: \(error.localizedDescription)")
         }
-        onChange?()
+        changeHandlers.forEach { $0() }
     }
 }
