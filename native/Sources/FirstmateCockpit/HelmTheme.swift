@@ -38,6 +38,13 @@ struct HelmTheme {
     let backgroundHex: String
     let cursorHex: String
     let selectionHex: String
+    /// Text colour for a selected run, paired with `selectionHex` so selected
+    /// text always clears WCAG AA against the (now opaque) selection fill -
+    /// the same role as the web app's `--accent-ink` token against `--accent`.
+    /// Without this SwiftTerm defaults `selectedTextForegroundColor` to a
+    /// hardcoded black, which is unreadable once `selectionHex` is a
+    /// mid-luminance accent (every light theme) rather than a pale tint.
+    let selectionTextHex: String
     /// 16 ANSI colours, in SwiftTerm/xterm order:
     /// black, red, green, yellow, blue, magenta, cyan, white, then the 8 bright.
     let ansiHex: [String]
@@ -51,7 +58,13 @@ struct HelmTheme {
         view.nativeForegroundColor = Self.nsColor(foregroundHex)
         view.nativeBackgroundColor = Self.nsColor(backgroundHex)
         view.caretColor = Self.nsColor(cursorHex)
-        view.selectedTextBackgroundColor = Self.nsColor(selectionHex).withAlphaComponent(0.35)
+        // Opaque, not alpha-blended: an alpha-blended fill's effective colour
+        // (and thus its contrast against selectionTextHex) depends on
+        // whatever background happened to be underneath a given cell -
+        // including arbitrary ANSI colours from the remote program's own
+        // output. A solid fill keeps the contrast guarantee exact.
+        view.selectedTextBackgroundColor = Self.nsColor(selectionHex)
+        view.selectedTextForegroundColor = Self.nsColor(selectionTextHex)
         view.needsDisplay = true
     }
 
@@ -89,10 +102,14 @@ struct HelmTheme {
         foregroundHex: "f0f4f7",       // --ink
         backgroundHex: "05090e",       // --term-bg
         cursorHex: "6cd7e3",           // --accent
-        selectionHex: "6cd7e3",        // --accent (drawn at 35% alpha)
+        selectionHex: "6cd7e3",        // --accent, opaque fill
+        selectionTextHex: "001a22",    // --accent-ink (10.6:1 on the accent fill)
         ansiHex: [
+            // index 8 (bright black / "dim") brightened from 585e65 (3.05:1 on
+            // term-bg, below the 4.5:1 floor) to 747c86 (4.68:1) - it is used
+            // for genuinely-dim-but-still-legible text (comments, timestamps).
             "292e34", "ef6661", "67d283", "f2bf4e", "5eade2", "d285cb", "71cfd9", "ced1d4",
-            "585e65", "ff8179", "7fe998", "ffd972", "7dc7f7", "e9a1e3", "96e8ef", "f9fcfe",
+            "747c86", "ff8179", "7fe998", "ffd972", "7dc7f7", "e9a1e3", "96e8ef", "f9fcfe",
         ]
     )
 
@@ -107,9 +124,20 @@ struct HelmTheme {
         foregroundHex: "212c3a",       // --ink
         backgroundHex: "f5f7f9",       // --term-bg
         cursorHex: "007194",           // --accent
-        selectionHex: "007194",        // --accent (drawn at 35% alpha)
+        selectionHex: "007194",        // --accent, opaque fill
+        selectionTextHex: "f9fcff",    // --accent-ink (5.4:1 on the accent fill)
         ansiHex: [
-            "272e38", "c22826", "007a43", "ad6800", "0069a1", "93398e", "007984", "9ca5b1",
+            // index 3 (yellow) darkened from ad6800 (4.11:1) to 995c00
+            // (4.91:1) - just under the floor on a light background.
+            // index 7 ("white", i.e. SGR 37/1m bold-white without an
+            // explicit bright flag) was 9ca5b1, a pale grey at only 2.32:1
+            // on term-bg - effectively invisible, and the actual bug the
+            // captain hit: SwiftTerm only promotes indices 0-6 to their
+            // bright siblings on bold text, so bold "white" stays on this
+            // slot rather than jumping to index 15. Darkened to 4c5866
+            // (6.75:1), the same muted-ink hue the web app uses for
+            // secondary text on this theme.
+            "272e38", "c22826", "007a43", "995c00", "0069a1", "93398e", "007984", "4c5866",
             "4e5661", "b3000d", "006c32", "9d5400", "005893", "852381", "006875", "212c3a",
         ]
     )
@@ -157,7 +185,8 @@ extension HelmTheme {
     private static func derived(
         id: String, name: String, mode: Mode,
         surface: Tok, line: Tok, ink: Tok,
-        accent: Tok, info: Tok, termBg: Tok
+        accent: Tok, info: Tok, termBg: Tok,
+        accentInk: Tok, muted: Tok? = nil
     ) -> HelmTheme {
         let base = mode == .dark ? HelmTheme.dark : HelmTheme.light
         let accentHex = oklchHex(accent.0, accent.1, accent.2)
@@ -178,6 +207,14 @@ extension HelmTheme {
         ansi[4] = blueHex; ansi[12] = brightBlueHex
         ansi[5] = magentaHex; ansi[13] = brightMagentaHex
         ansi[6] = accentHex; ansi[14] = brightCyanHex
+        // Index 7 ("white") needs its own per-theme fix on light themes, same
+        // root cause as `light.ansiHex[7]` above: `base.ansiHex[7]` for light
+        // mode is already the corrected muted-grey, but each light theme has
+        // its own hue, so re-derive it from that theme's own muted token
+        // rather than reusing helm-light's.
+        if let muted, mode == .light {
+            ansi[7] = oklchHex(muted.0, muted.1, muted.2)
+        }
 
         return HelmTheme(
             id: id, mode: mode, name: name,
@@ -189,6 +226,7 @@ extension HelmTheme {
             backgroundHex: oklchHex(termBg.0, termBg.1, termBg.2),
             cursorHex: accentHex,
             selectionHex: accentHex,
+            selectionTextHex: oklchHex(accentInk.0, accentInk.1, accentInk.2),
             ansiHex: ansi
         )
     }
@@ -198,32 +236,38 @@ extension HelmTheme {
     static let midnight = derived(
         id: "midnight", name: "Midnight", mode: .dark,
         surface: (0.20, 0.03, 262), line: (0.35, 0.032, 262), ink: (0.96, 0.01, 255),
-        accent: (0.78, 0.12, 242), info: (0.80, 0.10, 250), termBg: (0.13, 0.026, 262)
+        accent: (0.78, 0.12, 242), info: (0.80, 0.10, 250), termBg: (0.13, 0.026, 262),
+        accentInk: (0.17, 0.05, 255)
     )
     static let graphite = derived(
         id: "graphite", name: "Graphite", mode: .dark,
         surface: (0.215, 0.006, 285), line: (0.355, 0.009, 285), ink: (0.965, 0.003, 285),
-        accent: (0.80, 0.12, 300), info: (0.77, 0.10, 250), termBg: (0.145, 0.005, 285)
+        accent: (0.80, 0.12, 300), info: (0.77, 0.10, 250), termBg: (0.145, 0.005, 285),
+        accentInk: (0.18, 0.05, 300)
     )
     static let nocturne = derived(
         id: "nocturne", name: "Nocturne", mode: .dark,
         surface: (0.205, 0.02, 300), line: (0.345, 0.022, 300), ink: (0.965, 0.006, 320),
-        accent: (0.78, 0.13, 345), info: (0.77, 0.10, 255), termBg: (0.138, 0.016, 300)
+        accent: (0.78, 0.13, 345), info: (0.77, 0.10, 255), termBg: (0.138, 0.016, 300),
+        accentInk: (0.20, 0.06, 345)
     )
     static let paper = derived(
         id: "paper", name: "Paper", mode: .light,
         surface: (0.995, 0.004, 80), line: (0.87, 0.02, 80), ink: (0.30, 0.03, 70),
-        accent: (0.49, 0.15, 305), info: (0.51, 0.12, 290), termBg: (0.975, 0.008, 80)
+        accent: (0.49, 0.15, 305), info: (0.51, 0.12, 290), termBg: (0.975, 0.008, 80),
+        accentInk: (0.99, 0.004, 80), muted: (0.46, 0.03, 70)
     )
     static let frost = derived(
         id: "frost", name: "Frost", mode: .light,
         surface: (0.995, 0.003, 240), line: (0.87, 0.016, 240), ink: (0.29, 0.035, 250),
-        accent: (0.51, 0.14, 248), info: (0.51, 0.13, 248), termBg: (0.975, 0.005, 240)
+        accent: (0.51, 0.14, 248), info: (0.51, 0.13, 248), termBg: (0.975, 0.005, 240),
+        accentInk: (0.99, 0.004, 240), muted: (0.45, 0.03, 250)
     )
     static let linen = derived(
         id: "linen", name: "Linen", mode: .light,
         surface: (0.99, 0.006, 60), line: (0.865, 0.02, 60), ink: (0.29, 0.028, 55),
-        accent: (0.48, 0.11, 200), info: (0.51, 0.12, 250), termBg: (0.968, 0.008, 60)
+        accent: (0.48, 0.11, 200), info: (0.51, 0.12, 250), termBg: (0.968, 0.008, 60),
+        accentInk: (0.99, 0.004, 200), muted: (0.455, 0.026, 58)
     )
 
     /// All 8 palettes, in the same DARK-then-LIGHT, web-matching order as
