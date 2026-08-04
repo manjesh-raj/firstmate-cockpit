@@ -511,6 +511,20 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
 .xterm-viewport::-webkit-scrollbar{width:12px}
 .xterm-viewport::-webkit-scrollbar-thumb{background:color-mix(in oklab,var(--ink) 22%,transparent);border-radius:8px;border:3px solid transparent;background-clip:content-box}
 
+/* Transcript: a native, smoothly scrollable conversation log (not xterm).
+   This is the whole point of the view — the browser scrolls it line-by-line to
+   any exact point, unlike the alternate-screen mirror which can only page. */
+.transcript-log{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;padding:12px 16px 16px;
+  font-family:var(--mono);font-size:var(--tr-fs,13px);line-height:1.55;color:var(--ink);
+  background:var(--term-bg);scroll-behavior:auto;-webkit-overflow-scrolling:touch}
+.transcript-log .tr-line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.55em;padding:0 1px}
+.transcript-log mark{background:color-mix(in oklab,var(--accent) 30%,transparent);color:var(--ink);border-radius:2px;padding:0 1px}
+.transcript-log mark.cur{background:var(--accent);color:var(--bg);outline:1px solid var(--accent)}
+.transcript-log .tr-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--faint);
+  font-family:var(--font);font-size:.86rem;text-align:center;padding:0 24px}
+.transcript-log::-webkit-scrollbar{width:12px}
+.transcript-log::-webkit-scrollbar-thumb{background:color-mix(in oklab,var(--ink) 22%,transparent);border-radius:8px;border:3px solid transparent;background-clip:content-box}
+
 /* ======================================================================
    REVIEW (open PRs)
    ====================================================================== */
@@ -775,6 +789,7 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
         <div class="tabstrip">
           <button class="tab on" data-tab="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg> Live terminal <span class="led live"></span></button>
           <button class="tab" data-tab="shell"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg> Shell <span class="meta">PTY · scrollback</span></button>
+          <button class="tab" data-tab="transcript"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 10h16M4 15h11M4 20h7"/></svg> Transcript <span class="meta">scroll · search</span></button>
           <div class="spring"></div>
         </div>
 
@@ -814,6 +829,19 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
             <button class="ctl" id="shcopybtn" title="Copy terminal selection / screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
           </div>
           <div class="term-screen"><div id="xterm-shell-host"></div><button class="btn sm jump hidden" id="shjumpbtn">↓ Jump to bottom</button></div>
+        </div>
+
+        <!-- TRANSCRIPT (native scrollable conversation history — real line-by-line scroll) -->
+        <div class="term-pane hidden" data-pane="transcript">
+          <div class="term-toolbar">
+            <div class="who"><span class="led warn" id="tr-led"></span><span class="id">first mate</span><span class="k">·</span><span class="k">conversation transcript</span></div>
+            <div class="spring"></div>
+            <span class="term-conn" id="trconn"><span class="led warn"></span> loading</span>
+            <label class="search hide-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><input id="trsearch" placeholder="Search transcript  (⌘F)"><span class="cnt" id="trsearchcount"></span></label>
+            <div class="seg" title="Text size"><button data-trzoom="-">A−</button><button data-trzoom="+">A+</button></div>
+            <button class="ctl" id="trcopybtn" title="Copy transcript selection / all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+          </div>
+          <div class="term-screen"><div id="transcript-log" class="transcript-log" tabindex="0"></div><button class="btn sm jump hidden" id="trjumpbtn">↓ Jump to latest</button></div>
         </div>
       </div>
     </section>
@@ -1004,11 +1032,15 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
   /* ---------- console tabs (merged terminal + shell) ---------- */
   function termVisible(){ return app.dataset.view==='console' && app.dataset.tab==='live'; }
   function shellVisible(){ return app.dataset.view==='console' && app.dataset.tab==='shell'; }
+  function transcriptVisible(){ return app.dataset.view==='console' && app.dataset.tab==='transcript'; }
   function showTab(tab){
     app.dataset.tab=tab;
     $$('.tab[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
     $$('.term-pane[data-pane]').forEach(p=>p.classList.toggle('hidden',p.dataset.pane!==tab));
-    if(tab==='live') openTerm(); else openShell();
+    if(tab==='live') openTerm();
+    else if(tab==='shell') openShell();
+    else if(tab==='transcript') openTranscript();
+    if(tab!=='transcript') stopTranscriptPoll();
   }
   $$('.tab[data-tab]').forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
 
@@ -1028,7 +1060,7 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
   });
   async function doLogout(){
     try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
-    closeUserMenu(); closeTerm(); closeShell(); closeDrawer(); closePalette();
+    closeUserMenu(); closeTerm(); closeShell(); stopTranscriptPoll(); closeDrawer(); closePalette();
     showLogin(); toast('Signed out.','ok');
   }
 
@@ -1332,6 +1364,7 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
       toast('Target set to '+set+'.','ok');
       refreshFleet();
       if(termVisible()) reconnectTerm();   // repoint the live mirror at the new target
+      trResetForTarget();                  // the transcript belongs to a target — start fresh
     }catch(e){ toast('Could not save target.','bad'); }
   }
 
@@ -1350,6 +1383,7 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
     {t:'Go to Fleet',k:'⌘1',run:()=>go('fleet'),ic:'<rect x="3" y="3" width="7" height="9" rx="1.6"/><rect x="14" y="3" width="7" height="5" rx="1.6"/>'},
     {t:'Open Console',k:'⌘2',run:()=>{go('console');showTab('live');},ic:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/>'},
     {t:'Open Shell tab',k:'⌘3',run:()=>{go('console');showTab('shell');},ic:'<path d="M4 17l6-6-6-6M12 19h8"/>'},
+    {t:'Open Transcript (scrollable history)',run:()=>{go('console');showTab('transcript');},ic:'<path d="M4 5h16M4 10h16M4 15h11M4 20h7"/>'},
     {t:'Review open PRs',k:'⌘4',run:()=>go('review'),ic:'<path d="M6 3v12"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/>'},
     {t:'Settings',k:'⌘5',run:()=>go('settings'),ic:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3"/>'},
     {t:'New task for the first mate',k:'⏎',run:()=>{go('console');showTab('live');setTimeout(()=>$('#terminput').focus(),150);},ic:'<path d="M12 5v14M5 12h14"/>'},
@@ -1384,6 +1418,7 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
     if(meta&&key==='k'){ e.preventDefault(); openPalette(); }
     else if(meta&&key==='f'&&termVisible()){ e.preventDefault(); $('#termsearch').focus(); $('#termsearch').select(); }
     else if(meta&&key==='f'&&shellVisible()){ e.preventDefault(); $('#shsearch').focus(); $('#shsearch').select(); }
+    else if(meta&&key==='f'&&transcriptVisible()){ e.preventDefault(); $('#trsearch').focus(); $('#trsearch').select(); }
     else if(e.key==='Escape'){ closePalette(); closeDrawer(); switchMenu.classList.remove('on'); closeThemeMenu(); if(umenu.classList.contains('on')){ closeUserMenu(); avatar.focus(); } }
     else if(meta&&['1','2','3','4','5'].includes(e.key)){ e.preventDefault();
       ({'1':()=>go('fleet'),'2':()=>{go('console');showTab('live');},'3':()=>{go('console');showTab('shell');},'4':()=>go('review'),'5':()=>go('settings')})[e.key](); }
@@ -1580,6 +1615,151 @@ h1,h2,h3,h4{margin:0;font-weight:640;letter-spacing:-.02em;text-wrap:balance}
   }
   function closeShell(){ clearTimeout(shReconnectTimer); if(shWs){ try{shWs.close();}catch(e){} shWs=null; } }
   function reconnectShell(){ closeShell(); setShConn('reconnecting'); connectShell(); }
+
+  /* ---------- transcript (native, smoothly-scrollable conversation history) ----
+     The live mirror renders Claude Code in the terminal alternate screen, which
+     keeps NO line-by-line scrollback, so its wheel can only page. This view is a
+     plain scrollable DOM log of the SAME server-stitched history
+     (/api/firstmate/console → raw), so the browser scrolls it smoothly to any
+     exact line. It polls, auto-follows when pinned to the bottom, stops following
+     the moment you scroll up, and searches with jump-to-match. */
+  const trLog=$('#transcript-log');
+  let trPollTimer=null, trLines=[], trRaw=null, trFollow=true, trBooted=false;
+  let trFontSize=parseFloat(localStorage.getItem('fm-transcript-font'))||13;
+  let trMatches=[], trIdx=-1, trQuery='', trHiLines=new Set();
+
+  function trSetConn(state){
+    const map={ loading:['warn','loading'], live:['live','live'], off:['off','unreachable'], idle:['warn','not set'] };
+    const [cls,txt]=map[state]||map.loading;
+    const el=$('#trconn'); el.querySelector('.led').className='led '+cls;
+    el.childNodes[el.childNodes.length-1].textContent=' '+txt;
+    $('#tr-led').className='led '+cls;
+  }
+  function trApplyFont(){ trLog.style.setProperty('--tr-fs', trFontSize+'px'); }
+
+  function trAtBottom(){ return trLog.scrollHeight - trLog.scrollTop - trLog.clientHeight < 24; }
+  function trUpdateJump(){ $('#trjumpbtn').classList.toggle('hidden', trFollow || trAtBottom()); }
+  function trScrollToBottom(){ trLog.scrollTop=trLog.scrollHeight; trFollow=true; trUpdateJump(); }
+
+  function trShowEmpty(msg){
+    trLines=[]; trRaw=null; trMatches=[]; trHiLines.clear();
+    trLog.innerHTML=`<div class="tr-empty">${esc(msg)}</div>`;
+  }
+  function trLineEl(text){ const d=document.createElement('div'); d.className='tr-line'; d.textContent=text; return d; }
+
+  /* Render new history into the log. The server transcript is append-only in the
+     common case, so we diff against the current lines and only touch the DOM from
+     the first changed line onward — this keeps scroll position and text selection
+     intact while new content streams in at the bottom. */
+  function trRender(raw){
+    const wasFollow=trFollow;
+    const lines = raw ? raw.split('\n') : [];
+    // If the log currently shows the empty placeholder, clear it first.
+    if(trLog.querySelector('.tr-empty')) trLog.innerHTML='';
+    let common=0;
+    while(common<lines.length && common<trLines.length && lines[common]===trLines[common]) common++;
+    // Drop any diverged tail (rare: the live screen rewrote in place).
+    while(trLog.children.length>common) trLog.removeChild(trLog.lastChild);
+    const frag=document.createDocumentFragment();
+    for(let i=common;i<lines.length;i++) frag.appendChild(trLineEl(lines[i]));
+    trLog.appendChild(frag);
+    trLines=lines; trRaw=raw;
+    if(common<trLines.length){ // content changed → refresh search + follow
+      if(trQuery){ trBuildMatches(trQuery); trHiLines.clear(); trPaintHighlights();
+        $('#trsearchcount').textContent = trMatches.length ? ((Math.max(trIdx,0)+1)+'/'+trMatches.length) : '0/0'; }
+      if(wasFollow) trScrollToBottom(); else trUpdateJump();
+    }
+  }
+
+  async function trFetch(){
+    try{
+      const j=await apiJSON('/api/firstmate/console?lines=120');
+      if(!j.ok){
+        if(j.configured===false){ trSetConn('idle'); trShowEmpty('No first-mate target is set. Pick one from the top-bar target switcher, then the conversation history will appear here.'); }
+        else { trSetConn('off'); if(!trLines.length) trShowEmpty(j.error?('Could not read the first mate: '+j.error):'Could not read the first-mate pane.'); }
+        return;
+      }
+      trSetConn('live');
+      const raw=(j.raw||'').replace(/\s+$/,'');
+      if(!raw){ trShowEmpty('The transcript is empty so far. As the first mate works, its conversation history will stream in here — scroll up any time to read exact past content.'); trLines=[]; trRaw=''; return; }
+      if(raw!==trRaw) trRender(raw);
+    }catch(e){ trSetConn('off'); }
+  }
+
+  function openTranscript(){
+    trApplyFont();
+    if(!trBooted){ trShowEmpty('Loading conversation history…'); trBooted=true; }
+    trFetch();
+    clearInterval(trPollTimer); trPollTimer=setInterval(()=>{ if(transcriptVisible()) trFetch(); }, 1600);
+    setTimeout(()=>{ if(transcriptVisible()){ if(trFollow) trScrollToBottom(); trLog.focus({preventScroll:true}); } }, 120);
+  }
+  function stopTranscriptPoll(){ clearInterval(trPollTimer); trPollTimer=null; }
+  function trResetForTarget(){
+    trRaw=null; trLines=[]; trMatches=[]; trHiLines.clear(); trIdx=-1; trFollow=true;
+    $('#trsearchcount').textContent='';
+    if(transcriptVisible()){ trShowEmpty('Loading conversation history…'); trFetch(); }
+  }
+
+  // Follow only while pinned to the bottom; any scroll-up releases follow.
+  trLog.addEventListener('scroll',()=>{ trFollow=trAtBottom(); trUpdateJump(); });
+  $('#trjumpbtn').addEventListener('click',trScrollToBottom);
+
+  // font zoom (independent of the terminal font)
+  function trSetFont(px){ trFontSize=Math.max(10,Math.min(22,px)); localStorage.setItem('fm-transcript-font',trFontSize); trApplyFont(); if(trFollow) trScrollToBottom(); }
+  $$('[data-trzoom]').forEach(b=>b.addEventListener('click',()=>trSetFont(trFontSize+(b.dataset.trzoom==='+'?1:-1))));
+
+  // copy: selection if any, else the whole transcript
+  $('#trcopybtn').addEventListener('click',async()=>{
+    let text=String(window.getSelection());
+    if(!text) text=trLines.join('\n');
+    if(!text){ toast('Nothing to copy yet.','bad'); return; }
+    try{ await navigator.clipboard.writeText(text); toast('Copied transcript to clipboard.','ok'); }
+    catch(e){ toast('Copy blocked by the browser.','bad'); }
+  });
+
+  /* ---- transcript search (find + jump between matches) ---- */
+  function trClearHighlights(){ trHiLines.forEach(i=>{ const el=trLog.children[i]; if(el&&el.classList.contains('tr-line')) el.textContent=trLines[i]; }); trHiLines.clear(); }
+  function trBuildMatches(q){
+    trMatches=[]; const needle=q.toLowerCase(); if(!needle) return;
+    for(let i=0;i<trLines.length;i++){ const s=trLines[i].toLowerCase(); let idx=s.indexOf(needle); while(idx!==-1){ trMatches.push({line:i,start:idx}); idx=s.indexOf(needle, idx+needle.length); } }
+  }
+  function trPaintHighlights(){
+    trClearHighlights();
+    if(!trQuery) return;
+    const qlen=trQuery.length;
+    // group match offsets per line so each line is rebuilt once
+    const byLine=new Map();
+    trMatches.forEach((m,gi)=>{ if(!byLine.has(m.line)) byLine.set(m.line,[]); byLine.get(m.line).push({start:m.start,gi}); });
+    byLine.forEach((hits,li)=>{
+      const el=trLog.children[li]; if(!el||!el.classList.contains('tr-line')) return;
+      const src=trLines[li]; el.textContent=''; let pos=0;
+      hits.forEach(h=>{ if(h.start>pos) el.appendChild(document.createTextNode(src.slice(pos,h.start)));
+        const mk=document.createElement('mark'); mk.textContent=src.slice(h.start,h.start+qlen); if(h.gi===trIdx) mk.className='cur'; el.appendChild(mk); pos=h.start+qlen; });
+      if(pos<src.length) el.appendChild(document.createTextNode(src.slice(pos)));
+      trHiLines.add(li);
+    });
+  }
+  function trGoto(idx){
+    if(!trMatches.length){ $('#trsearchcount').textContent='0/0'; return; }
+    trIdx=(idx+trMatches.length)%trMatches.length;
+    trFollow=false;  // searching means the captain is reading, don't yank to bottom
+    trPaintHighlights();
+    const cur=trLog.querySelector('mark.cur'); if(cur) cur.scrollIntoView({behavior:'smooth',block:'center'});
+    $('#trsearchcount').textContent=(trIdx+1)+'/'+trMatches.length;
+    trUpdateJump();
+  }
+  function trRunSearch(q, forward=true){
+    q=q.trim();
+    if(q!==trQuery){ trQuery=q; trIdx=forward?-1:0; trBuildMatches(q); }
+    if(!q){ $('#trsearchcount').textContent=''; trClearHighlights(); return; }
+    if(!trMatches.length){ $('#trsearchcount').textContent='0/0'; trClearHighlights(); return; }
+    trGoto(forward? trIdx+1 : trIdx-1);
+  }
+  $('#trsearch').addEventListener('input',e=>{ trQuery=''; trRunSearch(e.target.value, true); });
+  $('#trsearch').addEventListener('keydown',e=>{
+    if(e.key==='Enter'){ e.preventDefault(); if(trQuery===e.target.value.trim() && trMatches.length) trGoto(trIdx+(e.shiftKey?-1:1)); else trRunSearch(e.target.value, !e.shiftKey); }
+    else if(e.key==='Escape'){ e.target.value=''; trQuery=''; trMatches=[]; $('#trsearchcount').textContent=''; trClearHighlights(); trLog.focus({preventScroll:true}); }
+  });
 
   // shell: jump to bottom
   function shUpdateJump(){ if(!shTerm) return; const b=shTerm.buffer.active; const atBottom=b.viewportY>=b.baseY-1; $('#shjumpbtn').classList.toggle('hidden', atBottom); }
