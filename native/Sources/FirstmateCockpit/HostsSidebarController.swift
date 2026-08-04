@@ -34,14 +34,6 @@ private enum HostListRow {
 final class HostsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate {
 
     private let store: HostStore
-    /// The saved-keys Keychain (Phase 2) - only read here, to populate the
-    /// editor's "Choose a key" popup. All secret handling lives in
-    /// `KeychainKeyStore` / `SSHKeyMaterializer`, not in this controller.
-    private let keyStore: SSHKeyStore
-    /// The snippet library (Phase 3) - only read here, to populate the
-    /// editor's "Startup snippet" popup and to hand the chosen id through to
-    /// `onConnect`; `ConsoleController` resolves it into command text.
-    private let snippetStore: SnippetStore
 
     /// Open an ssh session: (tab label, ssh argv, host accent hex, saved-key
     /// id, startup-snippet id). Wired by the app delegate to
@@ -51,6 +43,13 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     /// Connect the pinned "Firstmate" entry (Fix 4). Wired by the app
     /// delegate to `ConsoleController.openFirstmateHost`.
     var onConnectPinned: (() -> Void)?
+
+    /// Add ("+"/⌘N) or edit (double-click/Edit) a host - `nil` for a new
+    /// host, a host for editing. Nav-redesign task, item 3: the editor is now
+    /// a dedicated full-page window (`AppDelegate.presentHostEditor`), not a
+    /// sheet cramped into this ~240pt-wide panel, so this view no longer
+    /// constructs `HostEditorController` itself.
+    var onAddOrEdit: ((Host?) -> Void)?
 
     // MARK: Views
 
@@ -70,10 +69,8 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     private var selectedTags: Set<String> = []
     private var tagButtons: [String: NSButton] = [:]
 
-    init(store: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    init(store: HostStore) {
         self.store = store
-        self.keyStore = keyStore
-        self.snippetStore = snippetStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -502,19 +499,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func presentEditor(for host: Host?) {
-        let editor = HostEditorController(host: host, keyStore: keyStore, snippets: snippetStore.snippets)
-        editor.onSave = { [weak self] saved in
-            guard let self else { return }
-            if self.store.host(id: saved.id) != nil {
-                self.store.update(saved)
-            } else {
-                self.store.add(saved)
-            }
-        }
-        editor.onDelete = { [weak self] id in
-            self?.store.delete(id: id)
-        }
-        presentAsSheet(editor)
+        onAddOrEdit?(host)
     }
 
     // MARK: NSSearchFieldDelegate

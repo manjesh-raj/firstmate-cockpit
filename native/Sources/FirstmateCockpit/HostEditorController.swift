@@ -1,9 +1,13 @@
 // Firstmate Cockpit - native macOS app.
 //
-// The host-details editor (design report A2/A3, Section D Phase 1). A sheet with
-// the Termius "New Host" fields - Label, Address, Port, Username, a credentials
-// section, and the A3 icon/colour pickers. Add, edit, and delete all route back
-// to the sidebar via closures; this view knows nothing about the host store.
+// The host-details editor (design report A2/A3, Section D Phase 1). The
+// Termius "New Host" fields - Label, Address, Port, Username, a credentials
+// section, and the A3 icon/colour pickers. Add, edit, and delete all route
+// back to the caller via closures; this view knows nothing about the host
+// store. Nav-redesign task, item 3: presented as its own top-level window
+// (`AppDelegate.presentHostEditor`) with the same visual weight as Settings,
+// not a sheet on the ~240pt Hosts panel - only the presentation container
+// changed, every field and the inline "+ New Key…" flow below are unchanged.
 //
 // Phase 2 replaces the raw "key file path" field with a "Choose a key" popup
 // sourced from the saved-keys Keychain (`SSHKeyStore`) - the host now carries

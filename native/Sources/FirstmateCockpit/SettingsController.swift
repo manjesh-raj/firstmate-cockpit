@@ -4,9 +4,10 @@
 // Connection/Appearance/Terminal screen (`backend/static/index.html`),
 // adapted for a native app with no sign-in step. Three sections:
 //
-//   - Appearance: the Helm theme picker, wired straight to `ThemeManager` -
-//     every theme-aware window (console, Hosts/Keys/Snippets) already
-//     observes it, so a change here repaints the whole app immediately.
+//   - Appearance: the same 8-theme picker (`ThemeMenu`) as the topbar, wired
+//     straight to `ThemeManager` - every theme-aware window (console,
+//     Hosts/Keys/Snippets) already observes it, so a change here repaints the
+//     whole app immediately.
 //   - Terminal: font-size +/- steppers. The live font change is routed
 //     through `ConsoleController.stepFontSize` (wired by the app delegate,
 //     `onFontSizeStep`) since this panel has no direct reference to the
@@ -31,7 +32,7 @@ final class SettingsController: NSViewController {
     /// direct reference to the console.
     var onFontSizeStep: ((CGFloat) -> Void)?
 
-    private let themeSwitch = NSSegmentedControl()
+    private let themeButton = NSButton()
     private let fontSizeLabel = NSTextField(labelWithString: "")
     private let shellCwdField = NSTextField()
     private let mirrorTargetField = NSTextField()
@@ -39,7 +40,19 @@ final class SettingsController: NSViewController {
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 420))
+        root.wantsLayer = true
         view = root
+        // Nav-redesign task: Settings now sits embedded in the same window as
+        // the themed rail/console/placeholders (previously its own floating
+        // window, where the system's own light/dark mode covered for this) -
+        // so it needs the same theme-follows-`ThemeManager` treatment as the
+        // Hosts/Keys/Snippets panels (PR #14 Fix 2), or it would show as a
+        // glaring system-background rectangle whenever the in-app theme and
+        // the OS appearance disagree.
+        ThemeManager.shared.observe { [weak root] theme in
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        }
 
         let appearance = section("Appearance", buildAppearanceRow())
         let terminal = section("Terminal", buildTerminalRow())
@@ -81,17 +94,22 @@ final class SettingsController: NSViewController {
     // MARK: Appearance
 
     private func buildAppearanceRow() -> NSView {
-        themeSwitch.segmentCount = 2
-        themeSwitch.setLabel("Dark", forSegment: 0)
-        themeSwitch.setLabel("Light", forSegment: 1)
-        themeSwitch.target = self
-        themeSwitch.action = #selector(themeChanged)
-        themeSwitch.translatesAutoresizingMaskIntoConstraints = false
-        return themeSwitch
+        themeButton.bezelStyle = .rounded
+        themeButton.imagePosition = .imageLeading
+        themeButton.target = self
+        themeButton.action = #selector(themeButtonClicked)
+        themeButton.translatesAutoresizingMaskIntoConstraints = false
+        return themeButton
     }
 
-    @objc private func themeChanged() {
-        ThemeManager.shared.setTheme(themeSwitch.selectedSegment == 1 ? .light : .dark)
+    @objc private func themeButtonClicked() {
+        let menu = ThemeMenu.build(target: self, action: #selector(themeItemSelected(_:)))
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: themeButton.bounds.height + 4), in: themeButton)
+    }
+
+    @objc private func themeItemSelected(_ sender: NSMenuItem) {
+        ThemeMenu.apply(from: sender)
+        refreshFromSettings()
     }
 
     // MARK: Terminal
@@ -213,7 +231,9 @@ final class SettingsController: NSViewController {
     }
 
     private func refreshFromSettings() {
-        themeSwitch.selectedSegment = ThemeManager.shared.theme.mode == .light ? 1 : 0
+        let theme = ThemeManager.shared.theme
+        themeButton.title = " " + theme.name
+        themeButton.image = theme.swatchImage()
         fontSizeLabel.stringValue = "\(Int(AppSettings.shared.fontSize)) pt"
         shellCwdField.stringValue = AppSettings.shared.defaultShellCwd ?? ""
         mirrorTargetField.stringValue = AppSettings.shared.mirrorTarget ?? ""
