@@ -158,7 +158,19 @@ FM_MIRROR_TARGET=firstmate:1 swift run
 
 A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 
-> Launching an unbundled executable this way is expected pre-P4. It gets a Dock icon and menu bar because the app sets a regular activation policy. Signing, notarization, and a real `.app` bundle are Phase 4.
+> Launching an unbundled executable this way is expected pre-P4. It gets a Dock icon and menu bar because the app sets a regular activation policy. Signing and notarization for real distribution are still Phase 4 - see "Package as an app" below for a double-clickable local bundle in the meantime.
+
+## Package as an app
+
+`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/New-Firstmate.app`. It's unsigned and local-use only - no signing, no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
+
+```bash
+cd native
+./build_native_app.sh
+open ../dist/New-Firstmate.app
+```
+
+> **This is not `dist/Firstmate.app`.** The repo also has an old web/WKWebView app at `dist/Firstmate.app`, built by the root `build_app.sh` via py2app - a completely different codebase (`backend/` + `desktop.py`). `dist/New-Firstmate.app` (bundle ID `com.firstmate.cockpit.native`) is the one that launches *this* native Swift cockpit. Check the name before you double-click if both are sitting in `dist/`.
 
 ## Keyboard shortcuts
 
