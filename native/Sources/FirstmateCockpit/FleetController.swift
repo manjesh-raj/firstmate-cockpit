@@ -52,7 +52,7 @@ final class FleetController: NSViewController {
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 26
+        contentStack.spacing = 20
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
         contentStack.addArrangedSubview(bannerView)
@@ -180,35 +180,35 @@ final class FleetController: NSViewController {
 
         let iconView = NSImageView()
         iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let nameLabel = NSTextField(labelWithString: label)
-        nameLabel.font = .systemFont(ofSize: 10.5)
+        nameLabel.font = .systemFont(ofSize: 9.5)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let topRow = NSStackView(views: [iconView, valueLabel])
         topRow.orientation = .horizontal
-        topRow.spacing = 6
+        topRow.spacing = 5
         topRow.alignment = .firstBaseline
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [topRow, nameLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
+        stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
-            container.heightAnchor.constraint(equalToConstant: 66),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            container.heightAnchor.constraint(equalToConstant: 50),
         ])
         stashedTileParts.append((container, iconView, valueLabel, nameLabel))
         return container
@@ -243,7 +243,7 @@ final class FleetController: NSViewController {
         let section = NSStackView(views: [headerRow, stack])
         section.orientation = .vertical
         section.alignment = .leading
-        section.spacing = 10
+        section.spacing = 8
         section.translatesAutoresizingMaskIntoConstraints = false
         stack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
@@ -420,29 +420,38 @@ final class FleetController: NSViewController {
         let idLabel = NSTextField(labelWithString: task.id)
         idLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         idLabel.lineBreakMode = .byTruncatingTail
+        idLabel.maximumNumberOfLines = 1
 
         let subBits = [task.repo, task.detail.isEmpty ? "source: \(task.source)" : task.detail].compactMap { $0 }.filter { !$0.isEmpty }
         let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
         subLabel.font = .systemFont(ofSize: 10.5)
         subLabel.textColor = HelmTheme.mutedInk(theme)
         subLabel.lineBreakMode = .byTruncatingTail
+        subLabel.maximumNumberOfLines = 1
 
         let textStack = NSStackView(views: [idLabel, subLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let pill = pillLabelView(text: pillLabel, colorHex: colorHex)
 
         let row = NSStackView(views: [iconView, textStack, pill])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
+        // Keep the icon and status pill at their natural size and let the
+        // title/subtitle text truncate first under narrow widths, so the pill
+        // never gets squeezed into wrapping onto a second line.
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
         pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        return wrapRow(row, minHeight: 44)
+        return wrapRow(row, minHeight: 38)
     }
 
     private func taskVisuals(_ task: FleetTask) -> (symbol: String, colorHex: String, label: String) {
@@ -467,6 +476,7 @@ final class FleetController: NSViewController {
         let titleLabel = NSTextField(labelWithString: heading)
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
 
         var subBits: [String] = []
         if !pr.repo.isEmpty { subBits.append(pr.repo) }
@@ -476,24 +486,28 @@ final class FleetController: NSViewController {
         subLabel.font = .systemFont(ofSize: 10.5)
         subLabel.textColor = HelmTheme.mutedInk(theme)
         subLabel.lineBreakMode = .byTruncatingTail
+        subLabel.maximumNumberOfLines = 1
 
         let textStack = NSStackView(views: [titleLabel, subLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let (checksLabel, checksColorHex) = checksVisuals(pr.checks)
         let checksPill = pillLabelView(text: checksLabel, colorHex: checksColorHex)
 
         let reviewButton = NSButton(title: "Review", target: self, action: #selector(reviewPR(_:)))
         reviewButton.bezelStyle = .rounded
+        reviewButton.controlSize = .small
         reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
 
         var trailing: [NSView] = [checksPill, reviewButton]
         if pr.source == "work", let taskID = pr.taskID {
             let mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergePR(_:)))
             mergeButton.bezelStyle = .rounded
+            mergeButton.controlSize = .small
             mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
             trailing.append(mergeButton)
         }
@@ -501,11 +515,22 @@ final class FleetController: NSViewController {
         let row = NSStackView(views: [iconView, textStack] + trailing)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
-        for t in trailing { t.setContentHuggingPriority(.required, for: .horizontal) }
+        // Same rule as taskRowView: icon and every trailing control (badge,
+        // Review, Merge) stay fixed-size under narrow widths; only the
+        // title/subtitle text truncates. Previously nothing set compression
+        // resistance on the trailing controls, so a long PR title could
+        // squeeze the checks pill below its fitting width and force it (and
+        // the buttons after it) onto a visually wrapped second line.
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for t in trailing {
+            t.setContentHuggingPriority(.required, for: .horizontal)
+            t.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
 
-        return wrapRow(row, minHeight: 44)
+        return wrapRow(row, minHeight: 38)
     }
 
     private func checksVisuals(_ checks: String) -> (label: String, colorHex: String) {
@@ -529,10 +554,10 @@ final class FleetController: NSViewController {
         label.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3),
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -7),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
         ])
         return container
     }
@@ -544,10 +569,10 @@ final class FleetController: NSViewController {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
             container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight),
         ])
         rowContainers.append(container)
