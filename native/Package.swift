@@ -19,17 +19,25 @@ let package = Package(
         // SwiftTerm's AppKit views and the clipboard APIs used here need a recent macOS.
         .macOS(.v13)
     ],
-    dependencies: [
-        // The only production-grade native macOS terminal you can embed as a library.
-        // Pinned to the 1.x line; Package.resolved records the exact commit (1.15.0).
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMajor(from: "1.2.0"))
-    ],
     targets: [
+        // Vendored SwiftTerm 1.15.0 (Vendor/SwiftTerm), not a remote SPM dependency.
+        // The upstream `dimmedColor(towards:)` (SGR-2 dim/faint text) blends a flat
+        // 50% toward the background regardless of whether that background is dark
+        // or light, which reads fine on dark themes but leaves dim text nearly
+        // invisible on light ones - and there is no public/open hook to override it
+        // from outside the module. See Vendor/SwiftTerm/README.md for the patch and
+        // why it has to live here instead of a remote fork.
+        .target(
+            name: "SwiftTerm",
+            path: "Vendor/SwiftTerm/Sources/SwiftTerm",
+            exclude: ["Mac/README.md"],
+            resources: [
+                .process("Apple/Metal/Shaders.metal")
+            ]
+        ),
         .executableTarget(
             name: "FirstmateCockpit",
-            dependencies: [
-                .product(name: "SwiftTerm", package: "SwiftTerm")
-            ]
+            dependencies: ["SwiftTerm"]
         )
     ]
 )
