@@ -490,10 +490,12 @@ enum UpdatesSource {
             return CheckOutcome(installedLabel: installed, latestLabel: "level with upstream", status: .upToDate, detail: parsed.detail, log: result.combinedLog)
         case "would-update":
             return CheckOutcome(installedLabel: installed, latestLabel: "\(parsed.behind) commit(s) behind", status: .updateAvailable, detail: parsed.detail, log: result.combinedLog)
+        case "would-merge":
+            return CheckOutcome(installedLabel: installed, latestLabel: "\(parsed.behind) commit(s) to merge", status: .updateAvailable, detail: parsed.detail, log: result.combinedLog)
         default:
-            // diverged, dirty tree, no upstream remote, etc. - never treated
-            // as "safe to auto-fast-forward", surfaced as a failed check with
-            // the script's own explanation as the detail.
+            // merge-conflict, dirty tree, no upstream remote, etc. - never
+            // treated as "safe to auto-update", surfaced as a failed check
+            // with the script's own explanation as the detail.
             return CheckOutcome(installedLabel: installed, latestLabel: nil, status: .checkFailed, detail: parsed.detail, log: result.combinedLog)
         }
     }
@@ -509,6 +511,8 @@ enum UpdatesSource {
         }
         switch parsed.status {
         case "updated":
+            return UpdateOutcome(ok: true, newVersionLabel: firstmateLocalLabel(), detail: parsed.detail, log: result.combinedLog)
+        case "merged":
             return UpdateOutcome(ok: true, newVersionLabel: firstmateLocalLabel(), detail: parsed.detail, log: result.combinedLog)
         case "already-current":
             return UpdateOutcome(ok: true, newVersionLabel: firstmateLocalLabel(), detail: parsed.detail, log: result.combinedLog)
