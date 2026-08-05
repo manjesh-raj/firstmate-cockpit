@@ -525,9 +525,14 @@ final class UpdatesController: NSViewController {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Sync firstmate with upstream?"
-        alert.informativeText = "\(row.detail)\n\nThis fast-forwards the local default branch to kunchenguid/firstmate's upstream, then pushes the result to origin (your fork). Never forced, never a merge commit."
-        alert.addButton(withTitle: "Sync and Push")
+        if row.status == .notInstalled {
+            alert.messageText = "Install firstmate from upstream?"
+            alert.informativeText = "\(row.detail)\n\nThis fast-forwards the local default branch to kunchenguid/firstmate's upstream, then pushes the result to origin (your fork). Never forced, never a merge commit."
+        } else {
+            alert.messageText = "Sync firstmate with upstream?"
+            alert.informativeText = "\(row.detail)\n\nThis fast-forwards the local default branch to kunchenguid/firstmate's upstream, then pushes the result to origin (your fork). Never forced, never a merge commit."
+        }
+        alert.addButton(withTitle: row.status == .notInstalled ? "Install and Push" : "Sync and Push")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .informational
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -626,6 +631,7 @@ final class UpdatesController: NSViewController {
         row.pill.isHidden = busy
         row.checkButton.isHidden = busy
         row.updateButton.isHidden = busy || !row.status.showsUpdateButton
+        row.updateButton.title = row.status == .notInstalled ? "Install" : "Update"
         row.spinner.isHidden = !busy
         row.progressLabel.isHidden = !busy
         row.progressLabel.stringValue = row.status == .updating ? "Updating\u{2026}" : "Checking\u{2026}"
