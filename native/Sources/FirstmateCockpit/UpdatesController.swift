@@ -215,7 +215,7 @@ final class UpdatesController: NSViewController {
         checkAllIcon.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
         checkAllIcon.translatesAutoresizingMaskIntoConstraints = false
-        checkAllLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        checkAllLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         checkAllLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let pillContent = NSStackView(views: [checkAllIcon, checkAllLabel])
@@ -232,10 +232,10 @@ final class UpdatesController: NSViewController {
         checkAllPill.setAccessibilityLabel("Refresh")
         checkAllPill.addSubview(pillContent)
         NSLayoutConstraint.activate([
-            pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 18),
-            pillContent.trailingAnchor.constraint(equalTo: checkAllPill.trailingAnchor, constant: -18),
-            pillContent.topAnchor.constraint(equalTo: checkAllPill.topAnchor, constant: 10),
-            pillContent.bottomAnchor.constraint(equalTo: checkAllPill.bottomAnchor, constant: -10),
+            pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 14),
+            pillContent.trailingAnchor.constraint(equalTo: checkAllPill.trailingAnchor, constant: -14),
+            pillContent.topAnchor.constraint(equalTo: checkAllPill.topAnchor, constant: 7),
+            pillContent.bottomAnchor.constraint(equalTo: checkAllPill.bottomAnchor, constant: -7),
         ])
         checkAllPill.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(checkAllTapped)))
         checkAllPill.setContentHuggingPriority(.required, for: .horizontal)
@@ -273,6 +273,7 @@ final class UpdatesController: NSViewController {
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 12
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
     }
@@ -354,7 +355,7 @@ final class UpdatesController: NSViewController {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         let valueLabel = NSTextField(labelWithString: "0")
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .bold)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 19, weight: .bold)
         valueLabel.lineBreakMode = .byTruncatingTail
         valueLabel.maximumNumberOfLines = 1
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
