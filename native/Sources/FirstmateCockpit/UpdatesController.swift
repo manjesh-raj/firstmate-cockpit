@@ -42,6 +42,7 @@ private final class UpdateRow {
     var isLogExpanded = false
     var isBusy = false
 
+    let iconTile = NSView()
     let iconView = NSImageView()
     let nameLabel = NSTextField(labelWithString: "")
     let detailLabel = NSTextField(labelWithString: "")
@@ -64,12 +65,38 @@ private final class UpdateRow {
 
 final class UpdatesController: NSViewController {
 
+    /// One category card's rows + the separators between them, kept so the
+    /// search field can hide non-matching rows and collapse the separator
+    /// that would otherwise sit next to a hidden row - see `applyFilter`.
+    private struct CategorySection {
+        let background: NSView
+        let rows: [UpdateRow]
+        let separators: [NSView]
+    }
+
+    private enum StatSemantic { case neutral, success, warning }
+
+    private struct StatTile {
+        let valueLabel: NSTextField
+        let iconView: NSImageView
+        let semantic: StatSemantic
+    }
+
     private var rows: [UpdateRow] = DependencyCatalog.items.map(UpdateRow.init)
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var scrollView: NSScrollView!
     private var cardBackgrounds: [NSView] = []
     private var separators: [NSView] = []
+    private var categorySections: [CategorySection] = []
+    private var statTiles: [StatTile] = []
+    private let searchField = NSSearchField()
+    private var lastCheckedAt: Date?
+    private var lastCheckedTimer: Timer?
     private var hasCheckedOnce = false
+
+    deinit {
+        lastCheckedTimer?.invalidate()
+    }
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 720))
@@ -83,7 +110,9 @@ final class UpdatesController: NSViewController {
         }
 
         let header = buildHeader()
-        var sections: [NSView] = [header]
+        let statsRow = buildStatsRow()
+        let searchRow = buildSearchRow()
+        var sections: [NSView] = [header, statsRow, searchRow]
         for category in DependencyCatalog.categoryOrder {
             let categoryRows = rows.filter { $0.item.category == category }
             guard !categoryRows.isEmpty else { continue }
@@ -95,7 +124,9 @@ final class UpdatesController: NSViewController {
         stack.alignment = .leading
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.setCustomSpacing(16, after: header)
+        stack.setCustomSpacing(18, after: header)
+        stack.setCustomSpacing(18, after: statsRow)
+        stack.setCustomSpacing(18, after: searchRow)
 
         let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -126,17 +157,30 @@ final class UpdatesController: NSViewController {
         scrollView = scroll
 
         for row in rows { render(row) }
+        applyFilter("")
         applyTheme()
+        renderStats()
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         view.layoutSubtreeIfNeeded()
         scrollToTop()
+        renderStats()
+        lastCheckedTimer?.invalidate()
+        lastCheckedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.renderStats()
+        }
         if !hasCheckedOnce {
             hasCheckedOnce = true
             checkAll()
         }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        lastCheckedTimer?.invalidate()
+        lastCheckedTimer = nil
     }
 
     private func scrollToTop() {
@@ -148,12 +192,16 @@ final class UpdatesController: NSViewController {
 
     private let subtitleLabel = NSTextField(labelWithString: "Every tool in the fleet, checked against its real source - npm, Homebrew, herdr, no-mistakes, and firstmate's own upstream.")
 
-    /// Icon button with visible chrome (filled surface + border), matching
-    /// `TopBarController.themeButton` - a page-header bulk action in this app
-    /// is icon-only, but it still needs to read as clickable, so it borrows
-    /// that button's surface/border/corner-radius treatment rather than
-    /// `FleetController.refreshButton`'s bare borderless glyph.
-    private let checkAllButton = NSButton()
+    /// A prominent, labeled, accent-colored pill (icon + "Refresh") - the
+    /// captain's mockup showed this as the page's clear primary action, not a
+    /// bare icon glyph, superseding cockpit-native-updates-polish's earlier
+    /// borderless-icon-button decision for this control. Built the same way
+    /// `SettingsController.themeCard`/`sessionCard` build a clickable styled
+    /// card (a plain `NSView` + click gesture) rather than fighting `NSButton`
+    /// for custom padding on a borderless button.
+    private let checkAllPill = NSView()
+    private let checkAllIcon = NSImageView()
+    private let checkAllLabel = NSTextField(labelWithString: "Refresh")
     private let checkAllProgressBar = NSProgressIndicator()
     private let checkAllProgressLabel = NSTextField(labelWithString: "")
     private var isCheckingAll = false
@@ -164,18 +212,34 @@ final class UpdatesController: NSViewController {
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.preferredMaxLayoutWidth = 560
 
-        checkAllButton.title = ""
-        checkAllButton.isBordered = false
-        checkAllButton.wantsLayer = true
-        checkAllButton.layer?.cornerRadius = 9
-        checkAllButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check all")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
-        checkAllButton.target = self
-        checkAllButton.action = #selector(checkAllTapped)
-        checkAllButton.toolTip = "Check all for updates"
-        checkAllButton.translatesAutoresizingMaskIntoConstraints = false
-        checkAllButton.widthAnchor.constraint(equalToConstant: 34).isActive = true
-        checkAllButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        checkAllIcon.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        checkAllIcon.translatesAutoresizingMaskIntoConstraints = false
+        checkAllLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        checkAllLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let pillContent = NSStackView(views: [checkAllIcon, checkAllLabel])
+        pillContent.orientation = .horizontal
+        pillContent.alignment = .centerY
+        pillContent.spacing = 7
+        pillContent.translatesAutoresizingMaskIntoConstraints = false
+
+        checkAllPill.wantsLayer = true
+        checkAllPill.layer?.cornerRadius = 10
+        checkAllPill.translatesAutoresizingMaskIntoConstraints = false
+        checkAllPill.toolTip = "Check all tools for updates"
+        checkAllPill.setAccessibilityRole(.button)
+        checkAllPill.setAccessibilityLabel("Refresh")
+        checkAllPill.addSubview(pillContent)
+        NSLayoutConstraint.activate([
+            pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 18),
+            pillContent.trailingAnchor.constraint(equalTo: checkAllPill.trailingAnchor, constant: -18),
+            pillContent.topAnchor.constraint(equalTo: checkAllPill.topAnchor, constant: 10),
+            pillContent.bottomAnchor.constraint(equalTo: checkAllPill.bottomAnchor, constant: -10),
+        ])
+        checkAllPill.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(checkAllTapped)))
+        checkAllPill.setContentHuggingPriority(.required, for: .horizontal)
+        checkAllPill.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         checkAllProgressBar.style = .bar
         checkAllProgressBar.isIndeterminate = false
@@ -195,12 +259,12 @@ final class UpdatesController: NSViewController {
         textStack.spacing = 4
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let trailing = NSStackView(views: [checkAllProgressLabel, checkAllProgressBar, checkAllButton])
+        let trailing = NSStackView(views: [checkAllProgressLabel, checkAllProgressBar, checkAllPill])
         trailing.orientation = .horizontal
         trailing.alignment = .centerY
         trailing.spacing = 8
         trailing.translatesAutoresizingMaskIntoConstraints = false
-        for v: NSView in [checkAllProgressLabel, checkAllProgressBar, checkAllButton] {
+        for v: NSView in [checkAllProgressLabel, checkAllProgressBar] {
             v.setContentHuggingPriority(.required, for: .horizontal)
             v.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
@@ -218,7 +282,7 @@ final class UpdatesController: NSViewController {
     private func checkAll() {
         guard !isCheckingAll else { return }
         isCheckingAll = true
-        checkAllButton.isHidden = true
+        checkAllPill.isHidden = true
         checkAllProgressBar.isHidden = false
         checkAllProgressLabel.isHidden = false
 
@@ -241,9 +305,11 @@ final class UpdatesController: NSViewController {
 
     private func finishCheckAll() {
         isCheckingAll = false
-        checkAllButton.isHidden = false
+        checkAllPill.isHidden = false
         checkAllProgressBar.isHidden = true
         checkAllProgressLabel.isHidden = true
+        lastCheckedAt = Date()
+        renderStats()
 
         let updateCount = rows.filter { $0.status.showsUpdateButton }.count
         let message = updateCount > 0
@@ -251,6 +317,135 @@ final class UpdatesController: NSViewController {
             : "Checked \(rows.count) tools - all up to date"
         if let container = view.window?.contentView {
             Toast.show(in: container, message: message)
+        }
+    }
+
+    // MARK: Stats strip
+
+    private func buildStatsRow() -> NSView {
+        let installed = statCard(icon: "shippingbox", title: "Tools Installed")
+        let upToDate = statCard(icon: "checkmark.circle", title: "Up to Date")
+        let updatesAvailable = statCard(icon: "arrow.up.circle", title: "Updates Available")
+        let lastChecked = statCard(icon: "clock", title: "Last Checked")
+
+        statTiles = [
+            StatTile(valueLabel: installed.valueLabel, iconView: installed.iconView, semantic: .neutral),
+            StatTile(valueLabel: upToDate.valueLabel, iconView: upToDate.iconView, semantic: .success),
+            StatTile(valueLabel: updatesAvailable.valueLabel, iconView: updatesAvailable.iconView, semantic: .warning),
+            StatTile(valueLabel: lastChecked.valueLabel, iconView: lastChecked.iconView, semantic: .neutral),
+        ]
+
+        let row = NSStackView(views: [installed.container, upToDate.container, updatesAvailable.container, lastChecked.container])
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    /// Same rounded-card chrome as `card(icon:title:content:)`/`SettingsController.card`
+    /// (appended to the shared `cardBackgrounds` list so it themes identically)
+    /// but laid out as a stat tile: icon + big number on top, label beneath -
+    /// mirrors `FleetController.statTile`'s shape at a larger, page-header scale.
+    private func statCard(icon: String, title: String) -> (container: NSView, valueLabel: NSTextField, iconView: NSImageView, titleLabel: NSTextField) {
+        let iconView = NSImageView()
+        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let valueLabel = NSTextField(labelWithString: "0")
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .bold)
+        valueLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.maximumNumberOfLines = 1
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let topRow = NSStackView(views: [iconView, valueLabel])
+        topRow.orientation = .horizontal
+        topRow.spacing = 6
+        topRow.alignment = .firstBaseline
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [topRow, titleLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let background = NSView()
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 13
+        background.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
+            background.heightAnchor.constraint(equalToConstant: 66),
+        ])
+        cardBackgrounds.append(background)
+        statTitleLabels.append(titleLabel)
+        return (background, valueLabel, iconView, titleLabel)
+    }
+
+    private var statTitleLabels: [NSTextField] = []
+
+    private func renderStats() {
+        let total = rows.count
+        let upToDate = rows.filter { $0.status == .upToDate }.count
+        let needsUpdate = rows.filter { $0.status == .updateAvailable || $0.status == .notInstalled }.count
+        guard statTiles.count == 4 else { return }
+        statTiles[0].valueLabel.stringValue = "\(total)"
+        statTiles[1].valueLabel.stringValue = "\(upToDate)"
+        statTiles[2].valueLabel.stringValue = "\(needsUpdate)"
+        statTiles[3].valueLabel.stringValue = relativeLastChecked()
+    }
+
+    private func relativeLastChecked() -> String {
+        guard let lastCheckedAt else { return "\u{2014}" }
+        let seconds = max(0, Int(Date().timeIntervalSince(lastCheckedAt)))
+        if seconds < 5 { return "just now" }
+        if seconds < 60 { return "\(seconds)s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        return "\(days)d ago"
+    }
+
+    // MARK: Search
+
+    private func buildSearchRow() -> NSView {
+        searchField.placeholderString = "Search tools\u{2026}"
+        searchField.delegate = self
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        return searchField
+    }
+
+    /// Hides rows whose name doesn't match `query` (case-insensitive
+    /// substring), collapses the separator that would otherwise sit next to
+    /// a hidden row, and hides a whole category card once none of its rows
+    /// match - an empty query shows everything.
+    private func applyFilter(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for section in categorySections {
+            var anyVisible = false
+            for row in section.rows {
+                let matches = q.isEmpty || row.item.name.lowercased().contains(q)
+                row.rowContainer.isHidden = !matches
+                if matches { anyVisible = true }
+            }
+            section.background.isHidden = !anyVisible
+            for i in section.separators.indices {
+                let rowVisible = !section.rows[i].rowContainer.isHidden
+                let laterVisible = section.rows[(i + 1)...].contains { !$0.rowContainer.isHidden }
+                section.separators[i].isHidden = !(rowVisible && laterVisible)
+            }
         }
     }
 
@@ -262,6 +457,19 @@ final class UpdatesController: NSViewController {
         case "Homebrew": return "wrench.and.screwdriver"
         case "Other tools": return "gearshape.2"
         default: return "sailboat"
+        }
+    }
+
+    /// A per-category tint for each row's icon tile background (mirrors the
+    /// mockup's colored emoji squares) - drawn from the theme's own ANSI
+    /// slots/accent rather than a fixed hex, so it stays correct across all
+    /// 8 Helm palettes.
+    private func tintHex(for category: String) -> String {
+        switch category {
+        case "npm packages": return theme.ansiHex[4] // blue
+        case "Homebrew": return theme.ansiHex[3]      // amber
+        case "Other tools": return theme.ansiHex[6]   // cyan
+        default: return theme.accentHex               // Firstmate
         }
     }
 
@@ -282,9 +490,14 @@ final class UpdatesController: NSViewController {
         header.translatesAutoresizingMaskIntoConstraints = false
 
         var rowViews: [NSView] = []
+        var sectionSeparators: [NSView] = []
         for (index, row) in categoryRows.enumerated() {
             rowViews.append(buildRow(row))
-            if index < categoryRows.count - 1 { rowViews.append(separator()) }
+            if index < categoryRows.count - 1 {
+                let sep = separator()
+                rowViews.append(sep)
+                sectionSeparators.append(sep)
+            }
         }
         let rowsStack = NSStackView(views: rowViews)
         rowsStack.orientation = .vertical
@@ -312,6 +525,7 @@ final class UpdatesController: NSViewController {
             inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
         ])
         cardBackgrounds.append(background)
+        categorySections.append(CategorySection(background: background, rows: categoryRows, separators: sectionSeparators))
         return background
     }
 
@@ -329,11 +543,24 @@ final class UpdatesController: NSViewController {
         row.iconView.image = NSImage(systemSymbolName: row.item.kind.symbol, accessibilityDescription: row.item.name)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
         row.iconView.translatesAutoresizingMaskIntoConstraints = false
-        row.iconView.setContentHuggingPriority(.required, for: .horizontal)
-        row.iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        // A rounded-square, category-tinted tile behind the glyph - the
+        // native equivalent of the mockup's colored emoji squares.
+        row.iconTile.wantsLayer = true
+        row.iconTile.layer?.cornerRadius = 9
+        row.iconTile.translatesAutoresizingMaskIntoConstraints = false
+        row.iconTile.addSubview(row.iconView)
+        NSLayoutConstraint.activate([
+            row.iconView.centerXAnchor.constraint(equalTo: row.iconTile.centerXAnchor),
+            row.iconView.centerYAnchor.constraint(equalTo: row.iconTile.centerYAnchor),
+            row.iconTile.widthAnchor.constraint(equalToConstant: 34),
+            row.iconTile.heightAnchor.constraint(equalToConstant: 34),
+        ])
+        row.iconTile.setContentHuggingPriority(.required, for: .horizontal)
+        row.iconTile.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         row.nameLabel.stringValue = row.item.name
-        row.nameLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        row.nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         row.nameLabel.lineBreakMode = .byTruncatingTail
         row.nameLabel.maximumNumberOfLines = 1
 
@@ -348,18 +575,18 @@ final class UpdatesController: NSViewController {
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Pill
-        row.pillLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        // Badge
+        row.pillLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
         row.pillLabel.translatesAutoresizingMaskIntoConstraints = false
         row.pill.wantsLayer = true
-        row.pill.layer?.cornerRadius = 8
+        row.pill.layer?.cornerRadius = 9
         row.pill.translatesAutoresizingMaskIntoConstraints = false
         row.pill.addSubview(row.pillLabel)
         NSLayoutConstraint.activate([
-            row.pillLabel.leadingAnchor.constraint(equalTo: row.pill.leadingAnchor, constant: 7),
-            row.pillLabel.trailingAnchor.constraint(equalTo: row.pill.trailingAnchor, constant: -7),
-            row.pillLabel.topAnchor.constraint(equalTo: row.pill.topAnchor, constant: 2),
-            row.pillLabel.bottomAnchor.constraint(equalTo: row.pill.bottomAnchor, constant: -2),
+            row.pillLabel.leadingAnchor.constraint(equalTo: row.pill.leadingAnchor, constant: 9),
+            row.pillLabel.trailingAnchor.constraint(equalTo: row.pill.trailingAnchor, constant: -9),
+            row.pillLabel.topAnchor.constraint(equalTo: row.pill.topAnchor, constant: 3),
+            row.pillLabel.bottomAnchor.constraint(equalTo: row.pill.bottomAnchor, constant: -3),
         ])
 
         // Check / Update
@@ -411,7 +638,7 @@ final class UpdatesController: NSViewController {
         row.detailsButton.setContentHuggingPriority(.required, for: .horizontal)
         row.detailsButton.toolTip = "Show command output"
 
-        let topRow = NSStackView(views: [row.iconView, textStack, row.trailingStack, row.detailsButton])
+        let topRow = NSStackView(views: [row.iconTile, textStack, row.trailingStack, row.detailsButton])
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.spacing = 8
@@ -643,17 +870,18 @@ final class UpdatesController: NSViewController {
         row.rowContainer.alphaValue = disabled ? 0.6 : 1.0
 
         applyThemeToRow(row)
+        renderStats()
     }
 
     private func pillVisuals(_ status: DependencyStatus) -> (String, String) {
         switch status {
-        case .unknown: return ("not checked", theme.chromeInkHex)
+        case .unknown: return ("Not Checked", theme.chromeInkHex)
         case .checking, .updating: return ("", theme.chromeInkHex)
-        case .upToDate: return ("up to date", theme.ansiHex[2])
-        case .updateAvailable: return ("update available", theme.ansiHex[3])
-        case .notInstalled: return ("not installed", theme.ansiHex[3])
-        case .checkFailed: return ("check failed", theme.ansiHex[1])
-        case .updateFailed: return ("update failed", theme.ansiHex[1])
+        case .upToDate: return ("Up to Date", theme.ansiHex[2])
+        case .updateAvailable: return ("Update Available", theme.ansiHex[3])
+        case .notInstalled: return ("Not Installed", theme.ansiHex[3])
+        case .checkFailed: return ("Check Failed", theme.ansiHex[1])
+        case .updateFailed: return ("Update Failed", theme.ansiHex[1])
         }
     }
 
@@ -663,10 +891,14 @@ final class UpdatesController: NSViewController {
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        checkAllButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.75)
-        checkAllButton.layer?.backgroundColor = surface.cgColor
-        checkAllButton.layer?.borderWidth = 1
-        checkAllButton.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        checkAllPill.layer?.backgroundColor = accent.cgColor
+        // `selectionTextHex` is the text tone already contrast-verified
+        // against an opaque `accentHex` fill (SwiftTerm's selected-text
+        // color) - the same pairing this pill's fill/text need.
+        let onAccent = HelmTheme.nsColor(theme.selectionTextHex)
+        checkAllIcon.contentTintColor = onAccent
+        checkAllLabel.textColor = onAccent
         checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
         for v in cardBackgrounds {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
@@ -676,13 +908,29 @@ final class UpdatesController: NSViewController {
         for v in separators {
             v.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
         }
+        for label in statTitleLabels {
+            label.textColor = HelmTheme.mutedInk(theme)
+        }
+        for tile in statTiles {
+            let color: NSColor
+            switch tile.semantic {
+            case .neutral: color = HelmTheme.nsColor(theme.chromeInkHex)
+            case .success: color = HelmTheme.nsColor(theme.ansiHex[2])
+            case .warning: color = HelmTheme.nsColor(theme.ansiHex[3])
+            }
+            tile.valueLabel.textColor = color
+            tile.iconView.contentTintColor = color.withAlphaComponent(0.85)
+        }
+        searchField.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
         for row in rows { applyThemeToRow(row) }
     }
 
     private func applyThemeToRow(_ row: UpdateRow) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
-        row.iconView.contentTintColor = ink.withAlphaComponent(0.7)
+        let tint = HelmTheme.nsColor(tintHex(for: row.item.category))
+        row.iconTile.layer?.backgroundColor = tint.withAlphaComponent(0.16).cgColor
+        row.iconView.contentTintColor = tint
         row.nameLabel.textColor = ink
         row.detailLabel.textColor = row.status == .checkFailed || row.status == .updateFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
         row.progressLabel.textColor = muted
@@ -690,5 +938,11 @@ final class UpdatesController: NSViewController {
         row.logField.textColor = muted
         row.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         row.rowContainer.layer?.backgroundColor = .clear
+    }
+}
+
+extension UpdatesController: NSSearchFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        applyFilter(searchField.stringValue)
     }
 }
