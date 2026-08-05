@@ -349,13 +349,14 @@ enum UpdatesSource {
     /// - the same field firstmate's own `fm_backend_herdr_version_check`
     /// (`bin/backends/herdr.sh`) reads before every herdr-backed spawn.
     /// herdr's CLI has no "check for a newer release without installing it"
-    /// flag (`herdr update` always performs the update); the latest-available
-    /// version is instead read from Homebrew, since herdr happens to be
-    /// homebrew-core tapped on this machine (confirmed live: `brew list
-    /// --versions herdr` succeeds) - but the actual Update action below still
-    /// runs herdr's own `herdr update`, never `brew upgrade herdr`, per the
-    /// brief's explicit instruction to reuse herdr's own update mechanism
-    /// rather than assume brew ownership of it.
+    /// flag; the latest-available version is instead read from Homebrew,
+    /// since herdr happens to be homebrew-core tapped on this machine
+    /// (confirmed live: `brew list --versions herdr` succeeds). The actual
+    /// Update action below also goes through Homebrew (`brew update && brew
+    /// upgrade herdr`), not `herdr update` - a Homebrew-installed herdr
+    /// refuses to self-update by design ("self-update is disabled for
+    /// Homebrew installs; run `brew update && brew upgrade herdr`"),
+    /// confirmed live, so `herdr update` fails 100% of the time here.
     private static func checkHerdr() -> CheckOutcome {
         guard let herdrPath = resolveExecutable("herdr") else { return missingToolOutcome("herdr") }
         let statusResult = run(herdrPath, ["status", "--json"])
@@ -383,21 +384,17 @@ enum UpdatesSource {
     }
 
     private static func updateHerdr() -> UpdateOutcome {
-        guard let herdrPath = resolveExecutable("herdr") else {
-            return UpdateOutcome(ok: false, newVersionLabel: nil, detail: "'herdr' not found on PATH", log: "")
+        guard let brew = resolveExecutable("brew") else {
+            return UpdateOutcome(ok: false, newVersionLabel: nil, detail: "'brew' not found on PATH", log: "")
         }
-        let result = run(herdrPath, ["update"])
-        guard result.status == 0 else {
-            return UpdateOutcome(ok: false, newVersionLabel: nil, detail: "herdr update failed", log: result.combinedLog)
+        let updateResult = run(brew, ["update"])
+        let upgradeResult = run(brew, ["upgrade", "herdr"])
+        let log = [updateResult.combinedLog, upgradeResult.combinedLog].filter { !$0.isEmpty }.joined(separator: "\n")
+        guard upgradeResult.status == 0 else {
+            return UpdateOutcome(ok: false, newVersionLabel: nil, detail: "brew upgrade herdr failed", log: log)
         }
-        let statusResult = run(herdrPath, ["status", "--json"])
-        var version: String?
-        if let data = statusResult.stdout.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let client = obj["client"] as? [String: Any] {
-            version = client["version"] as? String
-        }
-        return UpdateOutcome(ok: true, newVersionLabel: version, detail: "Updated to \(version ?? "latest")", log: result.combinedLog)
+        let version = installedBrewVersion(brew: brew, formula: "herdr", cask: false)
+        return UpdateOutcome(ok: true, newVersionLabel: version, detail: "Upgraded to \(version ?? "latest")", log: log)
     }
 
     // MARK: no-mistakes
