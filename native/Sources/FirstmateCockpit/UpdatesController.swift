@@ -148,9 +148,11 @@ final class UpdatesController: NSViewController {
 
     private let subtitleLabel = NSTextField(labelWithString: "Every tool in the fleet, checked against its real source - npm, Homebrew, herdr, no-mistakes, and firstmate's own upstream.")
 
-    /// Borderless icon button, matching `FleetController.refreshButton` /
-    /// `TopBarController`'s header-level icon actions - a page-header bulk
-    /// action in this app is a small icon button, not a labeled pill.
+    /// Icon button with visible chrome (filled surface + border), matching
+    /// `TopBarController.themeButton` - a page-header bulk action in this app
+    /// is icon-only, but it still needs to read as clickable, so it borrows
+    /// that button's surface/border/corner-radius treatment rather than
+    /// `FleetController.refreshButton`'s bare borderless glyph.
     private let checkAllButton = NSButton()
     private let checkAllProgressBar = NSProgressIndicator()
     private let checkAllProgressLabel = NSTextField(labelWithString: "")
@@ -164,11 +166,16 @@ final class UpdatesController: NSViewController {
 
         checkAllButton.title = ""
         checkAllButton.isBordered = false
-        checkAllButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check all")
+        checkAllButton.wantsLayer = true
+        checkAllButton.layer?.cornerRadius = 9
+        checkAllButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check all")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
         checkAllButton.target = self
         checkAllButton.action = #selector(checkAllTapped)
         checkAllButton.toolTip = "Check all for updates"
         checkAllButton.translatesAutoresizingMaskIntoConstraints = false
+        checkAllButton.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        checkAllButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
         checkAllProgressBar.style = .bar
         checkAllProgressBar.isIndeterminate = false
@@ -648,10 +655,13 @@ final class UpdatesController: NSViewController {
 
     private func applyTheme() {
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
-        checkAllButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
-        checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
+        checkAllButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.75)
+        checkAllButton.layer?.backgroundColor = surface.cgColor
+        checkAllButton.layer?.borderWidth = 1
+        checkAllButton.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
         for v in cardBackgrounds {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
             v.layer?.borderWidth = 1
