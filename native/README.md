@@ -162,7 +162,7 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 
 ## Package as an app
 
-`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Firstmate.app`. It's unsigned and local-use only - no signing, no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
+`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Firstmate.app` - no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
 
 ```bash
 cd native
@@ -171,6 +171,39 @@ open ../dist/Firstmate.app
 ```
 
 This is the one and only Firstmate app (bundle ID `com.firstmate.cockpit.native`). An earlier web/WKWebView app used to occupy this same `dist/Firstmate.app` path via a root-level `build_app.sh` and py2app - that codebase has been removed, so there's no longer anything to disambiguate from.
+
+### Local signing setup
+
+`build_native_app.sh` codesigns the assembled `.app` with a local, self-signed identity named **"Firstmate Cockpit Local Dev"**, if that identity exists on the machine. This matters for more than tidiness: saved SSH keys live in the macOS Keychain (see "SSH Keys" above), and Keychain's default per-item ACL trusts only the app identity that created the item. An unsigned/ad-hoc build gets a *different* code identity on every single rebuild, so a Keychain item saved by one build becomes unreadable ("the user name or passphrase you entered is not correct") the moment the next rebuild tries to read it. Signing every build with the same fixed identity keeps Keychain trust stable across rebuilds.
+
+If the identity isn't present, the build script prints a warning and continues unsigned rather than failing - this is a one-time, per-machine setup step, not something CI or every contributor needs.
+
+To create the identity once on a fresh machine:
+
+```bash
+# 1. Generate a self-signed cert with the codeSigning extended key usage.
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/fmcockpit.key -out /tmp/fmcockpit.crt \
+  -days 3650 -nodes -subj "/CN=Firstmate Cockpit Local Dev" \
+  -addext "extendedKeyUsage=critical,codeSigning"
+
+# 2. Package it as a .p12. The `-legacy` flag is required: modern OpenSSL 3.x's
+#    default PKCS12 encryption isn't readable by macOS's importer without it.
+openssl pkcs12 -export -legacy -inkey /tmp/fmcockpit.key -in /tmp/fmcockpit.crt \
+  -out /tmp/fmcockpit.p12 -passout pass:temporary
+
+# 3. Import into the login keychain, trusted for codesign specifically.
+security import /tmp/fmcockpit.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P temporary -T /usr/bin/codesign
+
+# 4. Trust the cert for code signing. Note `-r trustRoot`, not `-r trustAsRoot` -
+#    the latter fails with a parameter error on this cert shape.
+security add-trusted-cert -d -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db \
+  /tmp/fmcockpit.crt
+
+rm -f /tmp/fmcockpit.key /tmp/fmcockpit.crt /tmp/fmcockpit.p12
+```
+
+Verify with `security find-identity -v -p codesigning | grep "Firstmate Cockpit Local Dev"` - it should list one valid identity. The next `./build_native_app.sh` run will then sign automatically.
 
 ## Keyboard shortcuts
 

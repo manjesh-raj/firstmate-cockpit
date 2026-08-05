@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build Firstmate.app: a plain macOS app-bundle wrapper around the native
-# Swift cockpit (native/, SwiftTerm-based). No signing, no notarization:
-# this is a lightweight, unsigned, local-use bundle.
+# Swift cockpit (native/, SwiftTerm-based). No notarization, but the bundle is
+# codesigned with a stable local identity when one is available - see
+# "Local signing" below and native/README.md's "Local signing setup" section.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -12,6 +13,7 @@ EXECUTABLE_NAME="FirstmateCockpit"
 BUNDLE_ID="com.firstmate.cockpit.native"
 VERSION="0.1.0"
 ICON_SRC="../assets/icon.icns"
+SIGNING_IDENTITY="Firstmate Cockpit Local Dev"
 
 echo "Building $EXECUTABLE_NAME (release)…"
 swift build -c release
@@ -58,6 +60,17 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
+  echo "Signing with local identity \"$SIGNING_IDENTITY\"…"
+  codesign --force --sign "$SIGNING_IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR"
+else
+  echo "⚠️  No \"$SIGNING_IDENTITY\" codesigning identity found - building unsigned."
+  echo "    Saved Keychain items (SSH keys/passphrases) may stop being readable"
+  echo "    after a future rebuild, since an unsigned/ad-hoc binary gets a new"
+  echo "    code identity on every rebuild. See native/README.md's"
+  echo "    \"Local signing setup\" section to create this identity once per machine."
+fi
 
 echo ""
 echo "✓ Built: $(cd "$DIST_DIR" && pwd)/$APP_NAME"
