@@ -58,6 +58,19 @@ func childEnvironmentDict() -> [String: String] {
     env["LANG"] = "en_US.UTF-8"
     env["LC_ALL"] = "en_US.UTF-8"
     env.removeValue(forKey: "TMUX")
+
+    // A Finder/`open`-launched GUI app inherits a bare minimal PATH, missing
+    // Homebrew and other common tool locations. `resolveExecutable` in
+    // UpdatesData.swift compensates for this when finding the top-level
+    // binary, but nested subprocesses (e.g. Homebrew's `npm` script resolving
+    // `node` via its own `#!/usr/bin/env node` shebang) resolve against this
+    // PATH too, so they need the same locations - see UpdatesData.swift.
+    let standardPaths = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
+    var existing = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+    let missing = standardPaths.filter { !existing.contains($0) }
+    existing = missing + existing
+    env["PATH"] = existing.joined(separator: ":")
+
     return env
 }
 
