@@ -162,15 +162,15 @@ A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
 
 ## Package as an app
 
-`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/New-Firstmate.app`. It's unsigned and local-use only - no signing, no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
+`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Firstmate.app`. It's unsigned and local-use only - no signing, no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
 
 ```bash
 cd native
 ./build_native_app.sh
-open ../dist/New-Firstmate.app
+open ../dist/Firstmate.app
 ```
 
-> **This is not `dist/Firstmate.app`.** The repo also has an old web/WKWebView app at `dist/Firstmate.app`, built by the root `build_app.sh` via py2app - a completely different codebase (`backend/` + `desktop.py`). `dist/New-Firstmate.app` (bundle ID `com.firstmate.cockpit.native`) is the one that launches *this* native Swift cockpit. Check the name before you double-click if both are sitting in `dist/`.
+This is the one and only Firstmate app (bundle ID `com.firstmate.cockpit.native`). An earlier web/WKWebView app used to occupy this same `dist/Firstmate.app` path via a root-level `build_app.sh` and py2app - that codebase has been removed, so there's no longer anything to disambiguate from.
 
 ## Keyboard shortcuts
 
@@ -303,4 +303,4 @@ If those pass, all five of the captain's original connection-manager requirement
 - Session logs are plain text under Application Support, not sanitized or redacted - a logged session's transcript can contain anything the remote host printed. Treat the `logs/` directory the same way you would treat terminal scrollback.
 - Jump hosts, port forwarding, and agent forwarding are all just extra `ssh` argv - this app does not re-implement any part of the SSH protocol, host-key trust, or the SSH agent protocol.
 - Deferred out of this pass: SFTP, split panes, encrypted cross-device sync/vault, broadcast-snippet-to-all-tabs (Phase 4 / nice-to-have).
-- Does not touch the existing Python cockpit (`backend/`, `desktop.py`). The native app is a separate, growing surface under `native/`.
+- This native app is the only cockpit in this repo; the earlier Python/WKWebView cockpit it replaced has been removed.
