@@ -18,3 +18,4 @@ See `native/README.md` for full instructions, including `swift build`/`swift run
 native/    the cockpit app (Swift, AppKit, SwiftTerm)
 assets/    shared app icon source files
 ```
+<!-- fm detect-test: automatic completion detection check -->
