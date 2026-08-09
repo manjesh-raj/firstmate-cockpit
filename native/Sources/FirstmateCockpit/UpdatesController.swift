@@ -12,8 +12,14 @@
 // Interaction flow (captain-specified):
 //   1. Check (automatic on load, or the row's own button) runs the read-only
 //      comparison and updates status. Update only appears when Check found a
-//      genuine update available or the tool is missing - see
-//      `DependencyStatus.showsUpdateButton`.
+//      genuine update available - see `DependencyStatus.showsUpdateButton`.
+//      cockpit-bootstrap-software: `.notInstalled` is the one exception - it
+//      no longer shows Update (which used to silently mean "install"); it
+//      shows a distinct "Install in Bootstrap ->" action instead, which
+//      navigates to the `.bootstrap` rail destination's own Software
+//      checklist card (`onNavigateToBootstrap`, wired by
+//      `AppShellController` to `show(.bootstrap)`) rather than running the
+//      install here. Every other status's Update button is unchanged.
 //   2. Update immediately shows an in-progress state (spinner + "Updating…",
 //      row disabled) while the real command runs in the background.
 //   3. On success: a `Toast` ("{tool} updated to {version}") plus the row
@@ -52,6 +58,10 @@ private final class UpdateRow {
     let progressLabel = NSTextField(labelWithString: "Updating\u{2026}")
     let checkButton = NSButton()
     let updateButton = NSButton()
+    /// `.notInstalled`-only action, styled deliberately unlike `updateButton`
+    /// (inline/link-style rather than a bordered rounded button) so it reads
+    /// as "go elsewhere," not "click to install here" - see the file header.
+    let installInBootstrapButton = NSButton()
     let detailsButton = NSButton()
     let logField = NSTextField(wrappingLabelWithString: "")
     let logContainer = NSView()
@@ -90,6 +100,11 @@ final class UpdatesController: NSViewController {
     private var categorySections: [CategorySection] = []
     private var statTiles: [StatTile] = []
     private let searchField = NSSearchField()
+    /// Set by `AppShellController` (mirrors `BootstrapController.onRunCommand`'s
+    /// closure-injection pattern) so a `.notInstalled` row's action can select
+    /// the Bootstrap rail destination without this controller knowing
+    /// anything about `AppShellController`/`RailDestination` itself.
+    var onNavigateToBootstrap: (() -> Void)?
     private var lastCheckedAt: Date?
     private var lastCheckedTimer: Timer?
     private var hasCheckedOnce = false
@@ -606,6 +621,19 @@ final class UpdatesController: NSViewController {
         row.updateButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
         row.updateButton.isHidden = true
 
+        // `.notInstalled` only - inline/link-styled (bordered, no fill) so it
+        // visually reads as "navigate elsewhere," never confusable with the
+        // rounded, filled `updateButton` used for every other status.
+        row.installInBootstrapButton.title = "Install in Bootstrap \u{2192}"
+        row.installInBootstrapButton.bezelStyle = .inline
+        row.installInBootstrapButton.isBordered = false
+        row.installInBootstrapButton.controlSize = .small
+        row.installInBootstrapButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        row.installInBootstrapButton.target = self
+        row.installInBootstrapButton.action = #selector(installInBootstrapTapped(_:))
+        row.installInBootstrapButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
+        row.installInBootstrapButton.isHidden = true
+
         // Busy state
         row.spinner.style = .spinning
         row.spinner.controlSize = .small
@@ -617,13 +645,14 @@ final class UpdatesController: NSViewController {
         row.trailingStack.spacing = 8
         row.trailingStack.alignment = .centerY
         row.trailingStack.translatesAutoresizingMaskIntoConstraints = false
-        for v in [row.pill, row.checkButton, row.updateButton, row.spinner, row.progressLabel] {
+        for v in [row.pill, row.checkButton, row.updateButton, row.installInBootstrapButton, row.spinner, row.progressLabel] {
             v.setContentHuggingPriority(.required, for: .horizontal)
             v.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
         row.trailingStack.addArrangedSubview(row.pill)
         row.trailingStack.addArrangedSubview(row.checkButton)
         row.trailingStack.addArrangedSubview(row.updateButton)
+        row.trailingStack.addArrangedSubview(row.installInBootstrapButton)
         row.trailingStack.addArrangedSubview(row.spinner)
         row.trailingStack.addArrangedSubview(row.progressLabel)
 
@@ -742,6 +771,10 @@ final class UpdatesController: NSViewController {
         confirmAndUpdate(row)
     }
 
+    @objc private func installInBootstrapTapped(_ sender: NSButton) {
+        onNavigateToBootstrap?()
+    }
+
     /// Firstmate's row gets an explicit before-acting summary (commit count +
     /// target) per the safety principle - every other row's summary is
     /// already visible in its subtitle (`row.detail`, e.g. "0.2.3 → 0.2.4"),
@@ -858,8 +891,11 @@ final class UpdatesController: NSViewController {
         let busy = row.status == .checking || row.status == .updating
         row.pill.isHidden = busy
         row.checkButton.isHidden = busy
-        row.updateButton.isHidden = busy || !row.status.showsUpdateButton
-        row.updateButton.title = row.status == .notInstalled ? "Install" : "Update"
+        // `.notInstalled` shows the distinct "Install in Bootstrap ->" link
+        // instead of Update - every other status that `showsUpdateButton`
+        // keeps its existing Update button unchanged.
+        row.updateButton.isHidden = busy || !row.status.showsUpdateButton || row.status == .notInstalled
+        row.installInBootstrapButton.isHidden = busy || row.status != .notInstalled
         row.spinner.isHidden = !busy
         row.progressLabel.isHidden = !busy
         row.progressLabel.stringValue = row.status == .updating ? "Updating\u{2026}" : "Checking\u{2026}"
@@ -868,6 +904,7 @@ final class UpdatesController: NSViewController {
         let disabled = row.isBusy
         row.checkButton.isEnabled = !disabled
         row.updateButton.isEnabled = !disabled
+        row.installInBootstrapButton.isEnabled = !disabled
         row.rowContainer.alphaValue = disabled ? 0.6 : 1.0
 
         applyThemeToRow(row)
@@ -935,6 +972,14 @@ final class UpdatesController: NSViewController {
         row.nameLabel.textColor = ink
         row.detailLabel.textColor = row.status == .checkFailed || row.status == .updateFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
         row.progressLabel.textColor = muted
+        // `.isBordered = false` buttons don't pick up a text color from
+        // `contentTintColor` (that only tints an image) - an attributed
+        // title is the one way to make this link-styled button visually
+        // read as "accent-colored," distinct from the rounded `updateButton`.
+        row.installInBootstrapButton.attributedTitle = NSAttributedString(
+            string: row.installInBootstrapButton.title,
+            attributes: [.foregroundColor: HelmTheme.nsColor(theme.accentHex), .font: NSFont.systemFont(ofSize: 11, weight: .semibold)]
+        )
         row.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
         row.logField.textColor = muted
         row.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor

@@ -140,6 +140,11 @@ final class AppShellController: NSViewController {
         // TTY) opens as a real tab in the shared Firstmate console rather
         // than a silent background process - see `runInConsole` below.
         bootstrap.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
+        // cockpit-bootstrap-software: a `.notInstalled` row on the Updates
+        // page no longer installs inline - it links to the Bootstrap page's
+        // own Software checklist card instead (same catalog, same install
+        // action, just relocated).
+        updates.onNavigateToBootstrap = { [weak self] in self?.show(.bootstrap) }
 
         show(.console)
     }
