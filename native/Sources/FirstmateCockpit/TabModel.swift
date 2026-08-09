@@ -75,6 +75,17 @@ final class TabModel {
     /// callback does not draw a "reconnect" hint into a view we are discarding.
     var isClosing = false
 
+    /// True for a tab opened via `ConsoleController.openCommandTab` - a
+    /// one-shot provisioning command (e.g. `rebuild.sh`), not a persistent
+    /// shell the captain expects to stay alive. `processTerminated` checks
+    /// this to never auto-reconnect such a tab, regardless of the global
+    /// "Reconnect automatically" setting or the command's exit code -
+    /// otherwise a successful one-shot command looks identical to a dropped
+    /// shell and gets endlessly re-run (captain-reproduced: an infinite
+    /// `darwin-rebuild switch` loop, re-prompting for the sudo password
+    /// every cycle).
+    var isOneShotCommand = false
+
     /// The tab bar chip for this tab, created alongside it.
     var chip: TabChipView!
 
