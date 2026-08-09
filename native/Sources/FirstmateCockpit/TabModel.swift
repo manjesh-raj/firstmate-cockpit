@@ -86,6 +86,12 @@ final class TabModel {
     /// every cycle).
     var isOneShotCommand = false
 
+    /// Fires once, with the child's exit code, when a one-shot command tab
+    /// (`isOneShotCommand`) terminates - lets a caller (Bootstrap's "Run full
+    /// setup" sequencer) know a provisioning step actually finished instead of
+    /// polling. `nil` for every other tab kind.
+    var onOneShotCompletion: ((Int32?) -> Void)?
+
     /// The tab bar chip for this tab, created alongside it.
     var chip: TabChipView!
 
