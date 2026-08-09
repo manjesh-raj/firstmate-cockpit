@@ -207,7 +207,7 @@ final class UpdatesController: NSViewController {
     private var isCheckingAll = false
 
     private func buildHeader() -> NSView {
-        let title = NSTextField(labelWithString: "Firstmate Latest Updates")
+        let title = NSTextField(labelWithString: "Updates")
         title.font = .systemFont(ofSize: 20, weight: .semibold)
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.preferredMaxLayoutWidth = 560

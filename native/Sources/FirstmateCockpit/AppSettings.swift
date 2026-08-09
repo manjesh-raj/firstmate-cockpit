@@ -22,6 +22,7 @@ final class AppSettings {
         static let sessionLoggingDefault = "fm.sessionLoggingDefault"
         static let autoReconnect = "fm.autoReconnect"
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
+        static let fmHome = "fm.fmHome"
     }
 
     private init() {}
@@ -75,5 +76,15 @@ final class AppSettings {
     var notifyOnNeedsDecision: Bool {
         get { defaults.bool(forKey: Keys.notifyOnNeedsDecision) }
         set { defaults.set(newValue, forKey: Keys.notifyOnNeedsDecision) }
+    }
+
+    /// Bootstrap page's "Firstmate home" card - checked by
+    /// `FirstmateHome.resolve()` after `FM_HOME`/`FIRSTMATE_HOME`, before the
+    /// hardcoded fallback candidates. `FirstmateHome.root` is computed once
+    /// at process launch, so changing this only takes effect after a
+    /// restart - the Bootstrap page makes that explicit on save.
+    var fmHome: String? {
+        get { defaults.string(forKey: Keys.fmHome) }
+        set { defaults.set(newValue, forKey: Keys.fmHome) }
     }
 }
