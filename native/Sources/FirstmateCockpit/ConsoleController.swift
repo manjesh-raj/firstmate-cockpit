@@ -341,6 +341,25 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         return shellTab
     }
 
+    // MARK: Ad-hoc commands (Bootstrap page, cockpit-bootstrap-dotfiles)
+
+    /// Open a new tab that runs `command` through a real login shell (`$SHELL
+    /// -lc "<command>"`) - the Bootstrap page's "Clone & Bootstrap"/"Run
+    /// rebuild.sh"/"Create link" actions all go through this rather than a
+    /// silent background `Process`, since `darwin-rebuild switch` needs an
+    /// interactive TTY for its `sudo` prompt (task brief requirement). This
+    /// reuses the exact same `.shell` launch kind and `startProcess` path a
+    /// plain new tab (⌘T) already uses, just with a one-shot `-lc` command
+    /// instead of an interactive `-l` login shell - so it gets the same
+    /// reconnect-hint behaviour on exit as any other shell tab.
+    @discardableResult
+    func openCommandTab(label: String, command: String, cwd: String? = nil) -> TabModel {
+        let launch = TabLaunch.shell(executable: shellArgv().executable, args: ["-lc", command], cwd: cwd ?? shellCwd())
+        let tab = addTab(launch: launch, name: label, select: true)
+        if let current = currentTab { view.window?.makeFirstResponder(current.terminal) }
+        return tab
+    }
+
     // MARK: SSH (Phase 1 hosts, Phase 2 keys, Phase 3 startup snippet)
 
     /// Open a new tab that runs `ssh` with the given argv - the connect action for

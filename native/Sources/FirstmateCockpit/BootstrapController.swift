@@ -1,15 +1,34 @@
 // Firstmate Cockpit - native macOS app.
 //
-// The `.bootstrap` rail destination (cockpit-bootstrap-scaffold, phase 1 of
-// a larger, captain-reviewed plan). This PR is scaffold-only: the page holds
-// a single "Firstmate home" card, laid out with the same card chrome
-// `SettingsController` already established (icon + title header, rounded
-// bordered background, `FlippedView` + scrollToTop for the same
-// empty-gap-above-header fix that page and `FleetController`/
-// `ReviewController` carry). Later phases (not this PR) add the
-// dotfiles bootstrap/rebuild terminal wiring, the AGENTS.md/CLAUDE.md
-// symlink checklist, the software-install checklist, and the Updates page
-// behaviour split.
+// The `.bootstrap` rail destination. Phase 1 (cockpit-bootstrap-scaffold,
+// merged) was scaffold-only: a single "Firstmate home" card, laid out with
+// the same card chrome `SettingsController` established (icon + title
+// header, rounded bordered background, `FlippedView` + scrollToTop for the
+// same empty-gap-above-header fix that page and `FleetController`/
+// `ReviewController` carry).
+//
+// Phase 2 (cockpit-bootstrap-dotfiles, this file) adds two more sections
+// below it, both driven by live checks against this machine's real files -
+// see `DotfilesData.swift` for the model side:
+//   - "Dotfiles & machine config": detects `~/.dotfiles` (the captain's Nix
+//     flake, nix-darwin + home-manager + nix-homebrew), or offers to clone
+//     and bootstrap one if absent; shows repo path/branch/dirty-status, a
+//     live-parsed macOS username field, a managed-items table, and the
+//     Run rebuild.sh action.
+//   - "Global agent instructions": read-only verification of the three
+//     harness-expected filenames (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+//     `~/.config/opencode/AGENTS.md`) that `home.nix` symlinks to one shared
+//     `<dotfiles>/home/AGENTS.md`.
+// Out of scope for this phase: the software install checklist, the Updates
+// page's `.notInstalled` row-behaviour split, and "Run full setup" chaining -
+// see the task brief for the full plan.
+//
+// Any action that can invoke `darwin-rebuild switch` (clone+bootstrap.sh,
+// rebuild.sh, and Part B's "Create link", which just re-runs rebuild.sh)
+// needs `sudo`'s interactive TTY prompt, so all three go through
+// `onRunCommand`, wired by `AppShellController.runInConsole` to open a real
+// Console tab - never a silent background `Process` (see
+// `ConsoleController.openCommandTab`).
 //
 // The Firstmate-home card lets the captain see and override
 // `FirstmateHome.root` - which is a `static let`, resolved once at process
@@ -31,8 +50,28 @@ final class BootstrapController: NSViewController {
     private let saveButton = NSButton()
     private let restartButton = NSButton()
 
+    /// Set by `AppShellController` (mirrors `onPresentHostEditor`'s wiring
+    /// pattern) so this controller can ask for a command to run in the
+    /// shared Console tab, without knowing anything about `ConsoleController`
+    /// itself.
+    var onRunCommand: ((String, String) -> Void)?
+
     private var cardBackgroundViews: [NSView] = []
     private var scrollView: NSScrollView!
+
+    // MARK: Dotfiles state (Part A + B)
+
+    private var dotfilesRepoPath: String?
+    private var repoState: DotfilesRepoState?
+    private var managedItems: [ManagedItem] = []
+    private var agentItems: [AgentInstructionsItem] = []
+    private var isLoadingDotfiles = true
+
+    private let dotfilesStack = NSStackView()
+    private let agentStack = NSStackView()
+    private let clonePathField = NSTextField(string: DotfilesSource.defaultClonePath)
+    private let usernameField = NSTextField()
+    private let dotfilesStatusLabel = NSTextField(wrappingLabelWithString: "")
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
@@ -43,12 +82,23 @@ final class BootstrapController: NSViewController {
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
             self?.theme = theme
             self?.applyTheme()
+            self?.rebuildDynamicSections()
         }
 
         let header = buildHeader()
         let homeCard = card(icon: "folder", title: "Firstmate home", content: buildHomeSection())
 
-        let stack = NSStackView(views: [header, homeCard])
+        dotfilesStack.orientation = .vertical
+        dotfilesStack.alignment = .leading
+        dotfilesStack.spacing = 10
+        let dotfilesCard = card(icon: "gearshape.2", title: "Dotfiles & machine config", content: dotfilesStack)
+
+        agentStack.orientation = .vertical
+        agentStack.alignment = .leading
+        agentStack.spacing = 10
+        let agentCard = card(icon: "text.badge.checkmark", title: "Global agent instructions", content: agentStack)
+
+        let stack = NSStackView(views: [header, homeCard, dotfilesCard, agentCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -65,6 +115,8 @@ final class BootstrapController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             homeCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            dotfilesCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            agentCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         let scroll = NSScrollView()
@@ -84,11 +136,16 @@ final class BootstrapController: NSViewController {
 
         refreshFromSettings()
         applyTheme()
+        // rebuildDynamicSections here shows the "Checking…" loading state
+        // immediately; refreshDotfiles's own initial call (viewWillAppear,
+        // called right after loadView) then kicks off the real background
+        // check.
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshFromSettings()
+        refreshDotfiles()
         scrollToTop()
     }
 
@@ -246,6 +303,370 @@ final class BootstrapController: NSViewController {
         statusLabel.stringValue = message
         statusLabel.textColor = isError ? HelmTheme.nsColor(theme.ansiHex[1]) : HelmTheme.nsColor(theme.ansiHex[2])
         statusLabel.isHidden = false
+    }
+
+    // MARK: Dotfiles & machine config (Part A)
+
+    /// Re-checks `~/.dotfiles` and the two dependent sections off the main
+    /// thread (git/file IO), mirroring `FleetController.refresh`. Shows a
+    /// lightweight "Checking…" state first so navigating to the page never
+    /// looks frozen while `git` runs.
+    private func refreshDotfiles() {
+        guard isViewLoaded else { return }
+        isLoadingDotfiles = true
+        rebuildDynamicSections()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let resolved = DotfilesSource.resolvedDotfilesPath()
+            var state: DotfilesRepoState?
+            var managed: [ManagedItem] = []
+            var agents: [AgentInstructionsItem] = []
+            if let resolved {
+                state = DotfilesSource.repoState(at: resolved)
+                managed = DotfilesSource.managedItems(repoPath: resolved)
+                agents = DotfilesSource.agentInstructionItems(repoPath: resolved)
+            } else {
+                agents = DotfilesSource.agentInstructionPaths.map {
+                    AgentInstructionsItem(label: $0.label, path: $0.path, status: .notLinked)
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.dotfilesRepoPath = resolved
+                self.repoState = state
+                self.managedItems = managed
+                self.agentItems = agents
+                self.isLoadingDotfiles = false
+                self.usernameField.stringValue = state?.flakeUsername ?? ""
+                self.rebuildDynamicSections()
+                self.applyTheme()
+            }
+        }
+    }
+
+    /// Rebuilds both dynamic sections together, since they share the one
+    /// `dynamicLabels` re-theming list (see its doc comment) that needs
+    /// clearing exactly once per refresh, not once per section.
+    private func rebuildDynamicSections() {
+        dynamicLabels.removeAll()
+        rebuildDotfilesSection()
+        rebuildAgentSection()
+    }
+
+    private func rebuildDotfilesSection() {
+        clearStack(dotfilesStack)
+        let content: NSView
+        if isLoadingDotfiles {
+            content = loadingLabel("Checking ~/.dotfiles\u{2026}")
+        } else if let repoPath = dotfilesRepoPath, let state = repoState {
+            content = buildDotfilesPresentSection(repoPath: repoPath, state: state)
+        } else {
+            content = buildDotfilesAbsentSection()
+        }
+        dotfilesStack.addArrangedSubview(content)
+        content.widthAnchor.constraint(equalTo: dotfilesStack.widthAnchor).isActive = true
+    }
+
+    private func buildDotfilesAbsentSection() -> NSView {
+        let desc = NSTextField(wrappingLabelWithString: "~/.dotfiles was not found on this machine. Clone the captain's dotfiles repo and run its bootstrap script to set one up.")
+        desc.font = .systemFont(ofSize: 11)
+        desc.textColor = HelmTheme.mutedInk(theme)
+        desc.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(desc)
+
+        clonePathField.translatesAutoresizingMaskIntoConstraints = false
+        let cloneButton = NSButton(title: "Clone & Bootstrap", target: self, action: #selector(cloneAndBootstrapClicked))
+        cloneButton.bezelStyle = .rounded
+        let fieldRow = NSStackView(views: [clonePathField, cloneButton])
+        fieldRow.orientation = .horizontal
+        fieldRow.spacing = 8
+        clonePathField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let section = NSStackView(views: [desc, fieldRow])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 10
+        fieldRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    private func buildDotfilesPresentSection(repoPath: String, state: DotfilesRepoState) -> NSView {
+        var rows: [NSView] = []
+
+        let repoLabel = NSTextField(labelWithString: repoPath)
+        repoLabel.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        dynamicLabels.append(repoLabel)
+        rows.append(repoLabel)
+
+        var metaBits: [String] = []
+        if let branch = state.branch { metaBits.append("branch \(branch)") }
+        if let remote = state.remoteURL { metaBits.append(remote) }
+        if !metaBits.isEmpty {
+            let metaLabel = NSTextField(labelWithString: metaBits.joined(separator: " \u{00B7} "))
+            metaLabel.font = .systemFont(ofSize: 11)
+            metaLabel.textColor = HelmTheme.mutedInk(theme)
+            dynamicLabels.append(metaLabel)
+            rows.append(metaLabel)
+        }
+
+        if !state.dirtyFiles.isEmpty {
+            rows.append(buildDirtyBanner(state.dirtyFiles))
+        }
+
+        rows.append(buildUsernameRow(repoPath: repoPath))
+
+        let rebuildButton = NSButton(title: "Run rebuild.sh", target: self, action: #selector(runRebuildClicked))
+        rebuildButton.bezelStyle = .rounded
+        rows.append(rebuildButton)
+
+        let managedTitle = NSTextField(labelWithString: "Managed items")
+        managedTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        rows.append(managedTitle)
+        for item in managedItems {
+            rows.append(managedItemRow(item))
+        }
+
+        let section = NSStackView(views: rows)
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 8
+        section.setCustomSpacing(14, after: rebuildButton)
+        for row in rows { row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true }
+        return section
+    }
+
+    private func buildDirtyBanner(_ files: [String]) -> NSView {
+        let title = NSTextField(labelWithString: "Uncommitted changes")
+        title.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        title.textColor = HelmTheme.nsColor(theme.ansiHex[1])
+
+        let body = NSTextField(wrappingLabelWithString: "\(files.count) file(s) uncommitted here: a fresh machine bootstrapping from origin right now would miss them.\n" + files.joined(separator: "\n"))
+        body.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        body.textColor = HelmTheme.mutedInk(theme)
+        body.preferredMaxLayoutWidth = 500
+
+        let inner = NSStackView(views: [title, body])
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 4
+        inner.translatesAutoresizingMaskIntoConstraints = false
+
+        let banner = NSView()
+        banner.wantsLayer = true
+        banner.layer?.cornerRadius = 9
+        banner.layer?.backgroundColor = HelmTheme.nsColor(theme.ansiHex[1]).withAlphaComponent(0.12).cgColor
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
+            inner.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -10),
+            inner.topAnchor.constraint(equalTo: banner.topAnchor, constant: 8),
+            inner.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -8),
+        ])
+        dynamicLabels.append(contentsOf: [title, body])
+        return banner
+    }
+
+    private func buildUsernameRow(repoPath: String) -> NSView {
+        let label = NSTextField(labelWithString: "macOS username")
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+
+        usernameField.translatesAutoresizingMaskIntoConstraints = false
+        let save = NSButton(title: "Save", target: self, action: #selector(saveUsernameClicked))
+        save.bezelStyle = .rounded
+
+        let row = NSStackView(views: [usernameField, save])
+        row.orientation = .horizontal
+        row.spacing = 8
+        usernameField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        dotfilesStatusLabel.font = .systemFont(ofSize: 11)
+        dotfilesStatusLabel.preferredMaxLayoutWidth = 500
+        dotfilesStatusLabel.isHidden = true
+        dynamicLabels.append(dotfilesStatusLabel)
+
+        let section = NSStackView(views: [label, row, dotfilesStatusLabel])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 4
+        row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    private func managedItemRow(_ item: ManagedItem) -> NSView {
+        let pathLabel = NSTextField(labelWithString: "\(item.label) (\(item.path))")
+        pathLabel.font = .systemFont(ofSize: 11.5)
+        pathLabel.lineBreakMode = .byTruncatingTail
+        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dynamicLabels.append(pathLabel)
+
+        let (pillText, pillColor) = managedStatusVisuals(item.status)
+        let pill = statusPill(text: pillText, colorHex: pillColor)
+
+        let row = NSStackView(views: [pathLabel, pill])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return row
+    }
+
+    private func managedStatusVisuals(_ status: ManagedItemStatus) -> (String, String) {
+        switch status {
+        case .linked: return ("Linked", theme.ansiHex[2])
+        case .notLinked: return ("Not linked", theme.ansiHex[3])
+        case .missing: return ("Missing", theme.ansiHex[1])
+        }
+    }
+
+    // MARK: Global agent instructions (Part B)
+
+    private func rebuildAgentSection() {
+        clearStack(agentStack)
+        if isLoadingDotfiles {
+            let content = loadingLabel("Checking\u{2026}")
+            agentStack.addArrangedSubview(content)
+            content.widthAnchor.constraint(equalTo: agentStack.widthAnchor).isActive = true
+            return
+        }
+        let desc = NSTextField(wrappingLabelWithString: "Three harness-expected filenames home-manager symlinks to the same shared AGENTS.md in the dotfiles repo.")
+        desc.font = .systemFont(ofSize: 11)
+        desc.textColor = HelmTheme.mutedInk(theme)
+        desc.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(desc)
+        agentStack.addArrangedSubview(desc)
+        desc.widthAnchor.constraint(equalTo: agentStack.widthAnchor).isActive = true
+
+        for item in agentItems {
+            let row = agentInstructionRow(item)
+            agentStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: agentStack.widthAnchor).isActive = true
+        }
+    }
+
+    private func agentInstructionRow(_ item: AgentInstructionsItem) -> NSView {
+        let pathLabel = NSTextField(labelWithString: "\(item.label) (\(item.path))")
+        pathLabel.font = .systemFont(ofSize: 11.5)
+        pathLabel.lineBreakMode = .byTruncatingTail
+        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dynamicLabels.append(pathLabel)
+
+        let (pillText, pillColor) = agentStatusVisuals(item.status)
+        let pill = statusPill(text: pillText, colorHex: pillColor)
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        var trailing: [NSView] = [pill]
+        if item.status != .linked {
+            let button = NSButton(title: "Create link", target: self, action: #selector(createLinkClicked))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+            trailing.append(button)
+        }
+
+        let row = NSStackView(views: [pathLabel] + trailing)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        return row
+    }
+
+    private func agentStatusVisuals(_ status: AgentInstructionsRow) -> (String, String) {
+        switch status {
+        case .linked: return ("Linked", theme.ansiHex[2])
+        case .notLinked: return ("Not linked", theme.ansiHex[1])
+        case .wrongTarget: return ("Wrong target", theme.ansiHex[3])
+        }
+    }
+
+    // MARK: Shared row/label chrome
+
+    /// Labels built by the dynamic sections above are recreated on every
+    /// refresh (`clearStack` tears the old ones down), so this app's
+    /// existing "re-theme on `ThemeManager.shared.observe`" convention
+    /// (see `HelmTheme.swift`) needs a per-refresh list to walk instead of
+    /// a fixed set of `@IBOutlet`-style properties.
+    private var dynamicLabels: [NSTextField] = []
+
+    private func clearStack(_ stack: NSStackView) {
+        for v in stack.arrangedSubviews {
+            stack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+    }
+
+    private func loadingLabel(_ text: String) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = HelmTheme.mutedInk(theme)
+        dynamicLabels.append(label)
+        return label
+    }
+
+    private func statusPill(text: String, colorHex: String) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = HelmTheme.nsColor(colorHex)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -7),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
+        ])
+        return container
+    }
+
+    // MARK: Actions (Part A + B)
+
+    @objc private func cloneAndBootstrapClicked() {
+        let raw = clonePathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let destination = raw.isEmpty ? DotfilesSource.defaultClonePath : raw
+        let expanded = (destination as NSString).expandingTildeInPath
+        let command = "git clone \(DotfilesSource.cloneURL) \"\(expanded)\" && cd \"\(expanded)\" && ./bootstrap.sh"
+        onRunCommand?("Bootstrap", command)
+    }
+
+    @objc private func runRebuildClicked() {
+        guard let repoPath = dotfilesRepoPath else { return }
+        onRunCommand?("rebuild.sh", "cd \"\(repoPath)\" && ./rebuild.sh")
+    }
+
+    @objc private func createLinkClicked() {
+        guard let repoPath = dotfilesRepoPath else { return }
+        onRunCommand?("rebuild.sh", "cd \"\(repoPath)\" && ./rebuild.sh")
+    }
+
+    @objc private func saveUsernameClicked() {
+        guard let repoPath = dotfilesRepoPath else { return }
+        let newUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newUsername.isEmpty else {
+            showDotfilesStatus("Enter a username before saving.", isError: true)
+            return
+        }
+        do {
+            try DotfilesSource.writeFlakeUsername(repoPath: repoPath, newUsername: newUsername)
+            showDotfilesStatus("Saved. Run rebuild.sh to apply.", isError: false)
+            Toast.show(in: view, message: "flake.nix username saved")
+        } catch {
+            showDotfilesStatus("Could not save: \(error.localizedDescription)", isError: true)
+        }
+    }
+
+    private func showDotfilesStatus(_ message: String, isError: Bool) {
+        dotfilesStatusLabel.stringValue = message
+        dotfilesStatusLabel.textColor = isError ? HelmTheme.nsColor(theme.ansiHex[1]) : HelmTheme.nsColor(theme.ansiHex[2])
+        dotfilesStatusLabel.isHidden = false
     }
 
     // MARK: Sync

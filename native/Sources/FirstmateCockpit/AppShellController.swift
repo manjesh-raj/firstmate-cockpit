@@ -135,7 +135,22 @@ final class AppShellController: NSViewController {
         ])
 
         hostsPanel.onAddOrEdit = { [weak self] host in self?.onPresentHostEditor?(host) }
+        // cockpit-bootstrap-dotfiles: every command the Bootstrap page can run
+        // that touches `darwin-rebuild switch` (needs an interactive `sudo`
+        // TTY) opens as a real tab in the shared Firstmate console rather
+        // than a silent background process - see `runInConsole` below.
+        bootstrap.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
 
+        show(.console)
+    }
+
+    /// Open `command` as a new tab in the shared Firstmate console and bring
+    /// Console forward, so its output (and any `sudo` prompt) is visible
+    /// immediately - the one path every Bootstrap-page action that can invoke
+    /// `darwin-rebuild switch` uses (`bootstrap.sh`, `rebuild.sh`, the initial
+    /// clone).
+    func runInConsole(label: String, command: String) {
+        console.openCommandTab(label: label, command: command)
         show(.console)
     }
 
