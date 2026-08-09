@@ -278,9 +278,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Add a tab for `launch`, build its chip, and (if the view is already on
     /// screen) start its process. Returns the new tab.
     @discardableResult
-    private func addTab(launch: TabLaunch, name: String, select: Bool, accentHex: String? = nil) -> TabModel {
+    private func addTab(launch: TabLaunch, name: String, select: Bool, accentHex: String? = nil, isOneShotCommand: Bool = false) -> TabModel {
         let term = makeTerminal()
         let tab = TabModel(name: name, launch: launch, terminal: term, accentHex: accentHex)
+        tab.isOneShotCommand = isOneShotCommand
 
         let chip = TabChipView(tabID: tab.id, name: name)
         let id = tab.id
@@ -350,12 +351,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// interactive TTY for its `sudo` prompt (task brief requirement). This
     /// reuses the exact same `.shell` launch kind and `startProcess` path a
     /// plain new tab (⌘T) already uses, just with a one-shot `-lc` command
-    /// instead of an interactive `-l` login shell - so it gets the same
-    /// reconnect-hint behaviour on exit as any other shell tab.
+    /// instead of an interactive `-l` login shell. Marked `isOneShotCommand`
+    /// so `processTerminated` never auto-reconnects it - unlike an
+    /// interactive shell, this command is meant to run once and stop, and a
+    /// successful exit must never be treated like a dropped connection.
     @discardableResult
     func openCommandTab(label: String, command: String, cwd: String? = nil) -> TabModel {
         let launch = TabLaunch.shell(executable: shellArgv().executable, args: ["-lc", command], cwd: cwd ?? shellCwd())
-        let tab = addTab(launch: launch, name: label, select: true)
+        let tab = addTab(launch: launch, name: label, select: true, isOneShotCommand: true)
         if let current = currentTab { view.window?.makeFirstResponder(current.terminal) }
         return tab
     }
@@ -791,6 +794,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// also schedules a real reconnect of the same tab after a short delay
     /// (mirroring `reconnectActive()`'s per-launch-kind restart), instead of
     /// only showing the hint and waiting for ⌘R.
+    ///
+    /// A one-shot command tab (`openCommandTab`, e.g. Bootstrap's
+    /// `rebuild.sh`) is never auto-reconnected here, regardless of the
+    /// setting above or the exit code - it ran a provisioning command to
+    /// completion, not a shell that dropped, and re-running it would repeat
+    /// side effects (and re-prompt for `sudo`) forever. Captain-reproduced:
+    /// a successful `rebuild.sh` exit used to be treated like a dropped
+    /// shell, restarting the whole `darwin-rebuild switch` every 2 seconds.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         guard let tab = tabs.first(where: { $0.terminal === source }) else { return }
         if tab.isClosing { return }
@@ -798,6 +809,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.mirror = nil
         cleanupSSHKeyTempFile(tab)
         let code = exitCode.map { " (exit \($0))" } ?? ""
+
+        if tab.isOneShotCommand {
+            let outcome = (exitCode == 0) ? "finished\(code)" : "failed\(code)"
+            source.feed(text: "\r\n  \u{1b}[2m[\(outcome)]\u{1b}[0m\r\n")
+            return
+        }
+
         let hint = AppSettings.shared.autoReconnect ? "reconnecting…" : "press ⌘R to reconnect"
         source.feed(text: "\r\n  \u{1b}[2m[process ended\(code) - \(hint)]\u{1b}[0m\r\n")
 
