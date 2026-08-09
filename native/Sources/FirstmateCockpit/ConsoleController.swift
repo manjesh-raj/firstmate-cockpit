@@ -355,10 +355,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// so `processTerminated` never auto-reconnects it - unlike an
     /// interactive shell, this command is meant to run once and stop, and a
     /// successful exit must never be treated like a dropped connection.
+    ///
+    /// `completion`, when supplied (Bootstrap's "Run full setup" sequencer),
+    /// fires exactly once with the child's real exit code once
+    /// `processTerminated` sees this tab end - the sequencer waits on this
+    /// rather than a fixed timer before starting its next step.
     @discardableResult
-    func openCommandTab(label: String, command: String, cwd: String? = nil) -> TabModel {
+    func openCommandTab(label: String, command: String, cwd: String? = nil, completion: ((Int32?) -> Void)? = nil) -> TabModel {
         let launch = TabLaunch.shell(executable: shellArgv().executable, args: ["-lc", command], cwd: cwd ?? shellCwd())
         let tab = addTab(launch: launch, name: label, select: true, isOneShotCommand: true)
+        tab.onOneShotCompletion = completion
         if let current = currentTab { view.window?.makeFirstResponder(current.terminal) }
         return tab
     }
@@ -813,6 +819,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if tab.isOneShotCommand {
             let outcome = (exitCode == 0) ? "finished\(code)" : "failed\(code)"
             source.feed(text: "\r\n  \u{1b}[2m[\(outcome)]\u{1b}[0m\r\n")
+            tab.onOneShotCompletion?(exitCode)
             return
         }
 

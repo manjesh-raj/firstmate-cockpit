@@ -31,8 +31,30 @@
 //     the destination the Updates page's `.notInstalled` rows now link to
 //     instead of installing inline - see `UpdatesController`'s row-render
 //     code and `AppShellController.show(.bootstrap)`.
-// Out of scope for this phase: "Run full setup" chaining across sections -
-// see the task brief for the full plan.
+// Phase 4 (cockpit-bootstrap-full-setup, this file) adds the "Run full setup"
+// card at the top of the page: a single button that sequences the three
+// sections below for the true blank-machine case, showing a shared ordered
+// progress list (pending/running/done/skipped/failed) rather than requiring
+// the captain to click each card's own action in order. It is a sequencer,
+// not a reimplementation - every step calls the exact same method its card's
+// own standalone button already calls:
+//   1. Firstmate home - a pure status check (`FirstmateHome.homeOk`); if not
+//      already OK, the sequence stops here and points at the home card's own
+//      Save & Verify flow rather than guessing a path.
+//   2. Dotfiles & machine config - always runs (rebuild.sh/bootstrap.sh are
+//      idempotent): clones if `~/.dotfiles` is absent, else runs rebuild.sh.
+//      Both reuse `onRunCommandTracked` (a completion-carrying sibling of
+//      `onRunCommand`) so the sequencer waits for the real Console tab exit
+//      before continuing, never a fixed timer.
+//   3. Global agent instructions - a re-check only, since it resolves itself
+//      once step 2's home-manager run has completed.
+//   4. Software checklist - runs the card's new "Install everything missing"
+//      action (`installAllMissing`, added in this phase alongside its
+//      per-row Install, both funneling through the same `performInstall`)
+//      only if a row is still `.notInstalled` after checking.
+// A step failure stops the sequence there; it never silently continues past
+// a failed step. Section 5 ("secrets/keys/GitHub auth", not part of this
+// page) never gets a button in this chain - it stays permanently manual.
 //
 // Any action that can invoke `darwin-rebuild switch` (clone+bootstrap.sh,
 // rebuild.sh, and Part B's "Create link", which just re-runs rebuild.sh)
@@ -66,6 +88,11 @@ final class BootstrapController: NSViewController {
     /// shared Console tab, without knowing anything about `ConsoleController`
     /// itself.
     var onRunCommand: ((String, String) -> Void)?
+
+    /// Same wiring as `onRunCommand`, but for callers (the "Run full setup"
+    /// sequencer below) that need to know when the command's Console tab
+    /// actually exits, not just that it was started.
+    var onRunCommandTracked: ((String, String, @escaping (Bool) -> Void) -> Void)?
 
     private var cardBackgroundViews: [NSView] = []
     private var scrollView: NSScrollView!
@@ -103,6 +130,35 @@ final class BootstrapController: NSViewController {
     private var hasCheckedSoftwareOnce = false
     private let softwareStack = NSStackView()
 
+    // MARK: "Run full setup" sequencer state (Part D)
+
+    private enum SetupStepKind: CaseIterable {
+        case firstmateHome, dotfiles, agentInstructions, software
+
+        var title: String {
+            switch self {
+            case .firstmateHome: return "Firstmate home"
+            case .dotfiles: return "Dotfiles & machine config"
+            case .agentInstructions: return "Global agent instructions"
+            case .software: return "Software checklist"
+            }
+        }
+    }
+
+    private enum SetupStepStatus: Equatable {
+        case pending, running, done, skipped, failed(String)
+    }
+
+    private struct SetupStepState {
+        let kind: SetupStepKind
+        var status: SetupStepStatus = .pending
+    }
+
+    private var setupSteps: [SetupStepState] = SetupStepKind.allCases.map { SetupStepState(kind: $0) }
+    private var isRunningFullSetup = false
+    private let setupStack = NSStackView()
+    private let runFullSetupButton = NSButton()
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
         root.wantsLayer = true
@@ -116,6 +172,12 @@ final class BootstrapController: NSViewController {
         }
 
         let header = buildHeader()
+
+        setupStack.orientation = .vertical
+        setupStack.alignment = .leading
+        setupStack.spacing = 8
+        let fullSetupCard = card(icon: "checkmark.seal", title: "Run full setup", content: buildFullSetupSection())
+
         let homeCard = card(icon: "folder", title: "Firstmate home", content: buildHomeSection())
 
         dotfilesStack.orientation = .vertical
@@ -133,7 +195,7 @@ final class BootstrapController: NSViewController {
         softwareStack.spacing = 10
         let softwareCard = card(icon: "checklist", title: "Software checklist", content: softwareStack)
 
-        let stack = NSStackView(views: [header, homeCard, dotfilesCard, agentCard, softwareCard])
+        let stack = NSStackView(views: [header, fullSetupCard, homeCard, dotfilesCard, agentCard, softwareCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -149,6 +211,7 @@ final class BootstrapController: NSViewController {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            fullSetupCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             homeCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dotfilesCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             agentCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -345,14 +408,186 @@ final class BootstrapController: NSViewController {
         statusLabel.isHidden = false
     }
 
+    // MARK: "Run full setup" sequencer (Part D)
+
+    private func buildFullSetupSection() -> NSView {
+        let desc = NSTextField(wrappingLabelWithString: "Runs the sections below in order for a blank-machine setup: Firstmate home, dotfiles & machine config, agent instructions, then software. A step only skips when it is already satisfied - dotfiles/rebuild always runs, since it is safe to re-run.")
+        desc.font = .systemFont(ofSize: 11)
+        desc.textColor = .secondaryLabelColor
+        desc.preferredMaxLayoutWidth = 520
+
+        runFullSetupButton.title = "Run full setup"
+        runFullSetupButton.bezelStyle = .rounded
+        runFullSetupButton.target = self
+        runFullSetupButton.action = #selector(runFullSetupClicked)
+
+        let section = NSStackView(views: [desc, runFullSetupButton, setupStack])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 10
+        desc.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        setupStack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    private func rebuildSetupSection() {
+        clearStack(setupStack)
+        for step in setupSteps {
+            let row = setupStepRow(step)
+            setupStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: setupStack.widthAnchor).isActive = true
+        }
+        runFullSetupButton.title = isRunningFullSetup ? "Running\u{2026}" : "Run full setup"
+        runFullSetupButton.isEnabled = !isRunningFullSetup
+    }
+
+    private func setupStepRow(_ step: SetupStepState) -> NSView {
+        let titleLabel = NSTextField(labelWithString: step.kind.title)
+        titleLabel.font = .systemFont(ofSize: 11.5)
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dynamicLabels.append(titleLabel)
+
+        let (pillText, pillColor) = setupStatusVisuals(step.status)
+        let pill = statusPill(text: pillText, colorHex: pillColor)
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [titleLabel, pill])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+
+        if case .failed(let reason) = step.status {
+            let reasonLabel = NSTextField(wrappingLabelWithString: reason)
+            reasonLabel.font = .systemFont(ofSize: 10.5)
+            reasonLabel.textColor = HelmTheme.nsColor(theme.ansiHex[1])
+            reasonLabel.preferredMaxLayoutWidth = 500
+            dynamicLabels.append(reasonLabel)
+            let column = NSStackView(views: [row, reasonLabel])
+            column.orientation = .vertical
+            column.alignment = .leading
+            column.spacing = 2
+            row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+            reasonLabel.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+            return column
+        }
+        return row
+    }
+
+    private func setupStatusVisuals(_ status: SetupStepStatus) -> (String, String) {
+        switch status {
+        case .pending: return ("Pending", theme.chromeInkHex)
+        case .running: return ("Running\u{2026}", theme.chromeInkHex)
+        case .done: return ("Done", theme.ansiHex[2])
+        case .skipped: return ("Skipped", theme.chromeInkHex)
+        case .failed: return ("Failed", theme.ansiHex[1])
+        }
+    }
+
+    private func updateSetupStep(_ kind: SetupStepKind, _ status: SetupStepStatus) {
+        guard let index = setupSteps.firstIndex(where: { $0.kind == kind }) else { return }
+        setupSteps[index].status = status
+        rebuildSetupSection()
+    }
+
+    @objc private func runFullSetupClicked() {
+        guard !isRunningFullSetup else { return }
+        isRunningFullSetup = true
+        setupSteps = SetupStepKind.allCases.map { SetupStepState(kind: $0) }
+        rebuildSetupSection()
+        runSetupStepHome()
+    }
+
+    private func finishFullSetup() {
+        isRunningFullSetup = false
+        rebuildSetupSection()
+    }
+
+    private func runSetupStepHome() {
+        updateSetupStep(.firstmateHome, .running)
+        guard FirstmateHome.homeOk(at: FirstmateHome.root) else {
+            updateSetupStep(.firstmateHome, .failed("Firstmate home is not set up - use the Firstmate home card below to locate or clone one, then run full setup again."))
+            finishFullSetup()
+            return
+        }
+        updateSetupStep(.firstmateHome, .done)
+        runSetupStepDotfiles()
+    }
+
+    private func runSetupStepDotfiles() {
+        updateSetupStep(.dotfiles, .running)
+        // Re-check ~/.dotfiles right before deciding clone-vs-rebuild, so a
+        // stale in-memory `dotfilesRepoPath` from before this run never picks
+        // the wrong branch.
+        refreshDotfiles { [weak self] in
+            guard let self else { return }
+            guard let onRunCommandTracked = self.onRunCommandTracked else {
+                self.updateSetupStep(.dotfiles, .failed("No console wiring available."))
+                self.finishFullSetup()
+                return
+            }
+            let label: String
+            let command: String
+            if let repoPath = self.dotfilesRepoPath {
+                label = "rebuild.sh"
+                command = "cd \"\(repoPath)\" && ./rebuild.sh"
+            } else {
+                let raw = self.clonePathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let destination = raw.isEmpty ? DotfilesSource.defaultClonePath : raw
+                let expanded = (destination as NSString).expandingTildeInPath
+                label = "Bootstrap"
+                command = "git clone \(DotfilesSource.cloneURL) \"\(expanded)\" && cd \"\(expanded)\" && ./bootstrap.sh"
+            }
+            onRunCommandTracked(label, command) { [weak self] ok in
+                guard let self else { return }
+                if ok {
+                    self.updateSetupStep(.dotfiles, .done)
+                    self.runSetupStepAgentInstructions()
+                } else {
+                    self.updateSetupStep(.dotfiles, .failed("\(label) exited with a non-zero status - see its Console tab for output."))
+                    self.finishFullSetup()
+                }
+            }
+        }
+    }
+
+    private func runSetupStepAgentInstructions() {
+        updateSetupStep(.agentInstructions, .running)
+        refreshDotfiles { [weak self] in
+            guard let self else { return }
+            self.updateSetupStep(.agentInstructions, .done)
+            self.runSetupStepSoftware()
+        }
+    }
+
+    private func runSetupStepSoftware() {
+        updateSetupStep(.software, .running)
+        let missing = softwareRows.filter { $0.status == .notInstalled }
+        guard !missing.isEmpty else {
+            updateSetupStep(.software, .done)
+            finishFullSetup()
+            return
+        }
+        installAllMissing { [weak self] allOk in
+            guard let self else { return }
+            if allOk {
+                self.updateSetupStep(.software, .done)
+            } else {
+                self.updateSetupStep(.software, .failed("One or more installs failed - see the software checklist above for detail."))
+            }
+            self.finishFullSetup()
+        }
+    }
+
     // MARK: Dotfiles & machine config (Part A)
 
     /// Re-checks `~/.dotfiles` and the two dependent sections off the main
     /// thread (git/file IO), mirroring `FleetController.refresh`. Shows a
     /// lightweight "Checking…" state first so navigating to the page never
     /// looks frozen while `git` runs.
-    private func refreshDotfiles() {
-        guard isViewLoaded else { return }
+    private func refreshDotfiles(completion: (() -> Void)? = nil) {
+        guard isViewLoaded else { completion?(); return }
         isLoadingDotfiles = true
         rebuildDynamicSections()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -370,7 +605,7 @@ final class BootstrapController: NSViewController {
                 }
             }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self else { completion?(); return }
                 self.dotfilesRepoPath = resolved
                 self.repoState = state
                 self.managedItems = managed
@@ -379,6 +614,7 @@ final class BootstrapController: NSViewController {
                 self.usernameField.stringValue = state?.flakeUsername ?? ""
                 self.rebuildDynamicSections()
                 self.applyTheme()
+                completion?()
             }
         }
     }
@@ -388,6 +624,7 @@ final class BootstrapController: NSViewController {
     /// clearing exactly once per refresh, not once per section.
     private func rebuildDynamicSections() {
         dynamicLabels.removeAll()
+        rebuildSetupSection()
         rebuildDotfilesSection()
         rebuildAgentSection()
         rebuildSoftwareSection()
@@ -660,6 +897,14 @@ final class BootstrapController: NSViewController {
             content.widthAnchor.constraint(equalTo: softwareStack.widthAnchor).isActive = true
             return
         }
+        let missingCount = softwareRows.filter { $0.status == .notInstalled }.count
+        if missingCount > 0 {
+            let button = NSButton(title: "Install everything missing (\(missingCount))", target: self, action: #selector(installAllMissingClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !softwareRows.contains { $0.isBusy }
+            softwareStack.addArrangedSubview(button)
+            softwareStack.setCustomSpacing(12, after: button)
+        }
         for category in DependencyCatalog.categoryOrder {
             let categoryRows = softwareRows.filter { $0.item.category == category }
             guard !categoryRows.isEmpty else { continue }
@@ -728,7 +973,37 @@ final class BootstrapController: NSViewController {
               let row = softwareRows.first(where: { $0.item.id == id }),
               !row.isBusy
         else { return }
+        performInstall(row) { _ in }
+    }
 
+    @objc private func installAllMissingClicked() {
+        installAllMissing { _ in }
+    }
+
+    /// Installs every row currently `.notInstalled`, one at a time (not
+    /// concurrently - avoids racing two `brew`/`npm` invocations against each
+    /// other's lock file), re-checking each as it finishes. Used by both the
+    /// software card's own "Install everything missing" button and the "Run
+    /// full setup" sequencer's software step - same underlying action either
+    /// way, just batched.
+    private func installAllMissing(completion: @escaping (Bool) -> Void) {
+        let missing = softwareRows.filter { $0.status == .notInstalled && !$0.isBusy }
+        guard !missing.isEmpty else { completion(true); return }
+        var overallOk = true
+        func runNext(_ index: Int) {
+            guard index < missing.count else { completion(overallOk); return }
+            performInstall(missing[index]) { ok in
+                if !ok { overallOk = false }
+                runNext(index + 1)
+            }
+        }
+        runNext(0)
+    }
+
+    /// Shared install-one-row action behind both the per-row "Install"
+    /// button and `installAllMissing` - calls the exact same
+    /// `UpdatesSource.update`/`.check` pair the Updates page itself uses.
+    private func performInstall(_ row: SoftwareRowState, completion: @escaping (Bool) -> Void) {
         row.isBusy = true
         row.status = .updating
         rebuildSoftwareSection()
@@ -738,7 +1013,10 @@ final class BootstrapController: NSViewController {
             let outcome = UpdatesSource.update(item)
             let recheck = UpdatesSource.check(item)
             DispatchQueue.main.async {
-                guard let self, let row = self.softwareRows.first(where: { $0.item.id == item.id }) else { return }
+                guard let self, let row = self.softwareRows.first(where: { $0.item.id == item.id }) else {
+                    completion(false)
+                    return
+                }
                 row.isBusy = false
                 row.status = recheck.status
                 row.detail = recheck.detail
@@ -748,6 +1026,7 @@ final class BootstrapController: NSViewController {
                 } else {
                     Toast.show(in: self.view, message: "\(item.name) install failed")
                 }
+                completion(outcome.ok)
             }
         }
     }

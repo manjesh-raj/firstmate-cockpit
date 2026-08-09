@@ -140,6 +140,13 @@ final class AppShellController: NSViewController {
         // TTY) opens as a real tab in the shared Firstmate console rather
         // than a silent background process - see `runInConsole` below.
         bootstrap.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
+        // cockpit-bootstrap-full-setup: the "Run full setup" sequencer needs
+        // to know a step's Console command actually finished (not a fixed
+        // timer) before starting the next one - same tab, same command
+        // string, just with a completion callback threaded through.
+        bootstrap.onRunCommandTracked = { [weak self] label, command, completion in
+            self?.runInConsole(label: label, command: command, completion: completion)
+        }
         // cockpit-bootstrap-software: a `.notInstalled` row on the Updates
         // page no longer installs inline - it links to the Bootstrap page's
         // own Software checklist card instead (same catalog, same install
@@ -154,8 +161,8 @@ final class AppShellController: NSViewController {
     /// immediately - the one path every Bootstrap-page action that can invoke
     /// `darwin-rebuild switch` uses (`bootstrap.sh`, `rebuild.sh`, the initial
     /// clone).
-    func runInConsole(label: String, command: String) {
-        console.openCommandTab(label: label, command: command)
+    func runInConsole(label: String, command: String, completion: ((Bool) -> Void)? = nil) {
+        console.openCommandTab(label: label, command: command) { exitCode in completion?(exitCode == 0) }
         show(.console)
     }
 
