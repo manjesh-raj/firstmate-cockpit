@@ -7,9 +7,9 @@
 // same empty-gap-above-header fix that page and `FleetController`/
 // `ReviewController` carry).
 //
-// Phase 2 (cockpit-bootstrap-dotfiles, this file) adds two more sections
-// below it, both driven by live checks against this machine's real files -
-// see `DotfilesData.swift` for the model side:
+// Phase 2 (cockpit-bootstrap-dotfiles) added two more sections below it, both
+// driven by live checks against this machine's real files - see
+// `DotfilesData.swift` for the model side:
 //   - "Dotfiles & machine config": detects `~/.dotfiles` (the captain's Nix
 //     flake, nix-darwin + home-manager + nix-homebrew), or offers to clone
 //     and bootstrap one if absent; shows repo path/branch/dirty-status, a
@@ -19,8 +19,19 @@
 //     harness-expected filenames (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
 //     `~/.config/opencode/AGENTS.md`) that `home.nix` symlinks to one shared
 //     `<dotfiles>/home/AGENTS.md`.
-// Out of scope for this phase: the software install checklist, the Updates
-// page's `.notInstalled` row-behaviour split, and "Run full setup" chaining -
+//
+// Phase 3 (cockpit-bootstrap-software, this file) adds a fourth section:
+//   - "Software checklist": one row per `DependencyCatalog.items`
+//     (`UpdatesData.swift`), grouped by `DependencyCatalog.categoryOrder`,
+//     checked with the exact same `UpdatesSource.check`/`.update` the Updates
+//     page uses - no separate catalog or check logic lives here. A
+//     `.notInstalled` row gets an "Install" button (`UpdatesSource.update`,
+//     the same idempotent install-or-upgrade action Updates' own "Update"
+//     button calls for that case), re-checked on completion. This is also
+//     the destination the Updates page's `.notInstalled` rows now link to
+//     instead of installing inline - see `UpdatesController`'s row-render
+//     code and `AppShellController.show(.bootstrap)`.
+// Out of scope for this phase: "Run full setup" chaining across sections -
 // see the task brief for the full plan.
 //
 // Any action that can invoke `darwin-rebuild switch` (clone+bootstrap.sh,
@@ -73,6 +84,25 @@ final class BootstrapController: NSViewController {
     private let usernameField = NSTextField()
     private let dotfilesStatusLabel = NSTextField(wrappingLabelWithString: "")
 
+    // MARK: Software checklist state (Part C)
+
+    /// Mutable per-row state for one `DependencyItem` - mirrors
+    /// `UpdatesController`'s private `UpdateRow`, but this card only ever
+    /// needs status/detail/busy (no expandable log, no spinner chrome) since
+    /// it's a compact checklist, not the Updates page's full row UI.
+    private final class SoftwareRowState {
+        let item: DependencyItem
+        var status: DependencyStatus = .unknown
+        var detail: String = "Not checked yet"
+        var isBusy = false
+        init(item: DependencyItem) { self.item = item }
+    }
+
+    private var softwareRows: [SoftwareRowState] = DependencyCatalog.items.map(SoftwareRowState.init)
+    private var isLoadingSoftware = true
+    private var hasCheckedSoftwareOnce = false
+    private let softwareStack = NSStackView()
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
         root.wantsLayer = true
@@ -98,7 +128,12 @@ final class BootstrapController: NSViewController {
         agentStack.spacing = 10
         let agentCard = card(icon: "text.badge.checkmark", title: "Global agent instructions", content: agentStack)
 
-        let stack = NSStackView(views: [header, homeCard, dotfilesCard, agentCard])
+        softwareStack.orientation = .vertical
+        softwareStack.alignment = .leading
+        softwareStack.spacing = 10
+        let softwareCard = card(icon: "checklist", title: "Software checklist", content: softwareStack)
+
+        let stack = NSStackView(views: [header, homeCard, dotfilesCard, agentCard, softwareCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -117,6 +152,7 @@ final class BootstrapController: NSViewController {
             homeCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dotfilesCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             agentCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            softwareCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         let scroll = NSScrollView()
@@ -146,6 +182,10 @@ final class BootstrapController: NSViewController {
         super.viewWillAppear()
         refreshFromSettings()
         refreshDotfiles()
+        if !hasCheckedSoftwareOnce {
+            hasCheckedSoftwareOnce = true
+            checkAllSoftware()
+        }
         scrollToTop()
     }
 
@@ -343,13 +383,14 @@ final class BootstrapController: NSViewController {
         }
     }
 
-    /// Rebuilds both dynamic sections together, since they share the one
+    /// Rebuilds all three dynamic sections together, since they share the one
     /// `dynamicLabels` re-theming list (see its doc comment) that needs
     /// clearing exactly once per refresh, not once per section.
     private func rebuildDynamicSections() {
         dynamicLabels.removeAll()
         rebuildDotfilesSection()
         rebuildAgentSection()
+        rebuildSoftwareSection()
     }
 
     private func rebuildDotfilesSection() {
@@ -580,6 +621,134 @@ final class BootstrapController: NSViewController {
         case .linked: return ("Linked", theme.ansiHex[2])
         case .notLinked: return ("Not linked", theme.ansiHex[1])
         case .wrongTarget: return ("Wrong target", theme.ansiHex[3])
+        }
+    }
+
+    // MARK: Software checklist (Part C)
+
+    /// Checks every catalog item off the main thread via `UpdatesSource.check`
+    /// - the exact same function the Updates page's own automatic check-on-
+    /// load uses - then re-renders once. Runs once per page visit (mirrors
+    /// `UpdatesController.hasCheckedOnce`), not on every navigation back to
+    /// this page, so re-opening Bootstrap doesn't re-shell out to npm/brew/
+    /// herdr repeatedly; the card's `Toast`-free rows re-check themselves
+    /// individually after a successful Install anyway.
+    private func checkAllSoftware() {
+        isLoadingSoftware = true
+        rebuildSoftwareSection()
+        let items = softwareRows.map { $0.item }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcomes = items.map { ($0.id, UpdatesSource.check($0)) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                for (id, outcome) in outcomes {
+                    guard let row = self.softwareRows.first(where: { $0.item.id == id }) else { continue }
+                    row.status = outcome.status
+                    row.detail = outcome.detail
+                }
+                self.isLoadingSoftware = false
+                self.rebuildSoftwareSection()
+            }
+        }
+    }
+
+    private func rebuildSoftwareSection() {
+        clearStack(softwareStack)
+        if isLoadingSoftware {
+            let content = loadingLabel("Checking installed tools\u{2026}")
+            softwareStack.addArrangedSubview(content)
+            content.widthAnchor.constraint(equalTo: softwareStack.widthAnchor).isActive = true
+            return
+        }
+        for category in DependencyCatalog.categoryOrder {
+            let categoryRows = softwareRows.filter { $0.item.category == category }
+            guard !categoryRows.isEmpty else { continue }
+
+            let categoryLabel = NSTextField(labelWithString: category)
+            categoryLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+            dynamicLabels.append(categoryLabel)
+            softwareStack.addArrangedSubview(categoryLabel)
+            categoryLabel.widthAnchor.constraint(equalTo: softwareStack.widthAnchor).isActive = true
+
+            for row in categoryRows {
+                let view = softwareItemRow(row)
+                softwareStack.addArrangedSubview(view)
+                view.widthAnchor.constraint(equalTo: softwareStack.widthAnchor).isActive = true
+            }
+        }
+    }
+
+    private func softwareItemRow(_ row: SoftwareRowState) -> NSView {
+        let nameLabel = NSTextField(labelWithString: row.item.name)
+        nameLabel.font = .systemFont(ofSize: 12)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dynamicLabels.append(nameLabel)
+
+        let (pillText, pillColor) = softwareStatusVisuals(row.status)
+        let pill = statusPill(text: pillText, colorHex: pillColor)
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        var trailing: [NSView] = [pill]
+        if row.status == .notInstalled {
+            let button = NSButton(title: row.isBusy ? "Installing\u{2026}" : "Install", target: self, action: #selector(installSoftwareClicked(_:)))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.isEnabled = !row.isBusy
+            button.identifier = NSUserInterfaceItemIdentifier(row.item.id)
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+            trailing.append(button)
+        }
+
+        let rowView = NSStackView(views: [nameLabel] + trailing)
+        rowView.orientation = .horizontal
+        rowView.alignment = .centerY
+        rowView.spacing = 8
+        return rowView
+    }
+
+    private func softwareStatusVisuals(_ status: DependencyStatus) -> (String, String) {
+        switch status {
+        case .unknown: return ("Not checked", theme.chromeInkHex)
+        case .checking: return ("Checking\u{2026}", theme.chromeInkHex)
+        case .upToDate: return ("Installed", theme.ansiHex[2])
+        case .updateAvailable: return ("Update available", theme.ansiHex[3])
+        case .notInstalled: return ("Not installed", theme.ansiHex[3])
+        case .checkFailed: return ("Check failed", theme.ansiHex[1])
+        case .updating: return ("Installing\u{2026}", theme.chromeInkHex)
+        case .updateFailed: return ("Install failed", theme.ansiHex[1])
+        }
+    }
+
+    @objc private func installSoftwareClicked(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let row = softwareRows.first(where: { $0.item.id == id }),
+              !row.isBusy
+        else { return }
+
+        row.isBusy = true
+        row.status = .updating
+        rebuildSoftwareSection()
+
+        let item = row.item
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = UpdatesSource.update(item)
+            let recheck = UpdatesSource.check(item)
+            DispatchQueue.main.async {
+                guard let self, let row = self.softwareRows.first(where: { $0.item.id == item.id }) else { return }
+                row.isBusy = false
+                row.status = recheck.status
+                row.detail = recheck.detail
+                self.rebuildSoftwareSection()
+                if outcome.ok {
+                    Toast.show(in: self.view, message: "\(item.name) installed")
+                } else {
+                    Toast.show(in: self.view, message: "\(item.name) install failed")
+                }
+            }
         }
     }
 
