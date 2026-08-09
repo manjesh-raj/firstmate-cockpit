@@ -54,11 +54,12 @@ enum DependencyCatalog {
         .init(id: "herdr", name: "herdr", category: "Other tools", kind: .herdr),
         .init(id: "no-mistakes", name: "no-mistakes", category: "Other tools", kind: .noMistakes),
         .init(id: "firstmate", name: "firstmate", category: "Firstmate", kind: .firstmate),
+        .init(id: "automic-vault", name: "Automic Vault", category: "Security", kind: .brewCask(cask: "automic-vault/isotopes/automic-vault")),
     ]
 
     /// Category display order - `Dictionary`-grouping in `UpdatesController`
     /// would otherwise be unordered.
-    static let categoryOrder = ["npm packages", "Homebrew", "Other tools", "Firstmate"]
+    static let categoryOrder = ["npm packages", "Homebrew", "Other tools", "Firstmate", "Security"]
 }
 
 // MARK: - Outcomes
@@ -265,7 +266,13 @@ enum UpdatesSource {
     private static func installedBrewVersion(brew: String, formula: String, cask: Bool) -> String? {
         var args = ["list", "--versions"]
         if cask { args.append("--cask") }
-        args.append(formula)
+        // `brew list --versions --cask` only resolves an installed cask by its
+        // short token - the fully-qualified `owner/tap/name` form `brew
+        // info`/`brew upgrade` both accept happily returns exit 1 here even
+        // when installed (confirmed live with automic-vault/isotopes/automic-vault
+        // post-install: `brew list --versions --cask <full token>` failed while
+        // `brew list --versions --cask automic-vault` succeeded).
+        args.append(cask ? String(formula.split(separator: "/").last ?? Substring(formula)) : formula)
         let result = run(brew, args)
         guard result.status == 0, !result.stdout.isEmpty else { return nil }
         // "<name> <version>[ <version>...]" - the installed formula/cask name
@@ -300,6 +307,7 @@ enum UpdatesSource {
 
     private static func checkBrewCask(_ cask: String) -> CheckOutcome {
         guard let brew = resolveExecutable("brew") else { return missingToolOutcome("brew") }
+        ensureTapped(brew: brew, cask: cask)
         let installed = installedBrewVersion(brew: brew, formula: cask, cask: true)
         let infoResult = run(brew, ["info", "--cask", "--json=v2", cask])
         let latest = latestBrewCaskVersion(from: infoResult.stdout)
@@ -327,10 +335,27 @@ enum UpdatesSource {
         return version
     }
 
+    /// A fully-qualified `owner/tap/cask` token (unlike a short homebrew-core
+    /// name such as `claude-code`) 404s from every brew subcommand until its
+    /// tap has been added at least once - confirmed live: `brew info --cask`
+    /// on `automic-vault/isotopes/automic-vault` fails with "requires the tap
+    /// ... tap it explicitly" before the one-time `brew tap` below. Tapping
+    /// only clones the tap's Ruby cask/formula definitions (no code execution,
+    /// no install) and is a no-op once already tapped, so it's safe to call
+    /// unconditionally ahead of every check/update rather than parsing the
+    /// error text to decide whether it's needed.
+    private static func ensureTapped(brew: String, cask: String) {
+        let segments = cask.split(separator: "/")
+        guard segments.count == 3 else { return }
+        let tap = "\(segments[0])/\(segments[1])"
+        _ = run(brew, ["tap", tap])
+    }
+
     private static func updateBrewCask(_ cask: String) -> UpdateOutcome {
         guard let brew = resolveExecutable("brew") else {
             return UpdateOutcome(ok: false, newVersionLabel: nil, detail: "'brew' not found on PATH", log: "")
         }
+        ensureTapped(brew: brew, cask: cask)
         // Matches the exact hint text Claude Code itself prints ("Update
         // available! Run: brew upgrade claude-code") rather than the more
         // explicit `--cask` form - brew resolves it unambiguously on this
