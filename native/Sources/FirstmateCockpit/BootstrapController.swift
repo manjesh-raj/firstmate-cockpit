@@ -130,6 +130,13 @@ final class BootstrapController: NSViewController {
     private var hasCheckedSoftwareOnce = false
     private let softwareStack = NSStackView()
 
+    // MARK: "Not synced here, by design" state (Part E)
+
+    private var ghHardenStatus: GhHardenStatus = .checking
+    private var isHardeningGh = false
+    private var hasCheckedGhHardeningOnce = false
+    private let notSyncedStack = NSStackView()
+
     // MARK: "Run full setup" sequencer state (Part D)
 
     private enum SetupStepKind: CaseIterable {
@@ -195,7 +202,12 @@ final class BootstrapController: NSViewController {
         softwareStack.spacing = 10
         let softwareCard = card(icon: "checklist", title: "Software checklist", content: softwareStack)
 
-        let stack = NSStackView(views: [header, fullSetupCard, homeCard, dotfilesCard, agentCard, softwareCard])
+        notSyncedStack.orientation = .vertical
+        notSyncedStack.alignment = .leading
+        notSyncedStack.spacing = 10
+        let notSyncedCard = card(icon: "lock.slash", title: "Not synced here, by design", content: notSyncedStack)
+
+        let stack = NSStackView(views: [header, fullSetupCard, homeCard, dotfilesCard, agentCard, softwareCard, notSyncedCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -216,6 +228,7 @@ final class BootstrapController: NSViewController {
             dotfilesCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             agentCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             softwareCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            notSyncedCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         let scroll = NSScrollView()
@@ -248,6 +261,10 @@ final class BootstrapController: NSViewController {
         if !hasCheckedSoftwareOnce {
             hasCheckedSoftwareOnce = true
             checkAllSoftware()
+        }
+        if !hasCheckedGhHardeningOnce {
+            hasCheckedGhHardeningOnce = true
+            checkGhHardening()
         }
         scrollToTop()
     }
@@ -628,6 +645,7 @@ final class BootstrapController: NSViewController {
         rebuildDotfilesSection()
         rebuildAgentSection()
         rebuildSoftwareSection()
+        rebuildNotSyncedSection()
     }
 
     private func rebuildDotfilesSection() {
@@ -1028,6 +1046,137 @@ final class BootstrapController: NSViewController {
                 }
                 completion(outcome.ok)
             }
+        }
+    }
+
+    // MARK: Not synced here, by design (Part E)
+
+    /// SSH keys and `.env`/secrets stay permanently static text - no button,
+    /// no live check, by design (see this file's header comment and the task
+    /// that added this card). GitHub/`gh` auth is the one row with a real
+    /// mechanism (`av harden gh`), so it's the only one checked live.
+    private func rebuildNotSyncedSection() {
+        clearStack(notSyncedStack)
+
+        let intro = NSTextField(wrappingLabelWithString: "This page automates machine setup, but deliberately stops short of syncing credentials between machines. What's static here is static by design, not an oversight.")
+        intro.font = .systemFont(ofSize: 11)
+        intro.textColor = HelmTheme.mutedInk(theme)
+        intro.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(intro)
+        notSyncedStack.addArrangedSubview(intro)
+        intro.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let sshRow = notSyncedStaticRow(
+            title: "SSH private keys",
+            body: "The cockpit's own Keychain-backed key store (see the Keys screen) saves keys with ThisDeviceOnly accessibility and never syncs them through iCloud. Re-add a key per machine from the Keys screen."
+        )
+        notSyncedStack.addArrangedSubview(sshRow)
+        sshRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let envRow = notSyncedStaticRow(
+            title: ".env / secrets / tokens",
+            body: "Never committed to the dotfiles repo - gitignored by design, same as firstmate's own .env. Copy these by hand or from a password manager on each machine."
+        )
+        notSyncedStack.addArrangedSubview(envRow)
+        envRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let ghRow = ghAuthRow()
+        notSyncedStack.addArrangedSubview(ghRow)
+        ghRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+    }
+
+    private func notSyncedStaticRow(title: String, body: String) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        dynamicLabels.append(titleLabel)
+
+        let bodyLabel = NSTextField(wrappingLabelWithString: body)
+        bodyLabel.font = .systemFont(ofSize: 11)
+        bodyLabel.textColor = HelmTheme.mutedInk(theme)
+        bodyLabel.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(bodyLabel)
+
+        let section = NSStackView(views: [titleLabel, bodyLabel])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 2
+        bodyLabel.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    private func ghAuthRow() -> NSView {
+        let titleLabel = NSTextField(labelWithString: "GitHub / gh CLI auth")
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        dynamicLabels.append(titleLabel)
+
+        let bodyText: String
+        var trailing: [NSView] = []
+        switch ghHardenStatus {
+        case .checking:
+            bodyText = "Checking Automic Vault's hardening status\u{2026}"
+        case .avNotInstalled:
+            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
+        case .hardened:
+            bodyText = "Already hardened - gh credentials are migrated into Automic Vault's protected storage."
+            let pill = statusPill(text: "Hardened", colorHex: theme.ansiHex[2])
+            trailing.append(pill)
+        case .notHardened:
+            bodyText = "gh credentials are not yet migrated into Automic Vault. \"av harden gh\" moves them into protected storage and requires the patched gh-cli build (brew install automic-vault/isotopes/gh-cli)."
+            let button = NSButton(title: isHardeningGh ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenGhClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !isHardeningGh
+            trailing.append(button)
+        case .checkFailed(let reason):
+            bodyText = "Could not check hardening status: \(reason)"
+        }
+
+        let bodyLabel = NSTextField(wrappingLabelWithString: bodyText)
+        bodyLabel.font = .systemFont(ofSize: 11)
+        bodyLabel.textColor = HelmTheme.mutedInk(theme)
+        bodyLabel.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(bodyLabel)
+
+        var rows: [NSView] = [titleLabel, bodyLabel]
+        if !trailing.isEmpty {
+            let trailingRow = NSStackView(views: trailing)
+            trailingRow.orientation = .horizontal
+            trailingRow.alignment = .centerY
+            trailingRow.spacing = 8
+            rows.append(trailingRow)
+        }
+
+        let section = NSStackView(views: rows)
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 4
+        for row in rows { row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true }
+        return section
+    }
+
+    private func checkGhHardening() {
+        ghHardenStatus = .checking
+        rebuildNotSyncedSection()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = NotSyncedSource.checkGhHardening()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.ghHardenStatus = status
+                self.rebuildNotSyncedSection()
+            }
+        }
+    }
+
+    @objc private func hardenGhClicked() {
+        guard !isHardeningGh, let onRunCommandTracked else {
+            onRunCommand?("av harden gh", "av harden gh")
+            return
+        }
+        isHardeningGh = true
+        rebuildNotSyncedSection()
+        onRunCommandTracked("av harden gh", "av harden gh") { [weak self] _ in
+            guard let self else { return }
+            self.isHardeningGh = false
+            self.checkGhHardening()
         }
     }
 
