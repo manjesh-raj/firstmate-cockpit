@@ -1,17 +1,42 @@
 // Manjesh Grand Line - native macOS app.
 //
-// Resolves firstmate's OWN configured/auto-detected runtime backend (tmux vs.
+// Resolves firstmate's OWN configured/live-detected runtime backend (tmux vs.
 // herdr) so the Mirror tab can follow it instead of assuming tmux
-// unconditionally (cockpit-mirror-herdr-aware). Firstmate already owns this
-// resolution logic end to end - precedence `FM_BACKEND` env, then
-// `config/backend`, then runtime auto-detection from markers like
-// `HERDR_ENV=1`, then a `tmux` default - in `bin/fm-backend.sh`'s
-// `fm_backend_name`/`fm_backend_herdr_session`. This deliberately does not
-// reimplement that precedence: it sources the real script and calls the real
-// functions, the same "shell out to firstmate's own bin/ script rather than
-// re-derive its logic" convention `FleetData.swift`'s `crewState(taskID:)`
-// already uses for `fm-crew-state.sh`. That keeps the cockpit's answer
-// identical to firstmate's own, even as `fm-backend.sh`'s detection evolves.
+// unconditionally (cockpit-mirror-herdr-aware). An explicit override -
+// `FM_BACKEND` env, then `config/backend` - is still resolved by sourcing the
+// real `bin/fm-backend.sh` and calling its own `fm_backend_name`/
+// `fm_backend_herdr_session`, the same "shell out to firstmate's own bin/
+// script rather than re-derive its logic" convention `FleetData.swift`'s
+// `crewState(taskID:)` already uses for `fm-crew-state.sh`. That keeps the
+// cockpit's answer to an explicit override identical to firstmate's own, even
+// as `fm-backend.sh`'s config-file/env-var handling evolves.
+//
+// Absent an explicit override, `fm_backend_name` falls through to
+// `fm_backend_detect`'s runtime auto-detection, which answers "what backend
+// should a BRAND-NEW CREWMATE SPAWN use" by reading ambient markers
+// (`$TMUX`, `HERDR_ENV=1`, ...) from the CALLING PROCESS's own environment -
+// correct for a process spawned from within firstmate's own already-running
+// session, which genuinely inherits that marker. It is the wrong question for
+// this Cockpit app: the app is a standalone GUI launched by Finder/`open`,
+// never spawned by herdr or tmux, so its own process environment can
+// STRUCTURALLY never carry `HERDR_ENV=1` even when herdr is the fleet's real,
+// live backend (cockpit-mirror-backend-resolve-fix, a follow-up to
+// cockpit-mirror-herdr-aware found live: this always fell through to the
+// final `tmux` default and silently reproduced the pre-herdr-support "no
+// server running" bug). So `resolve()` below deliberately does NOT call
+// `fm_backend_name` when no explicit override is set - do not "simplify" this
+// back to a single `fm_backend_name` shell-out; that would reintroduce the
+// exact bug this file was patched for. Instead it asks a genuinely different
+// question - "what backend does the ambient fleet actually appear to be
+// running on, right now" - via live evidence: a real, running herdr session
+// matching `herdrSessionName()`, checked directly against herdr's own current
+// CLI surface (`herdr session list --json`). There is no separate live-tmux
+// check: `.tmux` is already the answer for every other case (explicit tmux,
+// no live herdr evidence, herdr not installed, the shell-out failing), so
+// checking for live herdr evidence is the only thing that can flip the
+// answer away from that default - which is exactly "prefer whichever backend
+// shows live evidence, falling back to tmux when neither does" collapsed to
+// its one decision-relevant check.
 //
 // Only `tmux` and `herdr` are given a native Mirror implementation here
 // (`TmuxMirror`/`HerdrMirror`); `fm-backend.sh` also names `zellij`, `orca`,
@@ -30,14 +55,51 @@ enum FirstmateBackendKind: Equatable {
 
 enum FirstmateBackend {
 
-    /// Resolve the backend firstmate itself would select for a new spawn
-    /// right now, by sourcing `bin/fm-backend.sh` and calling its own
-    /// `fm_backend_name`. Falls back to `.tmux` (today's default) when the
-    /// script is missing or the shell-out fails for any reason - never blocks
-    /// the Mirror tab on a resolution error.
+    /// Resolve which backend the Mirror tab should follow right now. An
+    /// explicit `FM_BACKEND`/`config/backend` override always wins, read via
+    /// `explicitOverride()`. Absent one, this asks for live evidence instead
+    /// of falling through to `fm_backend_name`'s ambient-marker auto-detect
+    /// (see this file's header comment for why that path can never fire for
+    /// this standalone app). Falls back to `.tmux` (today's default) on any
+    /// failure along the way - never blocks the Mirror tab on a resolution error.
     static func resolve() -> FirstmateBackendKind {
-        guard let out = runBackendScript("fm_backend_name") else { return .tmux }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines) == "herdr" ? .herdr : .tmux
+        if let explicit = explicitOverride() {
+            return explicit == "herdr" ? .herdr : .tmux
+        }
+        return hasLiveHerdrSession() ? .herdr : .tmux
+    }
+
+    /// The explicit `FM_BACKEND`/`config/backend` override, if any, resolved
+    /// by sourcing `bin/fm-backend.sh` and calling its own `fm_backend_name` -
+    /// but with `fm_backend_detect` stubbed out first so a missing override
+    /// falls through to a sentinel instead of real ambient-marker
+    /// auto-detection (which this caller must never invoke; see the header
+    /// comment). `nil` means no explicit override is set - NOT that the
+    /// answer is `tmux` - so callers can tell "explicitly configured tmux"
+    /// apart from "nothing configured, go do live-evidence detection".
+    private static func explicitOverride() -> String? {
+        let sentinel = "__FM_COCKPIT_NO_EXPLICIT_OVERRIDE__"
+        let stub = "fm_backend_detect() { FM_BACKEND_DETECTED=\"\(sentinel)\"; FM_BACKEND_DETECT_SIGNAL=\"\"; return 0; }"
+        guard let out = runBackendScript("\(stub); fm_backend_name") else { return nil }
+        let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == sentinel ? nil : trimmed
+    }
+
+    /// Live evidence that the ambient fleet is actually running on herdr
+    /// right now: a named herdr session matching `herdrSessionName()` that
+    /// herdr itself reports as running, via `herdr session list --json` (the
+    /// current CLI surface for this - verified live, no assumed flags).
+    /// `false` on any failure (herdr not installed, no server, bad JSON) -
+    /// that is indistinguishable from "no live herdr evidence" here, which is
+    /// correct: it means fall back to `.tmux`.
+    private static func hasLiveHerdrSession() -> Bool {
+        guard let herdr = HerdrMirror.resolveHerdr() else { return false }
+        let session = herdrSessionName()
+        let result = HerdrMirror.run(herdr, ["session", "list", "--json"], session: session, env: childEnvironmentDict())
+        guard result.status == 0, let data = result.stdout.data(using: .utf8) else { return false }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sessions = obj["sessions"] as? [[String: Any]] else { return false }
+        return sessions.contains { ($0["name"] as? String) == session && ($0["running"] as? Bool) == true }
     }
 
     /// The herdr session firstmate itself would target for its own ambient
