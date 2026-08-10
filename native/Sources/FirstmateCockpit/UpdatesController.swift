@@ -69,6 +69,16 @@ private final class UpdateRow {
     /// [spinner, progressLabel] depending on `isBusy`.
     let trailingStack = NSStackView()
 
+    /// This row's fields, packaged for the shared `ToolRowLayout` assembly.
+    var toolRowViews: ToolRowLayout.Views {
+        ToolRowLayout.Views(
+            iconTile: iconTile, nameLabel: nameLabel, detailLabel: detailLabel,
+            pill: pill, pillLabel: pillLabel, trailingStack: trailingStack,
+            detailsButton: detailsButton, logField: logField, logContainer: logContainer,
+            rowContainer: rowContainer
+        )
+    }
+
     init(item: DependencyItem) { self.item = item }
 }
 
@@ -560,13 +570,7 @@ final class UpdatesController: NSViewController {
     /// `HelmTint` enum (phase 1's `HelmUIComponents.swift`) rather than a raw
     /// hex, so it stays correct across all 8 Helm palettes.
     private func categoryTint(for category: String) -> HelmTint {
-        switch category {
-        case "npm packages": return .info
-        case "Homebrew": return .warn
-        case "Other tools": return .neutral
-        case "Security": return .violet
-        default: return .accent // Firstmate
-        }
+        DependencyCatalog.tint(for: category)
     }
 
     private func card(icon: String, title: String, rows categoryRows: [UpdateRow]) -> NSView {
@@ -636,42 +640,6 @@ final class UpdatesController: NSViewController {
     // MARK: Row
 
     private func buildRow(_ row: UpdateRow) -> NSView {
-        // Shared icon-in-tinted-tile view (phase 1's `HelmUIComponents.swift`)
-        // - the native equivalent of the mockup's colored tool-row squares.
-        row.iconTile.configure(symbol: row.item.kind.symbol, tint: categoryTint(for: row.item.category), pointSize: 14)
-        row.iconTile.setContentHuggingPriority(.required, for: .horizontal)
-        row.iconTile.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        row.nameLabel.stringValue = row.item.name
-        row.nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        row.nameLabel.lineBreakMode = .byTruncatingTail
-        row.nameLabel.maximumNumberOfLines = 1
-
-        row.detailLabel.font = .systemFont(ofSize: 10.5)
-        row.detailLabel.lineBreakMode = .byTruncatingTail
-        row.detailLabel.maximumNumberOfLines = 1
-
-        let textStack = NSStackView(views: [row.nameLabel, row.detailLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        // Badge
-        row.pillLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
-        row.pillLabel.translatesAutoresizingMaskIntoConstraints = false
-        row.pill.wantsLayer = true
-        row.pill.layer?.cornerRadius = 9
-        row.pill.translatesAutoresizingMaskIntoConstraints = false
-        row.pill.addSubview(row.pillLabel)
-        NSLayoutConstraint.activate([
-            row.pillLabel.leadingAnchor.constraint(equalTo: row.pill.leadingAnchor, constant: 9),
-            row.pillLabel.trailingAnchor.constraint(equalTo: row.pill.trailingAnchor, constant: -9),
-            row.pillLabel.topAnchor.constraint(equalTo: row.pill.topAnchor, constant: 3),
-            row.pillLabel.bottomAnchor.constraint(equalTo: row.pill.bottomAnchor, constant: -3),
-        ])
-
         // Check / Update
         row.checkButton.title = "Check"
         row.checkButton.bezelStyle = .rounded
@@ -708,97 +676,24 @@ final class UpdatesController: NSViewController {
         row.spinner.translatesAutoresizingMaskIntoConstraints = false
         row.progressLabel.font = .systemFont(ofSize: 11, weight: .medium)
 
-        row.trailingStack.orientation = .horizontal
-        row.trailingStack.spacing = 8
-        row.trailingStack.alignment = .centerY
-        row.trailingStack.translatesAutoresizingMaskIntoConstraints = false
-        // NSStackView's own horizontal hugging priority defaults lower than
-        // any arranged-subview priority set on its children, so without this
-        // the stack itself (not `textStack`) can end up absorbing `topRow`'s
-        // slack width - leaving the chevron short of the trailing edge.
-        row.trailingStack.setContentHuggingPriority(.required, for: .horizontal)
-        row.trailingStack.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for v in [row.pill, row.checkButton, row.updateButton, row.installInBootstrapButton, row.spinner, row.progressLabel] {
-            v.setContentHuggingPriority(.required, for: .horizontal)
-            v.setContentCompressionResistancePriority(.required, for: .horizontal)
-        }
-        row.trailingStack.addArrangedSubview(row.pill)
-        row.trailingStack.addArrangedSubview(row.checkButton)
-        row.trailingStack.addArrangedSubview(row.updateButton)
-        row.trailingStack.addArrangedSubview(row.installInBootstrapButton)
-        row.trailingStack.addArrangedSubview(row.spinner)
-        row.trailingStack.addArrangedSubview(row.progressLabel)
-
-        // Details disclosure
-        row.detailsButton.title = ""
-        row.detailsButton.isBordered = false
-        row.detailsButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Show details")
-        row.detailsButton.imageScaling = .scaleProportionallyDown
-        row.detailsButton.target = self
-        row.detailsButton.action = #selector(detailsTapped(_:))
-        row.detailsButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
-        row.detailsButton.translatesAutoresizingMaskIntoConstraints = false
-        row.detailsButton.setContentHuggingPriority(.required, for: .horizontal)
-        row.detailsButton.toolTip = "Show command output"
-
-        let topRow = NSStackView(views: [row.iconTile, textStack, row.trailingStack, row.detailsButton])
-        topRow.orientation = .horizontal
-        topRow.alignment = .centerY
-        topRow.spacing = 8
-        // Default `.gravityAreas` distribution doesn't honor per-view hugging
-        // priorities to fill slack width - it just clusters arranged views at
-        // their natural size, leaving unclaimed space wherever Auto Layout's
-        // tie-breaking happens to land it. `.fill` is what actually makes
-        // `textStack`'s low hugging priority absorb the row's slack so the
-        // chevron stays pinned to the trailing edge.
-        topRow.distribution = .fill
-        topRow.translatesAutoresizingMaskIntoConstraints = false
-
-        // Log (expandable, monospace, hidden until toggled)
-        row.logField.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        row.logField.preferredMaxLayoutWidth = 560
-        row.logField.translatesAutoresizingMaskIntoConstraints = false
-        row.logContainer.wantsLayer = true
-        row.logContainer.layer?.cornerRadius = 6
-        row.logContainer.translatesAutoresizingMaskIntoConstraints = false
-        row.logContainer.isHidden = true
-        row.logContainer.addSubview(row.logField)
-        NSLayoutConstraint.activate([
-            row.logField.leadingAnchor.constraint(equalTo: row.logContainer.leadingAnchor, constant: 8),
-            row.logField.trailingAnchor.constraint(equalTo: row.logContainer.trailingAnchor, constant: -8),
-            row.logField.topAnchor.constraint(equalTo: row.logContainer.topAnchor, constant: 6),
-            row.logField.bottomAnchor.constraint(equalTo: row.logContainer.bottomAnchor, constant: -6),
-        ])
-
-        let column = NSStackView(views: [topRow, row.logContainer])
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 6
-        column.translatesAutoresizingMaskIntoConstraints = false
-        topRow.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-        row.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-
-        row.rowContainer.cornerRadius = 8
-        row.rowContainer.translatesAutoresizingMaskIntoConstraints = false
-        row.rowContainer.addSubview(column)
-        NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: row.rowContainer.leadingAnchor, constant: 4),
-            column.trailingAnchor.constraint(equalTo: row.rowContainer.trailingAnchor, constant: -4),
-            column.topAnchor.constraint(equalTo: row.rowContainer.topAnchor, constant: 4),
-            column.bottomAnchor.constraint(equalTo: row.rowContainer.bottomAnchor, constant: -4),
-        ])
-        return row.rowContainer
+        let view = ToolRowLayout.build(
+            row.toolRowViews,
+            iconSymbol: row.item.kind.symbol,
+            tint: categoryTint(for: row.item.category),
+            name: row.item.name,
+            trailingViews: [row.pill, row.checkButton, row.updateButton, row.installInBootstrapButton, row.spinner, row.progressLabel],
+            detailsTarget: self,
+            detailsAction: #selector(detailsTapped(_:)),
+            identifier: row.item.id
+        )
+        row.logContainer.isHidden = true // collapsed until the details chevron is tapped.
+        return view
     }
 
     @objc private func detailsTapped(_ sender: NSButton) {
         guard let row = row(for: sender) else { return }
         row.isLogExpanded.toggle()
-        row.logContainer.isHidden = !row.isLogExpanded || row.log.isEmpty
-        row.detailsButton.image = NSImage(
-            systemSymbolName: row.isLogExpanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: "Show details"
-        )
-        row.logField.stringValue = row.log.isEmpty ? "No output yet." : row.log
+        ToolRowLayout.setLogExpanded(row.toolRowViews, expanded: row.isLogExpanded, log: row.log)
     }
 
     private func row(for sender: NSButton) -> UpdateRow? {
@@ -963,9 +858,7 @@ final class UpdatesController: NSViewController {
         row.logField.stringValue = row.log.isEmpty ? "No output yet." : row.log
 
         let (pillText, pillColorHex) = pillVisuals(row.status)
-        row.pillLabel.stringValue = pillText
-        row.pillLabel.textColor = HelmTheme.nsColor(pillColorHex)
-        row.pill.layer?.backgroundColor = HelmTheme.nsColor(pillColorHex).withAlphaComponent(0.15).cgColor
+        ToolRowLayout.pill(text: pillText, colorHex: pillColorHex, into: row.pill, label: row.pillLabel)
 
         let busy = row.status == .checking || row.status == .updating
         row.pill.isHidden = busy
@@ -1050,13 +943,9 @@ final class UpdatesController: NSViewController {
     }
 
     private func applyThemeToRow(_ row: UpdateRow) {
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        let muted = HelmTheme.mutedInk(theme)
-        let line = HelmTheme.nsColor(theme.chromeLineHex)
-        row.iconTile.applyTheme(theme)
-        row.nameLabel.textColor = ink
-        row.detailLabel.textColor = row.status == .checkFailed || row.status == .updateFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
-        row.progressLabel.textColor = muted
+        let failed = row.status == .checkFailed || row.status == .updateFailed
+        ToolRowLayout.applyTheme(row.toolRowViews, theme: theme, detailFailed: failed)
+        row.progressLabel.textColor = HelmTheme.mutedInk(theme)
         // `.isBordered = false` buttons don't pick up a text color from
         // `contentTintColor` (that only tints an image) - an attributed
         // title is the one way to make this link-styled button visually
@@ -1065,14 +954,6 @@ final class UpdatesController: NSViewController {
             string: row.installInBootstrapButton.title,
             attributes: [.foregroundColor: HelmTheme.nsColor(theme.accentHex), .font: NSFont.systemFont(ofSize: 11, weight: .semibold)]
         )
-        row.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
-        row.logField.textColor = muted
-        row.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        // Shared hover helper (phase 1): a subtle highlight on mouse
-        // enter/exit, both colors theme-derived - mirrors
-        // `SettingsController.descRow`'s identical `HoverHighlightView` use.
-        row.rowContainer.normalColor = .clear
-        row.rowContainer.hoverColor = line.withAlphaComponent(0.18)
     }
 }
 

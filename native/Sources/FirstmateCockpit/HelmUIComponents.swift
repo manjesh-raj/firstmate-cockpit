@@ -164,3 +164,194 @@ final class HoverHighlightView: NSView {
         }
     }
 }
+
+/// The shared "tool checklist row" layout: an `IconTileView`, a name/detail
+/// text stack, a caller-populated trailing-controls stack, a disclosure
+/// chevron, and an expandable command-output log panel, all wrapped in a
+/// `HoverHighlightView`. `UpdatesController`'s per-tool rows and
+/// `BootstrapController`'s software checklist rows both need this exact same
+/// assembly (cockpit-bootstrap-software-row-parity) - factored here once so
+/// the two pages render rows identically instead of maintaining two
+/// divergent copies of the same NSStackView/constraint plumbing.
+enum ToolRowLayout {
+    /// The concrete view instances a row owns. Callers may create these fresh
+    /// on every render (Bootstrap's existing "tear down and rebuild" pattern)
+    /// or hold them for the row's whole lifetime and mutate in place
+    /// (Updates' existing pattern) - `build`/`applyTheme` don't care which.
+    struct Views {
+        let iconTile: IconTileView
+        let nameLabel: NSTextField
+        let detailLabel: NSTextField
+        let pill: NSView
+        let pillLabel: NSTextField
+        let trailingStack: NSStackView
+        let detailsButton: NSButton
+        let logField: NSTextField
+        let logContainer: NSView
+        let rowContainer: HoverHighlightView
+    }
+
+    /// Assembles `views` into one row and returns the top-level view to place
+    /// in a stack. `trailingViews` (e.g. a status pill plus Check/Update/
+    /// Install buttons or a spinner) are inserted into `views.trailingStack`
+    /// in order, after `views.pill` - callers configure `views.pill`'s
+    /// content themselves (see `pill(text:colorHex:into:)`) and pass it as
+    /// the first trailing view.
+    static func build(
+        _ views: Views,
+        iconSymbol: String,
+        tint: HelmTint,
+        name: String,
+        trailingViews: [NSView],
+        detailsTarget: AnyObject,
+        detailsAction: Selector,
+        identifier: String
+    ) -> NSView {
+        views.iconTile.configure(symbol: iconSymbol, tint: tint, pointSize: 14)
+        views.iconTile.setContentHuggingPriority(.required, for: .horizontal)
+        views.iconTile.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        views.nameLabel.stringValue = name
+        views.nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        views.nameLabel.lineBreakMode = .byTruncatingTail
+        views.nameLabel.maximumNumberOfLines = 1
+
+        views.detailLabel.font = .systemFont(ofSize: 10.5)
+        views.detailLabel.lineBreakMode = .byTruncatingTail
+        views.detailLabel.maximumNumberOfLines = 1
+
+        let textStack = NSStackView(views: [views.nameLabel, views.detailLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        views.trailingStack.orientation = .horizontal
+        views.trailingStack.spacing = 8
+        views.trailingStack.alignment = .centerY
+        views.trailingStack.translatesAutoresizingMaskIntoConstraints = false
+        // NSStackView's own horizontal hugging priority defaults lower than
+        // any arranged-subview priority set on its children, so without this
+        // the stack itself (not `textStack`) can end up absorbing `topRow`'s
+        // slack width - leaving the chevron short of the trailing edge.
+        views.trailingStack.setContentHuggingPriority(.required, for: .horizontal)
+        views.trailingStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for v in trailingViews {
+            v.setContentHuggingPriority(.required, for: .horizontal)
+            v.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.trailingStack.addArrangedSubview(v)
+        }
+
+        views.detailsButton.title = ""
+        views.detailsButton.isBordered = false
+        views.detailsButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Show details")
+        views.detailsButton.imageScaling = .scaleProportionallyDown
+        views.detailsButton.target = detailsTarget
+        views.detailsButton.action = detailsAction
+        views.detailsButton.identifier = NSUserInterfaceItemIdentifier(identifier)
+        views.detailsButton.translatesAutoresizingMaskIntoConstraints = false
+        views.detailsButton.setContentHuggingPriority(.required, for: .horizontal)
+        views.detailsButton.toolTip = "Show command output"
+
+        let topRow = NSStackView(views: [views.iconTile, textStack, views.trailingStack, views.detailsButton])
+        topRow.orientation = .horizontal
+        topRow.alignment = .centerY
+        topRow.spacing = 8
+        // Default `.gravityAreas` distribution doesn't honor per-view hugging
+        // priorities to fill slack width - `.fill` is what makes `textStack`'s
+        // low hugging priority absorb the row's slack so the chevron stays
+        // pinned to the trailing edge.
+        topRow.distribution = .fill
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        views.logField.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        views.logField.preferredMaxLayoutWidth = 560
+        views.logField.translatesAutoresizingMaskIntoConstraints = false
+        views.logContainer.wantsLayer = true
+        views.logContainer.layer?.cornerRadius = 6
+        views.logContainer.translatesAutoresizingMaskIntoConstraints = false
+        if views.logField.superview !== views.logContainer {
+            views.logContainer.addSubview(views.logField)
+            NSLayoutConstraint.activate([
+                views.logField.leadingAnchor.constraint(equalTo: views.logContainer.leadingAnchor, constant: 8),
+                views.logField.trailingAnchor.constraint(equalTo: views.logContainer.trailingAnchor, constant: -8),
+                views.logField.topAnchor.constraint(equalTo: views.logContainer.topAnchor, constant: 6),
+                views.logField.bottomAnchor.constraint(equalTo: views.logContainer.bottomAnchor, constant: -6),
+            ])
+        }
+
+        let column = NSStackView(views: [topRow, views.logContainer])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 6
+        column.translatesAutoresizingMaskIntoConstraints = false
+        topRow.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        views.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+
+        views.rowContainer.cornerRadius = 8
+        views.rowContainer.translatesAutoresizingMaskIntoConstraints = false
+        if column.superview !== views.rowContainer {
+            views.rowContainer.addSubview(column)
+            NSLayoutConstraint.activate([
+                column.leadingAnchor.constraint(equalTo: views.rowContainer.leadingAnchor, constant: 4),
+                column.trailingAnchor.constraint(equalTo: views.rowContainer.trailingAnchor, constant: -4),
+                column.topAnchor.constraint(equalTo: views.rowContainer.topAnchor, constant: 4),
+                column.bottomAnchor.constraint(equalTo: views.rowContainer.bottomAnchor, constant: -4),
+            ])
+        }
+        return views.rowContainer
+    }
+
+    /// Configures a pill's fill/text color and (on first call) its internal
+    /// label constraints - callers own the pill/label instances and pass the
+    /// pill as one of `build`'s `trailingViews`.
+    static func pill(text: String, colorHex: String, into pill: NSView, label: NSTextField) {
+        label.stringValue = text
+        label.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        label.textColor = HelmTheme.nsColor(colorHex)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 9
+        pill.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        if label.superview !== pill {
+            pill.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 9),
+                label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -9),
+                label.topAnchor.constraint(equalTo: pill.topAnchor, constant: 3),
+                label.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -3),
+            ])
+        }
+    }
+
+    /// Re-themes the shared chrome. `detailFailed` routes the detail label
+    /// through the theme's error color, matching `UpdatesController`'s
+    /// existing failed-state treatment.
+    static func applyTheme(_ views: Views, theme: HelmTheme, detailFailed: Bool) {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let muted = HelmTheme.mutedInk(theme)
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+        views.iconTile.applyTheme(theme)
+        views.nameLabel.textColor = ink
+        views.detailLabel.textColor = detailFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
+        views.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
+        views.logField.textColor = muted
+        views.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        views.rowContainer.normalColor = .clear
+        views.rowContainer.hoverColor = line.withAlphaComponent(0.18)
+    }
+
+    /// Toggles the chevron image, the log container's visibility, and the
+    /// log field's text together - the one place that decides "expanded and
+    /// non-empty" is what actually shows the panel.
+    static func setLogExpanded(_ views: Views, expanded: Bool, log: String) {
+        views.logContainer.isHidden = !expanded || log.isEmpty
+        views.detailsButton.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: "Show details"
+        )
+        views.logField.stringValue = log.isEmpty ? "No output yet." : log
+    }
+}
