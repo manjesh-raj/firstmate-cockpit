@@ -366,18 +366,22 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: The pinned "Firstmate" host (Fix 4)
 
-    /// Open the built-in Shell + Mirror pair - the connect action for the
-    /// Hosts sidebar's pinned, non-deletable "Firstmate" entry
+    /// Open the built-in tab pair - the connect action for the Hosts
+    /// sidebar's pinned, non-deletable "Firstmate" entry
     /// (`HostsSidebarController`), and also what `loadView` calls to land the
     /// app on this pair at startup so the initial state is unchanged from
     /// before this pair lived in the Hosts list. Like every other host,
     /// connecting always opens a fresh tab pair rather than reusing an
-    /// existing one - the same mental model as SSH hosts and ⌘T.
+    /// existing one - the same mental model as SSH hosts and ⌘T. Still
+    /// exactly two tabs: on a tmux fleet, "Mirror" (read-only,
+    /// `TmuxMirror`) + "Shell"; on a herdr fleet (fm/cockpit-mirror-herdr-
+    /// real-attach), "herdr" (a real `herdr session attach` client,
+    /// `HerdrMirror`) + "Shell", the latter completely unchanged either way.
     @discardableResult
     func openFirstmateHost(focus: Bool = true) -> TabModel {
-        // Mirror first, Shell second (fixes3) - both the tab bar order and
-        // the ⌘1…⌘9 shortcut numbering follow `tabs`' append order, so the
-        // mirror tab must be created before the shell tab.
+        // The mirror/herdr tab first, Shell second (fixes3) - both the tab
+        // bar order and the ⌘1…⌘9 shortcut numbering follow `tabs`' append
+        // order, so this tab must be created before the shell tab.
         let mirror = TabLaunch.mirror(target: mirrorTarget())
         addTab(launch: mirror, name: mirror.defaultName, select: false)
         let s = shellArgv()
@@ -534,9 +538,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Set up a live session for `target` and attach `tab`'s terminal to it,
     /// on whichever backend firstmate itself resolves to right now
     /// (`FirstmateBackend.resolve()`, cockpit-mirror-herdr-aware) - tmux's
-    /// `TmuxMirror` (unchanged) or herdr's `HerdrMirror`. On failure the
-    /// error is written into the terminal so it is visible rather than
-    /// silent.
+    /// read-only `TmuxMirror` (unchanged, tab named "Mirror") or herdr's
+    /// real-attach `HerdrMirror` (fm/cockpit-mirror-herdr-real-attach, tab
+    /// named "Herdr" - see `TabLaunch.defaultName`). On failure the error is
+    /// written into the terminal so it is visible rather than silent.
     private func connectMirror(_ tab: TabModel, target: String) {
         switch FirstmateBackend.resolve() {
         case .tmux:
@@ -559,17 +564,23 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             switch HerdrMirror.setUp(target: target) {
             case .success(let m):
                 tab.mirror = .herdr(m)
+                // A real `herdr session attach` client is launched from the
+                // firstmate home (not `shellCwd()`, which follows the
+                // captain's own Settings/`FM_SHELL_CWD` preference for
+                // *shell* tabs) - captain's explicit call, since this tab is
+                // attaching to firstmate's own herdr session, not opening a
+                // general-purpose shell.
                 tab.terminal.startProcess(
                     executable: m.attachExecutable,
                     args: m.attachArgs,
                     environment: childEnvironment(),
                     execName: nil,
-                    currentDirectory: shellCwd()
+                    currentDirectory: FirstmateHome.root.path
                 )
             case .failure(let err):
                 tab.mirror = nil
-                tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
-                tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live herdr session (or '<session>#<pane-id>'), then press ⌘R to reconnect.\u{1b}[0m\r\n")
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[herdr]\u{1b}[0m \(err.message)\r\n")
+                tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live herdr session, then press ⌘R to reconnect.\u{1b}[0m\r\n")
             }
         }
     }
