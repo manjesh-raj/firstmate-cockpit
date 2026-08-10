@@ -43,8 +43,8 @@ func shellCwd() -> String {
 
 /// Environment for a terminal child, mirroring `terminal.py`/`shell.py`:
 /// force `TERM=xterm-256color` and a UTF-8 locale (a Finder-launched GUI app
-/// inherits no LANG/LC_ALL), and drop `TMUX` so this is a fresh, un-nested
-/// shell/client. Returned as SwiftTerm's `KEY=VALUE` array form.
+/// inherits no LANG/LC_ALL), and drop `TMUX`/`HERDR_*` so this is a fresh,
+/// un-nested shell/client. Returned as SwiftTerm's `KEY=VALUE` array form.
 func childEnvironment() -> [String] {
     childEnvironmentDict().map { "\($0.key)=\($0.value)" }
 }
@@ -58,6 +58,17 @@ func childEnvironmentDict() -> [String: String] {
     env["LANG"] = "en_US.UTF-8"
     env["LC_ALL"] = "en_US.UTF-8"
     env.removeValue(forKey: "TMUX")
+    // The "Herdr" tab (`HerdrMirror`) runs a real `herdr session attach`
+    // client (fm/cockpit-mirror-herdr-real-attach); herdr refuses to launch
+    // when it sees its own `HERDR_ENV=1` marker in the environment ("nested
+    // herdr is disabled by default"), confirmed live while testing that
+    // task's concurrent-attach question. This app is normally a plain
+    // Finder-launched GUI process that never inherits that marker anyway,
+    // but stripping it here (same reasoning as `TMUX` above) means this tab
+    // attaches cleanly even if that ever isn't true.
+    for key in ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"] {
+        env.removeValue(forKey: key)
+    }
 
     // A Finder/`open`-launched GUI app inherits a bare minimal PATH, missing
     // Homebrew and other common tool locations. `resolveExecutable` in
@@ -76,27 +87,30 @@ func childEnvironmentDict() -> [String: String] {
 
 // MARK: - Mirror target
 
-/// The first mate's own target the Mirror tab attaches to. Configurable via
-/// `FM_MIRROR_TARGET`, then the Settings > General "Mirror target" field;
-/// either override is honored verbatim regardless of backend, exactly as
-/// before this task. Absent an override, the default now follows firstmate's
-/// own resolved backend (`FirstmateBackend.resolve()`, cockpit-mirror-herdr-
-/// aware) instead of assuming tmux unconditionally:
+/// The first mate's own target this tab attaches to - "Mirror" for a tmux
+/// fleet, "Herdr" for a herdr one (`TabLaunch.defaultName`). Configurable via
+/// `FM_MIRROR_TARGET`, then the Settings > General "Mirror target" field
+/// (name unchanged - it's shared plumbing behind both backends' tab, not a
+/// UI label); either override is honored verbatim regardless of backend,
+/// exactly as before this task. Absent an override, the default now follows
+/// firstmate's own resolved backend (`FirstmateBackend.resolve()`, cockpit-
+/// mirror-herdr-aware) instead of assuming tmux unconditionally:
 ///
 /// - tmux (today's default, and every fleet before this task): the
 ///   `firstmate` session, byte-identical to before.
 /// - herdr: the session firstmate's own ambient commands would target
 ///   (`FirstmateBackend.herdrSessionName()`, `${HERDR_SESSION:-default}` -
-///   `default` on this captain's fleet, confirmed live). `HerdrMirror.setUp`
-///   resolves which PANE within that session to read; this function only
-///   resolves the session name, mirroring how the tmux default (`firstmate`)
-///   is a session name too, with `select-window`/`select-window`'s absence
-///   deciding the window the same way for both backends.
+///   `default` on this captain's fleet, confirmed live). `HerdrMirror`
+///   attaches to that session as a whole (fm/cockpit-mirror-herdr-real-attach
+///   - a real `herdr session attach`, showing every space/agent in its own
+///   sidebar entry, not one pane's text) rather than reading a single pane
+///   within it, so there is no pane-level resolution step for herdr the way
+///   there used to be.
 ///
-/// An explicit override can pin a specific pane for herdr with
-/// `<session>#<pane-id>` (see `HerdrMirror.splitTarget`) or a specific window
-/// for tmux with `<session>:<window>` (see `TmuxMirror.splitTarget`) -
-/// unchanged, since both are read by the mirror kind that's actually active.
+/// An explicit override can pin a specific window for tmux with
+/// `<session>:<window>` (see `TmuxMirror.splitTarget`) - unchanged. There is
+/// no equivalent pin syntax for herdr anymore, since attaching the whole
+/// session already shows everything.
 func mirrorTarget() -> String {
     let env = ProcessInfo.processInfo.environment
     if let t = env["FM_MIRROR_TARGET"], !t.trimmingCharacters(in: .whitespaces).isEmpty {

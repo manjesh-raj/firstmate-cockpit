@@ -36,11 +36,15 @@ enum MirrorSession {
 enum TabLaunch {
     /// A login shell (`$SHELL -l`), the Phase 1 terminal.
     case shell(executable: String, args: [String], cwd: String)
-    /// A live mirror of the first mate's own session, on whichever backend
-    /// firstmate itself resolves to (`FirstmateBackend.resolve()`) - tmux
-    /// (`TmuxMirror`) or herdr (`HerdrMirror`), see `TabModel.mirror`. Each
-    /// mirror tab sets up its own backend-appropriate session/process on
-    /// launch, so duplicating a mirror is safe.
+    /// A live attach to the first mate's own session, on whichever backend
+    /// firstmate itself resolves to (`FirstmateBackend.resolve()`) - a
+    /// read-only tmux mirror (`TmuxMirror`, still named "Mirror" in the tab
+    /// bar) or, since fm/cockpit-mirror-herdr-real-attach, a real interactive
+    /// `herdr session attach` client (`HerdrMirror`, named "Herdr" in the tab
+    /// bar - it isn't a mirror of anything, it's the genuine herdr TUI), see
+    /// `TabModel.mirror`/`TabLaunch.defaultName`. Each sets up its own
+    /// backend-appropriate session/process on launch, so duplicating this
+    /// tab is safe either way.
     case mirror(target: String)
     /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
     /// manager. `ssh` is just another interactive PTY child (design report C1),
@@ -56,11 +60,19 @@ enum TabLaunch {
     /// the session looks ready.
     case ssh(label: String, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID?)
 
-    /// The default display name for a freshly created tab of this kind.
+    /// The default display name for a freshly created tab of this kind. For
+    /// `.mirror`, this depends on which backend is actually live right now
+    /// (`FirstmateBackend.resolve()`): a tmux fleet still gets "Mirror" -
+    /// untouched by fm/cockpit-mirror-herdr-real-attach, since that's still
+    /// genuinely a read-only mirror of the captain's tmux session - but a
+    /// herdr fleet's tab is a real `herdr session attach` client, not a
+    /// mirror of anything, so it's named "Herdr" instead (per the captain's
+    /// explicit call in that task). Resolved fresh each time rather than
+    /// cached, matching `connectMirror`'s own fresh `resolve()` call.
     var defaultName: String {
         switch self {
         case .shell: return "Shell"
-        case .mirror: return "Mirror"
+        case .mirror: return FirstmateBackend.resolve() == .herdr ? "Herdr" : "Mirror"
         case .ssh(let label, _, _, _, _): return label
         }
     }
