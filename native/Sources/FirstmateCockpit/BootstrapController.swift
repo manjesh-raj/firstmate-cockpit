@@ -71,6 +71,85 @@
 
 import AppKit
 
+/// One step's live wizard state (cockpit-modern-ui-bootstrap) - distinct from
+/// `BootstrapController.SetupStepStatus`, which tracks the transient
+/// "Run full setup" sequencer's running/failed/etc state for one pass. This
+/// tracks whether a step is *configured* at all, derived fresh from the same
+/// checks (`FirstmateHome.homeOk`, `dotfilesRepoPath`, `agentItems`,
+/// `softwareRows`) every other part of this page already reads - never
+/// hardcoded.
+private enum StepperDotState: Equatable {
+    case done, current, pending
+}
+
+/// The mockup's numbered/checkmark stepper dot (`.step-dot`) - a plain
+/// layer-backed circle, deliberately simpler than `IconTileView` (a square
+/// SF-Symbol tile) since a step dot is either a number or a checkmark, never
+/// an arbitrary glyph.
+private final class StepDotView: NSView {
+    private let numberLabel = NSTextField(labelWithString: "")
+    private let checkImageView = NSImageView()
+    private let diameter: CGFloat = 30
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+        layer?.cornerRadius = diameter / 2
+
+        numberLabel.font = .systemFont(ofSize: 12.5, weight: .bold)
+        numberLabel.alignment = .center
+        numberLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        checkImageView.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+        checkImageView.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(numberLabel)
+        addSubview(checkImageView)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: diameter),
+            heightAnchor.constraint(equalToConstant: diameter),
+            numberLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            numberLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            checkImageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            checkImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    func configure(number: Int, state: StepperDotState, theme: HelmTheme) {
+        switch state {
+        case .done:
+            numberLabel.isHidden = true
+            checkImageView.isHidden = false
+            checkImageView.contentTintColor = HelmTheme.nsColor(theme.selectionTextHex)
+            layer?.backgroundColor = HelmTheme.nsColor(theme.ansiHex[2]).cgColor
+            layer?.borderWidth = 0
+        case .current:
+            numberLabel.isHidden = false
+            checkImageView.isHidden = true
+            numberLabel.stringValue = "\(number)"
+            numberLabel.textColor = HelmTheme.nsColor(theme.selectionTextHex)
+            layer?.backgroundColor = HelmTheme.nsColor(theme.accentHex).cgColor
+            layer?.borderWidth = 3
+            layer?.borderColor = HelmTheme.nsColor(theme.accentHex).withAlphaComponent(0.25).cgColor
+        case .pending:
+            numberLabel.isHidden = false
+            checkImageView.isHidden = true
+            numberLabel.stringValue = "\(number)"
+            numberLabel.textColor = HelmTheme.mutedInk(theme)
+            layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.25).cgColor
+            layer?.borderWidth = 0
+        }
+    }
+}
+
 final class BootstrapController: NSViewController {
 
     private var theme: HelmTheme = ThemeManager.shared.theme
@@ -139,7 +218,7 @@ final class BootstrapController: NSViewController {
 
     // MARK: "Run full setup" sequencer state (Part D)
 
-    private enum SetupStepKind: CaseIterable {
+    private enum SetupStepKind: CaseIterable, Hashable {
         case firstmateHome, dotfiles, agentInstructions, software
 
         var title: String {
@@ -165,6 +244,36 @@ final class BootstrapController: NSViewController {
     private var isRunningFullSetup = false
     private let setupStack = NSStackView()
     private let runFullSetupButton = NSButton()
+    private let fullSetupSubtitleLabel = NSTextField(wrappingLabelWithString: "")
+    private let progressTrack = NSView()
+    private let progressFill = NSView()
+    private var progressFillWidthConstraint: NSLayoutConstraint?
+    private let progressTrackWidth: CGFloat = 120
+
+    // MARK: Vertical stepper (cockpit-modern-ui-bootstrap)
+
+    /// The four persistent per-row views the stepper mutates in place on every
+    /// refresh (`refreshStepperVisuals`) - built once in `loadView`, never torn
+    /// down and rebuilt, unlike this file's other dynamic sections. That's a
+    /// deliberate departure from the `clearStack`/`dynamicLabels` convention
+    /// below: those sections rebuild fresh child views into a persistent
+    /// *container* each time, but a stepper row's container itself wraps
+    /// another persistent container (`dotfilesStack`/`agentStack`/
+    /// `softwareStack`) - recreating the wrapper each refresh would repeatedly
+    /// reparent that inner view into a brand-new box, leaving the old box's
+    /// now-dangling layout constraints on the inner view. Mutating in place
+    /// avoids that entirely.
+    private struct StepRowViews {
+        let dot: StepDotView
+        let line: NSView
+        let titleLabel: NSTextField
+        let chipContainer: NSView
+        let chipLabel: NSTextField
+        let detailLabel: NSTextField
+    }
+    private var stepRowViews: [SetupStepKind: StepRowViews] = [:]
+    private var stepContentBackgrounds: [NSView] = []
+    private var homeSectionContent: NSView!
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
@@ -185,29 +294,48 @@ final class BootstrapController: NSViewController {
         setupStack.spacing = 8
         let fullSetupCard = card(icon: "checkmark.seal", title: "Run full setup", content: buildFullSetupSection())
 
-        let homeCard = card(icon: "folder", title: "Firstmate home", content: buildHomeSection())
+        homeSectionContent = buildHomeSection()
 
         dotfilesStack.orientation = .vertical
         dotfilesStack.alignment = .leading
         dotfilesStack.spacing = 10
-        let dotfilesCard = card(icon: "gearshape.2", title: "Dotfiles & machine config", content: dotfilesStack)
 
         agentStack.orientation = .vertical
         agentStack.alignment = .leading
         agentStack.spacing = 10
-        let agentCard = card(icon: "text.badge.checkmark", title: "Global agent instructions", content: agentStack)
 
         softwareStack.orientation = .vertical
         softwareStack.alignment = .leading
         softwareStack.spacing = 10
-        let softwareCard = card(icon: "checklist", title: "Software checklist", content: softwareStack)
+
+        // The four sequenced sections (home, dotfiles, agent instructions,
+        // software) are steps in one connected vertical stepper rather than
+        // four independent cards - see the `StepRowViews` doc comment.
+        let stepperStack = NSStackView()
+        stepperStack.orientation = .vertical
+        stepperStack.alignment = .leading
+        stepperStack.spacing = 20
+        let kinds = SetupStepKind.allCases
+        for (index, kind) in kinds.enumerated() {
+            let content: NSView
+            switch kind {
+            case .firstmateHome: content = homeSectionContent
+            case .dotfiles: content = dotfilesStack
+            case .agentInstructions: content = agentStack
+            case .software: content = softwareStack
+            }
+            let row = buildStepRow(kind: kind, number: index + 1, content: content, isLast: index == kinds.count - 1)
+            stepperStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stepperStack.widthAnchor).isActive = true
+        }
+        let stepperCard = card(icon: "list.number", title: "Setup steps", content: stepperStack)
 
         notSyncedStack.orientation = .vertical
         notSyncedStack.alignment = .leading
         notSyncedStack.spacing = 10
         let notSyncedCard = card(icon: "lock.slash", title: "Not synced here, by design", content: notSyncedStack)
 
-        let stack = NSStackView(views: [header, fullSetupCard, homeCard, dotfilesCard, agentCard, softwareCard, notSyncedCard])
+        let stack = NSStackView(views: [header, fullSetupCard, stepperCard, notSyncedCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -224,10 +352,7 @@ final class BootstrapController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             fullSetupCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            homeCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            dotfilesCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            agentCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            softwareCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            stepperCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             notSyncedCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
@@ -248,6 +373,8 @@ final class BootstrapController: NSViewController {
 
         refreshFromSettings()
         applyTheme()
+        refreshStepperVisuals()
+        rebuildSetupSection()
         // rebuildDynamicSections here shows the "Checking…" loading state
         // immediately; refreshDotfiles's own initial call (viewWillAppear,
         // called right after loadView) then kicks off the real background
@@ -427,27 +554,92 @@ final class BootstrapController: NSViewController {
 
     // MARK: "Run full setup" sequencer (Part D)
 
+    /// One-line status matching the mockup's `run-full-bar` subtitle - "Step 2
+    /// of 4 — applying dotfiles" while running, a stop reason on failure, or
+    /// the idle description otherwise. Derived from `setupSteps`, never
+    /// hardcoded.
+    private var fullSetupSubtitle: String {
+        if let runningIndex = setupSteps.firstIndex(where: {
+            if case .running = $0.status { return true }
+            return false
+        }) {
+            return "Step \(runningIndex + 1) of \(setupSteps.count) \u{2014} \(setupSteps[runningIndex].kind.title)"
+        }
+        if let failedIndex = setupSteps.firstIndex(where: {
+            if case .failed = $0.status { return true }
+            return false
+        }) {
+            return "Stopped at \(setupSteps[failedIndex].kind.title) - see below for the reason."
+        }
+        let allResolved = setupSteps.allSatisfy {
+            if case .done = $0.status { return true }
+            if case .skipped = $0.status { return true }
+            return false
+        }
+        if allResolved && setupSteps.contains(where: { if case .done = $0.status { return true }; return false }) {
+            return "Completed."
+        }
+        return "Runs Firstmate home, dotfiles & machine config, agent instructions, then software in order."
+    }
+
     private func buildFullSetupSection() -> NSView {
-        let desc = NSTextField(wrappingLabelWithString: "Runs the sections below in order for a blank-machine setup: Firstmate home, dotfiles & machine config, agent instructions, then software. A step only skips when it is already satisfied - dotfiles/rebuild always runs, since it is safe to re-run.")
-        desc.font = .systemFont(ofSize: 11)
-        desc.textColor = .secondaryLabelColor
-        desc.preferredMaxLayoutWidth = 520
+        let tile = IconTileView()
+        tile.configure(symbol: "checkmark.seal", tint: .accent)
+
+        let titleLabel = NSTextField(labelWithString: "Run full setup")
+        titleLabel.font = .systemFont(ofSize: 14.5, weight: .bold)
+
+        fullSetupSubtitleLabel.font = .systemFont(ofSize: 11.5)
+        fullSetupSubtitleLabel.preferredMaxLayoutWidth = 320
+        fullSetupSubtitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        fullSetupSubtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let textStack = NSStackView(views: [titleLabel, fullSetupSubtitleLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+
+        progressTrack.wantsLayer = true
+        progressTrack.layer?.cornerRadius = 2.5
+        progressTrack.translatesAutoresizingMaskIntoConstraints = false
+        progressTrack.widthAnchor.constraint(equalToConstant: progressTrackWidth).isActive = true
+        progressTrack.heightAnchor.constraint(equalToConstant: 5).isActive = true
+
+        progressFill.wantsLayer = true
+        progressFill.layer?.cornerRadius = 2.5
+        progressFill.translatesAutoresizingMaskIntoConstraints = false
+        progressTrack.addSubview(progressFill)
+        progressFillWidthConstraint = progressFill.widthAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            progressFill.leadingAnchor.constraint(equalTo: progressTrack.leadingAnchor),
+            progressFill.topAnchor.constraint(equalTo: progressTrack.topAnchor),
+            progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
+            progressFillWidthConstraint!,
+        ])
+        progressTrack.setContentHuggingPriority(.required, for: .horizontal)
 
         runFullSetupButton.title = "Run full setup"
         runFullSetupButton.bezelStyle = .rounded
         runFullSetupButton.target = self
         runFullSetupButton.action = #selector(runFullSetupClicked)
+        runFullSetupButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let section = NSStackView(views: [desc, runFullSetupButton, setupStack])
+        let barRow = NSStackView(views: [tile, textStack, progressTrack, runFullSetupButton])
+        barRow.orientation = .horizontal
+        barRow.alignment = .centerY
+        barRow.spacing = 12
+
+        let section = NSStackView(views: [barRow, setupStack])
         section.orientation = .vertical
         section.alignment = .leading
-        section.spacing = 10
-        desc.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        section.spacing = 12
+        barRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         setupStack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
     }
 
     private func rebuildSetupSection() {
+        guard isViewLoaded else { return }
         clearStack(setupStack)
         for step in setupSteps {
             let row = setupStepRow(step)
@@ -456,6 +648,18 @@ final class BootstrapController: NSViewController {
         }
         runFullSetupButton.title = isRunningFullSetup ? "Running\u{2026}" : "Run full setup"
         runFullSetupButton.isEnabled = !isRunningFullSetup
+        fullSetupSubtitleLabel.stringValue = fullSetupSubtitle
+        fullSetupSubtitleLabel.textColor = HelmTheme.mutedInk(theme)
+
+        let doneCount = setupSteps.filter {
+            if case .done = $0.status { return true }
+            if case .skipped = $0.status { return true }
+            return false
+        }.count
+        let fraction = CGFloat(doneCount) / CGFloat(setupSteps.count)
+        progressFillWidthConstraint?.constant = progressTrackWidth * fraction
+        progressTrack.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.3).cgColor
+        progressFill.layer?.backgroundColor = HelmTheme.nsColor(theme.accentHex).cgColor
     }
 
     private func setupStepRow(_ step: SetupStepState) -> NSView {
@@ -594,6 +798,193 @@ final class BootstrapController: NSViewController {
                 self.updateSetupStep(.software, .failed("One or more installs failed - see the software checklist above for detail."))
             }
             self.finishFullSetup()
+        }
+    }
+
+    // MARK: Vertical stepper (cockpit-modern-ui-bootstrap)
+
+    /// Whether a step is currently configured/satisfied, read live from the
+    /// same state every other part of this page already reads - never a
+    /// hardcoded flag. `nil` means "still checking" (the background refresh
+    /// for that step hasn't returned yet).
+    private func stepIsDone(_ kind: SetupStepKind) -> Bool? {
+        switch kind {
+        case .firstmateHome:
+            return FirstmateHome.homeOk(at: FirstmateHome.root)
+        case .dotfiles:
+            guard !isLoadingDotfiles else { return nil }
+            return dotfilesRepoPath != nil
+        case .agentInstructions:
+            guard !isLoadingDotfiles else { return nil }
+            return !agentItems.isEmpty && agentItems.allSatisfy { $0.status == .linked }
+        case .software:
+            guard !isLoadingSoftware else { return nil }
+            return !softwareRows.contains { $0.status == .notInstalled }
+        }
+    }
+
+    /// The first not-yet-done step is "current"; anything after it is
+    /// "pending"; anything before it is "done". A step still loading counts
+    /// as not-done for ordering purposes, so the stepper never claims a step
+    /// is finished before its check has actually returned.
+    private func stepperDotState(for kind: SetupStepKind) -> StepperDotState {
+        let order = SetupStepKind.allCases
+        guard let targetIndex = order.firstIndex(of: kind) else { return .pending }
+        let doneFlags = order.map { stepIsDone($0) ?? false }
+        if doneFlags[targetIndex] { return .done }
+        let firstNotDone = doneFlags.firstIndex(of: false) ?? order.count
+        return targetIndex == firstNotDone ? .current : .pending
+    }
+
+    private func stepChip(for kind: SetupStepKind) -> (String, String)? {
+        switch kind {
+        case .firstmateHome:
+            return stepIsDone(.firstmateHome) == true ? ("Verified", theme.ansiHex[2]) : ("Not set up", theme.ansiHex[3])
+        case .dotfiles:
+            guard !isLoadingDotfiles else { return nil }
+            guard dotfilesRepoPath != nil else { return ("Not found", theme.ansiHex[3]) }
+            if let state = repoState, !state.dirtyFiles.isEmpty { return ("Uncommitted changes", theme.ansiHex[3]) }
+            return ("Verified", theme.ansiHex[2])
+        case .agentInstructions:
+            guard !isLoadingDotfiles else { return nil }
+            let unresolved = agentItems.filter { $0.status != .linked }.count
+            return unresolved == 0 ? ("Linked", theme.ansiHex[2]) : ("\(unresolved) unresolved", theme.ansiHex[3])
+        case .software:
+            guard !isLoadingSoftware else { return nil }
+            let missing = softwareRows.filter { $0.status == .notInstalled }.count
+            return missing == 0 ? ("All installed", theme.ansiHex[2]) : ("\(missing) missing", theme.ansiHex[3])
+        }
+    }
+
+    private func stepDetail(for kind: SetupStepKind) -> String {
+        switch kind {
+        case .firstmateHome:
+            return FirstmateHome.root.path
+        case .dotfiles:
+            if isLoadingDotfiles { return "Checking ~/.dotfiles\u{2026}" }
+            return dotfilesRepoPath ?? "~/.dotfiles was not found on this machine."
+        case .agentInstructions:
+            return "Verifies the three harness-expected AGENTS.md/CLAUDE.md symlinks resolve to the dotfiles repo."
+        case .software:
+            return "\(softwareRows.count) tracked dependencies across \(DependencyCatalog.categoryOrder.count) categories."
+        }
+    }
+
+    /// Builds one step's row scaffolding once - see the `StepRowViews` doc
+    /// comment for why this isn't torn down and rebuilt like this file's other
+    /// dynamic sections.
+    private func buildStepRow(kind: SetupStepKind, number: Int, content: NSView, isLast: Bool) -> NSView {
+        let dot = StepDotView()
+
+        let line = NSView()
+        line.wantsLayer = true
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.isHidden = isLast
+
+        let leftColumn = NSView()
+        leftColumn.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addSubview(dot)
+        leftColumn.addSubview(line)
+        NSLayoutConstraint.activate([
+            dot.topAnchor.constraint(equalTo: leftColumn.topAnchor),
+            dot.centerXAnchor.constraint(equalTo: leftColumn.centerXAnchor),
+            leftColumn.widthAnchor.constraint(equalTo: dot.widthAnchor),
+            line.widthAnchor.constraint(equalToConstant: 2),
+            line.centerXAnchor.constraint(equalTo: dot.centerXAnchor),
+            line.topAnchor.constraint(equalTo: dot.bottomAnchor, constant: 4),
+            line.bottomAnchor.constraint(equalTo: leftColumn.bottomAnchor),
+        ])
+
+        let titleLabel = NSTextField(labelWithString: kind.title)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+
+        let chipLabel = NSTextField(labelWithString: "")
+        chipLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        chipLabel.translatesAutoresizingMaskIntoConstraints = false
+        let chipContainer = NSView()
+        chipContainer.wantsLayer = true
+        chipContainer.layer?.cornerRadius = 8
+        chipContainer.translatesAutoresizingMaskIntoConstraints = false
+        chipContainer.addSubview(chipLabel)
+        NSLayoutConstraint.activate([
+            chipLabel.leadingAnchor.constraint(equalTo: chipContainer.leadingAnchor, constant: 7),
+            chipLabel.trailingAnchor.constraint(equalTo: chipContainer.trailingAnchor, constant: -7),
+            chipLabel.topAnchor.constraint(equalTo: chipContainer.topAnchor, constant: 2),
+            chipLabel.bottomAnchor.constraint(equalTo: chipContainer.bottomAnchor, constant: -2),
+        ])
+        chipContainer.setContentHuggingPriority(.required, for: .horizontal)
+        chipContainer.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let titleRow = NSStackView(views: [titleLabel, chipContainer])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 8
+
+        let detailLabel = NSTextField(wrappingLabelWithString: "")
+        detailLabel.font = .systemFont(ofSize: 11.5)
+        detailLabel.preferredMaxLayoutWidth = 500
+
+        let contentBox = stepContentBox(content)
+
+        let bodyStack = NSStackView(views: [titleRow, detailLabel, contentBox])
+        bodyStack.orientation = .vertical
+        bodyStack.alignment = .leading
+        bodyStack.spacing = 8
+        bodyStack.setCustomSpacing(2, after: titleRow)
+        titleRow.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
+        detailLabel.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
+        contentBox.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
+
+        let row = NSStackView(views: [leftColumn, bodyStack])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 14
+        leftColumn.heightAnchor.constraint(equalTo: bodyStack.heightAnchor).isActive = true
+
+        stepRowViews[kind] = StepRowViews(dot: dot, line: line, titleLabel: titleLabel, chipContainer: chipContainer, chipLabel: chipLabel, detailLabel: detailLabel)
+        return row
+    }
+
+    /// Wraps a step's real content (the same field/button/table views the old
+    /// standalone cards used) in a nested, slightly recessed panel - the
+    /// mockup's `.step-content` box.
+    private func stepContentBox(_ content: NSView) -> NSView {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let box = NSView()
+        box.wantsLayer = true
+        box.layer?.cornerRadius = 10
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
+            content.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+        ])
+        stepContentBackgrounds.append(box)
+        return box
+    }
+
+    /// Re-derives every step's dot/chip/detail from live state - called
+    /// whenever any of the underlying checks change (see call sites in
+    /// `rebuildSoftwareSection`/theme changes) or the active theme changes.
+    private func refreshStepperVisuals() {
+        for (index, kind) in SetupStepKind.allCases.enumerated() {
+            guard let rowViews = stepRowViews[kind] else { continue }
+            let state = stepperDotState(for: kind)
+            rowViews.dot.configure(number: index + 1, state: state, theme: theme)
+            rowViews.titleLabel.textColor = state == .pending ? HelmTheme.mutedInk(theme) : HelmTheme.nsColor(theme.chromeInkHex)
+            rowViews.detailLabel.stringValue = stepDetail(for: kind)
+            rowViews.detailLabel.textColor = HelmTheme.mutedInk(theme)
+            rowViews.line.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.6).cgColor
+            if let (text, colorHex) = stepChip(for: kind) {
+                rowViews.chipContainer.isHidden = false
+                rowViews.chipLabel.stringValue = text
+                rowViews.chipLabel.textColor = HelmTheme.nsColor(colorHex)
+                rowViews.chipContainer.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
+            } else {
+                rowViews.chipContainer.isHidden = true
+            }
         }
     }
 
@@ -908,6 +1299,13 @@ final class BootstrapController: NSViewController {
     }
 
     private func rebuildSoftwareSection() {
+        // Also refreshes the stepper's dot/chip state, since this is the one
+        // rebuild function guaranteed to run on every path that can change
+        // whether a step is "done" (initial check, install, and the shared
+        // `rebuildDynamicSections` sweep that also covers dotfiles/agent/theme
+        // changes) - see the `StepRowViews` doc comment for why the stepper
+        // itself isn't rebuilt from scratch here.
+        defer { refreshStepperVisuals() }
         clearStack(softwareStack)
         if isLoadingSoftware {
             let content = loadingLabel("Checking installed tools\u{2026}")
@@ -1286,6 +1684,11 @@ final class BootstrapController: NSViewController {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
             v.layer?.borderWidth = 1
             v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        }
+        for v in stepContentBackgrounds {
+            v.layer?.backgroundColor = line.withAlphaComponent(0.08).cgColor
+            v.layer?.borderWidth = 1
+            v.layer?.borderColor = line.withAlphaComponent(0.3).cgColor
         }
     }
 }
