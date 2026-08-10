@@ -36,7 +36,21 @@ final class SettingsController: NSViewController {
     /// direct reference to the console.
     var onFontSizeStep: ((CGFloat) -> Void)?
 
+    /// The Security card's "Enable" action, requiring a `sudo` prompt - wired
+    /// by the app delegate to the same `AppShellController.runInConsole`
+    /// Bootstrap's own provisioning actions use (cockpit-settings-sudo-
+    /// touchid), never a silent background process.
+    var onRunCommand: ((String, String) -> Void)?
+
+    /// Same wiring as `onRunCommand`, but with a completion callback so the
+    /// row can re-check status once the Console tab's `av harden sudo`
+    /// actually exits, rather than on a fixed timer.
+    var onRunCommandTracked: ((String, String, @escaping (Bool) -> Void) -> Void)?
+
     private var theme: HelmTheme = ThemeManager.shared.theme
+
+    private var sudoTouchIDStatus: SudoTouchIDStatus = .checking
+    private var isHardeningSudo = false
 
     // Header (Fix 1, cockpit-native-settings-compact): the topbar already
     // shows "Settings" as the destination title, so this only carries the
@@ -91,8 +105,9 @@ final class SettingsController: NSViewController {
         let connection = card(icon: "network", tint: .info, title: "Connection", subtitle: "Mirror target and working directory", content: buildConnectionSection())
         let appearance = card(icon: "paintpalette", tint: .violet, title: "Appearance", subtitle: "8 Helm themes, light and dark", content: buildAppearanceSection())
         let terminal = card(icon: "terminal", tint: .warn, title: "Terminal", subtitle: "Font size and behavior", content: buildTerminalSection())
+        let security = card(icon: "lock.shield", tint: .violet, title: "Security", subtitle: "System-level convenience toggles", content: buildSecuritySection())
 
-        let stack = NSStackView(views: [header, connection, appearance, terminal])
+        let stack = NSStackView(views: [header, connection, appearance, terminal, security])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -111,6 +126,7 @@ final class SettingsController: NSViewController {
             connection.widthAnchor.constraint(equalTo: stack.widthAnchor),
             appearance.widthAnchor.constraint(equalTo: stack.widthAnchor),
             terminal.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            security.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         let scroll = NSScrollView()
@@ -134,8 +150,18 @@ final class SettingsController: NSViewController {
     override func viewWillAppear() {
         super.viewWillAppear()
         refreshFromSettings()
+        if !hasCheckedSudoTouchIDOnce {
+            hasCheckedSudoTouchIDOnce = true
+            checkSudoTouchID()
+        }
         scrollToTop()
     }
+
+    /// Guards the initial background PAM-file check to once per app launch
+    /// (re-checked explicitly after the Enable action completes) rather than
+    /// on every visit to Settings - same convention as Bootstrap's
+    /// `hasCheckedGhHardeningOnce`.
+    private var hasCheckedSudoTouchIDOnce = false
 
     /// Fix 4: the document view (`content`, a `FlippedView`) puts y=0 at its
     /// top, but a freshly laid-out `NSScrollView` can still leave the clip
@@ -608,6 +634,87 @@ final class SettingsController: NSViewController {
             row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         }
         return section
+    }
+
+    // MARK: Security
+
+    private let securityStack = NSStackView()
+
+    private func buildSecuritySection() -> NSView {
+        securityStack.orientation = .vertical
+        securityStack.alignment = .leading
+        securityStack.spacing = 12
+        securityStack.translatesAutoresizingMaskIntoConstraints = false
+        rebuildSecuritySection()
+        return securityStack
+    }
+
+    /// Rebuilt (not just re-themed) on every status change, since the
+    /// trailing control differs by status (a pill, a button, or plain text) -
+    /// same convention as Bootstrap's `ghAuthRow`. `descRow` registers a
+    /// fresh `HoverHighlightView` into the shared `hoverRows` re-theming list
+    /// on every call, so the just-removed row's now-orphaned entry is pruned
+    /// first rather than left to accumulate.
+    private func rebuildSecuritySection() {
+        for v in securityStack.arrangedSubviews {
+            securityStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        hoverRows.removeAll { $0.superview == nil }
+        let row = sudoTouchIDRow()
+        securityStack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: securityStack.widthAnchor).isActive = true
+        applyTheme()
+    }
+
+    private func sudoTouchIDRow() -> NSView {
+        var desc = "Use your fingerprint instead of typing your password at a terminal prompt."
+        let trailing: NSView
+        switch sudoTouchIDStatus {
+        case .checking:
+            trailing = rowLabel("Checking\u{2026}")
+        case .enabled:
+            trailing = pillView(text: "Enabled", colorHex: theme.ansiHex[2])
+        case .notEnabled:
+            let button = NSButton(title: isHardeningSudo ? "Enabling\u{2026}" : "Enable", target: self, action: #selector(enableSudoTouchIDClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !isHardeningSudo
+            trailing = button
+        case .pamNotConfigured:
+            desc += " Not available on this Mac - /etc/pam.d/sudo doesn't include sudo_local."
+            trailing = rowLabel("Unavailable")
+        case .checkFailed(let reason):
+            desc += " Could not check status: \(reason)."
+            trailing = rowLabel("Unknown")
+        }
+        return descRow(title: "Touch ID for sudo", desc: desc, trailing: trailing)
+    }
+
+    private func checkSudoTouchID() {
+        sudoTouchIDStatus = .checking
+        rebuildSecuritySection()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = SudoTouchIDSource.checkStatus()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.sudoTouchIDStatus = status
+                self.rebuildSecuritySection()
+            }
+        }
+    }
+
+    @objc private func enableSudoTouchIDClicked() {
+        guard !isHardeningSudo, let onRunCommandTracked else {
+            onRunCommand?("av harden sudo", "sudo av harden sudo")
+            return
+        }
+        isHardeningSudo = true
+        rebuildSecuritySection()
+        onRunCommandTracked("av harden sudo", "sudo av harden sudo") { [weak self] _ in
+            guard let self else { return }
+            self.isHardeningSudo = false
+            self.checkSudoTouchID()
+        }
     }
 
     @objc private func fontPresetClicked(_ sender: NSButton) {
