@@ -752,7 +752,7 @@ final class BootstrapController: NSViewController {
             let command: String
             if let repoPath = self.dotfilesRepoPath {
                 label = "rebuild.sh"
-                command = "cd \"\(repoPath)\" && ./rebuild.sh"
+                command = Self.rebuildCommand(repoPath: repoPath)
             } else {
                 let raw = self.clonePathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let destination = raw.isEmpty ? DotfilesSource.defaultClonePath : raw
@@ -844,6 +844,9 @@ final class BootstrapController: NSViewController {
             guard !isLoadingDotfiles else { return nil }
             guard dotfilesRepoPath != nil else { return ("Not found", theme.ansiHex[3]) }
             if let state = repoState, !state.dirtyFiles.isEmpty { return ("Uncommitted changes", theme.ansiHex[3]) }
+            if let state = repoState, let behind = state.commitsBehindOrigin, behind > 0 {
+                return ("\(behind) behind origin", theme.ansiHex[3])
+            }
             return ("Verified", theme.ansiHex[2])
         case .agentInstructions:
             guard !isLoadingDotfiles else { return nil }
@@ -1095,6 +1098,10 @@ final class BootstrapController: NSViewController {
             rows.append(metaLabel)
         }
 
+        if let behind = state.commitsBehindOrigin, behind > 0 {
+            rows.append(buildBehindOriginBanner(behind))
+        }
+
         if !state.dirtyFiles.isEmpty {
             rows.append(buildDirtyBanner(state.dirtyFiles))
         }
@@ -1119,6 +1126,38 @@ final class BootstrapController: NSViewController {
         section.setCustomSpacing(14, after: rebuildButton)
         for row in rows { row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true }
         return section
+    }
+
+    private func buildBehindOriginBanner(_ count: Int) -> NSView {
+        let title = NSTextField(labelWithString: "\(count) commit\(count == 1 ? "" : "s") behind origin")
+        title.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        title.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+
+        let body = NSTextField(wrappingLabelWithString: "Run rebuild.sh will pull these from GitHub first.")
+        body.font = .systemFont(ofSize: 10.5, weight: .regular)
+        body.textColor = HelmTheme.mutedInk(theme)
+        body.preferredMaxLayoutWidth = 500
+
+        let inner = NSStackView(views: [title, body])
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 4
+        inner.translatesAutoresizingMaskIntoConstraints = false
+
+        let banner = NSView()
+        banner.wantsLayer = true
+        banner.layer?.cornerRadius = 9
+        banner.layer?.backgroundColor = HelmTheme.nsColor(theme.ansiHex[3]).withAlphaComponent(0.12).cgColor
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
+            inner.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -10),
+            inner.topAnchor.constraint(equalTo: banner.topAnchor, constant: 8),
+            inner.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -8),
+        ])
+        dynamicLabels.append(contentsOf: [title, body])
+        return banner
     }
 
     private func buildDirtyBanner(_ files: [String]) -> NSView {
@@ -1634,12 +1673,21 @@ final class BootstrapController: NSViewController {
 
     @objc private func runRebuildClicked() {
         guard let repoPath = dotfilesRepoPath else { return }
-        onRunCommand?("rebuild.sh", "cd \"\(repoPath)\" && ./rebuild.sh")
+        onRunCommand?("rebuild.sh", Self.rebuildCommand(repoPath: repoPath))
+    }
+
+    /// Fetches and fast-forwards from `origin` before applying - never a
+    /// forced overwrite. `git pull --ff-only` aborts on its own, with a real,
+    /// visible error in the Console tab, if the local checkout has diverged
+    /// (uncommitted changes or a genuine merge conflict) - `rebuild.sh` never
+    /// runs against a repo state that didn't cleanly update from GitHub.
+    private static func rebuildCommand(repoPath: String) -> String {
+        "cd \"\(repoPath)\" && git pull --ff-only && ./rebuild.sh"
     }
 
     @objc private func createLinkClicked() {
         guard let repoPath = dotfilesRepoPath else { return }
-        onRunCommand?("rebuild.sh", "cd \"\(repoPath)\" && ./rebuild.sh")
+        onRunCommand?("rebuild.sh", Self.rebuildCommand(repoPath: repoPath))
     }
 
     @objc private func saveUsernameClicked() {

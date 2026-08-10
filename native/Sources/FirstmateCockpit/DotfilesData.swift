@@ -42,6 +42,11 @@ struct DotfilesRepoState {
     /// The live `user = "..."` value parsed out of `flake.nix`, or `nil` if
     /// the file is missing or the line couldn't be found.
     let flakeUsername: String?
+    /// How many commits `origin/<branch>` has that `HEAD` doesn't, computed
+    /// via a real `git fetch` against GitHub (never trusting stale local
+    /// remote-tracking refs). `nil` when unknown - no network, no remote, or
+    /// the fetch failed - never coerced to `0`.
+    let commitsBehindOrigin: Int?
 }
 
 enum ManagedItemStatus: Equatable {
@@ -71,7 +76,7 @@ struct AgentInstructionsItem {
 enum DotfilesSource {
 
     static let defaultClonePath = "~/manjesh/dotfiles"
-    static let cloneURL = "https://github.com/manjesh-raj/dotfiles"
+    static let cloneURL = "https://github.com/manjesh-raj/manjesh-config"
     static let dotfilesMarker = "~/.dotfiles"
 
     /// The paths `home.nix` declares as a plain `home.file` -> repo symlink
@@ -106,13 +111,30 @@ enum DotfilesSource {
         let branch = run("/usr/bin/git", ["-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"]).stdout
         let statusOut = run("/usr/bin/git", ["-C", repoPath, "status", "--short"]).stdout
         let dirty = statusOut.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        let branchName = branch.isEmpty ? nil : branch
         return DotfilesRepoState(
             repoPath: repoPath,
             remoteURL: remote.isEmpty ? nil : remote,
-            branch: branch.isEmpty ? nil : branch,
+            branch: branchName,
             dirtyFiles: dirty,
-            flakeUsername: parseFlakeUsername(repoPath: repoPath)
+            flakeUsername: parseFlakeUsername(repoPath: repoPath),
+            commitsBehindOrigin: commitsBehindOrigin(repoPath: repoPath, branch: branchName)
         )
+    }
+
+    /// Fetches `origin/<branch>` for real (updating the local remote-tracking
+    /// ref, never the working tree or local branch) and counts how many
+    /// commits it has that `HEAD` doesn't. Returns `nil` on any failure - no
+    /// network, no `origin`, no such branch on the remote - rather than
+    /// trusting whatever stale remote-tracking ref happened to already be on
+    /// disk.
+    private static func commitsBehindOrigin(repoPath: String, branch: String?) -> Int? {
+        guard let branch else { return nil }
+        let fetch = run("/usr/bin/git", ["-C", repoPath, "fetch", "origin", branch])
+        guard fetch.status == 0 else { return nil }
+        let countResult = run("/usr/bin/git", ["-C", repoPath, "rev-list", "--count", "HEAD..origin/\(branch)"])
+        guard countResult.status == 0, let count = Int(countResult.stdout) else { return nil }
+        return count
     }
 
     /// Parses the live `user = "..."` line out of `<repoPath>/flake.nix` -
