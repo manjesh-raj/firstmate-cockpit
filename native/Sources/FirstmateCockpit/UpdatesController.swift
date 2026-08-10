@@ -48,8 +48,7 @@ private final class UpdateRow {
     var isLogExpanded = false
     var isBusy = false
 
-    let iconTile = NSView()
-    let iconView = NSImageView()
+    let iconTile = IconTileView()
     let nameLabel = NSTextField(labelWithString: "")
     let detailLabel = NSTextField(labelWithString: "")
     let pill = NSView()
@@ -65,7 +64,7 @@ private final class UpdateRow {
     let detailsButton = NSButton()
     let logField = NSTextField(wrappingLabelWithString: "")
     let logContainer = NSView()
-    let rowContainer = NSView()
+    let rowContainer = HoverHighlightView()
     /// Swapped between [pill, checkButton, updateButton] and
     /// [spinner, progressLabel] depending on `isBusy`.
     let trailingStack = NSStackView()
@@ -92,6 +91,8 @@ final class UpdatesController: NSViewController {
         let semantic: StatSemantic
     }
 
+    private enum ToolFilterMode { case all, needsAttention }
+
     private var rows: [UpdateRow] = DependencyCatalog.items.map(UpdateRow.init)
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var scrollView: NSScrollView!
@@ -100,6 +101,16 @@ final class UpdatesController: NSViewController {
     private var categorySections: [CategorySection] = []
     private var statTiles: [StatTile] = []
     private let searchField = NSSearchField()
+    private var filterMode: ToolFilterMode = .all
+    /// The two "All / Needs attention" segments (mockup's `.segmented`),
+    /// built as plain clickable views rather than `NSSegmentedControl` to
+    /// match how this codebase already builds custom pill controls
+    /// (`checkAllPill`, `SettingsController`'s theme/session cards).
+    private let allSegment = NSView()
+    private let allSegmentLabel = NSTextField(labelWithString: "All")
+    private let needsAttentionSegment = NSView()
+    private let needsAttentionSegmentLabel = NSTextField(labelWithString: "Needs Attention")
+    private let segmentedBackground = NSView()
     /// Set by `AppShellController` (mirrors `BootstrapController.onRunCommand`'s
     /// closure-injection pattern) so a `.notInstalled` row's action can select
     /// the Bootstrap rail destination without this controller knowing
@@ -126,8 +137,8 @@ final class UpdatesController: NSViewController {
 
         let header = buildHeader()
         let statsRow = buildStatsRow()
-        let searchRow = buildSearchRow()
-        var sections: [NSView] = [header, statsRow, searchRow]
+        let toolbarRow = buildToolbarRow()
+        var sections: [NSView] = [header, statsRow, toolbarRow]
         for category in DependencyCatalog.categoryOrder {
             let categoryRows = rows.filter { $0.item.category == category }
             guard !categoryRows.isEmpty else { continue }
@@ -141,7 +152,7 @@ final class UpdatesController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setCustomSpacing(18, after: header)
         stack.setCustomSpacing(18, after: statsRow)
-        stack.setCustomSpacing(18, after: searchRow)
+        stack.setCustomSpacing(18, after: toolbarRow)
 
         let content = FlippedView()
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -172,7 +183,7 @@ final class UpdatesController: NSViewController {
         scrollView = scroll
 
         for row in rows { render(row) }
-        applyFilter("")
+        applyFilter()
         applyTheme()
         renderStats()
     }
@@ -207,6 +218,22 @@ final class UpdatesController: NSViewController {
 
     private let subtitleLabel = NSTextField(labelWithString: "Every tool in the fleet, checked against its real source - npm, Homebrew, herdr, no-mistakes, and firstmate's own upstream.")
 
+    private func buildHeader() -> NSView {
+        let title = NSTextField(labelWithString: "Updates")
+        title.font = .systemFont(ofSize: 20, weight: .semibold)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.preferredMaxLayoutWidth = 560
+
+        let row = NSStackView(views: [title, subtitleLabel])
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 4
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    // MARK: Toolbar (segmented filter + search + Refresh)
+
     /// A prominent, labeled, accent-colored pill (icon + "Refresh") - the
     /// captain's mockup showed this as the page's clear primary action, not a
     /// bare icon glyph, superseding cockpit-native-updates-polish's earlier
@@ -221,11 +248,56 @@ final class UpdatesController: NSViewController {
     private let checkAllProgressLabel = NSTextField(labelWithString: "")
     private var isCheckingAll = false
 
-    private func buildHeader() -> NSView {
-        let title = NSTextField(labelWithString: "Updates")
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
-        subtitleLabel.font = .systemFont(ofSize: 12)
-        subtitleLabel.preferredMaxLayoutWidth = 560
+    /// The mockup's `.toolbar-row`: segmented "All / Needs attention" filter,
+    /// the live search field, and the Refresh action (swapped for a progress
+    /// bar+label while a check-all is running) pinned to the trailing edge.
+    private func buildToolbarRow() -> NSView {
+        allSegmentLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        needsAttentionSegmentLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        for (segment, label, mode): (NSView, NSTextField, ToolFilterMode) in [
+            (allSegment, allSegmentLabel, .all),
+            (needsAttentionSegment, needsAttentionSegmentLabel, .needsAttention),
+        ] {
+            segment.wantsLayer = true
+            segment.layer?.cornerRadius = 6
+            segment.translatesAutoresizingMaskIntoConstraints = false
+            label.translatesAutoresizingMaskIntoConstraints = false
+            segment.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: segment.leadingAnchor, constant: 12),
+                label.trailingAnchor.constraint(equalTo: segment.trailingAnchor, constant: -12),
+                label.topAnchor.constraint(equalTo: segment.topAnchor, constant: 5),
+                label.bottomAnchor.constraint(equalTo: segment.bottomAnchor, constant: -5),
+            ])
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(segmentTapped(_:)))
+            segment.addGestureRecognizer(recognizer)
+            segment.identifier = NSUserInterfaceItemIdentifier(mode == .all ? "all" : "needsAttention")
+        }
+
+        let segmentsStack = NSStackView(views: [allSegment, needsAttentionSegment])
+        segmentsStack.orientation = .horizontal
+        segmentsStack.spacing = 2
+        segmentsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        segmentedBackground.wantsLayer = true
+        segmentedBackground.layer?.cornerRadius = 8
+        segmentedBackground.translatesAutoresizingMaskIntoConstraints = false
+        segmentedBackground.addSubview(segmentsStack)
+        NSLayoutConstraint.activate([
+            segmentsStack.leadingAnchor.constraint(equalTo: segmentedBackground.leadingAnchor, constant: 2),
+            segmentsStack.trailingAnchor.constraint(equalTo: segmentedBackground.trailingAnchor, constant: -2),
+            segmentsStack.topAnchor.constraint(equalTo: segmentedBackground.topAnchor, constant: 2),
+            segmentsStack.bottomAnchor.constraint(equalTo: segmentedBackground.bottomAnchor, constant: -2),
+        ])
+        segmentedBackground.setContentHuggingPriority(.required, for: .horizontal)
+        segmentedBackground.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        searchField.placeholderString = "Filter tools\u{2026}"
+        searchField.delegate = self
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        searchField.setContentHuggingPriority(.required, for: .horizontal)
+        searchField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         checkAllIcon.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
@@ -240,15 +312,15 @@ final class UpdatesController: NSViewController {
         pillContent.translatesAutoresizingMaskIntoConstraints = false
 
         checkAllPill.wantsLayer = true
-        checkAllPill.layer?.cornerRadius = 10
+        checkAllPill.layer?.cornerRadius = 8
         checkAllPill.translatesAutoresizingMaskIntoConstraints = false
         checkAllPill.toolTip = "Check all tools for updates"
         checkAllPill.setAccessibilityRole(.button)
         checkAllPill.setAccessibilityLabel("Refresh")
         checkAllPill.addSubview(pillContent)
         NSLayoutConstraint.activate([
-            pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 14),
-            pillContent.trailingAnchor.constraint(equalTo: checkAllPill.trailingAnchor, constant: -14),
+            pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 13),
+            pillContent.trailingAnchor.constraint(equalTo: checkAllPill.trailingAnchor, constant: -13),
             pillContent.topAnchor.constraint(equalTo: checkAllPill.topAnchor, constant: 7),
             pillContent.bottomAnchor.constraint(equalTo: checkAllPill.bottomAnchor, constant: -7),
         ])
@@ -267,30 +339,46 @@ final class UpdatesController: NSViewController {
         checkAllProgressLabel.font = .systemFont(ofSize: 11, weight: .medium)
         checkAllProgressLabel.isHidden = true
         checkAllProgressLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let textStack = NSStackView(views: [title, subtitleLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 4
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let trailing = NSStackView(views: [checkAllProgressLabel, checkAllProgressBar, checkAllPill])
-        trailing.orientation = .horizontal
-        trailing.alignment = .centerY
-        trailing.spacing = 8
-        trailing.translatesAutoresizingMaskIntoConstraints = false
         for v: NSView in [checkAllProgressLabel, checkAllProgressBar] {
             v.setContentHuggingPriority(.required, for: .horizontal)
             v.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
 
-        let row = NSStackView(views: [textStack, trailing])
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [
+            segmentedBackground, searchField, spacer,
+            checkAllProgressLabel, checkAllProgressBar, checkAllPill,
+        ])
         row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 12
-        row.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 8)
+        row.alignment = .centerY
+        row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
+        updateSegmentedAppearance()
         return row
+    }
+
+    @objc private func segmentTapped(_ sender: NSClickGestureRecognizer) {
+        guard let id = sender.view?.identifier?.rawValue else { return }
+        filterMode = id == "needsAttention" ? .needsAttention : .all
+        updateSegmentedAppearance()
+        applyFilter()
+    }
+
+    private func updateSegmentedAppearance() {
+        let activeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let muted = HelmTheme.mutedInk(theme)
+        for (segment, label, mode): (NSView, NSTextField, ToolFilterMode) in [
+            (allSegment, allSegmentLabel, .all),
+            (needsAttentionSegment, needsAttentionSegmentLabel, .needsAttention),
+        ] {
+            let isActive = filterMode == mode
+            segment.layer?.backgroundColor = isActive ? activeBg.cgColor : NSColor.clear.cgColor
+            label.textColor = isActive ? ink : muted
+        }
     }
 
     @objc private func checkAllTapped() { checkAll() }
@@ -393,15 +481,15 @@ final class UpdatesController: NSViewController {
 
         let background = NSView()
         background.wantsLayer = true
-        background.layer?.cornerRadius = 13
+        background.layer?.cornerRadius = 10
         background.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
-            background.heightAnchor.constraint(equalToConstant: 66),
+            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 15),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -15),
+            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 13),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -13),
+            background.heightAnchor.constraint(equalToConstant: 60),
         ])
         cardBackgrounds.append(background)
         statTitleLabels.append(titleLabel)
@@ -434,25 +522,24 @@ final class UpdatesController: NSViewController {
         return "\(days)d ago"
     }
 
-    // MARK: Search
+    // MARK: Filtering
 
-    private func buildSearchRow() -> NSView {
-        searchField.placeholderString = "Search tools\u{2026}"
-        searchField.delegate = self
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        return searchField
-    }
-
-    /// Hides rows whose name doesn't match `query` (case-insensitive
-    /// substring), collapses the separator that would otherwise sit next to
-    /// a hidden row, and hides a whole category card once none of its rows
-    /// match - an empty query shows everything.
-    private func applyFilter(_ query: String) {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    /// Hides rows whose name doesn't match the live search field (case-
+    /// insensitive substring) or, when the "Needs attention" segment is
+    /// active, whose status isn't one that already surfaces an action
+    /// (`DependencyStatus.showsUpdateButton` - the same set the stats strip's
+    /// "Updates Available" tile counts) - collapses the separator that would
+    /// otherwise sit next to a hidden row, and hides a whole category card
+    /// once none of its rows match. An empty query with "All" selected shows
+    /// everything.
+    private func applyFilter() {
+        let q = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for section in categorySections {
             var anyVisible = false
             for row in section.rows {
-                let matches = q.isEmpty || row.item.name.lowercased().contains(q)
+                let matchesQuery = q.isEmpty || row.item.name.lowercased().contains(q)
+                let matchesMode = filterMode == .all || row.status.showsUpdateButton
+                let matches = matchesQuery && matchesMode
                 row.rowContainer.isHidden = !matches
                 if matches { anyVisible = true }
             }
@@ -476,16 +563,17 @@ final class UpdatesController: NSViewController {
         }
     }
 
-    /// A per-category tint for each row's icon tile background (mirrors the
-    /// mockup's colored emoji squares) - drawn from the theme's own ANSI
-    /// slots/accent rather than a fixed hex, so it stays correct across all
-    /// 8 Helm palettes.
-    private func tintHex(for category: String) -> String {
+    /// A per-category tint for each row's `IconTileView` (mirrors the
+    /// mockup's blue/red/violet tool-row tiles) - resolved through the shared
+    /// `HelmTint` enum (phase 1's `HelmUIComponents.swift`) rather than a raw
+    /// hex, so it stays correct across all 8 Helm palettes.
+    private func categoryTint(for category: String) -> HelmTint {
         switch category {
-        case "npm packages": return theme.ansiHex[4] // blue
-        case "Homebrew": return theme.ansiHex[3]      // amber
-        case "Other tools": return theme.ansiHex[6]   // cyan
-        default: return theme.accentHex               // Firstmate
+        case "npm packages": return .info
+        case "Homebrew": return .warn
+        case "Other tools": return .neutral
+        case "Security": return .violet
+        default: return .accent // Firstmate
         }
     }
 
@@ -556,22 +644,9 @@ final class UpdatesController: NSViewController {
     // MARK: Row
 
     private func buildRow(_ row: UpdateRow) -> NSView {
-        row.iconView.image = NSImage(systemSymbolName: row.item.kind.symbol, accessibilityDescription: row.item.name)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
-        row.iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        // A rounded-square, category-tinted tile behind the glyph - the
-        // native equivalent of the mockup's colored emoji squares.
-        row.iconTile.wantsLayer = true
-        row.iconTile.layer?.cornerRadius = 9
-        row.iconTile.translatesAutoresizingMaskIntoConstraints = false
-        row.iconTile.addSubview(row.iconView)
-        NSLayoutConstraint.activate([
-            row.iconView.centerXAnchor.constraint(equalTo: row.iconTile.centerXAnchor),
-            row.iconView.centerYAnchor.constraint(equalTo: row.iconTile.centerYAnchor),
-            row.iconTile.widthAnchor.constraint(equalToConstant: 34),
-            row.iconTile.heightAnchor.constraint(equalToConstant: 34),
-        ])
+        // Shared icon-in-tinted-tile view (phase 1's `HelmUIComponents.swift`)
+        // - the native equivalent of the mockup's colored tool-row squares.
+        row.iconTile.configure(symbol: row.item.kind.symbol, tint: categoryTint(for: row.item.category), pointSize: 14)
         row.iconTile.setContentHuggingPriority(.required, for: .horizontal)
         row.iconTile.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -698,8 +773,7 @@ final class UpdatesController: NSViewController {
         topRow.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         row.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
 
-        row.rowContainer.wantsLayer = true
-        row.rowContainer.layer?.cornerRadius = 8
+        row.rowContainer.cornerRadius = 8
         row.rowContainer.translatesAutoresizingMaskIntoConstraints = false
         row.rowContainer.addSubview(column)
         NSLayoutConstraint.activate([
@@ -909,6 +983,9 @@ final class UpdatesController: NSViewController {
 
         applyThemeToRow(row)
         renderStats()
+        // A status change can move this row in/out of the "Needs attention"
+        // set - keep the current filter's visible rows in sync.
+        if !categorySections.isEmpty { applyFilter() }
     }
 
     private func pillVisuals(_ status: DependencyStatus) -> (String, String) {
@@ -938,6 +1015,10 @@ final class UpdatesController: NSViewController {
         checkAllIcon.contentTintColor = onAccent
         checkAllLabel.textColor = onAccent
         checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
+        segmentedBackground.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
+        segmentedBackground.layer?.borderWidth = 1
+        segmentedBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        updateSegmentedAppearance()
         for v in cardBackgrounds {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
             v.layer?.borderWidth = 1
@@ -966,9 +1047,8 @@ final class UpdatesController: NSViewController {
     private func applyThemeToRow(_ row: UpdateRow) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
-        let tint = HelmTheme.nsColor(tintHex(for: row.item.category))
-        row.iconTile.layer?.backgroundColor = tint.withAlphaComponent(0.16).cgColor
-        row.iconView.contentTintColor = tint
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+        row.iconTile.applyTheme(theme)
         row.nameLabel.textColor = ink
         row.detailLabel.textColor = row.status == .checkFailed || row.status == .updateFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
         row.progressLabel.textColor = muted
@@ -983,12 +1063,16 @@ final class UpdatesController: NSViewController {
         row.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
         row.logField.textColor = muted
         row.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        row.rowContainer.layer?.backgroundColor = .clear
+        // Shared hover helper (phase 1): a subtle highlight on mouse
+        // enter/exit, both colors theme-derived - mirrors
+        // `SettingsController.descRow`'s identical `HoverHighlightView` use.
+        row.rowContainer.normalColor = .clear
+        row.rowContainer.hoverColor = line.withAlphaComponent(0.18)
     }
 }
 
 extension UpdatesController: NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
-        applyFilter(searchField.stringValue)
+        applyFilter()
     }
 }
