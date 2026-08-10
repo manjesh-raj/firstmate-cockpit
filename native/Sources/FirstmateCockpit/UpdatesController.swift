@@ -219,17 +219,10 @@ final class UpdatesController: NSViewController {
     private let subtitleLabel = NSTextField(labelWithString: "Every tool in the fleet, checked against its real source - npm, Homebrew, herdr, no-mistakes, and firstmate's own upstream.")
 
     private func buildHeader() -> NSView {
-        let title = NSTextField(labelWithString: "Updates")
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.preferredMaxLayoutWidth = 560
-
-        let row = NSStackView(views: [title, subtitleLabel])
-        row.orientation = .vertical
-        row.alignment = .leading
-        row.spacing = 4
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        return subtitleLabel
     }
 
     // MARK: Toolbar (segmented filter + search + Refresh)
@@ -489,7 +482,6 @@ final class UpdatesController: NSViewController {
             stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -15),
             stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 13),
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -13),
-            background.heightAnchor.constraint(equalToConstant: 60),
         ])
         cardBackgrounds.append(background)
         statTitleLabels.append(titleLabel)
