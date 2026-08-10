@@ -63,6 +63,14 @@ final class SettingsController: NSViewController {
     /// their section refreshes.
     private var cardBackgroundViews: [NSView] = []
 
+    /// Card-header icon tiles (`IconTileView`) - re-tinted on every theme
+    /// change alongside `cardBackgroundViews`.
+    private var cardIconTiles: [IconTileView] = []
+
+    /// Row containers using the shared `HoverHighlightView` hover helper -
+    /// re-colored on every theme change alongside `cardBackgroundViews`.
+    private var hoverRows: [HoverHighlightView] = []
+
     /// Fix 4: kept so `viewWillAppear` can force the scroll position back to
     /// the top on every visit - see `FlippedView` below for why a fresh
     /// layout can otherwise land scrolled to the bottom.
@@ -80,9 +88,9 @@ final class SettingsController: NSViewController {
         }
 
         let header = buildHeader()
-        let connection = card(icon: "network", title: "Connection", content: buildConnectionSection())
-        let appearance = card(icon: "paintpalette", title: "Appearance", content: buildAppearanceSection())
-        let terminal = card(icon: "terminal", title: "Terminal", content: buildTerminalSection())
+        let connection = card(icon: "network", tint: .info, title: "Connection", subtitle: "Mirror target and working directory", content: buildConnectionSection())
+        let appearance = card(icon: "paintpalette", tint: .violet, title: "Appearance", subtitle: "8 Helm themes, light and dark", content: buildAppearanceSection())
+        let terminal = card(icon: "terminal", tint: .warn, title: "Terminal", subtitle: "Font size and behavior", content: buildTerminalSection())
 
         let stack = NSStackView(views: [header, connection, appearance, terminal])
         stack.orientation = .vertical
@@ -149,23 +157,34 @@ final class SettingsController: NSViewController {
 
     // MARK: Card chrome
 
-    /// A section's card shell: an icon + title header, then its content,
-    /// generously padded and given a rounded, bordered background - matching
-    /// the web app's `.card` visual weight rather than a flat sparse list.
-    private func card(icon: String, title: String, content: NSView) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
+    /// A section's card shell: an icon tile + title/subtitle header, then its
+    /// content, generously padded and given a rounded, bordered background -
+    /// matching the mockup's `.card`/`.card-head` structure (icon-in-tile
+    /// rather than a plain glyph, a muted subtitle under the title).
+    private func card(icon: String, tint: HelmTint, title: String, subtitle: String, content: NSView) -> NSView {
+        let tile = IconTileView()
+        tile.configure(symbol: icon, tint: tint)
+        cardIconTiles.append(tile)
 
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let header = NSStackView(views: [iconView, titleLabel])
+        let subtitleLabel = NSTextField(labelWithString: subtitle)
+        subtitleLabel.font = .systemFont(ofSize: 11.5)
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleViews.append(subtitleLabel)
+
+        let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 1
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let header = NSStackView(views: [tile, titleStack])
         header.orientation = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
+        header.spacing = 12
+        header.alignment = .centerY
         header.translatesAutoresizingMaskIntoConstraints = false
 
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -173,24 +192,28 @@ final class SettingsController: NSViewController {
         let inner = NSStackView(views: [header, content])
         inner.orientation = .vertical
         inner.alignment = .leading
-        inner.spacing = 12
+        inner.spacing = 14
         inner.translatesAutoresizingMaskIntoConstraints = false
         content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
 
         let background = NSView()
         background.wantsLayer = true
-        background.layer?.cornerRadius = 13
+        background.layer?.cornerRadius = 14
         background.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(inner)
         NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
+            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
+            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
+            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16),
         ])
         cardBackgroundViews.append(background)
         return background
     }
+
+    /// Card-header subtitles (muted text below each `ch-title`), re-colored
+    /// alongside `cardBackgroundViews` on every theme change.
+    private var subtitleViews: [NSTextField] = []
 
     private func rowLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -221,7 +244,21 @@ final class SettingsController: NSViewController {
         row.alignment = .centerY
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
-        return row
+
+        // Shared hover helper (task brief #2): a subtle highlight on mouse
+        // enter/exit, both colors theme-derived - see `applyTheme` for the
+        // actual color assignment.
+        let container = HoverHighlightView()
+        container.cornerRadius = 8
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
+        ])
+        hoverRows.append(container)
+        return container
     }
 
     private func pillView(text: String, colorHex: String) -> NSView {
@@ -377,11 +414,9 @@ final class SettingsController: NSViewController {
         row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 8
+        let card = HoverHighlightView()
+        card.cornerRadius = 8
         card.layer?.borderWidth = isSelected ? 1.5 : 1
-        card.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(row)
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
@@ -389,7 +424,9 @@ final class SettingsController: NSViewController {
             row.topAnchor.constraint(equalTo: card.topAnchor, constant: 6),
             row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -6),
         ])
-        card.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        let base = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        card.normalColor = base
+        card.hoverColor = base.hoverShifted(by: 0.08, forMode: theme.mode)
         card.layer?.borderColor = (isSelected ? HelmTheme.nsColor(theme.accentHex) : HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)).cgColor
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(sessionCardClicked(_:)))
@@ -456,35 +493,24 @@ final class SettingsController: NSViewController {
     }
 
     private func themeCard(_ t: HelmTheme, active: Bool) -> NSView {
-        let preview = NSView()
+        // A 3-color swatch (bg / surface / accent), matching the mockup's
+        // `.theme-swatch` structure - all three pulled from this theme's real
+        // values, never the mockup's placeholder hexes.
+        let preview = NSStackView()
+        preview.orientation = .horizontal
+        preview.spacing = 0
+        preview.distribution = .fillEqually
         preview.wantsLayer = true
-        preview.layer?.backgroundColor = HelmTheme.nsColor(t.chromeBackgroundHex).cgColor
+        preview.layer?.cornerRadius = 6
+        preview.layer?.masksToBounds = true
         preview.translatesAutoresizingMaskIntoConstraints = false
-
-        let bar1 = NSView()
-        bar1.wantsLayer = true
-        bar1.layer?.cornerRadius = 3
-        bar1.layer?.backgroundColor = HelmTheme.nsColor(t.chromeInkHex).withAlphaComponent(0.35).cgColor
-        bar1.translatesAutoresizingMaskIntoConstraints = false
-        let bar2 = NSView()
-        bar2.wantsLayer = true
-        bar2.layer?.cornerRadius = 3
-        bar2.layer?.backgroundColor = HelmTheme.nsColor(t.accentHex).cgColor
-        bar2.translatesAutoresizingMaskIntoConstraints = false
-
-        preview.addSubview(bar1)
-        preview.addSubview(bar2)
-        NSLayoutConstraint.activate([
-            bar1.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 7),
-            bar1.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -7),
-            bar1.topAnchor.constraint(equalTo: preview.topAnchor, constant: 8),
-            bar1.heightAnchor.constraint(equalToConstant: 6),
-            bar2.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 7),
-            bar2.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -26),
-            bar2.topAnchor.constraint(equalTo: bar1.bottomAnchor, constant: 5),
-            bar2.heightAnchor.constraint(equalToConstant: 6),
-            preview.heightAnchor.constraint(equalToConstant: 40),
-        ])
+        for hex in [t.backgroundHex, t.chromeBackgroundHex, t.accentHex] {
+            let swatch = NSView()
+            swatch.wantsLayer = true
+            swatch.layer?.backgroundColor = HelmTheme.nsColor(hex).cgColor
+            preview.addArrangedSubview(swatch)
+        }
+        preview.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
         let nameLabel = NSTextField(labelWithString: t.name)
         nameLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
@@ -516,13 +542,14 @@ final class SettingsController: NSViewController {
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        let card = HoverHighlightView()
+        card.cornerRadius = 10
         card.layer?.borderWidth = active ? 1.5 : 1
         card.layer?.borderColor = (active ? HelmTheme.nsColor(t.accentHex) : HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)).cgColor
         card.layer?.masksToBounds = true
-        card.translatesAutoresizingMaskIntoConstraints = false
+        let base = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        card.normalColor = active ? HelmTheme.nsColor(t.accentHex).withAlphaComponent(0.08) : .clear
+        card.hoverColor = base.hoverShifted(by: 0.06, forMode: theme.mode)
         card.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
@@ -647,11 +674,22 @@ final class SettingsController: NSViewController {
     private func applyTheme() {
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        subtitleLabel.textColor = HelmTheme.mutedInk(theme)
+        let muted = HelmTheme.mutedInk(theme)
+        subtitleLabel.textColor = muted
         for v in cardBackgroundViews {
             v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
             v.layer?.borderWidth = 1
             v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        }
+        for tile in cardIconTiles {
+            tile.applyTheme(theme)
+        }
+        for label in subtitleViews {
+            label.textColor = muted
+        }
+        for row in hoverRows {
+            row.normalColor = .clear
+            row.hoverColor = line.withAlphaComponent(0.18)
         }
         for v in separatorViews {
             v.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
