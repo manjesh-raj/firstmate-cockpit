@@ -213,11 +213,19 @@ final class BootstrapController: NSViewController {
     private var hasCheckedSoftwareOnce = false
     private let softwareStack = NSStackView()
 
-    // MARK: "Not synced here, by design" state (Part E)
+    // MARK: "Not synced here, by design" state (Part E, extended in
+    // cockpit-bootstrap-vault-hardeners to add aws/codex/brew alongside gh)
 
-    private var ghHardenStatus: GhHardenStatus = .checking
+    private var ghHardenStatus: GhHardenState = .checking
     private var isHardeningGh = false
-    private var hasCheckedGhHardeningOnce = false
+    private var awsHardenStatus: AwsHardenState = .checking
+    private var isHardeningAws = false
+    private var codexHardenStatus: HardenerStatus = .checking
+    private var isHardeningCodex = false
+    private var homebrewHardenStatus: HardenerStatus = .checking
+    private var isHardeningHomebrew = false
+    private var homebrewDisruptionAcknowledged = false
+    private var hasCheckedHardenersOnce = false
     private let notSyncedStack = NSStackView()
 
     // MARK: "Run full setup" sequencer state (Part D)
@@ -407,9 +415,12 @@ final class BootstrapController: NSViewController {
             hasCheckedSoftwareOnce = true
             checkAllSoftware()
         }
-        if !hasCheckedGhHardeningOnce {
-            hasCheckedGhHardeningOnce = true
+        if !hasCheckedHardenersOnce {
+            hasCheckedHardenersOnce = true
             checkGhHardening()
+            checkAwsHardening()
+            checkCodexHardening()
+            checkHomebrewHardening()
         }
         scrollToTop()
     }
@@ -1645,6 +1656,18 @@ final class BootstrapController: NSViewController {
         let ghRow = ghAuthRow()
         notSyncedStack.addArrangedSubview(ghRow)
         ghRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let awsRow = awsAuthRow()
+        notSyncedStack.addArrangedSubview(awsRow)
+        awsRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let codexRow = codexAuthRow()
+        notSyncedStack.addArrangedSubview(codexRow)
+        codexRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
+
+        let homebrewRow = homebrewAuthRow()
+        notSyncedStack.addArrangedSubview(homebrewRow)
+        homebrewRow.widthAnchor.constraint(equalTo: notSyncedStack.widthAnchor).isActive = true
     }
 
     private func notSyncedStaticRow(title: String, body: String) -> NSView {
@@ -1666,39 +1689,23 @@ final class BootstrapController: NSViewController {
         return section
     }
 
-    private func ghAuthRow() -> NSView {
-        let titleLabel = NSTextField(labelWithString: "GitHub / gh CLI auth")
+    /// Shared title/body/trailing-controls chrome for one "Not synced"
+    /// hardener row - `extra` inserts additional views (e.g. Homebrew's
+    /// disruption warning + confirmation checkbox) between the body text
+    /// and the trailing controls row.
+    private func notSyncedHardenerRow(title: String, body: String, extra: [NSView] = [], trailing: [NSView] = []) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         dynamicLabels.append(titleLabel)
 
-        let bodyText: String
-        var trailing: [NSView] = []
-        switch ghHardenStatus {
-        case .checking:
-            bodyText = "Checking Automic Vault's hardening status\u{2026}"
-        case .avNotInstalled:
-            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
-        case .hardened:
-            bodyText = "Already hardened - gh credentials are migrated into Automic Vault's protected storage."
-            let pill = statusPill(text: "Hardened", colorHex: theme.ansiHex[2])
-            trailing.append(pill)
-        case .notHardened:
-            bodyText = "gh credentials are not yet migrated into Automic Vault. \"av harden gh\" moves them into protected storage and requires the patched gh-cli build (brew install automic-vault/isotopes/gh-cli)."
-            let button = NSButton(title: isHardeningGh ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenGhClicked))
-            button.bezelStyle = .rounded
-            button.isEnabled = !isHardeningGh
-            trailing.append(button)
-        case .checkFailed(let reason):
-            bodyText = "Could not check hardening status: \(reason)"
-        }
-
-        let bodyLabel = NSTextField(wrappingLabelWithString: bodyText)
+        let bodyLabel = NSTextField(wrappingLabelWithString: body)
         bodyLabel.font = .systemFont(ofSize: 11)
         bodyLabel.textColor = HelmTheme.mutedInk(theme)
         bodyLabel.preferredMaxLayoutWidth = 520
         dynamicLabels.append(bodyLabel)
 
         var rows: [NSView] = [titleLabel, bodyLabel]
+        rows.append(contentsOf: extra)
         if !trailing.isEmpty {
             let trailingRow = NSStackView(views: trailing)
             trailingRow.orientation = .horizontal
@@ -1715,6 +1722,121 @@ final class BootstrapController: NSViewController {
         return section
     }
 
+    private func ghAuthRow() -> NSView {
+        let bodyText: String
+        var trailing: [NSView] = []
+        switch ghHardenStatus {
+        case .checking:
+            bodyText = "Checking Automic Vault's hardening status\u{2026}"
+        case .avNotInstalled:
+            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
+        case .hardened:
+            bodyText = "Already hardened - gh credentials are migrated into Automic Vault's protected storage."
+            trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
+        case .notHardened:
+            bodyText = "gh credentials are not yet migrated into Automic Vault. \"av harden gh\" moves them into protected storage and requires the patched gh-cli build (brew install automic-vault/isotopes/gh-cli)."
+            let button = NSButton(title: isHardeningGh ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenGhClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !isHardeningGh
+            trailing.append(button)
+        case .isotopeMissingPlainGhInstalled:
+            bodyText = "The plain `gh` formula is installed, but Automic Vault's patched gh-cli isotope isn't - and it conflicts with plain `gh`, so \"av harden gh\" can't just install it for you. Requires swapping `gh` for `automic-vault/isotopes/gh-cli` in your dotfiles' configuration.nix (homebrew.brews), then running rebuild.sh."
+            trailing.append(statusPill(text: "Needs dotfiles change", colorHex: theme.ansiHex[3]))
+        case .checkFailed(let reason):
+            bodyText = "Could not check hardening status: \(reason)"
+        }
+        return notSyncedHardenerRow(title: "GitHub / gh CLI auth", body: bodyText, trailing: trailing)
+    }
+
+    private func awsAuthRow() -> NSView {
+        let bodyText: String
+        var trailing: [NSView] = []
+        switch awsHardenStatus {
+        case .checking:
+            bodyText = "Checking Automic Vault's hardening status\u{2026}"
+        case .avNotInstalled:
+            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
+        case .hardened:
+            bodyText = "Already hardened - the default AWS key pair is migrated into the login keychain behind a protected /usr/local/bin/aws launcher."
+            trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
+        case .noLocalCredentials:
+            bodyText = "No local AWS credentials found in ~/.aws/credentials - nothing to harden yet. \"av harden aws\" migrates an existing default key pair once one exists on this machine."
+            trailing.append(statusPill(text: "Nothing to harden", colorHex: theme.ansiHex[3]))
+        case .notHardened:
+            bodyText = "A default AWS key pair exists in ~/.aws/credentials and is not yet migrated. \"av harden aws\" moves it into the login keychain and installs a protected /usr/local/bin/aws launcher in front of the real AWS CLI."
+            let button = NSButton(title: isHardeningAws ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenAwsClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !isHardeningAws
+            trailing.append(button)
+        case .checkFailed(let reason):
+            bodyText = "Could not check hardening status: \(reason)"
+        }
+        return notSyncedHardenerRow(title: "AWS CLI credentials", body: bodyText, trailing: trailing)
+    }
+
+    private func codexAuthRow() -> NSView {
+        let bodyText: String
+        var trailing: [NSView] = []
+        switch codexHardenStatus {
+        case .checking:
+            bodyText = "Checking Automic Vault's hardening status\u{2026}"
+        case .avNotInstalled:
+            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
+        case .hardened:
+            bodyText = "Already hardened - Codex CLI credentials are stored in the macOS Keychain instead of a plaintext auth.json."
+            trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
+        case .notHardened:
+            bodyText = "Codex CLI credentials are still on disk in plaintext auth.json. \"av harden codex\" migrates them into the macOS Keychain. It refuses to run while ChatGPT.app is open, since Codex CLI, its IDE extension, and the ChatGPT desktop app share configuration - quit ChatGPT first."
+            let button = NSButton(title: isHardeningCodex ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenCodexClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = !isHardeningCodex
+            trailing.append(button)
+        case .checkFailed(let reason):
+            bodyText = "Could not check hardening status: \(reason)"
+        }
+        return notSyncedHardenerRow(title: "Codex CLI credentials", body: bodyText, trailing: trailing)
+    }
+
+    private func homebrewAuthRow() -> NSView {
+        let bodyText: String
+        var extra: [NSView] = []
+        var trailing: [NSView] = []
+        switch homebrewHardenStatus {
+        case .checking:
+            bodyText = "Checking Automic Vault's hardening status\u{2026}"
+        case .avNotInstalled:
+            bodyText = "Automic Vault (av) isn't installed, so there's nothing to check yet. Install it from the Software checklist card above, then revisit this page."
+        case .hardened:
+            bodyText = "Already hardened - only brew itself can alter /opt/homebrew, and installs/upgrades require Automic Vault's approval."
+            trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
+        case .notHardened:
+            bodyText = "Homebrew is not yet hardened. This is far more disruptive than the other rows on this card: shell completions become unavailable, most Homebrew casks become categorically incompatible (only CLI-only casks from homebrew/cask with a `binary` artifact still work), and it requires reordering PATH plus adding `eval \"$(/usr/local/bin/brew shellenv)\"` to your shell startup."
+            let warning = NSTextField(wrappingLabelWithString: "Review that disruption before continuing - it changes how every `brew` command on this machine behaves.")
+            warning.font = .systemFont(ofSize: 11, weight: .semibold)
+            warning.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+            warning.preferredMaxLayoutWidth = 520
+            dynamicLabels.append(warning)
+            extra.append(warning)
+
+            let checkbox = NSButton(checkboxWithTitle: "I understand the disruption above and want to continue", target: self, action: #selector(homebrewDisruptionToggled))
+            checkbox.state = homebrewDisruptionAcknowledged ? .on : .off
+            extra.append(checkbox)
+
+            let button = NSButton(title: isHardeningHomebrew ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenHomebrewClicked))
+            button.bezelStyle = .rounded
+            button.isEnabled = homebrewDisruptionAcknowledged && !isHardeningHomebrew
+            trailing.append(button)
+        case .checkFailed(let reason):
+            bodyText = "Could not check hardening status: \(reason)"
+        }
+        return notSyncedHardenerRow(title: "Homebrew", body: bodyText, extra: extra, trailing: trailing)
+    }
+
+    @objc private func homebrewDisruptionToggled(_ sender: NSButton) {
+        homebrewDisruptionAcknowledged = sender.state == .on
+        rebuildNotSyncedSection()
+    }
+
     private func checkGhHardening() {
         ghHardenStatus = .checking
         rebuildNotSyncedSection()
@@ -1723,6 +1845,45 @@ final class BootstrapController: NSViewController {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.ghHardenStatus = status
+                self.rebuildNotSyncedSection()
+            }
+        }
+    }
+
+    private func checkAwsHardening() {
+        awsHardenStatus = .checking
+        rebuildNotSyncedSection()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = NotSyncedSource.checkAwsHardening()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.awsHardenStatus = status
+                self.rebuildNotSyncedSection()
+            }
+        }
+    }
+
+    private func checkCodexHardening() {
+        codexHardenStatus = .checking
+        rebuildNotSyncedSection()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = NotSyncedSource.checkCodexHardening()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.codexHardenStatus = status
+                self.rebuildNotSyncedSection()
+            }
+        }
+    }
+
+    private func checkHomebrewHardening() {
+        homebrewHardenStatus = .checking
+        rebuildNotSyncedSection()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = NotSyncedSource.checkHomebrewHardening()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.homebrewHardenStatus = status
                 self.rebuildNotSyncedSection()
             }
         }
@@ -1739,6 +1900,48 @@ final class BootstrapController: NSViewController {
             guard let self else { return }
             self.isHardeningGh = false
             self.checkGhHardening()
+        }
+    }
+
+    @objc private func hardenAwsClicked() {
+        guard !isHardeningAws, let onRunCommandTracked else {
+            onRunCommand?("av harden aws", "av harden aws")
+            return
+        }
+        isHardeningAws = true
+        rebuildNotSyncedSection()
+        onRunCommandTracked("av harden aws", "av harden aws") { [weak self] _ in
+            guard let self else { return }
+            self.isHardeningAws = false
+            self.checkAwsHardening()
+        }
+    }
+
+    @objc private func hardenCodexClicked() {
+        guard !isHardeningCodex, let onRunCommandTracked else {
+            onRunCommand?("av harden codex", "av harden codex")
+            return
+        }
+        isHardeningCodex = true
+        rebuildNotSyncedSection()
+        onRunCommandTracked("av harden codex", "av harden codex") { [weak self] _ in
+            guard let self else { return }
+            self.isHardeningCodex = false
+            self.checkCodexHardening()
+        }
+    }
+
+    @objc private func hardenHomebrewClicked() {
+        guard homebrewDisruptionAcknowledged, !isHardeningHomebrew, let onRunCommandTracked else {
+            if homebrewDisruptionAcknowledged { onRunCommand?("av harden brew", "av harden brew") }
+            return
+        }
+        isHardeningHomebrew = true
+        rebuildNotSyncedSection()
+        onRunCommandTracked("av harden brew", "av harden brew") { [weak self] _ in
+            guard let self else { return }
+            self.isHardeningHomebrew = false
+            self.checkHomebrewHardening()
         }
     }
 
