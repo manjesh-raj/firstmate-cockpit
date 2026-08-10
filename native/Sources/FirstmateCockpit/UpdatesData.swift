@@ -60,6 +60,20 @@ enum DependencyCatalog {
     /// Category display order - `Dictionary`-grouping in `UpdatesController`
     /// would otherwise be unordered.
     static let categoryOrder = ["npm packages", "Homebrew", "Other tools", "Firstmate", "Security"]
+
+    /// Per-category tint for a row's `IconTileView` (mirrors the mockup's
+    /// blue/red/violet tool-row tiles) - shared by `UpdatesController` and
+    /// `BootstrapController`'s software checklist (cockpit-bootstrap-software-
+    /// row-parity) so both pages tint the same category identically.
+    static func tint(for category: String) -> HelmTint {
+        switch category {
+        case "npm packages": return .info
+        case "Homebrew": return .warn
+        case "Other tools": return .neutral
+        case "Security": return .violet
+        default: return .accent // Firstmate
+        }
+    }
 }
 
 // MARK: - Outcomes

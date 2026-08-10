@@ -193,13 +193,17 @@ final class BootstrapController: NSViewController {
     // MARK: Software checklist state (Part C)
 
     /// Mutable per-row state for one `DependencyItem` - mirrors
-    /// `UpdatesController`'s private `UpdateRow`, but this card only ever
-    /// needs status/detail/busy (no expandable log, no spinner chrome) since
-    /// it's a compact checklist, not the Updates page's full row UI.
+    /// `UpdatesController`'s private `UpdateRow`. The views are recreated
+    /// fresh on every `rebuildSoftwareSection()` call (this card's existing
+    /// tear-down-and-rebuild convention, unlike Updates' build-once-mutate-
+    /// in-place rows), so `log`/`isLogExpanded` persist here on the row
+    /// itself and get fed back into the freshly-built views each rebuild.
     private final class SoftwareRowState {
         let item: DependencyItem
         var status: DependencyStatus = .unknown
         var detail: String = "Not checked yet"
+        var log: String = ""
+        var isLogExpanded = false
         var isBusy = false
         init(item: DependencyItem) { self.item = item }
     }
@@ -1330,6 +1334,7 @@ final class BootstrapController: NSViewController {
                     guard let row = self.softwareRows.first(where: { $0.item.id == id }) else { continue }
                     row.status = outcome.status
                     row.detail = outcome.detail
+                    row.log = outcome.log
                 }
                 self.isLoadingSoftware = false
                 self.rebuildSoftwareSection()
@@ -1378,36 +1383,67 @@ final class BootstrapController: NSViewController {
         }
     }
 
+    /// Built fresh on every `rebuildSoftwareSection()` call via the shared
+    /// `ToolRowLayout` (same icon tile, detail line, pill, and expandable-log
+    /// chevron as `UpdatesController`'s per-tool rows, cockpit-bootstrap-
+    /// software-row-parity) - the Install button is always present, only its
+    /// enabled state and title change with `row.status`/`row.isBusy`, so the
+    /// row never visibly reflows between not-installed/installing/installed.
     private func softwareItemRow(_ row: SoftwareRowState) -> NSView {
-        let nameLabel = NSTextField(labelWithString: row.item.name)
-        nameLabel.font = .systemFont(ofSize: 12)
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        dynamicLabels.append(nameLabel)
+        let views = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView()
+        )
+        dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
 
         let (pillText, pillColor) = softwareStatusVisuals(row.status)
-        let pill = statusPill(text: pillText, colorHex: pillColor)
-        pill.setContentHuggingPriority(.required, for: .horizontal)
-        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        var trailing: [NSView] = [pill]
-        if row.status == .notInstalled {
-            let button = NSButton(title: row.isBusy ? "Installing\u{2026}" : "Install", target: self, action: #selector(installSoftwareClicked(_:)))
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.isEnabled = !row.isBusy
-            button.identifier = NSUserInterfaceItemIdentifier(row.item.id)
-            button.setContentHuggingPriority(.required, for: .horizontal)
-            button.setContentCompressionResistancePriority(.required, for: .horizontal)
-            trailing.append(button)
-        }
+        let button = NSButton(title: installButtonTitle(row), target: self, action: #selector(installSoftwareClicked(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.isEnabled = installButtonEnabled(row)
+        button.identifier = NSUserInterfaceItemIdentifier(row.item.id)
 
-        let rowView = NSStackView(views: [nameLabel] + trailing)
-        rowView.orientation = .horizontal
-        rowView.alignment = .centerY
-        rowView.spacing = 8
-        return rowView
+        let view = ToolRowLayout.build(
+            views,
+            iconSymbol: row.item.kind.symbol,
+            tint: DependencyCatalog.tint(for: row.item.category),
+            name: row.item.name,
+            trailingViews: [views.pill, button],
+            detailsTarget: self,
+            detailsAction: #selector(softwareDetailsTapped(_:)),
+            identifier: row.item.id
+        )
+        views.detailLabel.stringValue = row.detail
+        ToolRowLayout.setLogExpanded(views, expanded: row.isLogExpanded, log: row.log)
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: row.status == .checkFailed || row.status == .updateFailed)
+        return view
+    }
+
+    /// Enabled + "Install" only while genuinely actionable; every other
+    /// status (installed, up to date, check failed, ...) disables the same
+    /// button in place with "Installed" rather than hiding it - see the task
+    /// brief this fixed (cockpit-bootstrap-software-row-parity): the button
+    /// used to only exist in the view hierarchy for `.notInstalled` rows.
+    private func installButtonTitle(_ row: SoftwareRowState) -> String {
+        if row.isBusy { return "Installing\u{2026}" }
+        return row.status == .notInstalled ? "Install" : "Installed"
+    }
+
+    private func installButtonEnabled(_ row: SoftwareRowState) -> Bool {
+        row.status == .notInstalled && !row.isBusy
+    }
+
+    @objc private func softwareDetailsTapped(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let row = softwareRows.first(where: { $0.item.id == id })
+        else { return }
+        row.isLogExpanded.toggle()
+        rebuildSoftwareSection()
     }
 
     private func softwareStatusVisuals(_ status: DependencyStatus) -> (String, String) {
@@ -1475,6 +1511,11 @@ final class BootstrapController: NSViewController {
                 row.isBusy = false
                 row.status = recheck.status
                 row.detail = recheck.detail
+                // Mirrors `UpdatesController.update`'s log handling: on
+                // success show the post-install check's own output (real
+                // verification), on failure keep the install command's
+                // output (why it failed) rather than the recheck's.
+                row.log = outcome.ok ? recheck.log : outcome.log
                 self.rebuildSoftwareSection()
                 if outcome.ok {
                     Toast.show(in: self.view, message: "\(item.name) installed")
