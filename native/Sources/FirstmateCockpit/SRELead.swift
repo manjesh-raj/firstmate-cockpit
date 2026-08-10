@@ -114,7 +114,27 @@ enum SRELead {
     /// this ssh argv itself, since the escalation happens on the remote side,
     /// inside `sre_kubectl_mcp.py`'s `_run_kubectl`, after this session's own
     /// interactive tab (and this SSH connection) already logged in normally.
-    static func setUp(hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore, becomeUser: String? = nil) -> Result<SRELeadSession, SRELeadSetupError> {
+    ///
+    /// `startupSnippet` (`fm/cockpit-sre-lead-startup-snippet`, the resolved
+    /// command text for `Host.startupSnippetID`, looked up by the caller via
+    /// `SnippetStore` - this file has no store reference of its own) is passed
+    /// through the same way, as `startup_snippet`. **This is not optional
+    /// polish for some hosts - three prior attempts at `becomeUser` escalation
+    /// (`fm/cockpit-sre-lead-become-user`, `-su-syntax-fix`,
+    /// `-su-stdin-pipe`) all failed identically on the captain's real bastion
+    /// because `Host.sshArguments` alone only reaches a jump/gateway box
+    /// (`centos@...`), never the real target the interactive tab's own
+    /// `startupSnippetID` hops to afterward - so every one of those escalation
+    /// attempts ran on the wrong machine.** See `sre_kubectl_mcp.py`'s module
+    /// docstring and `_run_via_sequential_shell` for why the snippet has to
+    /// run first, over the same persistent shell, before the escalation and
+    /// kubectl command - not as a separate `ssh` invocation of its own, since
+    /// it depends on server-side aliases/config that exist only inside the
+    /// first hop's shell.
+    static func setUp(
+        hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore,
+        becomeUser: String? = nil, startupSnippet: String? = nil
+    ) -> Result<SRELeadSession, SRELeadSetupError> {
         guard let tmux = TmuxMirror.resolveTmux() else {
             return .failure(SRELeadSetupError(message: "tmux not found on PATH (looked in Homebrew/usr paths)."))
         }
@@ -145,6 +165,9 @@ enum SRELead {
             var hostConfig: [String: Any] = ["ssh_executable": HostCatalog.sshExecutable, "ssh_argv": sshArgv]
             if let becomeUser, !becomeUser.isEmpty {
                 hostConfig["become_user"] = becomeUser
+            }
+            if let startupSnippet, !startupSnippet.isEmpty {
+                hostConfig["startup_snippet"] = startupSnippet
             }
             try JSONSerialization.data(withJSONObject: hostConfig, options: [.prettyPrinted])
                 .write(to: hostConfigPath)
