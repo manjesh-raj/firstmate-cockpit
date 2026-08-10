@@ -41,6 +41,7 @@ final class AppShellController: NSViewController {
     private let settings: SettingsController
     private let overview: FleetController
     private let review = ReviewController()
+    private let docs = DocsController()
     private let updates = UpdatesController()
     private let bootstrap = BootstrapController()
 
@@ -110,11 +111,12 @@ final class AppShellController: NSViewController {
         addChild(console)
         addChild(overview)
         addChild(review)
+        addChild(docs)
         addChild(updates)
         addChild(bootstrap)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, updates.view, bootstrap.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, docs.view, updates.view, bootstrap.view, settings.view] {
             embed(destinationView)
         }
 
@@ -209,6 +211,9 @@ final class AppShellController: NSViewController {
         case .review:
             review.view.isHidden = false
             topBar.setTitle("Review")
+        case .docs:
+            docs.view.isHidden = false
+            topBar.setTitle("Docs")
         case .updates:
             updates.view.isHidden = false
             topBar.setTitle("Updates")
@@ -274,6 +279,7 @@ final class AppShellController: NSViewController {
         console.view.isHidden = true
         overview.view.isHidden = true
         review.view.isHidden = true
+        docs.view.isHidden = true
         updates.view.isHidden = true
         bootstrap.view.isHidden = true
         settings.view.isHidden = true
