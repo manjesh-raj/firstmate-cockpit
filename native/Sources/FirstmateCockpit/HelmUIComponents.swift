@@ -197,15 +197,23 @@ enum ToolRowLayout {
     /// in order, after `views.pill` - callers configure `views.pill`'s
     /// content themselves (see `pill(text:colorHex:into:)`) and pass it as
     /// the first trailing view.
+    ///
+    /// `showDetails` controls whether the row gets the disclosure chevron +
+    /// expandable command-output log (Software checklist's rows, which have a
+    /// real `CheckOutcome.log`) or omits both entirely (Bootstrap's "Managed
+    /// items"/"Global agent instructions"/"Run full setup" step rows, which
+    /// have no log to show) - `detailsTarget`/`detailsAction` are only
+    /// meaningful when `showDetails` is true.
     static func build(
         _ views: Views,
         iconSymbol: String,
         tint: HelmTint,
         name: String,
         trailingViews: [NSView],
-        detailsTarget: AnyObject,
-        detailsAction: Selector,
-        identifier: String
+        detailsTarget: AnyObject? = nil,
+        detailsAction: Selector? = nil,
+        identifier: String,
+        showDetails: Bool = true
     ) -> NSView {
         views.iconTile.configure(symbol: iconSymbol, tint: tint, pointSize: 14)
         views.iconTile.setContentHuggingPriority(.required, for: .horizontal)
@@ -243,18 +251,24 @@ enum ToolRowLayout {
             views.trailingStack.addArrangedSubview(v)
         }
 
-        views.detailsButton.title = ""
-        views.detailsButton.isBordered = false
-        views.detailsButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Show details")
-        views.detailsButton.imageScaling = .scaleProportionallyDown
-        views.detailsButton.target = detailsTarget
-        views.detailsButton.action = detailsAction
-        views.detailsButton.identifier = NSUserInterfaceItemIdentifier(identifier)
-        views.detailsButton.translatesAutoresizingMaskIntoConstraints = false
-        views.detailsButton.setContentHuggingPriority(.required, for: .horizontal)
-        views.detailsButton.toolTip = "Show command output"
+        var topRowViews: [NSView] = [views.iconTile, textStack, views.trailingStack]
+        if showDetails {
+            views.detailsButton.title = ""
+            views.detailsButton.isBordered = false
+            views.detailsButton.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Show details")
+            views.detailsButton.imageScaling = .scaleProportionallyDown
+            views.detailsButton.target = detailsTarget
+            views.detailsButton.action = detailsAction
+            views.detailsButton.identifier = NSUserInterfaceItemIdentifier(identifier)
+            views.detailsButton.translatesAutoresizingMaskIntoConstraints = false
+            views.detailsButton.setContentHuggingPriority(.required, for: .horizontal)
+            views.detailsButton.toolTip = "Show command output"
+            topRowViews.append(views.detailsButton)
+        } else {
+            views.detailsButton.isHidden = true
+        }
 
-        let topRow = NSStackView(views: [views.iconTile, textStack, views.trailingStack, views.detailsButton])
+        let topRow = NSStackView(views: topRowViews)
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.spacing = 8
@@ -265,29 +279,37 @@ enum ToolRowLayout {
         topRow.distribution = .fill
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        views.logField.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        views.logField.preferredMaxLayoutWidth = 560
-        views.logField.translatesAutoresizingMaskIntoConstraints = false
-        views.logContainer.wantsLayer = true
-        views.logContainer.layer?.cornerRadius = 6
-        views.logContainer.translatesAutoresizingMaskIntoConstraints = false
-        if views.logField.superview !== views.logContainer {
-            views.logContainer.addSubview(views.logField)
-            NSLayoutConstraint.activate([
-                views.logField.leadingAnchor.constraint(equalTo: views.logContainer.leadingAnchor, constant: 8),
-                views.logField.trailingAnchor.constraint(equalTo: views.logContainer.trailingAnchor, constant: -8),
-                views.logField.topAnchor.constraint(equalTo: views.logContainer.topAnchor, constant: 6),
-                views.logField.bottomAnchor.constraint(equalTo: views.logContainer.bottomAnchor, constant: -6),
-            ])
+        var columnViews: [NSView] = [topRow]
+        if showDetails {
+            views.logField.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+            views.logField.preferredMaxLayoutWidth = 560
+            views.logField.translatesAutoresizingMaskIntoConstraints = false
+            views.logContainer.wantsLayer = true
+            views.logContainer.layer?.cornerRadius = 6
+            views.logContainer.translatesAutoresizingMaskIntoConstraints = false
+            if views.logField.superview !== views.logContainer {
+                views.logContainer.addSubview(views.logField)
+                NSLayoutConstraint.activate([
+                    views.logField.leadingAnchor.constraint(equalTo: views.logContainer.leadingAnchor, constant: 8),
+                    views.logField.trailingAnchor.constraint(equalTo: views.logContainer.trailingAnchor, constant: -8),
+                    views.logField.topAnchor.constraint(equalTo: views.logContainer.topAnchor, constant: 6),
+                    views.logField.bottomAnchor.constraint(equalTo: views.logContainer.bottomAnchor, constant: -6),
+                ])
+            }
+            columnViews.append(views.logContainer)
+        } else {
+            views.logContainer.isHidden = true
         }
 
-        let column = NSStackView(views: [topRow, views.logContainer])
+        let column = NSStackView(views: columnViews)
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 6
         column.translatesAutoresizingMaskIntoConstraints = false
         topRow.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-        views.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        if showDetails {
+            views.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        }
 
         views.rowContainer.cornerRadius = 8
         views.rowContainer.translatesAutoresizingMaskIntoConstraints = false
