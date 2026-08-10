@@ -531,23 +531,46 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.sshKeyTempPath = nil
     }
 
-    /// Set up a grouped session and attach `tab`'s terminal to it. On failure the
-    /// error is written into the terminal so it is visible rather than silent.
+    /// Set up a live session for `target` and attach `tab`'s terminal to it,
+    /// on whichever backend firstmate itself resolves to right now
+    /// (`FirstmateBackend.resolve()`, cockpit-mirror-herdr-aware) - tmux's
+    /// `TmuxMirror` (unchanged) or herdr's `HerdrMirror`. On failure the
+    /// error is written into the terminal so it is visible rather than
+    /// silent.
     private func connectMirror(_ tab: TabModel, target: String) {
-        switch TmuxMirror.setUp(target: target) {
-        case .success(let m):
-            tab.mirror = m
-            tab.terminal.startProcess(
-                executable: m.tmuxPath,
-                args: m.attachArgs,
-                environment: childEnvironment(),
-                execName: nil,
-                currentDirectory: shellCwd()
-            )
-        case .failure(let err):
-            tab.mirror = nil
-            tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
-            tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live tmux target, then press ⌘R to reconnect.\u{1b}[0m\r\n")
+        switch FirstmateBackend.resolve() {
+        case .tmux:
+            switch TmuxMirror.setUp(target: target) {
+            case .success(let m):
+                tab.mirror = .tmux(m)
+                tab.terminal.startProcess(
+                    executable: m.tmuxPath,
+                    args: m.attachArgs,
+                    environment: childEnvironment(),
+                    execName: nil,
+                    currentDirectory: shellCwd()
+                )
+            case .failure(let err):
+                tab.mirror = nil
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
+                tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live tmux target, then press ⌘R to reconnect.\u{1b}[0m\r\n")
+            }
+        case .herdr:
+            switch HerdrMirror.setUp(target: target) {
+            case .success(let m):
+                tab.mirror = .herdr(m)
+                tab.terminal.startProcess(
+                    executable: m.attachExecutable,
+                    args: m.attachArgs,
+                    environment: childEnvironment(),
+                    execName: nil,
+                    currentDirectory: shellCwd()
+                )
+            case .failure(let err):
+                tab.mirror = nil
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
+                tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live herdr session (or '<session>#<pane-id>'), then press ⌘R to reconnect.\u{1b}[0m\r\n")
+            }
         }
     }
 
