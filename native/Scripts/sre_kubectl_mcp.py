@@ -12,6 +12,11 @@ resolved `ssh` argv for the bastion the captain is already connected to
 (`Host.sshArguments(allHosts:)` plus a materialized `-i <key>` when the host
 uses a saved key - see `SRELead.swift`'s `buildSSHArgv`).
 
+When the host config's `become_user` is set (`Host.becomeUser`, optional,
+per-host), the already-validated kubectl command is wrapped as
+`sudo su - <become_user> -c '<kubectl ...>'` before it's sent over SSH - see
+`_run_kubectl`. Unset (the default), behavior is unchanged.
+
 Read-only enforcement lives HERE, not in the persona prompt: `_ALLOWED_VERBS`
 is the only set of kubectl subcommands this tool will ever exec, and
 `_validate_args` rejects anything that isn't a plain, individually-safe
@@ -88,7 +93,7 @@ def _load_host_config():
     argv = cfg.get("ssh_argv")
     if not isinstance(argv, list) or not argv:
         raise RuntimeError(f"{path} has no usable 'ssh_argv'")
-    return cfg.get("ssh_executable", "/usr/bin/ssh"), argv
+    return cfg.get("ssh_executable", "/usr/bin/ssh"), argv, cfg.get("become_user")
 
 
 def _run_kubectl(subcommand, args, namespace):
@@ -96,7 +101,7 @@ def _run_kubectl(subcommand, args, namespace):
     if error:
         return {"ok": False, "error": error}
 
-    ssh_exe, ssh_argv = _load_host_config()
+    ssh_exe, ssh_argv, become_user = _load_host_config()
     remote = ["kubectl", subcommand]
     if namespace:
         if set(namespace) - _SAFE_CHARS:
@@ -116,6 +121,26 @@ def _run_kubectl(subcommand, args, namespace):
     # above, not a replacement for it - every token was already validated
     # before it reaches here.
     remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
+
+    # `become_user` (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`):
+    # on some bastions the login user this host connects as cannot run
+    # `kubectl` at all - only a dedicated service user reached via
+    # `sudo su - <user>` can. This wraps the already-validated command
+    # string built above (never raw args - validation already ran on the
+    # unwrapped kubectl command, so nothing new can sneak past it here) as
+    # `sudo su - <user> -c '<kubectl ...>'`. Safe to run fully
+    # non-interactively only because the captain's bastions have both
+    # `sudo` and `su` configured passwordless for this login user - root's
+    # own unconditional ability to `su` to any user with no password is
+    # standard Unix behavior, so once `sudo` itself needs no password the
+    # whole escalation needs no interactive prompt either. `become_user`
+    # itself is never attacker-controlled args text - it comes only from
+    # this host's own saved config, written by the Swift side - but it is
+    # still shell-quoted here for the same defense-in-depth reason as
+    # `remote_cmd` above.
+    if become_user:
+        remote_cmd = f"sudo su - {shlex.quote(become_user)} -c {shlex.quote(remote_cmd)}"
+
     full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", remote_cmd]
     try:
         proc = subprocess.run(

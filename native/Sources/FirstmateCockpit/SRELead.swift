@@ -108,8 +108,13 @@ enum SRELead {
     /// wrapper script into a private scratch directory (avoids threading
     /// `claude`'s multi-line `--append-system-prompt` text through tmux's own
     /// shell-joining of its command argv - see the wrapper script comment
-    /// below), then creates the detached tmux session.
-    static func setUp(hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore) -> Result<SRELeadSession, SRELeadSetupError> {
+    /// below), then creates the detached tmux session. `becomeUser`
+    /// (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`) is passed through
+    /// verbatim into the host config JSON as `become_user` - it never touches
+    /// this ssh argv itself, since the escalation happens on the remote side,
+    /// inside `sre_kubectl_mcp.py`'s `_run_kubectl`, after this session's own
+    /// interactive tab (and this SSH connection) already logged in normally.
+    static func setUp(hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore, becomeUser: String? = nil) -> Result<SRELeadSession, SRELeadSetupError> {
         guard let tmux = TmuxMirror.resolveTmux() else {
             return .failure(SRELeadSetupError(message: "tmux not found on PATH (looked in Homebrew/usr paths)."))
         }
@@ -137,7 +142,10 @@ enum SRELead {
         let env = childEnvironmentDict()
 
         do {
-            let hostConfig: [String: Any] = ["ssh_executable": HostCatalog.sshExecutable, "ssh_argv": sshArgv]
+            var hostConfig: [String: Any] = ["ssh_executable": HostCatalog.sshExecutable, "ssh_argv": sshArgv]
+            if let becomeUser, !becomeUser.isEmpty {
+                hostConfig["become_user"] = becomeUser
+            }
             try JSONSerialization.data(withJSONObject: hostConfig, options: [.prettyPrinted])
                 .write(to: hostConfigPath)
 

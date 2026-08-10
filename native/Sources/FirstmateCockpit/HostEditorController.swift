@@ -71,6 +71,7 @@ final class HostEditorController: NSViewController {
     private let tagsField = NSTextField()
     private let agentForwardCheckbox = NSButton(checkboxWithTitle: "Forward SSH agent (-A)", target: nil, action: nil)
     private let jumpViaField = NSTextField()
+    private let becomeUserField = NSTextField()
     private let portForwardingButton = NSButton()
     private let snippetPopup = NSPopUpButton()
 
@@ -148,6 +149,12 @@ final class HostEditorController: NSViewController {
 
         configure(jumpViaField, placeholder: "Jump via (host label or user@bastion)", value: editing?.jumpVia)
 
+        configure(becomeUserField, placeholder: "e.g. devops_k8s_prod (optional)", value: editing?.becomeUser)
+        let becomeUserCaption = caption("Used only by SRE Lead's kubectl tool: escalates via \"sudo su - <user>\" "
+            + "before running kubectl, since some bastions only resolve kubectl from a dedicated service user. "
+            + "Leave blank unless this host needs it - assumes passwordless sudo, and never affects the "
+            + "interactive ssh tab itself.")
+
         portForwardingButton.target = self
         portForwardingButton.action = #selector(editPortForwarding)
         portForwardingButton.bezelStyle = .rounded
@@ -172,6 +179,7 @@ final class HostEditorController: NSViewController {
             [rowLabel("Tags"), tagsField],
             [rowLabel(""), agentForwardCheckbox],
             [rowLabel("Jump via"), jumpViaField],
+            [rowLabel("Become user"), becomeUserField],
             [rowLabel("Forwarding"), portForwardingButton],
             [rowLabel("Startup snippet"), snippetPopup],
         ])
@@ -203,7 +211,7 @@ final class HostEditorController: NSViewController {
         bottom.orientation = .horizontal
         bottom.spacing = 10
 
-        let stack = NSStackView(views: [title, grid, credCaption, jumpCaption, bottom])
+        let stack = NSStackView(views: [title, grid, credCaption, jumpCaption, becomeUserCaption, bottom])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 16
@@ -251,6 +259,7 @@ final class HostEditorController: NSViewController {
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
             credCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
             jumpCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            becomeUserCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
@@ -529,6 +538,8 @@ final class HostEditorController: NSViewController {
         host.agentForward = agentForwardCheckbox.state == .on
         let jumpVia = jumpViaField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         host.jumpVia = jumpVia.isEmpty ? nil : jumpVia
+        let becomeUser = becomeUserField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        host.becomeUser = becomeUser.isEmpty ? nil : becomeUser
         host.portForwards = portForwards
         host.startupSnippetID = snippetPopup.selectedItem?.representedObject as? UUID
         host.iconSymbol = selectedIcon

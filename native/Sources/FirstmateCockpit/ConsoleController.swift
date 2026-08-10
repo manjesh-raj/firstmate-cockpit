@@ -108,7 +108,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// kept around so a later SRE Lead toggle can open its own, independent
     /// second connection to the same bastion without this controller having
     /// to know anything else about the `Host` value itself.
-    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?)?
+    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?, becomeUser: String?)?
 
     private enum SRELeadPhase { case notStarted, starting, ready, failed }
     private var sreLeadPhase: SRELeadPhase = .notStarted
@@ -449,8 +449,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// part) instead of implicitly stacking a second tab. A deliberate
     /// second session to the same host still works via the tab chip's own
     /// Duplicate affordance (⌘D / `duplicateTab`).
-    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?) {
-        sreLeadHostContext = (hostArgs: args, keyID: keyID)
+    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?, becomeUser: String? = nil) {
+        sreLeadHostContext = (hostArgs: args, keyID: keyID, becomeUser: becomeUser)
         guard tabs.isEmpty else { return }
         openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
     }
@@ -644,9 +644,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
         let hostArgs = context.hostArgs
         let keyID = context.keyID
+        let becomeUser = context.becomeUser
         let keyStore = self.keyStore
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = SRELead.setUp(hostArgs: hostArgs, keyID: keyID, keyStore: keyStore)
+            let result = SRELead.setUp(hostArgs: hostArgs, keyID: keyID, keyStore: keyStore, becomeUser: becomeUser)
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
