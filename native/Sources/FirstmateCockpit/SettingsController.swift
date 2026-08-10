@@ -669,28 +669,59 @@ final class SettingsController: NSViewController {
 
     private func sudoTouchIDRow() -> NSView {
         var desc = "Use your fingerprint instead of typing your password at a terminal prompt."
-        let trailing: NSView
+        let statusView: NSView
         switch sudoTouchIDStatus {
         case .checking:
-            trailing = rowLabel("Checking\u{2026}")
+            statusView = rowLabel("Checking\u{2026}")
         case .enabled:
-            trailing = pillView(text: "Enabled", colorHex: theme.ansiHex[2])
+            statusView = pillView(text: "Enabled", colorHex: theme.ansiHex[2])
         case .notEnabled:
             let button = NSButton(title: isHardeningSudo ? "Enabling\u{2026}" : "Enable", target: self, action: #selector(enableSudoTouchIDClicked))
             button.bezelStyle = .rounded
             button.isEnabled = !isHardeningSudo
-            trailing = button
+            statusView = button
         case .notEnabledNixDarwin:
             desc += " This Mac is managed by nix-darwin, where /etc/pam.d/sudo_local is regenerated from your flake on every rebuild - add `security.pam.services.sudo_local.touchIdAuth = true;` to your dotfiles' configuration.nix, then run rebuild.sh."
-            trailing = rowLabel("Needs dotfiles change")
+            statusView = rowLabel("Needs dotfiles change")
         case .pamNotConfigured:
             desc += " Not available on this Mac - /etc/pam.d/sudo doesn't include sudo_local."
-            trailing = rowLabel("Unavailable")
+            statusView = rowLabel("Unavailable")
         case .checkFailed(let reason):
             desc += " Could not check status: \(reason)."
-            trailing = rowLabel("Unknown")
+            statusView = rowLabel("Unknown")
+        }
+
+        // A manual recheck affordance for this one row: the automatic check
+        // only ever runs once per app launch (`hasCheckedSudoTouchIDOnce`,
+        // see `viewWillAppear`), so a fix made outside the app (editing
+        // dotfiles, running `rebuild.sh` in another terminal) leaves this
+        // row showing stale status until the captain restarts the whole app.
+        // Hidden while a check is already in flight, since re-triggering one
+        // mid-check would just race itself.
+        let trailing: NSView
+        if sudoTouchIDStatus == .checking {
+            trailing = statusView
+        } else {
+            let refreshButton = NSButton()
+            refreshButton.title = ""
+            refreshButton.isBordered = false
+            refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Recheck status")
+            refreshButton.toolTip = "Recheck Touch ID for sudo status"
+            refreshButton.target = self
+            refreshButton.action = #selector(recheckSudoTouchIDClicked)
+            refreshButton.contentTintColor = HelmTheme.mutedInk(theme)
+
+            let combined = NSStackView(views: [statusView, refreshButton])
+            combined.orientation = .horizontal
+            combined.alignment = .centerY
+            combined.spacing = 6
+            trailing = combined
         }
         return descRow(title: "Touch ID for sudo", desc: desc, trailing: trailing)
+    }
+
+    @objc private func recheckSudoTouchIDClicked() {
+        checkSudoTouchID()
     }
 
     private func checkSudoTouchID() {
