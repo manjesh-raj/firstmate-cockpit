@@ -27,6 +27,7 @@ already has its own authenticated `kubectl`.
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -103,9 +104,19 @@ def _run_kubectl(subcommand, args, namespace):
         remote += ["-n", namespace]
     remote += args
 
-    # `ssh <same argv the interactive tab already uses> -- kubectl ...`: a
-    # second, independent connection to the same bastion, non-interactive.
-    full = [ssh_exe] + ssh_argv + ["--"] + remote
+    # `ssh <same argv the interactive tab already uses> -- bash -lc '<kubectl ...>'`:
+    # a second, independent connection to the same bastion. Forced through a
+    # login shell (`bash -lc`) so it sources the same profile
+    # (`.bash_profile`/`.profile`) the interactive tab already benefits from -
+    # a bare non-interactive `ssh ... -- kubectl ...` exec only sources
+    # `.bashrc`, and only for an interactive shell, so a `kubectl` that's only
+    # on PATH via a profile file is "command not found" for this tool even
+    # though the interactive tab finds it fine. `shlex.quote` per token is
+    # defense in depth on top of `_validate_args`'s character-set check
+    # above, not a replacement for it - every token was already validated
+    # before it reaches here.
+    remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
+    full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", remote_cmd]
     try:
         proc = subprocess.run(
             full, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS
