@@ -152,6 +152,15 @@ final class AppShellController: NSViewController {
         // own Software checklist card instead (same catalog, same install
         // action, just relocated).
         updates.onNavigateToBootstrap = { [weak self] in self?.show(.bootstrap) }
+        // cockpit-settings-sudo-touchid: Settings' "Touch ID for sudo" row
+        // runs `sudo av harden sudo`, which needs a real interactive `sudo`
+        // prompt exactly like Bootstrap's provisioning actions - same
+        // one-shot Console command-tab mechanism, just reached from Settings
+        // instead.
+        settings.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
+        settings.onRunCommandTracked = { [weak self] label, command, completion in
+            self?.runInConsole(label: label, command: command, completion: completion)
+        }
 
         show(.console)
     }
