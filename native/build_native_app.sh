@@ -30,6 +30,13 @@ if [ -f "$ICON_SRC" ]; then
   cp "$ICON_SRC" "$APP_DIR/Contents/Resources/icon.icns"
 fi
 
+# SRE Lead's read-only kubectl MCP tool (SRELead.swift resolves it via
+# Bundle.main.resourceURL first, falling back to the source tree for
+# swift run/swift build dev flows).
+if [ -f "Scripts/sre_kubectl_mcp.py" ]; then
+  cp "Scripts/sre_kubectl_mcp.py" "$APP_DIR/Contents/Resources/sre_kubectl_mcp.py"
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
