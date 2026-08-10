@@ -14,8 +14,13 @@ uses a saved key - see `SRELead.swift`'s `buildSSHArgv`).
 
 When the host config's `become_user` is set (`Host.becomeUser`, optional,
 per-host), the already-validated kubectl command is wrapped as
-`sudo su - <become_user> -c '<kubectl ...>'` before it's sent over SSH - see
-`_run_kubectl`. Unset (the default), behavior is unchanged.
+`sudo su -c '<kubectl ...>' - <become_user>` before it's sent over SSH - see
+`_run_kubectl`. Unset (the default), behavior is unchanged. The `-c` option
+MUST precede `- <become_user>`: `su`'s own arg parser only recognizes
+options up to the point it hits `-`/the username, after which everything
+else is passed through unparsed as extra shell arguments (confirmed against
+util-linux `login-utils/su-common.c` and reproduced live against a real
+bastion - see `fm/cockpit-sre-lead-su-syntax-fix`).
 
 Read-only enforcement lives HERE, not in the persona prompt: `_ALLOWED_VERBS`
 is the only set of kubectl subcommands this tool will ever exec, and
@@ -127,19 +132,29 @@ def _run_kubectl(subcommand, args, namespace):
     # `kubectl` at all - only a dedicated service user reached via
     # `sudo su - <user>` can. This wraps the already-validated command
     # string built above (never raw args - validation already ran on the
-    # unwrapped kubectl command, so nothing new can sneak past it here) as
-    # `sudo su - <user> -c '<kubectl ...>'`. Safe to run fully
-    # non-interactively only because the captain's bastions have both
-    # `sudo` and `su` configured passwordless for this login user - root's
-    # own unconditional ability to `su` to any user with no password is
-    # standard Unix behavior, so once `sudo` itself needs no password the
-    # whole escalation needs no interactive prompt either. `become_user`
-    # itself is never attacker-controlled args text - it comes only from
-    # this host's own saved config, written by the Swift side - but it is
-    # still shell-quoted here for the same defense-in-depth reason as
-    # `remote_cmd` above.
+    # unwrapped kubectl command, so nothing new can sneak past it here).
+    #
+    # The flags MUST precede `-`/<user>: `su`'s own synopsis is
+    # `su [options] [-] [<user> [<argument>...]]` (util-linux
+    # login-utils/su-common.c) - it parses options with a plain
+    # `getopt_long(argc, argv, "c:fg:G:lmpPTs:u:hVw:", ...)` (no leading
+    # `+`, so GNU permutation applies, but that is not guaranteed across
+    # every `su` build/libc `su` could be linked against), then afterwards
+    # walks whatever `optind` is left pointing at: a literal `-` token,
+    # then the username, then *everything else* is passed through
+    # unparsed as extra arguments to the target user's login shell. The
+    # original `sudo su - <user> -c '<kubectl ...>'` shape put `-c` and
+    # its argument AFTER the username - on any `su` build that does not
+    # permute (confirmed live against a real bastion by the captain: `su`
+    # reported the invocation as malformed, missing a command arg), `-c`
+    # and the command string are swallowed as plain positional shell
+    # arguments instead of being recognized as `su`'s own `--command`
+    # option. `su -c '<kubectl ...>' - <user>` puts the option strictly
+    # before any positional argument, so it parses correctly regardless of
+    # permutation behavior - this is also the exact order the synopsis
+    # documents (`[options]` before `[-] [<user> ...]`).
     if become_user:
-        remote_cmd = f"sudo su - {shlex.quote(become_user)} -c {shlex.quote(remote_cmd)}"
+        remote_cmd = f"sudo su -c {shlex.quote(remote_cmd)} - {shlex.quote(become_user)}"
 
     full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", remote_cmd]
     try:
