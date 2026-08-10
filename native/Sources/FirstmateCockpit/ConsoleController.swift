@@ -107,8 +107,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// resolved `hostArgs`/`keyID` the interactive ssh tab already uses,
     /// kept around so a later SRE Lead toggle can open its own, independent
     /// second connection to the same bastion without this controller having
-    /// to know anything else about the `Host` value itself.
-    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?, becomeUser: String?)?
+    /// to know anything else about the `Host` value itself. `startupSnippetID`
+    /// (`fm/cockpit-sre-lead-startup-snippet`) is carried through the same way
+    /// - see `startSRELead()`, which resolves it to command text via
+    /// `snippetStore` right before spawning, the same lookup
+    /// `runStartupSnippet` already does for the interactive tab.
+    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?, becomeUser: String?, startupSnippetID: UUID?)?
 
     private enum SRELeadPhase { case notStarted, starting, ready, failed }
     private var sreLeadPhase: SRELeadPhase = .notStarted
@@ -450,7 +454,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// second session to the same host still works via the tab chip's own
     /// Duplicate affordance (⌘D / `duplicateTab`).
     func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?, becomeUser: String? = nil) {
-        sreLeadHostContext = (hostArgs: args, keyID: keyID, becomeUser: becomeUser)
+        sreLeadHostContext = (hostArgs: args, keyID: keyID, becomeUser: becomeUser, startupSnippetID: startupSnippetID)
         guard tabs.isEmpty else { return }
         openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
     }
@@ -646,8 +650,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         let keyID = context.keyID
         let becomeUser = context.becomeUser
         let keyStore = self.keyStore
+        // Resolved here, on the main thread, the same lookup
+        // `runStartupSnippet` already does for the interactive tab - a host's
+        // `startupSnippetID` only ever carries an id, never command text (see
+        // `Host.swift`), and `SRELead.setUp` needs the actual text to hand to
+        // the bastion, not a `SnippetStore` reference of its own.
+        let startupSnippet = context.startupSnippetID.flatMap { snippetStore.snippet(id: $0) }?.command
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = SRELead.setUp(hostArgs: hostArgs, keyID: keyID, keyStore: keyStore, becomeUser: becomeUser)
+            let result = SRELead.setUp(
+                hostArgs: hostArgs, keyID: keyID, keyStore: keyStore,
+                becomeUser: becomeUser, startupSnippet: startupSnippet
+            )
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {

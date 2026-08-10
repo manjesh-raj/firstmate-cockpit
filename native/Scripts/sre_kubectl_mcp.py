@@ -17,6 +17,24 @@ per-host), the already-validated kubectl command is piped into
 `sudo su - <become_user>`'s stdin, rather than passed as a `-c` argument -
 see `_run_kubectl`. Unset (the default), behavior is unchanged.
 
+When the host config's `startup_snippet` is set (`Host.startupSnippetID`,
+resolved to command text by `SRELead.swift` before this script ever sees it),
+it is sent first, before the escalation and kubectl command, over the same
+persistent shell - see `_run_via_sequential_shell`. This exists because of a
+root cause the first three `become_user` attempts (PRs #70/#71/#72, all
+described above) missed entirely: on the captain's real "EKS Preprod Bastion"
+host, `Host.sshArguments` connects only as far as a jump/gateway box
+(`centos@ec2-...`), never the real target where `kubectl`/`devops_k8s_preprod`
+live - reaching it needs an *additional* hop the interactive tab already
+fires automatically via `Host.startupSnippetID` (a saved snippet, e.g. `mpp`,
+presumably a shell alias/function defined server-side in that jump box's own
+profile) roughly 1.5s after connecting. Every prior escalation attempt ran
+`sudo su - <user>` on the jump box itself, a machine that almost certainly
+doesn't have that user or the same sudoers setup as the real target - which
+is why three different `su`/stdin argument shapes all failed identically.
+Unset (the default, every host that has never used a startup snippet),
+behavior is completely unchanged from before this feature existed.
+
 **`su -c` was tried twice and failed on the captain's real bastion - do not
 reintroduce it.** `fm/cockpit-sre-lead-become-user` (PR #70) used
 `sudo su - <user> -c '<kubectl ...>'`; `fm/cockpit-sre-lead-su-syntax-fix`
@@ -53,6 +71,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAME = "kubectl_readonly"
@@ -76,6 +95,13 @@ _SAFE_CHARS = set(
 )
 
 _TIMEOUT_SECONDS = 30
+
+# Best-effort delay between sequential stdin writes when a startup snippet is
+# involved (see `_run_via_sequential_shell`) - mirrors the existing ~1.5s
+# fixed-delay precedent `ConsoleController.runStartupSnippet` already uses
+# for the interactive tab, since there is no reliable "shell/nested-hop is
+# ready for more input" signal to hook here either.
+_SNIPPET_STEP_DELAY_SECONDS = 1.5
 
 
 def _validate_args(subcommand, args):
@@ -111,7 +137,12 @@ def _load_host_config():
     argv = cfg.get("ssh_argv")
     if not isinstance(argv, list) or not argv:
         raise RuntimeError(f"{path} has no usable 'ssh_argv'")
-    return cfg.get("ssh_executable", "/usr/bin/ssh"), argv, cfg.get("become_user")
+    return (
+        cfg.get("ssh_executable", "/usr/bin/ssh"),
+        argv,
+        cfg.get("become_user"),
+        cfg.get("startup_snippet"),
+    )
 
 
 def _run_kubectl(subcommand, args, namespace):
@@ -119,13 +150,23 @@ def _run_kubectl(subcommand, args, namespace):
     if error:
         return {"ok": False, "error": error}
 
-    ssh_exe, ssh_argv, become_user = _load_host_config()
+    ssh_exe, ssh_argv, become_user, startup_snippet = _load_host_config()
     remote = ["kubectl", subcommand]
     if namespace:
         if set(namespace) - _SAFE_CHARS:
             return {"ok": False, "error": f"namespace {namespace!r} contains disallowed characters"}
         remote += ["-n", namespace]
     remote += args
+
+    # `shlex.quote` per token is defense in depth on top of
+    # `_validate_args`'s character-set check above, not a replacement for it -
+    # every token was already validated before it reaches here.
+    remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
+
+    if startup_snippet:
+        return _run_via_sequential_shell(
+            ssh_exe, ssh_argv, startup_snippet, become_user, remote_cmd, subcommand
+        )
 
     # `ssh <same argv the interactive tab already uses> -- bash -lc '<...>'`:
     # a second, independent connection to the same bastion. Forced through a
@@ -134,12 +175,8 @@ def _run_kubectl(subcommand, args, namespace):
     # a bare non-interactive `ssh ... -- kubectl ...` exec only sources
     # `.bashrc`, and only for an interactive shell, so a `kubectl` that's only
     # on PATH via a profile file is "command not found" for this tool even
-    # though the interactive tab finds it fine. `shlex.quote` per token is
-    # defense in depth on top of `_validate_args`'s character-set check
-    # above, not a replacement for it - every token was already validated
-    # before it reaches here.
-    remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
-
+    # though the interactive tab finds it fine.
+    #
     # `become_user` (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`):
     # on some bastions the login user this host connects as cannot run
     # `kubectl` at all - only a dedicated service user reached via
@@ -152,7 +189,9 @@ def _run_kubectl(subcommand, args, namespace):
     # command embedded in argv at all), and the already-validated kubectl
     # command string is handed to `subprocess.run` via `input=`, with a
     # trailing newline so the remote shell actually executes it once read -
-    # matching the captain's own `echo '<cmd>' | sudo su - <user>` test.
+    # matching the captain's own `echo '<cmd>' | sudo su - <user>` test. This
+    # single-shot path is unaffected by `startup_snippet` - no host that lacks
+    # one reaches any of the code below this comment.
     stdin_input = None
     if become_user:
         shell_cmd = f"sudo su - {shlex.quote(become_user)}"
@@ -176,6 +215,73 @@ def _run_kubectl(subcommand, args, namespace):
         "exit_code": proc.returncode,
         "stdout": proc.stdout[-20000:],
         "stderr": proc.stderr[-4000:],
+    }
+
+
+def _run_via_sequential_shell(ssh_exe, ssh_argv, startup_snippet, become_user, remote_cmd, subcommand):
+    """A host with `startup_snippet` set needs an extra hop run first, over
+    the *same* shell session, before the escalation and kubectl commands -
+    `Host.sshArguments` alone only reaches a jump/gateway box on this class
+    of host, not the real target (see the module docstring for the captain's
+    "EKS Preprod Bastion" case this was root-caused against). The snippet is
+    typically itself a further nested `ssh` (a server-side alias like `mpp`,
+    opaque to this script by design), so a fresh, separate `ssh` invocation
+    from this script could not replicate it - it depends on config that only
+    exists inside the first hop's own shell.
+
+    Unlike the single-shot `subprocess.run(..., input=...)` path above, the
+    commands here cannot be handed over as one blob: the interactive tab's
+    own `runStartupSnippet` documents that there is no reliable "the remote
+    shell is ready" signal, and firing the escalation/kubectl commands
+    immediately risks them racing ahead of the snippet's own nested-hop
+    handshake and landing nowhere useful (or in the wrong shell entirely).
+    So this opens a persistent login shell and writes each command to its
+    stdin one at a time, with a delay after each, closing stdin once the
+    kubectl command is sent so the whole chain unwinds on EOF exactly like
+    the single-shot path's `su` session already does.
+    """
+    full = [ssh_exe] + ssh_argv + ["--", "bash", "-l"]
+    try:
+        proc = subprocess.Popen(
+            full, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+    except OSError as e:
+        return {"ok": False, "error": f"failed to run ssh: {e}"}
+
+    try:
+        proc.stdin.write(startup_snippet + "\n")
+        proc.stdin.flush()
+        time.sleep(_SNIPPET_STEP_DELAY_SECONDS)
+
+        if become_user:
+            proc.stdin.write(f"sudo su - {shlex.quote(become_user)}\n")
+            proc.stdin.flush()
+            time.sleep(_SNIPPET_STEP_DELAY_SECONDS)
+
+        proc.stdin.write(remote_cmd + "\n")
+        proc.stdin.flush()
+
+        # `communicate()`, not a manual `proc.stdin.close()` beforehand: it
+        # closes stdin itself (since no `input=` is passed here - every
+        # command was already written above) as part of its own internal
+        # read loop, which is what lets the remote's `bash -l` (and, if
+        # `become_user` opened one, its nested `su -` shell) see EOF and
+        # unwind - a `close()` call of our own first would make this second,
+        # redundant close raise on an already-closed file.
+        stdout, stderr = proc.communicate(timeout=_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return {"ok": False, "error": f"kubectl {subcommand} timed out after {_TIMEOUT_SECONDS}s"}
+    except OSError as e:
+        return {"ok": False, "error": f"failed to run ssh: {e}"}
+
+    return {
+        "ok": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "stdout": stdout[-20000:],
+        "stderr": stderr[-4000:],
     }
 
 
