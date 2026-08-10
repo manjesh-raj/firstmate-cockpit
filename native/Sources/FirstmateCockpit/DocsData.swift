@@ -82,8 +82,13 @@ enum DocsSyncCenter {
 /// against the live repo - the same "check compares a real signal, update
 /// runs the real thing, never fabricated" contract every other row in
 /// `UpdatesData.swift` follows. The repo is public, so the GitHub REST API
-/// needs no token - only a `User-Agent` header, which the API requires even
-/// unauthenticated (a request without one gets a 403).
+/// works fine unauthenticated (only a `User-Agent` header is required, or a
+/// 403), but an unauthenticated request shares GitHub's 60/hour-per-IP quota
+/// with every other unauthenticated caller on the machine - `get(_:)`/
+/// `downloadBytes(from:)` opportunistically add a `gh auth token` bearer
+/// token (via `ghAuthToken()` below) when one is available, bumping the
+/// effective limit to 5,000/hour tied to that account, and fall back to the
+/// exact same unauthenticated request when it isn't.
 enum DocsSyncSource {
     /// The one hardcoded pointer to the captain's real playbook repo - update
     /// here (and nowhere else) if it ever moves, mirroring `DotfilesSource.cloneURL`.
@@ -182,6 +187,55 @@ enum DocsSyncSource {
 
     // MARK: GitHub REST plumbing
 
+    /// Runs `gh auth token` fresh (mirrors `UpdatesData.swift`'s `Process`-based
+    /// shell-out convention, not a new networking abstraction) and returns its
+    /// trimmed stdout, or `nil` if `gh` isn't on PATH, isn't authenticated, or
+    /// the command fails for any reason - never throws. Called fresh per
+    /// request rather than cached, since `gh auth token` is already fast and
+    /// this avoids ever holding a stale/revoked token. The repo is public, so
+    /// this is purely a rate-limit improvement (60/hr shared-by-IP anonymous
+    /// vs. 5,000/hr per-account) over the unauthenticated fallback below, not
+    /// a requirement - `nil` here just means "send the request as before."
+    private static func ghAuthToken() -> String? {
+        guard let ghPath = {
+            let fm = FileManager.default
+            if let path = ProcessInfo.processInfo.environment["PATH"] {
+                for dir in path.split(separator: ":") {
+                    let candidate = "\(dir)/gh"
+                    if fm.isExecutableFile(atPath: candidate) { return candidate }
+                }
+            }
+            for candidate in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+                if fm.isExecutableFile(atPath: candidate) { return candidate }
+            }
+            return nil
+        }() else { return nil }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: ghPath)
+        proc.arguments = ["auth", "token"]
+        proc.environment = childEnvironmentDict()
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+        } catch {
+            return nil
+        }
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let token = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (token?.isEmpty ?? true) ? nil : token
+    }
+
+    private static func applyAuth(to request: inout URLRequest) {
+        if let token = ghAuthToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+    }
+
     private struct CommitResponse: Decodable { let sha: String }
 
     private struct ContentEntry: Decodable {
@@ -216,6 +270,7 @@ enum DocsSyncSource {
         var request = URLRequest(url: url)
         request.setValue("FirstmateCockpit", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
+        applyAuth(to: &request)
         return syncFetch(request)
     }
 
@@ -223,6 +278,7 @@ enum DocsSyncSource {
         var request = URLRequest(url: url)
         request.setValue("FirstmateCockpit", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 30
+        applyAuth(to: &request)
         return syncFetch(request)
     }
 
