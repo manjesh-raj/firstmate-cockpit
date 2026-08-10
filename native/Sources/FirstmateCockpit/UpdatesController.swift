@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // "Firstmate Latest Updates" - the new `.updates` rail destination (rail icon
 // pinned directly above Settings). Lists every tool in the captain's

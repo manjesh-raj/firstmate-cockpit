@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The tab model. Phase 0 of the "cockpit as a connection manager" work (design
 // report `data/cockpit-ssh-manager-research/report.md`, Section A4/A5 + Section D

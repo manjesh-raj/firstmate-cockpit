@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Fix 1: the real Fleet dashboard for the Overview rail destination,
 // replacing the "coming soon" `PlaceholderViewController`. Structure mirrors

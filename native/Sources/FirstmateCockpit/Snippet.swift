@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The saved-command library (design report Section B2 + B5, Section D Phase
 // 3): "a reusable library of shell snippets you run in the active tab" - and,

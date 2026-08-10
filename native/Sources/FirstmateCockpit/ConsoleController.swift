@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The console: one surface hosting a **flexible collection of tabs**, each a
 // SwiftTerm terminal. This is Phase 0 of the connection-manager work (design
@@ -772,7 +772,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     // MARK: Window title
 
     private func updateWindowTitle(from tab: TabModel) {
-        view.window?.title = "Firstmate Cockpit - \(tab.name)"
+        view.window?.title = "Manjesh Grand Line - \(tab.name)"
     }
 
     // MARK: LocalProcessTerminalViewDelegate

@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Data side for Bootstrap's "Not synced here, by design" card
 // (cockpit-bootstrap-not-synced, extended in cockpit-bootstrap-vault-hardeners

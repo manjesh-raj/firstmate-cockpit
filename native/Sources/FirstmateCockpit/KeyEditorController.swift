@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The New Key sheet (design report Section A1 + Section D Phase 2). Mirrors
 // the real Termius keychain form: **Label**, then either **Generate**

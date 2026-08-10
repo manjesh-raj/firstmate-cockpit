@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The saved-keys "Keychain" screen (design report Section A1, "a keychain
 // screen the captain can browse"). Deliberately built to match the Hosts

@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The Hosts sidebar (design report A2/A3, Section D Phase 1): a Termius-style
 // list of saved SSH hosts with per-host icons, a quick-connect field, and add /

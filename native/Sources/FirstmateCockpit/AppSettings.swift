@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // App-level preferences, backed by `UserDefaults`. Before the Settings panel
 // (Fix 3), these lived as ad-hoc environment-variable reads scattered across

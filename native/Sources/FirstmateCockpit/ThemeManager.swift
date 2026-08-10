@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // A single source of truth for the app's Helm theme, persisted across
 // launches. Before this existed, `ConsoleController` kept its own private

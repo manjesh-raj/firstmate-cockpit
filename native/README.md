@@ -1,4 +1,6 @@
-# Firstmate Cockpit - Native
+# Manjesh Grand Line - Native
+
+(formerly "Firstmate Cockpit")
 
 This is the growing native macOS cockpit: a Swift + SwiftTerm app that replaces the web (xterm.js-in-WKWebView) terminal with a real, native one.
 
@@ -156,21 +158,21 @@ To mirror a different tmux session:
 FM_MIRROR_TARGET=firstmate:1 swift run
 ```
 
-A window titled **"Firstmate Cockpit"** opens on the **Shell** tab.
+A window titled **"Manjesh Grand Line"** opens on the **Shell** tab.
 
 > Launching an unbundled executable this way is expected pre-P4. It gets a Dock icon and menu bar because the app sets a regular activation policy. Signing and notarization for real distribution are still Phase 4 - see "Package as an app" below for a double-clickable local bundle in the meantime.
 
 ## Package as an app
 
-`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Firstmate.app` - no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
+`./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Manjesh Grand Line.app` - no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
 
 ```bash
 cd native
 ./build_native_app.sh
-open ../dist/Firstmate.app
+open "../dist/Manjesh Grand Line.app"
 ```
 
-This is the one and only Firstmate app (bundle ID `com.firstmate.cockpit.native`). An earlier web/WKWebView app used to occupy this same `dist/Firstmate.app` path via a root-level `build_app.sh` and py2app - that codebase has been removed, so there's no longer anything to disambiguate from.
+This is the one and only app built from this repo (bundle ID `com.firstmate.cockpit.native`, unchanged by the app's rename - see the identifier note in this repo's `AGENTS.md`). An earlier web/WKWebView app used to occupy this same `dist/` path via a root-level `build_app.sh` and py2app - that codebase has been removed, so there's no longer anything to disambiguate from.
 
 ### Local signing setup
 

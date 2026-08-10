@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Shared visual helpers for the modern-UI restyle (cockpit-modern-ui-settings,
 // phase 1 of a captain-reviewed HTML/CSS mockup - see that task's PR for the
