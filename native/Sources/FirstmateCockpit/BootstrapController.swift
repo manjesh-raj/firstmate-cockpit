@@ -250,7 +250,7 @@ final class BootstrapController: NSViewController {
     }
 
     private enum SetupStepStatus: Equatable {
-        case pending, running, done, skipped, failed(String)
+        case pending, checking, running, done, skipped, failed(String)
     }
 
     private struct SetupStepState {
@@ -658,6 +658,7 @@ final class BootstrapController: NSViewController {
 
     private func rebuildSetupSection() {
         guard isViewLoaded else { return }
+        syncSetupStepsWithLiveState()
         clearStack(setupStack)
         for step in setupSteps {
             let row = setupStepRow(step)
@@ -730,10 +731,37 @@ final class BootstrapController: NSViewController {
     private func setupStatusVisuals(_ status: SetupStepStatus) -> (String, String) {
         switch status {
         case .pending: return ("Pending", theme.chromeInkHex)
+        case .checking: return ("Checking\u{2026}", theme.chromeInkHex)
         case .running: return ("Running\u{2026}", theme.chromeInkHex)
         case .done: return ("Done", theme.ansiHex[2])
         case .skipped: return ("Skipped", theme.chromeInkHex)
         case .failed: return ("Failed", theme.ansiHex[1])
+        }
+    }
+
+    /// Keeps the summary bar's per-step status honest with the live state the
+    /// cards below it (and the main stepper's own dots, via `stepIsDone`)
+    /// already reflect - without this, a step defaults to `.pending` forever
+    /// until an actual "Run full setup" pass sets it, even when the
+    /// underlying thing is already done. Only touches steps that aren't
+    /// currently showing a real run outcome (`.running`/`.failed`), so an
+    /// active or just-stopped run's own status is never clobbered - and only
+    /// runs at all when no run is in progress, so it never races
+    /// `updateSetupStep`'s own writes mid-run.
+    private func syncSetupStepsWithLiveState() {
+        guard !isRunningFullSetup else { return }
+        for index in setupSteps.indices {
+            switch setupSteps[index].status {
+            case .running, .failed:
+                continue
+            default:
+                break
+            }
+            switch stepIsDone(setupSteps[index].kind) {
+            case nil: setupSteps[index].status = .checking
+            case true?: setupSteps[index].status = .done
+            case false?: setupSteps[index].status = .pending
+            }
         }
     }
 
