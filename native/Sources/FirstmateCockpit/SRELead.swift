@@ -178,17 +178,23 @@ enum SRELead {
 
         let sessionName = "fm_srelead_\(ProcessInfo.processInfo.processIdentifier)_\(String(format: "%04x", UInt16.random(in: 0...UInt16.max)))"
         let env = childEnvironmentDict()
-        // `-c $HOME`, not the scratch dir the wrapper script itself lives in
-        // (`ProcessInfo`'s default tmux start-directory would otherwise be
-        // wherever the tmux *server* first started): a `claude` session's
-        // first-ever launch in a directory it hasn't seen before shows a
-        // one-time "do you trust this folder?" prompt - confirmed live by
-        // launching the exact wrapper-script shape this method generates in
-        // a fresh scratch dir. `$HOME` is overwhelmingly likely to already
-        // be trusted (or at least a directory the captain recognizes and can
-        // decide about themselves in the mirrored terminal, rather than an
-        // opaque `/tmp` path this feature invented).
-        let created = TmuxMirror.run(tmux, ["new-session", "-d", "-s", sessionName, "-c", FileManager.default.homeDirectoryForCurrentUser.path, wrapperPath.path], env: env)
+        guard let workingDir = resolveWorkingDirectory() else {
+            try? FileManager.default.removeItem(at: scratchDir)
+            if let keyTempPath { SSHKeyMaterializer.cleanup(privateKeyPath: keyTempPath) }
+            return .failure(SRELeadSetupError(message: "could not create SRE Lead working directory."))
+        }
+        // `-c <workingDir>`, not the scratch dir the wrapper script itself
+        // lives in (`ProcessInfo`'s default tmux start-directory would
+        // otherwise be wherever the tmux *server* first started): a `claude`
+        // session's first-ever launch in a directory it hasn't seen before
+        // shows a one-time "do you trust this folder?" prompt - confirmed
+        // live by launching the exact wrapper-script shape this method
+        // generates in a fresh scratch dir. `workingDir` is a small,
+        // dedicated app-owned folder rather than the captain's whole
+        // `$HOME`, so that prompt (when it appears) scopes to something
+        // purpose-built and empty instead of the captain's entire home
+        // directory.
+        let created = TmuxMirror.run(tmux, ["new-session", "-d", "-s", sessionName, "-c", workingDir.path, wrapperPath.path], env: env)
         if created.status != 0 {
             try? FileManager.default.removeItem(at: scratchDir)
             if let keyTempPath { SSHKeyMaterializer.cleanup(privateKeyPath: keyTempPath) }
@@ -204,6 +210,26 @@ enum SRELead {
     /// generated `bash` wrapper script above.
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// `~/Library/Application Support/FirstmateCockpit/sre-lead/`, created if
+    /// missing - the same base directory `HostStore`/`SSHKeyStore` already
+    /// use, and the same "create on demand" convention their `persist()`
+    /// methods follow. This directory only needs to exist: it is never
+    /// written into, it exists purely so `claude`'s one-time folder-trust
+    /// prompt (when it appears) scopes to a small, purpose-built, always-
+    /// empty app folder instead of the captain's entire home directory.
+    private static func resolveWorkingDirectory() -> URL? {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        let dir = base.appendingPathComponent("FirstmateCockpit", isDirectory: true)
+            .appendingPathComponent("sre-lead", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        return dir
     }
 
     /// Find the `claude` binary the same way `TmuxMirror.resolveTmux()` finds
