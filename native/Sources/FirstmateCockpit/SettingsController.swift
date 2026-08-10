@@ -12,9 +12,10 @@
 //     when its cwd is inside the firstmate home) - clicking one sets it as
 //     the mirror target. The working-directory chooser (previously under
 //     "General") lives here too.
-//   - Appearance: the 8-theme picker as a wrapping grid of preview cards
-//     (colour-bar swatch + name + checkmark), reusing `HelmTheme.allThemes`
-//     - the same source of truth the topbar's `ThemeMenu` picker uses.
+//   - Appearance: the theme picker (12 as of cockpit-theme-overhaul) as a
+//     wrapping grid of preview cards (colour-bar swatch + name + checkmark),
+//     reusing `HelmTheme.allThemes` - the same source of truth the topbar's
+//     `ThemeMenu` picker uses.
 //   - Terminal: font-size presets (12/13/14/16, routed through
 //     `ConsoleController.stepFontSize` via `onFontSizeStep` as before), plus
 //     two toggles with real behaviour behind them: "Reconnect automatically"
@@ -509,12 +510,21 @@ final class SettingsController: NSViewController {
             v.removeFromSuperview()
         }
         let activeID = ThemeManager.shared.theme.id
+        // Wrap into fixed-size rows rather than one ever-widening row per
+        // mode - cockpit-theme-overhaul grew this from 4 themes/mode to 6,
+        // and a single non-wrapping `NSStackView` row would just overflow
+        // the settings column at 6+ cards (`NSStackView` has no built-in
+        // wrap). Chunking at a fixed column count keeps every row's width
+        // bounded regardless of how many themes a mode ends up with.
+        let columnsPerRow = 4
         for group in [HelmTheme.allThemes.filter { $0.mode == .dark }, HelmTheme.allThemes.filter { $0.mode == .light }] {
-            let row = NSStackView(views: group.map { themeCard($0, active: $0.id == activeID) })
-            row.orientation = .horizontal
-            row.spacing = 8
-            row.translatesAutoresizingMaskIntoConstraints = false
-            appearanceContainer.addArrangedSubview(row)
+            for chunk in group.chunked(into: columnsPerRow) {
+                let row = NSStackView(views: chunk.map { themeCard($0, active: $0.id == activeID) })
+                row.orientation = .horizontal
+                row.spacing = 8
+                row.translatesAutoresizingMaskIntoConstraints = false
+                appearanceContainer.addArrangedSubview(row)
+            }
         }
     }
 
@@ -855,4 +865,12 @@ extension SettingsController: NSTextFieldDelegate {
 /// than a second copy.
 final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+extension Array {
+    /// Split into fixed-size groups, last group possibly shorter. Used by
+    /// the Appearance grid to wrap theme cards into bounded-width rows.
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
+    }
 }

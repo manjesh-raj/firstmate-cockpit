@@ -9,10 +9,13 @@
 // needs to render in the current Helm theme should read `ThemeManager.shared`
 // and register via `observe` rather than tracking its own copy.
 //
-// Nav-redesign task: grew from 2 palettes (dark/light) to all 8
+// Nav-redesign task: grew from 2 palettes (dark/light) to 8
 // (`HelmTheme.allThemes`), so persistence keyed on a theme `id` rather than a
 // bare "light"/"dark" string; a pre-existing "fm.themeMode" value is migrated
 // once so an upgrade doesn't silently reset anyone's dark/light preference.
+// cockpit-theme-overhaul: grew again to 12 (the 2 original Helm palettes
+// plus 5 real named families, each contributing a light+dark pair) and gave
+// `toggle()` family-aware pairing - see that method's own comment.
 
 import AppKit
 
@@ -84,11 +87,19 @@ final class ThemeManager {
     }
 
     /// The quick dark/light flip (View menu, ⌘⌥T, the console's own theme
-    /// button) - always lands on the two original Helm palettes regardless of
-    /// which of the 8 is active; the full picker (topbar, Settings) is what
-    /// reaches the other 6.
+    /// button) - flips to the *active theme's own* light/dark counterpart
+    /// (`pairId`), e.g. Catppuccin Mocha <-> Latte, Solarized Dark <-> Light.
+    /// `helm-dark`/`helm-light` pair with each other, matching the original
+    /// behavior for those two. Falls back to the plain Helm dark/light swap
+    /// only for a theme with no defined pair (shouldn't happen today - every
+    /// theme in `HelmTheme.allThemes` has one - but kept as a safety net
+    /// rather than force-unwrapping the lookup).
     func toggle() {
-        setTheme(theme.mode == .dark ? .light : .dark)
+        if let pair = HelmTheme.theme(id: theme.pairId) {
+            setTheme(pair)
+        } else {
+            setTheme(theme.mode == .dark ? .light : .dark)
+        }
     }
 
     /// Register for theme changes; `fn` is called immediately with the

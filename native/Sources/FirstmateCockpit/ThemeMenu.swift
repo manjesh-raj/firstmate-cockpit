@@ -1,10 +1,11 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The 8-theme picker menu (nav-redesign task, item 4): DARK/LIGHT group
-// headers, a swatch + name + checkmark per theme, exactly mirroring the web
-// app's theme dropdown (`backend/static/index.html`, `.theme-menu`/`THEMES`).
-// Shared by the topbar's theme button and Settings' Appearance row so both
-// pickers stay in lockstep with zero duplicated menu-building logic.
+// The theme picker menu (nav-redesign task, item 4; grew from 8 to 12 themes
+// in cockpit-theme-overhaul): DARK/LIGHT group headers, a swatch + name +
+// checkmark per theme. Shared by the topbar's theme button and Settings'
+// Appearance row so both pickers stay in lockstep with zero duplicated
+// menu-building logic. Built from `HelmTheme.allThemes` with no hardcoded
+// count, so it scales to however many themes that list holds.
 
 import AppKit
 

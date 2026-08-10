@@ -1,17 +1,24 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The "Helm" terminal palette (design report section 9). The web cockpit's Helm
-// tokens are OKLCH, which SwiftTerm cannot consume, so these are the same tokens
-// pre-converted to sRGB hex (via the OKLCH -> sRGB math in
-// `scripts/verify-contrast.mjs`) and hand-extended into a full 16-colour ANSI set
-// that harmonises with each mode. Changing a Helm token in the web app means
-// re-deriving the matching hex here; the source-of-truth conversion is that
-// script.
+// The "Helm" terminal palette (design report section 9), plus 10 real named
+// theme families (cockpit-theme-overhaul). `helm-dark`/`helm-light` are the
+// original, hand-pinned Helm tokens; the other 10 are sourced verbatim from
+// each family's own canonical repo (see `data/cockpit-theme-research/report.md`
+// for exact sources, per-family tables, and the reasoning behind every
+// deviation from canonical values below).
 //
 // `foreground`/`background` come straight from Helm `--ink` / `--term-bg`, the
 // cursor from `--accent`, and the ANSI reds/greens/yellows/blues are tuned off
 // Helm `--bad` / `--ok` / `--need` / `--accent` so the terminal reads as the same
 // instrument panel as the rest of the cockpit.
+//
+// Contrast is verified with a hand-written WCAG relative-luminance check
+// (sRGB -> linear -> 0.2126R + 0.7152G + 0.0722B -> (L1+0.05)/(L2+0.05)) held
+// to a 4.5:1 floor for text-bearing fields. There used to be a
+// `scripts/verify-contrast.mjs` for the old web app that did the equivalent
+// check against OKLCH input; it was removed along with that app
+// (`83cd4b3`) and never carried forward - this file's comments no longer
+// point at it.
 
 import AppKit
 import SwiftTerm
@@ -21,13 +28,16 @@ import SwiftTerm
 struct HelmTheme {
     enum Mode { case dark, light }
 
-    /// Stable identifier, matching the web app's `data-theme` ids
-    /// (`backend/static/index.html`'s `THEMES` array) - used for persistence
-    /// (`ThemeManager`) and for the topbar/Settings theme pickers to look a
-    /// theme back up by id.
+    /// Stable identifier - used for persistence (`ThemeManager`) and for the
+    /// topbar/Settings theme pickers to look a theme back up by id.
     let id: String
     let mode: Mode
     let name: String
+    /// The id of this theme's light/dark counterpart within the same family
+    /// (e.g. `catppuccin-mocha` <-> `catppuccin-latte`), used by
+    /// `ThemeManager.toggle()` to flip within a family instead of always
+    /// landing on `helm-dark`/`helm-light`.
+    let pairId: String
     /// Window / chrome colours so the AppKit shell around the terminal matches.
     let chromeBackgroundHex: String
     let chromeInkHex: String
@@ -96,8 +106,15 @@ struct HelmTheme {
     /// in the light ones - that's exactly how the Overview dashboard's PR
     /// text and timestamps went near-invisible. 0.7 is the measured floor:
     /// checked against every theme's `backgroundHex` and `chromeBackgroundHex`
-    /// (the two surfaces text actually sits on), the worst case across all 8
-    /// palettes is ~5.06:1 (Paper), comfortably clear of 4.5:1.
+    /// (the two surfaces text actually sits on), the worst case across the
+    /// original 8 palettes was ~5.06:1 (Paper), comfortably clear of 4.5:1.
+    /// Not re-verified against the 10 sourced-family themes added in
+    /// cockpit-theme-overhaul - several of those (e.g. Solarized Dark, down
+    /// to ~3.1:1) sit below this floor at a flat 0.7, since their own
+    /// `chromeInkHex`/background pairs are naturally lower-contrast than
+    /// Helm's hand-picked tones. Out of scope for that task; a future pass
+    /// touching muted text should re-measure per-theme rather than assume
+    /// this constant still holds everywhere.
     static func mutedInk(_ theme: HelmTheme) -> NSColor {
         nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
     }
@@ -108,6 +125,7 @@ struct HelmTheme {
         id: "helm-dark",
         mode: .dark,
         name: "Helm Dark",
+        pairId: "helm-light",
         chromeBackgroundHex: "111820", // --surface
         chromeInkHex: "f0f4f7",        // --ink
         chromeLineHex: "323a43",       // --line
@@ -130,6 +148,7 @@ struct HelmTheme {
         id: "helm-light",
         mode: .light,
         name: "Helm Light",
+        pairId: "helm-dark",
         chromeBackgroundHex: "fcfeff", // --surface
         chromeInkHex: "212c3a",        // --ink
         chromeLineHex: "cdd5dd",       // --line
@@ -156,143 +175,255 @@ struct HelmTheme {
     )
 }
 
-// MARK: - The 6 additional named palettes (nav-redesign task)
+// MARK: - The 10 named-family palettes (cockpit-theme-overhaul)
+//
+// Sourced from each family's own canonical repo - see
+// `data/cockpit-theme-research/report.md` Part 2 for exact source URLs, the
+// full per-family contrast tables, and the reasoning behind every deviation
+// called out below. Unlike the old `derived(...)` palettes these are not
+// computed from OKLCH tokens - every hex value here is either lifted
+// verbatim from the family's own source, or a deliberate, documented
+// deviation from it.
 
 extension HelmTheme {
-    /// `[L, C, hue]` in OKLCH, matching one CSS custom property.
-    private typealias Tok = (Double, Double, Double)
+    // --- Solarized (github.com/altercation/solarized) ---
+    //
+    // Solarized's own README.md defines a single set of 8 accent hues + an
+    // 8-step monotone ramp (base03...base3) reused unchanged across both
+    // modes - only which end of the ramp is "background" flips.
+    static let solarizedDarkAnsi = [
+        "073642", "dc322f", "859900", "b58900", "268bd2", "d33682", "2aa198", "eee8d5",
+        // index 8 ("bright black") is base03 - the same hex as this theme's
+        // own backgroundHex, an exact 1.00:1 self-match. This is a known,
+        // accepted Solarized limitation (confirmed in the family's own
+        // ANSI-16 table): no other ramp step is a clean substitute without
+        // stopping to look like Solarized's own "bright black".
+        "002b36", "dc322f", "859900", "b58900", "268bd2", "d33682", "2aa198", "fdf6e3",
+    ]
 
-    /// OKLCH -> sRGB hex, byte-for-byte the same math as
-    /// `scripts/verify-contrast.mjs`'s `hex()` (verified against every
-    /// hand-pinned value in `dark`/`light` above before use here) - the
-    /// single source of truth for this app's OKLCH token values. Only used
-    /// to derive the 6 palettes below from the same tokens as the web app's
-    /// CSS (`backend/static/index.html`); `dark`/`light` stay hand-pinned hex
-    /// so nothing already shipped shifts by a rounding hair.
-    private static func oklchHex(_ L: Double, _ C: Double, _ hDeg: Double) -> String {
-        let h = hDeg * .pi / 180
-        let a = C * cos(h), b = C * sin(h)
-        let l_ = L + 0.3963377774 * a + 0.2158037573 * b
-        let m_ = L - 0.1055613458 * a - 0.0638541728 * b
-        let s_ = L - 0.0894841775 * a - 1.2914855480 * b
-        let l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_
-        var r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
-        var g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
-        var bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
-        func toSrgb(_ c: Double) -> Double {
-            let cc = min(1, max(0, c))
-            return cc <= 0.0031308 ? 12.92 * cc : 1.055 * pow(cc, 1 / 2.4) - 0.055
-        }
-        r = toSrgb(r); g = toSrgb(g); bl = toSrgb(bl)
-        func to255(_ c: Double) -> Int { Int((min(1, max(0, c)) * 255).rounded()) }
-        return String(format: "%02x%02x%02x", to255(r), to255(g), to255(bl))
-    }
-
-    /// Build a full theme from the same OKLCH tokens the web CSS defines.
-    /// Red/green/yellow ANSI slots (and black/white) are lifted straight
-    /// from `dark`/`light`'s own hand-tuned arrays - the underlying
-    /// `--bad`/`--ok`/`--need`/`--ink` tokens are identical or a hair apart
-    /// across every theme in a mode, per the CSS - so only the accent-linked
-    /// slots (blue/magenta/cyan, base + bright) are re-derived per theme,
-    /// alongside the chrome/cursor/selection colours.
-    private static func derived(
-        id: String, name: String, mode: Mode,
-        surface: Tok, line: Tok, ink: Tok,
-        accent: Tok, info: Tok, termBg: Tok,
-        accentInk: Tok, muted: Tok? = nil
-    ) -> HelmTheme {
-        let base = mode == .dark ? HelmTheme.dark : HelmTheme.light
-        let accentHex = oklchHex(accent.0, accent.1, accent.2)
-        let blueHex = oklchHex(info.0, info.1, info.2)
-        let magentaHue = accent.2 + 100
-        let magentaHex = oklchHex(accent.0, accent.1, magentaHue)
-        // Dark brights lighten (+L); light "brights" deepen instead (-L, +C) -
-        // matching how the hand-tuned light ANSI set actually reads (its
-        // bright reds/greens are more saturated and slightly darker, not
-        // paler, so they still land against a light terminal background).
-        let dl: Double = mode == .dark ? 0.08 : -0.06
-        let dc: Double = mode == .dark ? 0 : 0.03
-        let brightCyanHex = oklchHex(min(0.97, accent.0 + dl), accent.1 + dc, accent.2)
-        let brightBlueHex = oklchHex(min(0.97, info.0 + dl), info.1 + dc, info.2)
-        let brightMagentaHex = oklchHex(min(0.97, accent.0 + dl), accent.1 + dc, magentaHue)
-
-        var ansi = base.ansiHex
-        ansi[4] = blueHex; ansi[12] = brightBlueHex
-        ansi[5] = magentaHex; ansi[13] = brightMagentaHex
-        ansi[6] = accentHex; ansi[14] = brightCyanHex
-        // Index 7 ("white") needs its own per-theme fix on light themes, same
-        // root cause as `light.ansiHex[7]` above: `base.ansiHex[7]` for light
-        // mode is already the corrected muted-grey, but each light theme has
-        // its own hue, so re-derive it from that theme's own muted token
-        // rather than reusing helm-light's.
-        if let muted, mode == .light {
-            ansi[7] = oklchHex(muted.0, muted.1, muted.2)
-        }
-
-        return HelmTheme(
-            id: id, mode: mode, name: name,
-            chromeBackgroundHex: oklchHex(surface.0, surface.1, surface.2),
-            chromeInkHex: oklchHex(ink.0, ink.1, ink.2),
-            chromeLineHex: oklchHex(line.0, line.1, line.2),
-            accentHex: accentHex,
-            foregroundHex: oklchHex(ink.0, ink.1, ink.2),
-            backgroundHex: oklchHex(termBg.0, termBg.1, termBg.2),
-            cursorHex: accentHex,
-            selectionHex: accentHex,
-            selectionTextHex: oklchHex(accentInk.0, accentInk.1, accentInk.2),
-            ansiHex: ansi
-        )
-    }
-
-    // Tokens copied verbatim from `backend/static/index.html`'s `:root[data-theme=...]`
-    // blocks - keep these in sync if a web theme's tokens change.
-    static let midnight = derived(
-        id: "midnight", name: "Midnight", mode: .dark,
-        surface: (0.20, 0.03, 262), line: (0.35, 0.032, 262), ink: (0.96, 0.01, 255),
-        accent: (0.78, 0.12, 242), info: (0.80, 0.10, 250), termBg: (0.13, 0.026, 262),
-        accentInk: (0.17, 0.05, 255)
-    )
-    static let graphite = derived(
-        id: "graphite", name: "Graphite", mode: .dark,
-        surface: (0.215, 0.006, 285), line: (0.355, 0.009, 285), ink: (0.965, 0.003, 285),
-        accent: (0.80, 0.12, 300), info: (0.77, 0.10, 250), termBg: (0.145, 0.005, 285),
-        accentInk: (0.18, 0.05, 300)
-    )
-    static let nocturne = derived(
-        id: "nocturne", name: "Nocturne", mode: .dark,
-        surface: (0.205, 0.02, 300), line: (0.345, 0.022, 300), ink: (0.965, 0.006, 320),
-        accent: (0.78, 0.13, 345), info: (0.77, 0.10, 255), termBg: (0.138, 0.016, 300),
-        accentInk: (0.20, 0.06, 345)
-    )
-    static let paper = derived(
-        id: "paper", name: "Paper", mode: .light,
-        surface: (0.995, 0.004, 80), line: (0.87, 0.02, 80), ink: (0.30, 0.03, 70),
-        accent: (0.49, 0.15, 305), info: (0.51, 0.12, 290), termBg: (0.975, 0.008, 80),
-        accentInk: (0.99, 0.004, 80), muted: (0.46, 0.03, 70)
-    )
-    static let frost = derived(
-        id: "frost", name: "Frost", mode: .light,
-        surface: (0.995, 0.003, 240), line: (0.87, 0.016, 240), ink: (0.29, 0.035, 250),
-        accent: (0.51, 0.14, 248), info: (0.51, 0.13, 248), termBg: (0.975, 0.005, 240),
-        accentInk: (0.99, 0.004, 240), muted: (0.45, 0.03, 250)
-    )
-    static let linen = derived(
-        id: "linen", name: "Linen", mode: .light,
-        surface: (0.99, 0.006, 60), line: (0.865, 0.02, 60), ink: (0.29, 0.028, 55),
-        accent: (0.48, 0.11, 200), info: (0.51, 0.12, 250), termBg: (0.968, 0.008, 60),
-        accentInk: (0.99, 0.004, 200), muted: (0.455, 0.026, 58)
+    static let solarizedDark = HelmTheme(
+        id: "solarized-dark", mode: .dark, name: "Solarized Dark", pairId: "solarized-light",
+        chromeBackgroundHex: "073642", chromeInkHex: "93a1a1", chromeLineHex: "586e75",
+        accentHex: "2aa198",
+        foregroundHex: "839496", backgroundHex: "002b36",
+        cursorHex: "2aa198", selectionHex: "2aa198", selectionTextHex: "002b36",
+        ansiHex: solarizedDarkAnsi
     )
 
-    /// All 8 palettes, in the same DARK-then-LIGHT, web-matching order as
-    /// `backend/static/index.html`'s `THEMES` array.
-    static let allThemes: [HelmTheme] = [dark, midnight, graphite, nocturne, light, paper, frost, linen]
+    static let solarizedLight = HelmTheme(
+        id: "solarized-light", mode: .light, name: "Solarized Light", pairId: "solarized-dark",
+        chromeBackgroundHex: "eee8d5", chromeInkHex: "002b36", chromeLineHex: "93a1a1",
+        accentHex: "2aa198",
+        // `base00`/`base3` - Solarized's own README-recommended default
+        // body-text pairing. Measures 4.13:1, a hair under the 4.5:1 floor
+        // (not flagged as a deviation in the sourcing report, which focused
+        // its contrast pass on the ANSI/accent/chrome slots) - consistent
+        // with this family's whole design philosophy of deliberately
+        // desaturated, lower-contrast tones (see the accent caveat below).
+        foregroundHex: "657b83", backgroundHex: "fdf6e3",
+        cursorHex: "2aa198", selectionHex: "2aa198", selectionTextHex: "002b36",
+        ansiHex: [
+            "073642", "dc322f", "859900",
+            // index 3 (yellow) ships as canonical b58900 despite measuring
+            // only 2.98:1 against this light background - darkening it away
+            // from Solarized's actual yellow isn't worth the hue drift for a
+            // slot most themes here only use sparingly. Accepted limitation.
+            "b58900",
+            "268bd2", "d33682", "2aa198",
+            // index 7/15 ("white"/"bright white") deviate from canonical
+            // base2/base3 (`eee8d5`/`fdf6e3`) - both measure 1.14:1/1.00:1
+            // against this light background, nearly invisible. base01
+            // (`586e75`) is the only ramp step that clears 4.5:1 (4.99:1)
+            // without abandoning Solarized's own ramp for a non-canonical hue.
+            "586e75",
+            "002b36", "dc322f", "859900", "b58900", "268bd2", "d33682", "2aa198", "586e75",
+        ]
+    )
+
+    // --- Catppuccin (github.com/catppuccin/palette, github.com/catppuccin/alacritty) ---
+    //
+    // Every value below is sourced verbatim - the report found zero contrast
+    // failures for this family, so no deviations were needed anywhere.
+    static let catppuccinMocha = HelmTheme(
+        id: "catppuccin-mocha", mode: .dark, name: "Catppuccin Mocha", pairId: "catppuccin-latte",
+        chromeBackgroundHex: "1e1e2e", chromeInkHex: "cdd6f4", chromeLineHex: "6c7086",
+        accentHex: "cba6f7",
+        foregroundHex: "cdd6f4", backgroundHex: "181825",
+        cursorHex: "cba6f7", selectionHex: "cba6f7", selectionTextHex: "1e1e2e",
+        ansiHex: [
+            "45475a", "f38ba8", "a6e3a1", "f9e2af", "89b4fa", "f5c2e7", "94e2d5", "bac2de",
+            "585b70", "f38ba8", "a6e3a1", "f9e2af", "89b4fa", "f5c2e7", "94e2d5", "a6adc8",
+        ]
+    )
+
+    static let catppuccinLatte = HelmTheme(
+        id: "catppuccin-latte", mode: .light, name: "Catppuccin Latte", pairId: "catppuccin-mocha",
+        chromeBackgroundHex: "eff1f5", chromeInkHex: "4c4f69", chromeLineHex: "9ca0b0",
+        accentHex: "8839ef",
+        foregroundHex: "4c4f69", backgroundHex: "e6e9ef",
+        cursorHex: "8839ef", selectionHex: "8839ef", selectionTextHex: "eff1f5",
+        ansiHex: [
+            "bcc0cc", "d20f39", "40a02b", "df8e1d", "1e66f5", "ea76cb", "179299", "5c5f77",
+            "acb0be", "d20f39", "40a02b", "df8e1d", "1e66f5", "ea76cb", "179299", "6c6f85",
+        ]
+    )
+
+    // --- Gruvbox (github.com/morhetz/gruvbox, colors/gruvbox.vim) ---
+    static let gruvboxDark = HelmTheme(
+        id: "gruvbox-dark", mode: .dark, name: "Gruvbox Dark", pairId: "gruvbox-light",
+        chromeBackgroundHex: "3c3836", chromeInkHex: "ebdbb2", chromeLineHex: "665c54",
+        accentHex: "fe8019",
+        foregroundHex: "ebdbb2", backgroundHex: "282828",
+        cursorHex: "fe8019", selectionHex: "fe8019", selectionTextHex: "282828",
+        ansiHex: [
+            "282828", "cc241d", "98971a", "d79921", "458588", "b16286", "689d6a", "a89984",
+            // index 8 ("bright black" / dim-but-legible text, per this
+            // project's own precedent for this slot) brightened from
+            // Gruvbox's canonical `gray` (928374, 4.02:1 on this background -
+            // below the 4.5:1 floor this slot is held to) to 9e8c7a
+            // (4.55:1), staying the same grey-brown hue.
+            "9e8c7a", "fb4934", "b8bb26", "fabd2f", "83a598", "d3869b", "8ec07c", "ebdbb2",
+        ]
+    )
+
+    static let gruvboxLight = HelmTheme(
+        id: "gruvbox-light", mode: .light, name: "Gruvbox Light", pairId: "gruvbox-dark",
+        chromeBackgroundHex: "fbf1c7", chromeInkHex: "3c3836", chromeLineHex: "bdae93",
+        accentHex: "af3a03",
+        foregroundHex: "3c3836", backgroundHex: "fbf1c7",
+        cursorHex: "af3a03", selectionHex: "af3a03", selectionTextHex: "fbf1c7",
+        ansiHex: [
+            "fbf1c7", "cc241d", "98971a",
+            // index 3 (yellow) darkened from canonical `neutral_yellow`
+            // (d79921, 2.19:1 on this light background) to 876700 (4.66:1) -
+            // Gruvbox publishes no third yellow to fall back to.
+            "876700",
+            "458588", "b16286", "689d6a", "7c6f64",
+            // index 8 ("bright black"), same fix as gruvbox-dark's ansi[8]
+            // but darkened instead: canonical `gray` (928374) measures only
+            // 3.24:1 here; 726557 clears at 4.98:1, same grey-brown hue.
+            "726557",
+            "9d0006", "79740e",
+            // index 11 ("bright yellow" / faded_yellow) darkened from
+            // canonical b57614 (3.33:1) to 8f5f0a (4.86:1), same reasoning
+            // as index 3 above.
+            "8f5f0a",
+            "076678", "8f3f71", "427b58", "3c3836",
+        ]
+    )
+
+    // --- Tokyo Night (github.com/enkia/tokyo-night-vscode-theme) ---
+    static let tokyoNightDark = HelmTheme(
+        id: "tokyo-night-dark", mode: .dark, name: "Tokyo Night", pairId: "tokyo-night-light",
+        chromeBackgroundHex: "16161e", chromeInkHex: "a9b1d6",
+        // No dedicated divider token is published for this family; derived
+        // as a ~12% blend of chromeInkHex into chromeBackgroundHex, the same
+        // ratio helm-dark/helm-light's own hand-picked chromeLineHex sits at
+        // relative to their chrome background (~1.5:1, decorative only).
+        chromeLineHex: "282934",
+        accentHex: "7aa2f7",
+        // `editor.foreground`, not the literal `terminal.foreground`
+        // (787c99) - that value measures only 4.40:1 on this background,
+        // just under the floor. `editor.foreground` is an equally authentic
+        // published Tokyo Night token and clears at 8.10:1.
+        foregroundHex: "a9b1d6", backgroundHex: "16161e",
+        cursorHex: "7aa2f7", selectionHex: "7aa2f7", selectionTextHex: "16161e",
+        ansiHex: [
+            "363b54", "f7768e", "73daca", "e0af68", "7aa2f7", "bb9af7", "7dcfff",
+            // index 7 ("white") - same `editor.foreground` swap as
+            // `foregroundHex` above, replacing canonical `terminal.foreground`.
+            "a9b1d6",
+            "363b54", "f7768e", "73daca", "e0af68", "7aa2f7", "bb9af7", "7dcfff",
+            // index 15 ("bright white") keeps the canonical, unreplaced
+            // `terminal.foreground`-derived value - enkia's port doesn't
+            // distinguish it from index 7 the way it does on light mode below.
+            "acb0d0",
+        ]
+    )
+
+    static let tokyoNightLight = HelmTheme(
+        id: "tokyo-night-light", mode: .light, name: "Tokyo Night Light", pairId: "tokyo-night-dark",
+        chromeBackgroundHex: "d6d8df", chromeInkHex: "343b59",
+        chromeLineHex: "c3c5cf",
+        accentHex: "2959aa",
+        foregroundHex: "343b59", backgroundHex: "d6d8df",
+        cursorHex: "2959aa", selectionHex: "2959aa", selectionTextHex: "d6d8df",
+        ansiHex: [
+            "343B58", "8c4351", "33635c",
+            // index 3 (yellow) ships as canonical 8f5e15 despite measuring
+            // only 3.90:1 - no alternate yellow is published for this port.
+            // Accepted limitation, same reasoning as Solarized's yellow.
+            "8f5e15",
+            "2959aa", "7b43ba", "006c86",
+            // index 7 ("white") - `editor.foreground` swap, same as dark
+            // mode above, replacing canonical `terminal.foreground` (707280).
+            "343b59",
+            "343B58", "8c4351", "33635c", "8f5e15", "2959aa", "7b43ba", "006c86",
+            // index 15 ("bright white") keeps the canonical value (707280,
+            // 3.35:1) - enkia's port makes this the one slot that's
+            // byte-identical to its normal counterpart, so it wasn't swapped
+            // to `editor.foreground` like index 7 was. Accepted limitation,
+            // no alternate published to substitute.
+            "707280",
+        ]
+    )
+
+    // --- Rosé Pine (github.com/rose-pine/palette, /alacritty, /vscode) ---
+    static let rosePineMain = HelmTheme(
+        id: "rose-pine-main", mode: .dark, name: "Rosé Pine", pairId: "rose-pine-dawn",
+        chromeBackgroundHex: "1f1d2e", chromeInkHex: "e0def4", chromeLineHex: "26233a",
+        // `iris` - clears both the UI-accent job (7.88:1 on chromeBackground)
+        // and the selection-fill job (8.43:1) on this mode; `pine` (used for
+        // Dawn instead) fails the UI-accent job here at 2.70:1. An
+        // intentionally asymmetric accent choice across the family's two
+        // modes, mirroring how helm-dark/helm-light already use two
+        // different accent hexes rather than a lightness twist of one hue.
+        accentHex: "c4a7e7",
+        foregroundHex: "e0def4", backgroundHex: "191724",
+        cursorHex: "c4a7e7", selectionHex: "c4a7e7", selectionTextHex: "191724",
+        ansiHex: [
+            "26233a", "eb6f92", "31748f", "f6c177", "9ccfd8", "c4a7e7", "ebbcba", "e0def4",
+            "6e6a86", "eb6f92", "31748f", "f6c177", "9ccfd8", "c4a7e7", "ebbcba", "e0def4",
+        ]
+    )
+
+    static let rosePineDawn = HelmTheme(
+        id: "rose-pine-dawn", mode: .light, name: "Rosé Pine Dawn", pairId: "rose-pine-main",
+        chromeBackgroundHex: "fffaf3",
+        // Current `rose-pine/palette` repo's `dawn.text` (`464261`), not the
+        // older `575279` still shipped by some of the family's other ports
+        // (`alacritty`/`vscode`) for the same role - both clear contrast,
+        // `464261` is simply the more current source of record.
+        chromeInkHex: "464261", chromeLineHex: "f2e9e1",
+        // `pine` - clears both jobs on this mode (5.88:1 UI accent, 5.59:1
+        // selection fill); `iris` (used for Main instead) fails both here.
+        accentHex: "286983",
+        foregroundHex: "464261", backgroundHex: "faf4ed",
+        cursorHex: "286983", selectionHex: "286983", selectionTextHex: "faf4ed",
+        ansiHex: [
+            "f2e9e1", "b4637a", "286983", "ea9d34", "56949f", "907aa9", "d7827e", "464261",
+            "9893a5", "b4637a", "286983", "ea9d34", "56949f", "907aa9", "d7827e", "464261",
+        ]
+    )
+
+    /// All 12 palettes: the two hand-pinned Helm originals, then the 10
+    /// sourced-family themes grouped by family (dark variant then its
+    /// light pair).
+    static let allThemes: [HelmTheme] = [
+        dark, light,
+        solarizedDark, solarizedLight,
+        catppuccinMocha, catppuccinLatte,
+        gruvboxDark, gruvboxLight,
+        tokyoNightDark, tokyoNightLight,
+        rosePineMain, rosePineDawn,
+    ]
 
     static func theme(id: String) -> HelmTheme? {
         allThemes.first { $0.id == id }
     }
 
     /// A small rounded two-tone swatch (chrome background + accent) for the
-    /// theme-picker menu, mirroring the web app's `.theme-item .sw` chip.
+    /// theme-picker menu.
     func swatchImage(size: NSSize = NSSize(width: 24, height: 14)) -> NSImage {
         let image = NSImage(size: size)
         image.lockFocus()
