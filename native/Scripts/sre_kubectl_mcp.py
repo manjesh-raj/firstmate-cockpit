@@ -13,14 +13,27 @@ resolved `ssh` argv for the bastion the captain is already connected to
 uses a saved key - see `SRELead.swift`'s `buildSSHArgv`).
 
 When the host config's `become_user` is set (`Host.becomeUser`, optional,
-per-host), the already-validated kubectl command is wrapped as
-`sudo su -c '<kubectl ...>' - <become_user>` before it's sent over SSH - see
-`_run_kubectl`. Unset (the default), behavior is unchanged. The `-c` option
-MUST precede `- <become_user>`: `su`'s own arg parser only recognizes
-options up to the point it hits `-`/the username, after which everything
-else is passed through unparsed as extra shell arguments (confirmed against
-util-linux `login-utils/su-common.c` and reproduced live against a real
-bastion - see `fm/cockpit-sre-lead-su-syntax-fix`).
+per-host), the already-validated kubectl command is piped into
+`sudo su - <become_user>`'s stdin, rather than passed as a `-c` argument -
+see `_run_kubectl`. Unset (the default), behavior is unchanged.
+
+**`su -c` was tried twice and failed on the captain's real bastion - do not
+reintroduce it.** `fm/cockpit-sre-lead-become-user` (PR #70) used
+`sudo su - <user> -c '<kubectl ...>'`; `fm/cockpit-sre-lead-su-syntax-fix`
+(PR #71) "fixed" the ordering to `sudo su -c '<kubectl ...>' - <user>` based
+on a correct reading of util-linux's `su` option-parsing order. Both were
+guesses validated only by static reasoning about `su`'s argv parser, and the
+captain then tested PR #71's fixed ordering directly on the real bastion:
+**`-c` was silently ignored entirely** - it dropped the captain into a live
+interactive shell as `<user>` instead of running the command. So this
+bastion's `su` does not honor `-c` reliably in that shape at all, regardless
+of argument order; the argv-flag approach is a dead end on this machine.
+What the captain confirmed *does* work, live: `echo '<kubectl ...>' | sudo su
+- <user>` - piping the command into the target shell's stdin. That is what
+`_run_kubectl` does now, via `subprocess.run`'s own `input=` parameter (not
+a shell-level `echo | ...` string, which would reintroduce the nested-quoting
+fragility this whole escalation path has been trying to avoid) - see
+`fm/cockpit-sre-lead-su-stdin-pipe`.
 
 Read-only enforcement lives HERE, not in the persona prompt: `_ALLOWED_VERBS`
 is the only set of kubectl subcommands this tool will ever exec, and
@@ -114,7 +127,7 @@ def _run_kubectl(subcommand, args, namespace):
         remote += ["-n", namespace]
     remote += args
 
-    # `ssh <same argv the interactive tab already uses> -- bash -lc '<kubectl ...>'`:
+    # `ssh <same argv the interactive tab already uses> -- bash -lc '<...>'`:
     # a second, independent connection to the same bastion. Forced through a
     # login shell (`bash -lc`) so it sources the same profile
     # (`.bash_profile`/`.profile`) the interactive tab already benefits from -
@@ -130,36 +143,28 @@ def _run_kubectl(subcommand, args, namespace):
     # `become_user` (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`):
     # on some bastions the login user this host connects as cannot run
     # `kubectl` at all - only a dedicated service user reached via
-    # `sudo su - <user>` can. This wraps the already-validated command
-    # string built above (never raw args - validation already ran on the
-    # unwrapped kubectl command, so nothing new can sneak past it here).
-    #
-    # The flags MUST precede `-`/<user>: `su`'s own synopsis is
-    # `su [options] [-] [<user> [<argument>...]]` (util-linux
-    # login-utils/su-common.c) - it parses options with a plain
-    # `getopt_long(argc, argv, "c:fg:G:lmpPTs:u:hVw:", ...)` (no leading
-    # `+`, so GNU permutation applies, but that is not guaranteed across
-    # every `su` build/libc `su` could be linked against), then afterwards
-    # walks whatever `optind` is left pointing at: a literal `-` token,
-    # then the username, then *everything else* is passed through
-    # unparsed as extra arguments to the target user's login shell. The
-    # original `sudo su - <user> -c '<kubectl ...>'` shape put `-c` and
-    # its argument AFTER the username - on any `su` build that does not
-    # permute (confirmed live against a real bastion by the captain: `su`
-    # reported the invocation as malformed, missing a command arg), `-c`
-    # and the command string are swallowed as plain positional shell
-    # arguments instead of being recognized as `su`'s own `--command`
-    # option. `su -c '<kubectl ...>' - <user>` puts the option strictly
-    # before any positional argument, so it parses correctly regardless of
-    # permutation behavior - this is also the exact order the synopsis
-    # documents (`[options]` before `[-] [<user> ...]`).
+    # `sudo su - <user>` can. Two prior attempts to deliver the kubectl
+    # command via `su -c '<kubectl ...>'` (in either argument order) both
+    # failed on the captain's real bastion - see the module docstring for
+    # the full evidence. What the captain confirmed works is piping the
+    # command into the target shell's stdin, so that's what happens here:
+    # the SSH command is just `bash -lc 'sudo su - <user>'` (no kubectl
+    # command embedded in argv at all), and the already-validated kubectl
+    # command string is handed to `subprocess.run` via `input=`, with a
+    # trailing newline so the remote shell actually executes it once read -
+    # matching the captain's own `echo '<cmd>' | sudo su - <user>` test.
+    stdin_input = None
     if become_user:
-        remote_cmd = f"sudo su -c {shlex.quote(remote_cmd)} - {shlex.quote(become_user)}"
+        shell_cmd = f"sudo su - {shlex.quote(become_user)}"
+        stdin_input = remote_cmd + "\n"
+    else:
+        shell_cmd = remote_cmd
 
-    full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", remote_cmd]
+    full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", shell_cmd]
     try:
         proc = subprocess.run(
-            full, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS
+            full, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS,
+            input=stdin_input,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"kubectl {subcommand} timed out after {_TIMEOUT_SECONDS}s"}
