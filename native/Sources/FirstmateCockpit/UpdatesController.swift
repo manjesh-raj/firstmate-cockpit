@@ -712,6 +712,12 @@ final class UpdatesController: NSViewController {
         row.trailingStack.spacing = 8
         row.trailingStack.alignment = .centerY
         row.trailingStack.translatesAutoresizingMaskIntoConstraints = false
+        // NSStackView's own horizontal hugging priority defaults lower than
+        // any arranged-subview priority set on its children, so without this
+        // the stack itself (not `textStack`) can end up absorbing `topRow`'s
+        // slack width - leaving the chevron short of the trailing edge.
+        row.trailingStack.setContentHuggingPriority(.required, for: .horizontal)
+        row.trailingStack.setContentCompressionResistancePriority(.required, for: .horizontal)
         for v in [row.pill, row.checkButton, row.updateButton, row.installInBootstrapButton, row.spinner, row.progressLabel] {
             v.setContentHuggingPriority(.required, for: .horizontal)
             v.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -739,6 +745,13 @@ final class UpdatesController: NSViewController {
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
         topRow.spacing = 8
+        // Default `.gravityAreas` distribution doesn't honor per-view hugging
+        // priorities to fill slack width - it just clusters arranged views at
+        // their natural size, leaving unclaimed space wherever Auto Layout's
+        // tie-breaking happens to land it. `.fill` is what actually makes
+        // `textStack`'s low hugging priority absorb the row's slack so the
+        // chevron stays pinned to the trailing edge.
+        topRow.distribution = .fill
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
         // Log (expandable, monospace, hidden until toggled)
