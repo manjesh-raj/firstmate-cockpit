@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The 8-theme picker menu (nav-redesign task, item 4): DARK/LIGHT group
 // headers, a swatch + name + checkmark per theme, exactly mirroring the web

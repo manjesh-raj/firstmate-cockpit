@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // "Firstmate Latest Updates" (the new `.updates` rail destination): the data
 // side. Every dependency in the captain's ecosystem is checked and updated by

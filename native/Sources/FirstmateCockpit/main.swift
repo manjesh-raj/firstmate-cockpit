@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app (Phase 2 entry point).
+// Manjesh Grand Line - native macOS app (Phase 2 entry point).
 //
 // One AppKit window whose content is `AppShellController` - the nav-redesign
 // task's icon rail + topbar + swappable body (Console/Home, Overview,
@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Firstmate Cockpit"
+        window.title = "Manjesh Grand Line"
         window.center()
         window.contentViewController = appShell
         // Theme-audit task: the window's own chrome (title bar) has no view

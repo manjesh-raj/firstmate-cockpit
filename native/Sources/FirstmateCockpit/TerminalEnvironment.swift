@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Child-process launch details for the two terminals, mirroring the choices the
 // Python backend makes in `backend/shell.py` and `backend/terminal.py`. Kept as

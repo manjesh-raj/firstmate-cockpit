@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The New/Edit Snippet sheet (design report Section B2, Section D Phase 3):
 // just a Label and a command text box - deliberately as small as the Termius

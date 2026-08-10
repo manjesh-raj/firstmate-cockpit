@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The native Settings panel (Fix 3) - rebuilt to match the richer web
 // cockpit layout (`backend/static/index.html`'s Settings screen): icon +

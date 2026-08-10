@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The paste-hardening terminal view. This is the Phase 1 subclass kept verbatim
 // (design report section 5.3): both Phase 2 tabs - the Shell and the tmux Mirror

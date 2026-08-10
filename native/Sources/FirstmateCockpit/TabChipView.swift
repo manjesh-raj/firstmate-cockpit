@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // One tab in the console's dynamic tab bar. A rounded chip with an editable name
 // label and a close button. Interaction (design report A4/A5):

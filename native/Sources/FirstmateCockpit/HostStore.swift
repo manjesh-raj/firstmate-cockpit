@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Host persistence. The native app had **zero** persistence before Phase 1
 // (config was env-var only, design report A2), so this is the first on-disk

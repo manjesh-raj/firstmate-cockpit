@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The port-forwarding rules sheet (design report Section B1, Section D Phase
 // 3): a rules list for a single host's Local (`-L`), Remote (`-R`), and

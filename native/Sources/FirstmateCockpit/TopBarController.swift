@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The top bar (nav-redesign task, item 4): always visible above the body
 // content regardless of which rail destination is active, carrying the

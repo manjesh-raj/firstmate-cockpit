@@ -1,7 +1,7 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Phase 2: a tabbed console surface hosting two SwiftTerm terminals - a real
 // login shell and a live mirror of the first mate's tmux session - with Helm

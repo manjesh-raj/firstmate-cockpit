@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // SSH key metadata persistence. Mirrors `HostStore` exactly: an in-memory
 // `[SSHKey]` backed by a JSON file, CRUD that persists on every mutation, not

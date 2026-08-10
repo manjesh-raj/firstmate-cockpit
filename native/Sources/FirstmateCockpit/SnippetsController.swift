@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The "Snippets" screen (design report Section B2 + B5, Section D Phase 3): a
 // saved-command library, managed from its own window in the same visual

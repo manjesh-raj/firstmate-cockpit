@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build Firstmate.app: a plain macOS app-bundle wrapper around the native
-# Swift cockpit (native/, SwiftTerm-based). No notarization, but the bundle is
-# codesigned with a stable local identity when one is available - see
-# "Local signing" below and native/README.md's "Local signing setup" section.
+# Build Manjesh Grand Line.app: a plain macOS app-bundle wrapper around the
+# native Swift cockpit (native/, SwiftTerm-based). No notarization, but the
+# bundle is codesigned with a stable local identity when one is available -
+# see "Local signing" below and native/README.md's "Local signing setup" section.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="Firstmate.app"
+APP_NAME="Manjesh Grand Line.app"
 DIST_DIR="../dist"
 APP_DIR="$DIST_DIR/$APP_NAME"
 EXECUTABLE_NAME="FirstmateCockpit"
@@ -36,9 +36,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Firstmate</string>
+    <string>Manjesh Grand Line</string>
     <key>CFBundleDisplayName</key>
-    <string>Firstmate</string>
+    <string>Manjesh Grand Line</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>

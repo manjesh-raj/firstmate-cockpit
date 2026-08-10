@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Fix 5 (fixes4): a brief, non-blocking success confirmation. Nothing like
 // this existed anywhere in the app before this fix - Save actions (hosts,

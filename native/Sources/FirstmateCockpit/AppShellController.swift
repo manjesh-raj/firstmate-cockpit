@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The window's root content view controller: a fixed `IconRailController` on
 // the left, and to its right a `TopBarController` (always visible) above a

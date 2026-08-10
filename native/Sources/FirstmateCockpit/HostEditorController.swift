@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The host-details editor (design report A2/A3, Section D Phase 1). The
 // Termius "New Host" fields - Label, Address, Port, Username, a credentials

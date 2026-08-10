@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Locates the firstmate home exactly like `backend/config.py`'s
 // `_find_fm_home` does, so the native Fleet dashboard (Fix 1) reads the same

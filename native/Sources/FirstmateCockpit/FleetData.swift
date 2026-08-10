@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Fix 1 (Overview): a Swift port of `backend/fleet.py`'s `snapshot()` and
 // `backend/openprs.py`'s `open_prs()` - the data the web cockpit's Fleet

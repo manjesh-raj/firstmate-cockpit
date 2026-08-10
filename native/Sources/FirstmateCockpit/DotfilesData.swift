@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Data side of the Bootstrap page's "Dotfiles & machine config" card and its
 // "Global agent instructions" verification section (cockpit-bootstrap-

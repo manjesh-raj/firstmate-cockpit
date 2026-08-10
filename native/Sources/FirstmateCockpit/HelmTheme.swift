@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The "Helm" terminal palette (design report section 9). The web cockpit's Helm
 // tokens are OKLCH, which SwiftTerm cannot consume, so these are the same tokens

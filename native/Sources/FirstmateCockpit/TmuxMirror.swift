@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The tmux grouped-session lifecycle for the Mirror tab, ported to Swift from
 // `backend/terminal.py` (`_setup_group` / `_teardown_group`). This keeps Phase 2

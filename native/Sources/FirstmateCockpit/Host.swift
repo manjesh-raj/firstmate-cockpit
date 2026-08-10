@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The SSH **host** model. Phase 1 of the connection-manager work (design report
 // `data/cockpit-ssh-manager-research/report.md`, Section A2/A3 + Section D

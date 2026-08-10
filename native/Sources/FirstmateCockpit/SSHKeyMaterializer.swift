@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Resolves a saved `SSHKey` into a file `ssh -i` can use. This is the one
 // place secret key material touches disk at all in this app, and only for as

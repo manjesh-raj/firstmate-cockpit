@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The primary nav rail (nav-redesign task, item 1): a narrow, fixed-width
 // icon-only column, mirroring the web app's icon rail
@@ -116,7 +116,7 @@ final class IconRailController: NSViewController {
         }
 
         let mark = NSImageView()
-        mark.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Firstmate Cockpit")
+        mark.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Manjesh Grand Line")
         mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .medium)
         mark.wantsLayer = true
         mark.layer?.cornerRadius = 10
@@ -166,7 +166,7 @@ final class IconRailController: NSViewController {
         avatar.font = .systemFont(ofSize: 13, weight: .semibold)
         avatar.target = self
         avatar.action = #selector(avatarClicked)
-        avatar.toolTip = "Firstmate Cockpit"
+        avatar.toolTip = "Manjesh Grand Line"
         avatar.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(mark)

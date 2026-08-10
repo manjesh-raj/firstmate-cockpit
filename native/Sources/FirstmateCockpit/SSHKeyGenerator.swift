@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Key generation and import inspection. Phase 2 (design report Section C3:
 // "prefer delegating ... rather than reimplementing crypto" - the same

@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Snippet persistence. Mirrors `HostStore`/`SSHKeyStore` exactly: an in-memory
 // `[Snippet]` backed by a JSON file, CRUD that persists on every mutation,

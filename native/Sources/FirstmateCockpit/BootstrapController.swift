@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // The `.bootstrap` rail destination. Phase 1 (cockpit-bootstrap-scaffold,
 // merged) was scaffold-only: a single "Firstmate home" card, laid out with
@@ -511,7 +511,7 @@ final class BootstrapController: NSViewController {
         saveButton.target = self
         saveButton.action = #selector(saveClicked)
 
-        restartButton.title = "Restart Firstmate Cockpit"
+        restartButton.title = "Restart Manjesh Grand Line"
         restartButton.bezelStyle = .rounded
         restartButton.target = self
         restartButton.action = #selector(restartClicked)
@@ -562,7 +562,7 @@ final class BootstrapController: NSViewController {
         }
         AppSettings.shared.fmHome = candidate.path
         pathField.stringValue = candidate.path
-        showStatus("Saved. Restart Firstmate Cockpit for the new home to take effect.", isError: false)
+        showStatus("Saved. Restart Manjesh Grand Line for the new home to take effect.", isError: false)
         restartButton.isHidden = false
         Toast.show(in: view, message: "Firstmate home saved")
     }

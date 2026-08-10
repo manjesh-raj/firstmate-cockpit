@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Settings > Terminal's "Bell & notifications" toggle (Fix 3): a real
 // background poll of the same task state `FleetController` reads, so a

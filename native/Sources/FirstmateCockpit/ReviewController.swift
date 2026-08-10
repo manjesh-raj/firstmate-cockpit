@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Fix 3 (theme-audit task): the real Review destination, replacing the
 // "coming soon" `PlaceholderViewController`. Same data source as Overview's

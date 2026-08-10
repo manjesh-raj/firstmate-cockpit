@@ -1,4 +1,4 @@
-// Firstmate Cockpit - native macOS app.
+// Manjesh Grand Line - native macOS app.
 //
 // Data side for Settings' "Touch ID for sudo" row (cockpit-settings-sudo-
 // touchid). `av harden sudo` (automic-vault/src/isotopes/hardeners/sudo.rs)
