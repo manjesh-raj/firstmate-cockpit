@@ -101,6 +101,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var logButton = NSButton()
     private let separator = NSView()
 
+    // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
+
+    /// Set by `connectSSHIfNeeded` for a dedicated host page - the same
+    /// resolved `hostArgs`/`keyID` the interactive ssh tab already uses,
+    /// kept around so a later SRE Lead toggle can open its own, independent
+    /// second connection to the same bastion without this controller having
+    /// to know anything else about the `Host` value itself.
+    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?)?
+
+    private enum SRELeadPhase { case notStarted, starting, ready, failed }
+    private var sreLeadPhase: SRELeadPhase = .notStarted
+    private var sreLeadSession: SRELeadSession?
+    private var sreLeadMirror: TmuxMirror?
+    private var sreLeadTerminal: CockpitTerminalView?
+    private var sreLeadButton: SRELeadStatusPill?
+
+    private let sreLeadPane = NSView()
+    private let sreLeadPaneSeparator = NSView()
+    private let sreLeadHeader = NSView()
+    private let sreLeadHeaderLabel = NSTextField(labelWithString: "SRE Lead")
+    private var sreLeadPaneWidthConstraint: NSLayoutConstraint!
+    private let sreLeadPaneWidth: CGFloat = 380
+
     /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5), then Settings > General's
     /// "Log sessions by default" toggle: when set, every newly started tab
     /// begins logging automatically. Re-read on every tab start (not cached)
@@ -124,6 +147,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         content.wantsLayer = true
         root.addSubview(content)
 
+        buildSRELeadPane()
+        root.addSubview(sreLeadPane)
+
+        sreLeadPaneWidthConstraint = sreLeadPane.widthAnchor.constraint(equalToConstant: 0)
+
         NSLayoutConstraint.activate([
             tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -131,9 +159,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tabBar.heightAnchor.constraint(equalToConstant: 42),
 
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            content.trailingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
             content.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            sreLeadPane.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            sreLeadPane.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            sreLeadPane.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            sreLeadPaneWidthConstraint,
         ])
 
         // The starting set: the pinned "Firstmate" host's Shell + Mirror pair,
@@ -199,7 +232,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
         logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
-        let tools = NSStackView(views: [findButton, zoomOutButton, zoomInButton, themeButton, logButton])
+
+        // SRE Lead (design brief Part C) is a dedicated-host-page-only
+        // affordance - the shared Firstmate console has no single host
+        // cluster to investigate.
+        var toolViews: [NSView] = []
+        if !isFirstmateConsole {
+            let pill = SRELeadStatusPill()
+            pill.onClick = { [weak self] in self?.toggleSRELead() }
+            sreLeadButton = pill
+            toolViews.append(pill)
+        }
+        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton, logButton]
+        let tools = NSStackView(views: toolViews)
         tools.orientation = .horizontal
         tools.spacing = 2
         tools.translatesAutoresizingMaskIntoConstraints = false
@@ -401,6 +446,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// second session to the same host still works via the tab chip's own
     /// Duplicate affordance (⌘D / `duplicateTab`).
     func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?) {
+        sreLeadHostContext = (hostArgs: args, keyID: keyID)
         guard tabs.isEmpty else { return }
         openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
     }
@@ -502,6 +548,156 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tab.mirror = nil
             tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m \(err.message)\r\n")
             tab.terminal.feed(text: "  \u{1b}[2mSet FM_MIRROR_TARGET to a live tmux target, then press ⌘R to reconnect.\u{1b}[0m\r\n")
+        }
+    }
+
+    // MARK: SRE Lead (design brief: Part B session lifecycle + Part C pane)
+
+    private func buildSRELeadPane() {
+        sreLeadPane.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadPane.wantsLayer = true
+        sreLeadPane.clipsToBounds = true
+
+        sreLeadPaneSeparator.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadPaneSeparator.wantsLayer = true
+        sreLeadPane.addSubview(sreLeadPaneSeparator)
+
+        sreLeadHeader.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadHeader.wantsLayer = true
+        sreLeadPane.addSubview(sreLeadHeader)
+
+        sreLeadHeaderLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sreLeadHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadHeader.addSubview(sreLeadHeaderLabel)
+
+        NSLayoutConstraint.activate([
+            sreLeadPaneSeparator.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            sreLeadPaneSeparator.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
+            sreLeadPaneSeparator.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+            sreLeadPaneSeparator.widthAnchor.constraint(equalToConstant: 1),
+
+            sreLeadHeader.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
+            sreLeadHeader.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            sreLeadHeader.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
+            sreLeadHeader.heightAnchor.constraint(equalToConstant: 32),
+
+            sreLeadHeaderLabel.leadingAnchor.constraint(equalTo: sreLeadHeader.leadingAnchor, constant: 12),
+            sreLeadHeaderLabel.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
+        ])
+    }
+
+    /// The toolbar pill's click action. Dedups exactly like
+    /// `connectSSHIfNeeded`'s `tabs.isEmpty` guard dedups a host reconnect:
+    /// a click while a spawn is already in flight (`.starting`) is ignored
+    /// rather than racing a second `SRELead.setUp`.
+    @objc private func toggleSRELead() {
+        switch sreLeadPhase {
+        case .starting:
+            return
+        case .ready:
+            tearDownSRELead()
+        case .notStarted, .failed:
+            startSRELead()
+        }
+    }
+
+    private func startSRELead() {
+        guard let context = sreLeadHostContext else { return }
+        sreLeadPhase = .starting
+        sreLeadButton?.setState(.starting)
+        sreLeadButton?.applyTheme(theme)
+        setSRELeadPaneOpen(true)
+
+        let hostArgs = context.hostArgs
+        let keyID = context.keyID
+        let keyStore = self.keyStore
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = SRELead.setUp(hostArgs: hostArgs, keyID: keyID, keyStore: keyStore)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let session):
+                    self.sreLeadSession = session
+                    self.attachSRELeadTerminal(to: session)
+                case .failure(let error):
+                    self.sreLeadPhase = .failed
+                    self.sreLeadButton?.setState(.failed)
+                    self.sreLeadButton?.applyTheme(self.theme)
+                    self.showSRELeadError(error.message)
+                }
+            }
+        }
+    }
+
+    private func attachSRELeadTerminal(to session: SRELeadSession) {
+        let term = sreLeadTerminal ?? makeSRELeadTerminal()
+        sreLeadTerminal = term
+        switch TmuxMirror.setUp(target: session.tmuxSessionName) {
+        case .success(let mirror):
+            sreLeadMirror = mirror
+            term.startProcess(
+                executable: mirror.tmuxPath, args: mirror.attachArgs,
+                environment: childEnvironment(), execName: nil, currentDirectory: shellCwd()
+            )
+            sreLeadPhase = .ready
+            sreLeadButton?.setState(.ready)
+            sreLeadButton?.applyTheme(theme)
+        case .failure(let err):
+            sreLeadPhase = .failed
+            sreLeadButton?.setState(.failed)
+            sreLeadButton?.applyTheme(theme)
+            showSRELeadError(err.message)
+        }
+    }
+
+    private func showSRELeadError(_ message: String) {
+        let term = sreLeadTerminal ?? makeSRELeadTerminal()
+        sreLeadTerminal = term
+        term.feed(text: "\r\n  \u{1b}[2m[SRE Lead]\u{1b}[0m \(message)\r\n")
+    }
+
+    /// Toggle-close (design brief Part B): kill the tmux session + `claude`
+    /// process and remove every scratch file `SRELead.setUp` wrote, exactly
+    /// like `TmuxMirror.tearDown()`/`cleanupSSHKeyTempFile` do for a regular
+    /// tab - nothing lingers. A later toggle-open starts a genuinely fresh
+    /// session rather than reattaching to anything.
+    private func tearDownSRELead() {
+        sreLeadMirror?.tearDown()
+        sreLeadMirror = nil
+        sreLeadTerminal?.terminate()
+        sreLeadTerminal?.removeFromSuperview()
+        sreLeadTerminal = nil
+        sreLeadSession?.tearDown()
+        sreLeadSession = nil
+        sreLeadPhase = .notStarted
+        sreLeadButton?.setState(.notStarted)
+        sreLeadButton?.applyTheme(theme)
+        setSRELeadPaneOpen(false)
+    }
+
+    private func makeSRELeadTerminal() -> CockpitTerminalView {
+        let term = CockpitTerminalView(frame: .zero)
+        term.translatesAutoresizingMaskIntoConstraints = false
+        term.processDelegate = self
+        term.font = currentFont()
+        term.terminal?.changeScrollback(scrollbackLines)
+        sreLeadPane.addSubview(term)
+        NSLayoutConstraint.activate([
+            term.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            term.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            term.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            term.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+        ])
+        theme.apply(to: term)
+        return term
+    }
+
+    private func setSRELeadPaneOpen(_ open: Bool) {
+        sreLeadPaneWidthConstraint.constant = open ? sreLeadPaneWidth : 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.allowsImplicitAnimation = true
+            view.layoutSubtreeIfNeeded()
         }
     }
 
@@ -626,6 +822,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         styleChips()
         updateLogButton()
+
+        sreLeadButton?.applyTheme(theme)
+        sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        sreLeadPaneSeparator.layer?.backgroundColor = line.cgColor
+        sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
+        sreLeadHeaderLabel.textColor = ink
+        if let term = sreLeadTerminal { theme.apply(to: term) }
     }
 
     private func styleChips() {
@@ -763,6 +966,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             cleanupSSHKeyTempFile(tab)
             tab.terminal.stopLogging()
         }
+        // Host-page disconnect (design brief Part B) - tear down the SRE
+        // Lead session the same way `tearDownSRELead()` does, just without
+        // the pane-close animation since this whole page may be on its way
+        // out already (a deleted host's page via
+        // `AppShellController.removeHostConsole`).
+        sreLeadMirror?.tearDown()
+        sreLeadMirror = nil
+        sreLeadSession?.tearDown()
+        sreLeadSession = nil
         if let themeObservation {
             ThemeManager.shared.unobserve(themeObservation)
             self.themeObservation = nil
@@ -809,6 +1021,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// a successful `rebuild.sh` exit used to be treated like a dropped
     /// shell, restarting the whole `darwin-rebuild switch` every 2 seconds.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
+        if source === sreLeadTerminal {
+            // The SRE Lead mirror (or the `claude` process behind it) ended
+            // unexpectedly - reset to a torn-down state so the pill reflects
+            // reality and a re-click starts a genuinely fresh session
+            // rather than reattaching to a dead one.
+            tearDownSRELead()
+            return
+        }
         guard let tab = tabs.first(where: { $0.terminal === source }) else { return }
         if tab.isClosing { return }
         tab.mirror?.tearDown()
