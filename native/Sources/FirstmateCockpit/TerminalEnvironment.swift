@@ -76,12 +76,27 @@ func childEnvironmentDict() -> [String: String] {
 
 // MARK: - Mirror target
 
-/// The first mate's tmux target the Mirror tab attaches to. Configurable via
-/// `FM_MIRROR_TARGET` (e.g. `firstmate` or `firstmate:1`), then the Settings >
-/// General "Mirror target" field, defaulting to the `firstmate` session.
-/// Pointing this at a specific window (`firstmate:<N>`) is also today's
-/// workaround for the mirror showing the wrong window's chrome - see the
-/// `TmuxMirror` doc comment.
+/// The first mate's own target the Mirror tab attaches to. Configurable via
+/// `FM_MIRROR_TARGET`, then the Settings > General "Mirror target" field;
+/// either override is honored verbatim regardless of backend, exactly as
+/// before this task. Absent an override, the default now follows firstmate's
+/// own resolved backend (`FirstmateBackend.resolve()`, cockpit-mirror-herdr-
+/// aware) instead of assuming tmux unconditionally:
+///
+/// - tmux (today's default, and every fleet before this task): the
+///   `firstmate` session, byte-identical to before.
+/// - herdr: the session firstmate's own ambient commands would target
+///   (`FirstmateBackend.herdrSessionName()`, `${HERDR_SESSION:-default}` -
+///   `default` on this captain's fleet, confirmed live). `HerdrMirror.setUp`
+///   resolves which PANE within that session to read; this function only
+///   resolves the session name, mirroring how the tmux default (`firstmate`)
+///   is a session name too, with `select-window`/`select-window`'s absence
+///   deciding the window the same way for both backends.
+///
+/// An explicit override can pin a specific pane for herdr with
+/// `<session>#<pane-id>` (see `HerdrMirror.splitTarget`) or a specific window
+/// for tmux with `<session>:<window>` (see `TmuxMirror.splitTarget`) -
+/// unchanged, since both are read by the mirror kind that's actually active.
 func mirrorTarget() -> String {
     let env = ProcessInfo.processInfo.environment
     if let t = env["FM_MIRROR_TARGET"], !t.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -89,6 +104,9 @@ func mirrorTarget() -> String {
     }
     if let saved = AppSettings.shared.mirrorTarget, !saved.trimmingCharacters(in: .whitespaces).isEmpty {
         return saved.trimmingCharacters(in: .whitespaces)
+    }
+    if FirstmateBackend.resolve() == .herdr {
+        return FirstmateBackend.herdrSessionName()
     }
     return "firstmate"
 }

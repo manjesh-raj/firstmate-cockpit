@@ -13,14 +13,34 @@
 
 import AppKit
 
+/// Which live mirror a `.mirror` tab is holding - `TmuxMirror` for a
+/// tmux-resolved fleet, `HerdrMirror` for a herdr-resolved one
+/// (cockpit-mirror-herdr-aware). `ConsoleController.connectMirror` picks the
+/// case by calling `FirstmateBackend.resolve()` once, at connect/reconnect
+/// time; nothing else in the console needs to know which backend is active,
+/// since both cases expose `tearDown()`.
+enum MirrorSession {
+    case tmux(TmuxMirror)
+    case herdr(HerdrMirror)
+
+    func tearDown() {
+        switch self {
+        case .tmux(let m): m.tearDown()
+        case .herdr(let m): m.tearDown()
+        }
+    }
+}
+
 /// How a tab's child process is (re)started. Kept as a value so duplicating a
 /// tab and reconnecting one both reduce to "launch this again".
 enum TabLaunch {
     /// A login shell (`$SHELL -l`), the Phase 1 terminal.
     case shell(executable: String, args: [String], cwd: String)
-    /// A live mirror of a first-mate tmux target. Each mirror tab sets up its
-    /// own grouped session on launch (see `TmuxMirror`), so duplicating a mirror
-    /// is safe - the two get different `cockpit_*` group names.
+    /// A live mirror of the first mate's own session, on whichever backend
+    /// firstmate itself resolves to (`FirstmateBackend.resolve()`) - tmux
+    /// (`TmuxMirror`) or herdr (`HerdrMirror`), see `TabModel.mirror`. Each
+    /// mirror tab sets up its own backend-appropriate session/process on
+    /// launch, so duplicating a mirror is safe.
     case mirror(target: String)
     /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
     /// manager. `ssh` is just another interactive PTY child (design report C1),
@@ -63,9 +83,10 @@ final class TabModel {
     /// screenshot-paste-into-Claude flow works on every tab.
     let terminal: CockpitTerminalView
 
-    /// The live grouped session for a mirror tab; `nil` for shells or a mirror
-    /// that failed to attach. Torn down on reconnect, close, and quit.
-    var mirror: TmuxMirror?
+    /// The live session for a mirror tab (tmux or herdr - see
+    /// `MirrorSession`); `nil` for shells or a mirror that failed to attach.
+    /// Torn down on reconnect, close, and quit.
+    var mirror: MirrorSession?
 
     /// Whether the child process has been started yet. Tabs created before the
     /// view is on screen defer their launch to `viewDidAppear`.
