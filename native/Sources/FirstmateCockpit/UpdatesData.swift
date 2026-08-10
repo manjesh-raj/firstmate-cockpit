@@ -20,6 +20,7 @@ enum DependencyKind {
     case herdr
     case noMistakes
     case firstmate
+    case docs
 
     var symbol: String {
         switch self {
@@ -28,6 +29,7 @@ enum DependencyKind {
         case .herdr: return "bolt.horizontal.circle"
         case .noMistakes: return "checkmark.shield"
         case .firstmate: return "sailboat"
+        case .docs: return "book.closed"
         }
     }
 }
@@ -55,11 +57,12 @@ enum DependencyCatalog {
         .init(id: "no-mistakes", name: "no-mistakes", category: "Other tools", kind: .noMistakes),
         .init(id: "firstmate", name: "firstmate", category: "Firstmate", kind: .firstmate),
         .init(id: "automic-vault", name: "Automic Vault", category: "Security", kind: .brewCask(cask: "automic-vault/isotopes/automic-vault")),
+        .init(id: "devops-playbook", name: "DevOps Playbook", category: "Documentation", kind: .docs),
     ]
 
     /// Category display order - `Dictionary`-grouping in `UpdatesController`
     /// would otherwise be unordered.
-    static let categoryOrder = ["npm packages", "Homebrew", "Other tools", "Firstmate", "Security"]
+    static let categoryOrder = ["npm packages", "Homebrew", "Other tools", "Firstmate", "Security", "Documentation"]
 
     /// Per-category tint for a row's `IconTileView` (mirrors the mockup's
     /// blue/red/violet tool-row tiles) - shared by `UpdatesController` and
@@ -71,6 +74,7 @@ enum DependencyCatalog {
         case "Homebrew": return .warn
         case "Other tools": return .neutral
         case "Security": return .violet
+        case "Documentation": return .info
         default: return .accent // Firstmate
         }
     }
@@ -191,6 +195,7 @@ enum UpdatesSource {
         case .herdr: return checkHerdr()
         case .noMistakes: return checkNoMistakes()
         case .firstmate: return checkFirstmate()
+        case .docs: return DocsSyncSource.check()
         }
     }
 
@@ -202,6 +207,7 @@ enum UpdatesSource {
         case .herdr: return updateHerdr()
         case .noMistakes: return updateNoMistakes()
         case .firstmate: return updateFirstmate()
+        case .docs: return DocsSyncSource.update()
         }
     }
 

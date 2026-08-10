@@ -24,8 +24,11 @@ import AppKit
 /// below the per-host icon block) regardless of case order here. `.bootstrap`
 /// (cockpit-bootstrap-scaffold) follows the identical convention, pinned
 /// between `.updates` and `.settings`.
+/// `.docs` (cockpit-docs-viewer) follows the identical convention too, pinned
+/// directly *above* `.updates` - so the bottom-anchored group reads Docs,
+/// Updates, Bootstrap, Settings, avatar.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, review, updates, bootstrap, settings
+    case overview, console, hosts, review, docs, updates, bootstrap, settings
 
     var symbol: String {
         switch self {
@@ -33,6 +36,7 @@ enum RailDestination: CaseIterable {
         case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
+        case .docs: return "book.closed"
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
         case .settings: return "gearshape"
@@ -45,6 +49,7 @@ enum RailDestination: CaseIterable {
         case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
+        case .docs: return "Docs"
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
         case .settings: return "Settings"
@@ -127,7 +132,7 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap {
+        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs {
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -138,12 +143,17 @@ final class IconRailController: NSViewController {
         hostsStack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(hostsStack)
 
-        // Updates (cockpit-native-updates-page) sits below the dynamic
-        // per-host icon block, directly above Bootstrap, which sits directly
-        // above Settings - which in turn sits directly above the avatar, per
-        // the captain's ask. All three are still real `RailDestination`
-        // cases for switching purposes; only their vertical position moves
-        // out of `navStack`.
+        // Docs (cockpit-docs-viewer) sits below the dynamic per-host icon
+        // block, directly above Updates, which sits directly above
+        // Bootstrap, which sits directly above Settings - which in turn sits
+        // directly above the avatar, per the captain's ask. All four are
+        // still real `RailDestination` cases for switching purposes; only
+        // their vertical position moves out of `navStack`.
+        let docsButton = railButton(for: .docs)
+        buttons[.docs] = docsButton
+        docsButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(docsButton)
+
         let updatesButton = railButton(for: .updates)
         buttons[.updates] = updatesButton
         updatesButton.translatesAutoresizingMaskIntoConstraints = false
@@ -187,6 +197,9 @@ final class IconRailController: NSViewController {
             hostsStack.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 10),
             hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
+            docsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+
             updatesButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
             updatesButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
@@ -203,6 +216,7 @@ final class IconRailController: NSViewController {
             settingsButton.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -14),
             bootstrapButton.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
             updatesButton.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
+            docsButton.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
         ])
 
         restyle(ThemeManager.shared.theme)

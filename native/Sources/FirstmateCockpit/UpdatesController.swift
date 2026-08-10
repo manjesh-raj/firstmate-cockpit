@@ -561,6 +561,7 @@ final class UpdatesController: NSViewController {
         case "npm packages": return "shippingbox"
         case "Homebrew": return "wrench.and.screwdriver"
         case "Other tools": return "gearshape.2"
+        case "Documentation": return "book.closed"
         default: return "sailboat"
         }
     }
