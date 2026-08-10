@@ -680,6 +680,9 @@ final class SettingsController: NSViewController {
             button.bezelStyle = .rounded
             button.isEnabled = !isHardeningSudo
             trailing = button
+        case .notEnabledNixDarwin:
+            desc += " This Mac is managed by nix-darwin, where /etc/pam.d/sudo_local is regenerated from your flake on every rebuild - add `security.pam.services.sudo_local.touchIdAuth = true;` to your dotfiles' configuration.nix, then run rebuild.sh."
+            trailing = rowLabel("Needs dotfiles change")
         case .pamNotConfigured:
             desc += " Not available on this Mac - /etc/pam.d/sudo doesn't include sudo_local."
             trailing = rowLabel("Unavailable")
