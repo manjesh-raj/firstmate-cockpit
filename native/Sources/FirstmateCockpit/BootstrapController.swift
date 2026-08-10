@@ -233,6 +233,20 @@ final class BootstrapController: NSViewController {
             case .software: return "Software checklist"
             }
         }
+
+        /// Mirrors the concept each step's own content already represents
+        /// elsewhere on this page (the home path field, the dotfiles repo
+        /// state, the AGENTS.md/CLAUDE.md symlinks, the software catalog) -
+        /// the stepper's own dot shows a number/checkmark, not an icon, so
+        /// there's no existing per-step icon to reuse verbatim.
+        var symbol: String {
+            switch self {
+            case .firstmateHome: return "house"
+            case .dotfiles: return "gearshape"
+            case .agentInstructions: return "doc.text"
+            case .software: return "checklist"
+            }
+        }
     }
 
     private enum SetupStepStatus: Equatable {
@@ -666,22 +680,35 @@ final class BootstrapController: NSViewController {
         progressFill.layer?.backgroundColor = HelmTheme.nsColor(theme.accentHex).cgColor
     }
 
+    /// Same shared `ToolRowLayout` as Software checklist/Managed items/Global
+    /// agent instructions (cockpit-bootstrap-row-width-parity) - no chevron/
+    /// log here either, since a setup step has nothing to expand. The detail
+    /// line reuses `stepDetail(for:)`, the same text the main stepper's own
+    /// per-step detail label already shows, rather than inventing new copy.
     private func setupStepRow(_ step: SetupStepState) -> NSView {
-        let titleLabel = NSTextField(labelWithString: step.kind.title)
-        titleLabel.font = .systemFont(ofSize: 11.5)
-        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        dynamicLabels.append(titleLabel)
+        let views = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView()
+        )
+        dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
 
         let (pillText, pillColor) = setupStatusVisuals(step.status)
-        let pill = statusPill(text: pillText, colorHex: pillColor)
-        pill.setContentHuggingPriority(.required, for: .horizontal)
-        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        let row = NSStackView(views: [titleLabel, pill])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
+        let row = ToolRowLayout.build(
+            views,
+            iconSymbol: step.kind.symbol,
+            tint: .neutral,
+            name: step.kind.title,
+            trailingViews: [views.pill],
+            identifier: step.kind.title,
+            showDetails: false
+        )
+        views.detailLabel.stringValue = stepDetail(for: step.kind)
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false)
 
         if case .failed(let reason) = step.status {
             let reasonLabel = NSTextField(wrappingLabelWithString: reason)
@@ -942,10 +969,21 @@ final class BootstrapController: NSViewController {
         detailLabel.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
         contentBox.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
 
+        leftColumn.setContentHuggingPriority(.required, for: .horizontal)
+        leftColumn.setContentCompressionResistancePriority(.required, for: .horizontal)
+        bodyStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bodyStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         let row = NSStackView(views: [leftColumn, bodyStack])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 14
+        // Default `.gravityAreas` distribution ignores hugging priorities for
+        // filling slack width (see the AppKit-gotchas note in this project's
+        // CLAUDE.md) - `.fill` is what makes `bodyStack` (and therefore its
+        // `stepContentBox`) actually absorb the row's full available width
+        // instead of shrinking to its content's natural size.
+        row.distribution = .fill
         leftColumn.heightAnchor.constraint(equalTo: bodyStack.heightAnchor).isActive = true
 
         stepRowViews[kind] = StepRowViews(dot: dot, line: line, titleLabel: titleLabel, chipContainer: chipContainer, chipLabel: chipLabel, detailLabel: detailLabel)
@@ -1222,24 +1260,35 @@ final class BootstrapController: NSViewController {
         return section
     }
 
+    /// Same shared `ToolRowLayout` (icon tile, name/detail line, pill) as the
+    /// Software checklist's rows (cockpit-bootstrap-row-width-parity) - these
+    /// items are read-only status with no action, so `showDetails: false`
+    /// omits the chevron/log portion `ToolRowLayout` also supports.
     private func managedItemRow(_ item: ManagedItem) -> NSView {
-        let pathLabel = NSTextField(labelWithString: "\(item.label) (\(item.path))")
-        pathLabel.font = .systemFont(ofSize: 11.5)
-        pathLabel.lineBreakMode = .byTruncatingTail
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        dynamicLabels.append(pathLabel)
+        let views = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView()
+        )
+        dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
 
         let (pillText, pillColor) = managedStatusVisuals(item.status)
-        let pill = statusPill(text: pillText, colorHex: pillColor)
+        ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        let row = NSStackView(views: [pathLabel, pill])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        pill.setContentHuggingPriority(.required, for: .horizontal)
-        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
-        return row
+        let view = ToolRowLayout.build(
+            views,
+            iconSymbol: "link",
+            tint: .neutral,
+            name: item.label,
+            trailingViews: [views.pill],
+            identifier: item.path,
+            showDetails: false
+        )
+        views.detailLabel.stringValue = item.path
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: item.status == .missing)
+        return view
     }
 
     private func managedStatusVisuals(_ status: ManagedItemStatus) -> (String, String) {
@@ -1275,34 +1324,41 @@ final class BootstrapController: NSViewController {
         }
     }
 
+    /// Same shared `ToolRowLayout` as `managedItemRow`/Software checklist.
+    /// "Create link" now behaves exactly like the Software checklist's
+    /// Install button (cockpit-bootstrap-software-row-parity): always
+    /// present, only disabled + relabeled once already linked, rather than
+    /// vanishing from the row entirely.
     private func agentInstructionRow(_ item: AgentInstructionsItem) -> NSView {
-        let pathLabel = NSTextField(labelWithString: "\(item.label) (\(item.path))")
-        pathLabel.font = .systemFont(ofSize: 11.5)
-        pathLabel.lineBreakMode = .byTruncatingTail
-        pathLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        dynamicLabels.append(pathLabel)
+        let views = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView()
+        )
+        dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
 
         let (pillText, pillColor) = agentStatusVisuals(item.status)
-        let pill = statusPill(text: pillText, colorHex: pillColor)
-        pill.setContentHuggingPriority(.required, for: .horizontal)
-        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        var trailing: [NSView] = [pill]
-        if item.status != .linked {
-            let button = NSButton(title: "Create link", target: self, action: #selector(createLinkClicked))
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.setContentHuggingPriority(.required, for: .horizontal)
-            button.setContentCompressionResistancePriority(.required, for: .horizontal)
-            trailing.append(button)
-        }
+        let button = NSButton(title: item.status == .linked ? "Linked" : "Create link", target: self, action: #selector(createLinkClicked))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.isEnabled = item.status != .linked
 
-        let row = NSStackView(views: [pathLabel] + trailing)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        return row
+        let view = ToolRowLayout.build(
+            views,
+            iconSymbol: "doc.text",
+            tint: .neutral,
+            name: item.label,
+            trailingViews: [views.pill, button],
+            identifier: item.path,
+            showDetails: false
+        )
+        views.detailLabel.stringValue = item.path
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: item.status == .notLinked)
+        return view
     }
 
     private func agentStatusVisuals(_ status: AgentInstructionsRow) -> (String, String) {
