@@ -134,6 +134,7 @@ enum SRELead {
         let hostConfigPath = scratchDir.appendingPathComponent("host-config.json")
         let mcpConfigPath = scratchDir.appendingPathComponent("mcp-config.json")
         let wrapperPath = scratchDir.appendingPathComponent("run-sre-lead.sh")
+        let env = childEnvironmentDict()
 
         do {
             let hostConfig: [String: Any] = ["ssh_executable": HostCatalog.sshExecutable, "ssh_argv": sshArgv]
@@ -160,8 +161,24 @@ enum SRELead {
             // pass. `exec`ing a single, already-quoted script file sidesteps
             // that entirely: tmux gets one argv token (the script path), no
             // re-parsing of our own arguments happens anywhere.
+            //
+            // The explicit `export PATH` below is not redundant with the
+            // `env:` passed to `TmuxMirror.run` further down, even though
+            // both come from the same `childEnvironmentDict()` call: tmux
+            // only captures its own global environment once, at the moment
+            // its *server* process first starts, from whichever client
+            // spawned it. A `new-session -d` against an already-running
+            // server (e.g. a leftover from a previous SRE Lead spawn)
+            // inherits that originally-captured environment, not this call's
+            // `env:` dict, unless the session overrides it itself - so
+            // without baking PATH into the script directly, `claude`'s own
+            // SessionStart hooks (`gh-axi`, `lavish-axi`,
+            // `chrome-devtools-axi`) can fail with "command not found" on
+            // every session after the first, however different the server's
+            // originally-captured PATH happens to be.
             let script = """
             #!/bin/bash
+            export PATH=\(shellQuote(env["PATH"] ?? ""))
             exec \(shellQuote(claude)) \\
               --mcp-config \(shellQuote(mcpConfigPath.path)) \\
               --strict-mcp-config \\
@@ -177,7 +194,6 @@ enum SRELead {
         }
 
         let sessionName = "fm_srelead_\(ProcessInfo.processInfo.processIdentifier)_\(String(format: "%04x", UInt16.random(in: 0...UInt16.max)))"
-        let env = childEnvironmentDict()
         guard let workingDir = resolveWorkingDirectory() else {
             try? FileManager.default.removeItem(at: scratchDir)
             if let keyTempPath { SSHKeyMaterializer.cleanup(privateKeyPath: keyTempPath) }
