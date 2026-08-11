@@ -2,9 +2,24 @@
 //
 // "SRE Lead": a locally-run Claude Code session, spawned per connected host
 // page, that investigates that host's Kubernetes cluster via one read-only
-// `kubectl` MCP tool (`native/Scripts/sre_kubectl_mcp.py`) run over a second
-// SSH connection to the same bastion the host page is already connected to -
-// never a local kubeconfig, never a credential on a separate machine.
+// `kubectl` MCP tool (`native/Scripts/sre_kubectl_mcp.py`).
+//
+// `fm/cockpit-sre-lead-shared-terminal` replaced this tool's whole execution
+// model. It used to open a *second*, independent SSH connection to the same
+// bastion (five attempts across PRs #70-73 plus an abandoned PTY
+// investigation, all trying to make that second connection complete the same
+// multi-hop, password-gated login chain the captain does by hand). The
+// captain then confirmed a hard constraint: the real "EKS Preprod Bastion"
+// host's EKS Bastion hop is username/password-gated *by policy* - no SSH key
+// auth is possible there - so a second, fully-automated connection can never
+// complete that chain; nothing can supply a password that isn't stored
+// anywhere, by design. The tool now runs kubectl inside the *same* already-
+// authenticated interactive tab the captain used to log all the way in, via
+// `SRELeadBridge` - see that file for the request/response protocol and
+// `sre_kubectl_mcp.py`'s module docstring for the Python side. This file no
+// longer knows anything about `ssh` argv, saved keys, or a host's
+// `startupSnippetID` - it only spawns the `claude` session and hands it the
+// bridge directory `SRELeadBridge` also watches.
 //
 // Lifecycle mirrors `TmuxMirror` deliberately: `SRELead.setUp` creates a
 // brand-new, uniquely-named detached tmux session running `claude` (not a
@@ -13,17 +28,14 @@
 // exactly the way the Mirror tab mirrors the real `firstmate` session -
 // `TmuxMirror.setUp(target: session.tmuxSessionName)` - so the rendering path
 // is the same `CockpitTerminalView`/grouped-session machinery, not a new one.
-// `tearDown()` kills the tmux session and every temp file this spawn wrote,
-// mirroring `TmuxMirror.tearDown()` and `SSHKeyMaterializer.cleanup`.
+// `tearDown()` kills the tmux session and removes the whole scratch directory
+// (wrapper script, MCP config, and the bridge directory's own request/
+// response files), mirroring `TmuxMirror.tearDown()`.
 //
 // Read-only enforcement is NOT here or in the persona prompt below - it is
 // enforced by `sre_kubectl_mcp.py` itself refusing any verb outside
 // `get`/`describe`/`logs`/`top`/`events` and validating every argument's
-// character set before it ever reaches `ssh`. This file's only security-
-// relevant job is choosing which host's `ssh` argv the tool is allowed to
-// run against, and it does that once, at spawn time, via a generated
-// per-session JSON config file (`SRE_LEAD_HOST_CONFIG`) - never a shared or
-// persisted credential.
+// character set before it ever reaches the shared terminal.
 
 import Foundation
 
@@ -31,35 +43,38 @@ struct SRELeadSetupError: Error {
     let message: String
 }
 
-/// A live SRE Lead session: the detached tmux session running `claude`, plus
-/// every scratch path this spawn created so `tearDown()` can remove them all.
+/// A live SRE Lead session: the detached tmux session running `claude`, the
+/// bridge directory its kubectl tool and `SRELeadBridge` both watch, and the
+/// scratch directory containing both so `tearDown()` can remove everything at
+/// once.
 struct SRELeadSession {
     /// The detached tmux session's name (mirrored into the pane via
     /// `TmuxMirror.setUp(target:)`, exactly like the Firstmate Mirror tab).
     let tmuxSessionName: String
 
+    /// Where `sre_kubectl_mcp.py` writes `request-<id>.json` and
+    /// `SRELeadBridge` writes `response-<id>.json` back - see
+    /// `SRELeadBridge.swift`'s header for the full protocol.
+    let bridgeDir: URL
+
     private let scratchDir: URL
-    private let sshKeyTempPath: String?
 
     /// Kill the tmux session (best-effort, mirrors `TmuxMirror.tearDown`),
     /// then remove this spawn's scratch directory (wrapper script, MCP
-    /// config, host config) and any materialized SSH key. Safe to call more
-    /// than once.
+    /// config, and the bridge directory - nothing lingers). Safe to call
+    /// more than once.
     func tearDown() {
         let env = childEnvironmentDict()
         if let tmux = TmuxMirror.resolveTmux() {
             _ = TmuxMirror.run(tmux, ["kill-session", "-t", tmuxSessionName], env: env)
         }
         try? FileManager.default.removeItem(at: scratchDir)
-        if let sshKeyTempPath {
-            SSHKeyMaterializer.cleanup(privateKeyPath: sshKeyTempPath)
-        }
     }
 
-    fileprivate init(tmuxSessionName: String, scratchDir: URL, sshKeyTempPath: String?) {
+    fileprivate init(tmuxSessionName: String, scratchDir: URL, bridgeDir: URL) {
         self.tmuxSessionName = tmuxSessionName
         self.scratchDir = scratchDir
-        self.sshKeyTempPath = sshKeyTempPath
+        self.bridgeDir = bridgeDir
     }
 }
 
@@ -73,68 +88,20 @@ enum SRELead {
     private static let persona = """
     You are the SRE Lead for this Kubernetes cluster, reporting to the captain (the human at the other end of this session).
 
-    You have exactly one tool: kubectl_readonly. It runs a read-only kubectl verb (get, describe, logs, top, or events) on the connected bastion over SSH. Any other verb is rejected by the tool itself, not by you - do not try to work around it, and do not suggest destructive commands as something the captain could run manually instead.
+    You have exactly one tool: kubectl_readonly. It runs a read-only kubectl verb (get, describe, logs, top, or events) in the captain's own already-connected terminal tab for this host. Any other verb is rejected by the tool itself, not by you - do not try to work around it, and do not suggest destructive commands as something the captain could run manually instead. The tool can occasionally fail with a "busy" error if the captain is actively typing in that tab, or if another call is already running - just wait a moment and retry once.
 
     When an investigation has genuinely independent parts (e.g. "check pod events" + "check node capacity" + "check recent logs" for one incident), delegate each part to a subagent (the Task tool) so they run in parallel, then synthesize what they found into ONE finding. The captain talks to you, not to your subagents - never relay raw tool output or a subagent's full transcript verbatim; give a short, direct diagnosis and the evidence that supports it.
 
     Be concise. This is an incident-investigation chat, not a report.
     """
 
-    /// Build the second SSH connection's argv: the exact same host argv the
-    /// interactive tab already uses (`Host.sshArguments(allHosts:)`), plus a
-    /// freshly materialized `-i <key>` when the host uses a saved key -
-    /// independent of whatever temp key file the interactive tab itself is
-    /// using, so this session's lifecycle (and cleanup) is entirely its own.
-    private static func buildSSHArgv(
-        hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore
-    ) -> (argv: [String], keyTempPath: String?) {
-        guard let keyID, let key = keyStore.key(id: keyID) else {
-            return (hostArgs, nil)
-        }
-        do {
-            let materialized = try SSHKeyMaterializer.materialize(key: key)
-            return (["-i", materialized.privateKeyPath] + hostArgs, materialized.privateKeyPath)
-        } catch {
-            // Same fallback the interactive tab takes: connect without -i
-            // rather than fail the whole session, since the system agent /
-            // known_hosts may still work.
-            return (hostArgs, nil)
-        }
-    }
-
-    /// Spawn a fresh SRE Lead session for `hostArgs`/`keyID` (the same values
-    /// `ConsoleController.connectSSHIfNeeded` already resolved for the
-    /// interactive tab). Writes this spawn's MCP config, host config, and a
+    /// Spawn a fresh SRE Lead session. Writes this spawn's MCP config and a
     /// wrapper script into a private scratch directory (avoids threading
     /// `claude`'s multi-line `--append-system-prompt` text through tmux's own
     /// shell-joining of its command argv - see the wrapper script comment
-    /// below), then creates the detached tmux session. `becomeUser`
-    /// (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`) is passed through
-    /// verbatim into the host config JSON as `become_user` - it never touches
-    /// this ssh argv itself, since the escalation happens on the remote side,
-    /// inside `sre_kubectl_mcp.py`'s `_run_kubectl`, after this session's own
-    /// interactive tab (and this SSH connection) already logged in normally.
-    ///
-    /// `startupSnippet` (`fm/cockpit-sre-lead-startup-snippet`, the resolved
-    /// command text for `Host.startupSnippetID`, looked up by the caller via
-    /// `SnippetStore` - this file has no store reference of its own) is passed
-    /// through the same way, as `startup_snippet`. **This is not optional
-    /// polish for some hosts - three prior attempts at `becomeUser` escalation
-    /// (`fm/cockpit-sre-lead-become-user`, `-su-syntax-fix`,
-    /// `-su-stdin-pipe`) all failed identically on the captain's real bastion
-    /// because `Host.sshArguments` alone only reaches a jump/gateway box
-    /// (`centos@...`), never the real target the interactive tab's own
-    /// `startupSnippetID` hops to afterward - so every one of those escalation
-    /// attempts ran on the wrong machine.** See `sre_kubectl_mcp.py`'s module
-    /// docstring and `_run_via_sequential_shell` for why the snippet has to
-    /// run first, over the same persistent shell, before the escalation and
-    /// kubectl command - not as a separate `ssh` invocation of its own, since
-    /// it depends on server-side aliases/config that exist only inside the
-    /// first hop's shell.
-    static func setUp(
-        hostArgs: [String], keyID: UUID?, keyStore: SSHKeyStore,
-        becomeUser: String? = nil, startupSnippet: String? = nil
-    ) -> Result<SRELeadSession, SRELeadSetupError> {
+    /// below), creates the bridge directory the MCP config points the
+    /// kubectl tool at, then creates the detached tmux session.
+    static func setUp() -> Result<SRELeadSession, SRELeadSetupError> {
         guard let tmux = TmuxMirror.resolveTmux() else {
             return .failure(SRELeadSetupError(message: "tmux not found on PATH (looked in Homebrew/usr paths)."))
         }
@@ -146,38 +113,27 @@ enum SRELead {
         }
         let python = resolvePython3() ?? "/usr/bin/python3"
 
-        let (sshArgv, keyTempPath) = buildSSHArgv(hostArgs: hostArgs, keyID: keyID, keyStore: keyStore)
-
         let scratchDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("fm-sre-lead-\(UUID().uuidString)", isDirectory: true)
+        let bridgeDir = scratchDir.appendingPathComponent("bridge", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: scratchDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try FileManager.default.createDirectory(at: bridgeDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         } catch {
             return .failure(SRELeadSetupError(message: "could not create scratch directory: \(error.localizedDescription)"))
         }
 
-        let hostConfigPath = scratchDir.appendingPathComponent("host-config.json")
         let mcpConfigPath = scratchDir.appendingPathComponent("mcp-config.json")
         let wrapperPath = scratchDir.appendingPathComponent("run-sre-lead.sh")
         let env = childEnvironmentDict()
 
         do {
-            var hostConfig: [String: Any] = ["ssh_executable": HostCatalog.sshExecutable, "ssh_argv": sshArgv]
-            if let becomeUser, !becomeUser.isEmpty {
-                hostConfig["become_user"] = becomeUser
-            }
-            if let startupSnippet, !startupSnippet.isEmpty {
-                hostConfig["startup_snippet"] = startupSnippet
-            }
-            try JSONSerialization.data(withJSONObject: hostConfig, options: [.prettyPrinted])
-                .write(to: hostConfigPath)
-
             let mcpConfig: [String: Any] = [
                 "mcpServers": [
                     "sre-kubectl": [
                         "command": python,
                         "args": [scriptPath],
-                        "env": ["SRE_LEAD_HOST_CONFIG": hostConfigPath.path],
+                        "env": ["SRE_LEAD_BRIDGE_DIR": bridgeDir.path],
                     ]
                 ]
             ]
@@ -227,7 +183,6 @@ enum SRELead {
         let sessionName = "fm_srelead_\(ProcessInfo.processInfo.processIdentifier)_\(String(format: "%04x", UInt16.random(in: 0...UInt16.max)))"
         guard let workingDir = resolveWorkingDirectory() else {
             try? FileManager.default.removeItem(at: scratchDir)
-            if let keyTempPath { SSHKeyMaterializer.cleanup(privateKeyPath: keyTempPath) }
             return .failure(SRELeadSetupError(message: "could not create SRE Lead working directory."))
         }
         // `-c <workingDir>`, not the scratch dir the wrapper script itself
@@ -244,13 +199,12 @@ enum SRELead {
         let created = TmuxMirror.run(tmux, ["new-session", "-d", "-s", sessionName, "-c", workingDir.path, wrapperPath.path], env: env)
         if created.status != 0 {
             try? FileManager.default.removeItem(at: scratchDir)
-            if let keyTempPath { SSHKeyMaterializer.cleanup(privateKeyPath: keyTempPath) }
             let detail = created.stderr.isEmpty ? "tmux could not start the session" : created.stderr
             return .failure(SRELeadSetupError(message: detail))
         }
         _ = TmuxMirror.run(tmux, ["set-option", "-t", sessionName, "status", "off"], env: env)
 
-        return .success(SRELeadSession(tmuxSessionName: sessionName, scratchDir: scratchDir, sshKeyTempPath: keyTempPath))
+        return .success(SRELeadSession(tmuxSessionName: sessionName, scratchDir: scratchDir, bridgeDir: bridgeDir))
     }
 
     /// Single-quote `s` for embedding as one literal argv token in the

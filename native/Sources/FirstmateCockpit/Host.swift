@@ -77,17 +77,6 @@ struct Host: Codable, Identifiable, Equatable {
     /// only ever carries the id, never the command text.
     var startupSnippetID: UUID?
 
-    /// SRE Lead escalation target (`fm/cockpit-sre-lead-become-user`): on some
-    /// bastions the login user this host connects as cannot run `kubectl`
-    /// directly - only a dedicated service user reached via `sudo su -
-    /// <becomeUser>` can. Used exclusively by SRE Lead's kubectl MCP tool
-    /// (`sre_kubectl_mcp.py`), never by the interactive ssh tab itself; `nil`
-    /// (the default) means run `kubectl` as the login user, unchanged from
-    /// before this field existed. Only safe to set when both `sudo` and `su`
-    /// are passwordless for this host's login user - see the SRE Lead bullet
-    /// in `AGENTS.md` for why that makes a non-interactive escalation safe.
-    var becomeUser: String?
-
     /// A typed-in password. **Session-only** - excluded from `CodingKeys`, so it
     /// is never written to disk (Phase 2 owns secure secret storage). Plain
     /// `ssh` prompts for it interactively on the PTY regardless.
@@ -96,7 +85,7 @@ struct Host: Codable, Identifiable, Equatable {
     /// Everything persisted - note `password` is intentionally absent.
     private enum CodingKeys: String, CodingKey {
         case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags,
-             agentForward, jumpVia, portForwards, startupSnippetID, becomeUser
+             agentForward, jumpVia, portForwards, startupSnippetID
     }
 
     /// The full `ssh` argument vector for this host, minus any identity file

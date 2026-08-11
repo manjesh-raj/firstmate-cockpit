@@ -103,20 +103,18 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
 
-    /// Set by `connectSSHIfNeeded` for a dedicated host page - the same
-    /// resolved `hostArgs`/`keyID` the interactive ssh tab already uses,
-    /// kept around so a later SRE Lead toggle can open its own, independent
-    /// second connection to the same bastion without this controller having
-    /// to know anything else about the `Host` value itself. `startupSnippetID`
-    /// (`fm/cockpit-sre-lead-startup-snippet`) is carried through the same way
-    /// - see `startSRELead()`, which resolves it to command text via
-    /// `snippetStore` right before spawning, the same lookup
-    /// `runStartupSnippet` already does for the interactive tab.
-    private var sreLeadHostContext: (hostArgs: [String], keyID: UUID?, becomeUser: String?, startupSnippetID: UUID?)?
+    /// Set by `connectSSHIfNeeded` for a dedicated host page - the one
+    /// interactive ssh tab the captain used to log all the way into this
+    /// host, and the only tab `SRELeadBridge` is ever allowed to inject
+    /// commands into (`fm/cockpit-sre-lead-shared-terminal`). Weak: if that
+    /// tab is ever closed, the bridge should fail clearly ("tab no longer
+    /// available") rather than guess at a different one.
+    private weak var primarySSHTab: TabModel?
 
     private enum SRELeadPhase { case notStarted, starting, ready, failed }
     private var sreLeadPhase: SRELeadPhase = .notStarted
     private var sreLeadSession: SRELeadSession?
+    private var sreLeadBridge: SRELeadBridge?
     private var sreLeadMirror: TmuxMirror?
     private var sreLeadTerminal: CockpitTerminalView?
     private var sreLeadButton: SRELeadStatusPill?
@@ -453,10 +451,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// part) instead of implicitly stacking a second tab. A deliberate
     /// second session to the same host still works via the tab chip's own
     /// Duplicate affordance (⌘D / `duplicateTab`).
-    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?, becomeUser: String? = nil) {
-        sreLeadHostContext = (hostArgs: args, keyID: keyID, becomeUser: becomeUser, startupSnippetID: startupSnippetID)
+    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?) {
         guard tabs.isEmpty else { return }
         openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+        // The tab `openSSH` just appended is this page's one primary
+        // interactive tab (`tabs` was empty a moment ago) - the only tab
+        // `SRELeadBridge` will ever inject commands into. A later ⌘D on this
+        // tab can create a second ssh tab, but `primarySSHTab` deliberately
+        // keeps pointing at this first one rather than guessing between them.
+        primarySSHTab = tabs.first
     }
 
     /// Re-focus whichever tab is already current, without touching the tab
@@ -640,32 +643,27 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     private func startSRELead() {
-        guard let context = sreLeadHostContext else { return }
+        guard let targetTab = primarySSHTab else {
+            sreLeadPhase = .failed
+            sreLeadButton?.setState(.failed)
+            sreLeadButton?.applyTheme(theme)
+            showSRELeadError("No connected interactive tab for this host yet - connect first, then try SRE Lead again.")
+            return
+        }
         sreLeadPhase = .starting
         sreLeadButton?.setState(.starting)
         sreLeadButton?.applyTheme(theme)
         setSRELeadPaneOpen(true)
 
-        let hostArgs = context.hostArgs
-        let keyID = context.keyID
-        let becomeUser = context.becomeUser
-        let keyStore = self.keyStore
-        // Resolved here, on the main thread, the same lookup
-        // `runStartupSnippet` already does for the interactive tab - a host's
-        // `startupSnippetID` only ever carries an id, never command text (see
-        // `Host.swift`), and `SRELead.setUp` needs the actual text to hand to
-        // the bastion, not a `SnippetStore` reference of its own.
-        let startupSnippet = context.startupSnippetID.flatMap { snippetStore.snippet(id: $0) }?.command
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = SRELead.setUp(
-                hostArgs: hostArgs, keyID: keyID, keyStore: keyStore,
-                becomeUser: becomeUser, startupSnippet: startupSnippet
-            )
+            let result = SRELead.setUp()
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let session):
                     self.sreLeadSession = session
+                    self.sreLeadBridge = SRELeadBridge(bridgeDir: session.bridgeDir, target: targetTab)
+                    self.sreLeadBridge?.start()
                     self.attachSRELeadTerminal(to: session)
                 case .failure(let error):
                     self.sreLeadPhase = .failed
@@ -710,6 +708,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// tab - nothing lingers. A later toggle-open starts a genuinely fresh
     /// session rather than reattaching to anything.
     private func tearDownSRELead() {
+        sreLeadBridge?.stop()
+        sreLeadBridge = nil
         sreLeadMirror?.tearDown()
         sreLeadMirror = nil
         sreLeadTerminal?.terminate()
@@ -1019,6 +1019,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // the pane-close animation since this whole page may be on its way
         // out already (a deleted host's page via
         // `AppShellController.removeHostConsole`).
+        sreLeadBridge?.stop()
+        sreLeadBridge = nil
         sreLeadMirror?.tearDown()
         sreLeadMirror = nil
         sreLeadSession?.tearDown()
