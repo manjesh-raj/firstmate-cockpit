@@ -165,6 +165,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         label.font = .systemFont(ofSize: 12.5)
         label.translatesAutoresizingMaskIntoConstraints = false
         label.lineBreakMode = .byWordWrapping
+        label.isSelectable = true
 
         let container = NSView()
         container.wantsLayer = true
@@ -246,13 +247,18 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// A non-editable, word-wrapping label showing pre-built attributed text
-    /// - `NSTextField(wrappingLabelWithString:)` only accepts a plain
-    /// `String`, so mixed bold/code runs need this manual equivalent instead.
+    /// A non-editable but selectable, word-wrapping label showing pre-built
+    /// attributed text - `NSTextField(wrappingLabelWithString:)` only
+    /// accepts a plain `String`, so mixed bold/code runs need this manual
+    /// equivalent instead. `isSelectable = true` (with `isEditable` left
+    /// false) is what makes click-drag-select + Cmd-C and the right-click
+    /// Copy menu work on this text - an `NSTextField` defaults to
+    /// non-selectable, which is why none of this pane's text could be
+    /// selected before this fix.
     private func wrappingLabel(_ text: NSAttributedString) -> NSTextField {
         let label = NSTextField()
         label.isEditable = false
-        label.isSelectable = false
+        label.isSelectable = true
         label.isBordered = false
         label.drawsBackground = false
         label.lineBreakMode = .byWordWrapping
@@ -328,6 +334,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         label.translatesAutoresizingMaskIntoConstraints = false
         label.lineBreakMode = .byWordWrapping
+        label.isSelectable = true
 
         let panel = NSView()
         panel.wantsLayer = true
