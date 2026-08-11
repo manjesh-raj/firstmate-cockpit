@@ -11,6 +11,17 @@
 // This view knows nothing about `claude`, MCP, or the bridge - it only
 // renders `SRELeadMessage` values `ConsoleController` appends (from
 // `SRELeadRunner`'s callbacks) and reports submitted text via `onSubmit`.
+//
+// `fm/cockpit-sre-lead-reply-formatting`: an assistant message used to be one
+// plain `NSTextField(wrappingLabelWithString:)` - no bold, no code, no lists,
+// even when the reply text already contained that markdown, which was the
+// captain's exact complaint ("no highlights, no bold, no blocks"). An
+// assistant message's text is now parsed by `SRELeadMarkdown.parse` into
+// blocks (paragraph/bulletList/codeBlock/callout) and each block gets its own
+// small AppKit view - see `renderBlock(_:)` below. User/status/error messages
+// are unchanged (plain text - a captain's own typed question, or a short
+// internal status/error string, neither of which carries the persona's
+// markdown convention).
 
 import AppKit
 
@@ -147,6 +158,9 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     }
 
     private func messageBlock(for message: SRELeadMessage) -> NSView {
+        if message.role == .assistant {
+            return assistantBlock(for: message.text)
+        }
         let label = NSTextField(wrappingLabelWithString: message.text)
         label.font = .systemFont(ofSize: 12.5)
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -176,8 +190,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
             label.textColor = ink
             label.font = .systemFont(ofSize: 12.5, weight: .medium)
         case .assistant:
-            container.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-            label.textColor = ink
+            break // handled by assistantBlock(for:) instead
         case .status:
             container.layer?.backgroundColor = .clear
             label.textColor = muted
@@ -186,6 +199,191 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
             container.layer?.backgroundColor = HelmTheme.nsColor(theme.ansiHex[1]).withAlphaComponent(0.14).cgColor
             label.textColor = HelmTheme.nsColor(theme.ansiHex[1])
         }
+    }
+
+    // MARK: Markdown rendering (assistant messages only)
+
+    /// An assistant message's container: same rounded/tinted chrome the plain
+    /// `.assistant` case used to apply directly to one label, now wrapping a
+    /// vertical stack of per-block views from `SRELeadMarkdown.parse`.
+    private func assistantBlock(for text: String) -> NSView {
+        let blockStack = NSStackView()
+        blockStack.orientation = .vertical
+        blockStack.alignment = .leading
+        blockStack.spacing = 8
+        blockStack.translatesAutoresizingMaskIntoConstraints = false
+        for block in SRELeadMarkdown.parse(text) {
+            let view = renderBlock(block)
+            blockStack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: blockStack.widthAnchor).isActive = true
+        }
+
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(blockStack)
+        NSLayoutConstraint.activate([
+            blockStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            blockStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            blockStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            blockStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+        ])
+        return container
+    }
+
+    private func renderBlock(_ block: SRELeadMarkdownBlock) -> NSView {
+        switch block {
+        case .paragraph(let runs):
+            return wrappingLabel(attributedInline(runs))
+        case .bulletList(let items):
+            return bulletListView(items)
+        case .codeBlock(let code):
+            return codeBlockView(code)
+        case .callout(let kind, let runs):
+            return calloutView(kind: kind, runs: runs)
+        }
+    }
+
+    /// A non-editable, word-wrapping label showing pre-built attributed text
+    /// - `NSTextField(wrappingLabelWithString:)` only accepts a plain
+    /// `String`, so mixed bold/code runs need this manual equivalent instead.
+    private func wrappingLabel(_ text: NSAttributedString) -> NSTextField {
+        let label = NSTextField()
+        label.isEditable = false
+        label.isSelectable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        label.attributedStringValue = text
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    /// Renders inline runs into one attributed string: bold text gets a
+    /// semibold weight, code spans get a monospace font plus a subtle tinted
+    /// background (`theme.chromeLineHex`, the same "line/border" token every
+    /// other themed view already uses for subtle chrome - not a new literal
+    /// color), everything else the base ink color at the base weight.
+    private func attributedInline(_ runs: [SRELeadInlineRun], baseSize: CGFloat = 12.5) -> NSAttributedString {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let codeBackground = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.35)
+        let result = NSMutableAttributedString()
+        for run in runs {
+            var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: ink]
+            if run.code {
+                attributes[.font] = NSFont.monospacedSystemFont(ofSize: baseSize - 1, weight: .regular)
+                attributes[.backgroundColor] = codeBackground
+            } else if run.bold {
+                attributes[.font] = NSFont.systemFont(ofSize: baseSize, weight: .semibold)
+            } else {
+                attributes[.font] = NSFont.systemFont(ofSize: baseSize)
+            }
+            result.append(NSAttributedString(string: run.text, attributes: attributes))
+        }
+        return result
+    }
+
+    private func bulletListView(_ items: [[SRELeadInlineRun]]) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        for item in items {
+            let bullet = NSTextField(labelWithString: "\u{2022}")
+            bullet.font = .systemFont(ofSize: 12.5)
+            bullet.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+            bullet.translatesAutoresizingMaskIntoConstraints = false
+            bullet.setContentHuggingPriority(.required, for: .horizontal)
+            bullet.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+            let body = wrappingLabel(attributedInline(item))
+
+            let row = NSStackView(views: [bullet, body])
+            row.orientation = .horizontal
+            row.alignment = .top
+            row.spacing = 6
+            row.distribution = .fill
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return stack
+    }
+
+    /// A fenced code block: monospace text on a subtly tinted, rounded
+    /// panel - `theme.chromeLineHex` again, at a slightly stronger alpha than
+    /// an inline code span since this is the block's whole background, not
+    /// a small highlight behind a few characters.
+    private func codeBlockView(_ code: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: code)
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.lineBreakMode = .byWordWrapping
+
+        let panel = NSView()
+        panel.wantsLayer = true
+        panel.layer?.cornerRadius = 6
+        panel.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.22).cgColor
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: panel.topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6),
+        ])
+        return panel
+    }
+
+    /// The Finding/Recommended-next-action blocks' distinct callout styling
+    /// (beyond plain bold): a small house-style pill (`ToolRowLayout.pill`,
+    /// the same pill every Updates/Bootstrap row status already uses) as the
+    /// label, over the body text, on a rounded panel tinted with the same hue
+    /// as the pill. Finding gets `.accent` (the app's own "this is the
+    /// headline" hue); Recommended next action gets `.good` (green, reads as
+    /// "the actionable step") - both resolved against the active theme's own
+    /// hues via `HelmTint`, never a literal color.
+    private func calloutView(kind: SRELeadCalloutKind, runs: [SRELeadInlineRun]) -> NSView {
+        let tint: HelmTint = kind == .finding ? .accent : .good
+        let colorHex = tint.hex(in: theme)
+
+        let pill = NSView()
+        let pillLabel = NSTextField(labelWithString: "")
+        ToolRowLayout.pill(text: kind.label, colorHex: colorHex, into: pill, label: pillLabel)
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let body = wrappingLabel(attributedInline(runs))
+
+        let inner = NSStackView(views: [pill, body])
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = 6
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        body.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+
+        let panel = NSView()
+        panel.wantsLayer = true
+        panel.layer?.cornerRadius = 8
+        panel.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.12).cgColor
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 10),
+            inner.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -10),
+            inner.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8),
+            inner.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -8),
+        ])
+        return panel
     }
 
     @objc private func submit() {
