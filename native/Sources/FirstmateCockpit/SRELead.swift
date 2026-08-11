@@ -4,38 +4,48 @@
 // page, that investigates that host's Kubernetes cluster via one read-only
 // `kubectl` MCP tool (`native/Scripts/sre_kubectl_mcp.py`).
 //
-// `fm/cockpit-sre-lead-shared-terminal` replaced this tool's whole execution
-// model. It used to open a *second*, independent SSH connection to the same
-// bastion (five attempts across PRs #70-73 plus an abandoned PTY
-// investigation, all trying to make that second connection complete the same
-// multi-hop, password-gated login chain the captain does by hand). The
-// captain then confirmed a hard constraint: the real "EKS Preprod Bastion"
-// host's EKS Bastion hop is username/password-gated *by policy* - no SSH key
-// auth is possible there - so a second, fully-automated connection can never
-// complete that chain; nothing can supply a password that isn't stored
-// anywhere, by design. The tool now runs kubectl inside the *same* already-
-// authenticated interactive tab the captain used to log all the way in, via
-// `SRELeadBridge` - see that file for the request/response protocol and
-// `sre_kubectl_mcp.py`'s module docstring for the Python side. This file no
-// longer knows anything about `ssh` argv, saved keys, or a host's
-// `startupSnippetID` - it only spawns the `claude` session and hands it the
-// bridge directory `SRELeadBridge` also watches.
+// `fm/cockpit-sre-lead-shared-terminal` replaced this tool's execution model
+// for kubectl commands. It used to open a *second*, independent SSH
+// connection to the same bastion (five attempts across PRs #70-73 plus an
+// abandoned PTY investigation, all trying to make that second connection
+// complete the same multi-hop, password-gated login chain the captain does
+// by hand). The captain then confirmed a hard constraint: the real "EKS
+// Preprod Bastion" host's EKS Bastion hop is username/password-gated *by
+// policy* - no SSH key auth is possible there - so a second, fully-automated
+// connection can never complete that chain; nothing can supply a password
+// that isn't stored anywhere, by design. The tool now runs kubectl inside
+// the *same* already-authenticated interactive tab the captain used to log
+// all the way in, via `SRELeadBridge` - see that file for the request/
+// response protocol and `sre_kubectl_mcp.py`'s module docstring for the
+// Python side. This file no longer knows anything about `ssh` argv, saved
+// keys, or a host's `startupSnippetID` - it only prepares the MCP config
+// `claude` needs and hands `SRELeadRunner` the bridge directory
+// `SRELeadBridge` also watches.
 //
-// Lifecycle mirrors `TmuxMirror` deliberately: `SRELead.setUp` creates a
-// brand-new, uniquely-named detached tmux session running `claude` (not a
-// grouped attach to an existing session - there is nothing to attach to yet,
-// this session *is* the thing). The toolbar pane then mirrors that session
-// exactly the way the Mirror tab mirrors the real `firstmate` session -
-// `TmuxMirror.setUp(target: session.tmuxSessionName)` - so the rendering path
-// is the same `CockpitTerminalView`/grouped-session machinery, not a new one.
-// `tearDown()` kills the tmux session and removes the whole scratch directory
-// (wrapper script, MCP config, and the bridge directory's own request/
-// response files), mirroring `TmuxMirror.tearDown()`.
+// `fm/cockpit-sre-lead-ux-fixes` then replaced *this file's* own execution
+// model: it used to spawn a persistent, detached tmux session running the
+// interactive `claude` TUI, mirrored into the pane via `TmuxMirror` exactly
+// like the Firstmate Mirror tab - which meant the pane showed the raw
+// interactive CLI (permission-mode banner, box-drawing borders, ANSI chrome)
+// instead of anything native to this app. `setUp()` now only prepares the
+// MCP config + a scratch/working directory; there is no tmux session, no
+// wrapper script, and no `claude` process spawned here at all - `SRELeadRunner`
+// spawns one non-interactive `claude -p ... --output-format json` process per
+// question/follow-up, using `--resume <session_id>` (confirmed to work with
+// `-p` by a live local test - `claude --help` documents `-r`/`--resume` as
+// working with `--print`) to keep conversation context across turns, and the
+// pane renders just the assistant's final reply as a native message feed
+// (`SRELeadChatView.swift`) instead of a terminal. A wrapper script is no
+// longer needed either: `Process`'s `arguments` array reaches `claude`
+// directly, with no intervening shell to re-parse the persona text.
 //
 // Read-only enforcement is NOT here or in the persona prompt below - it is
 // enforced by `sre_kubectl_mcp.py` itself refusing any verb outside
 // `get`/`describe`/`logs`/`top`/`events` and validating every argument's
-// character set before it ever reaches the shared terminal.
+// character set before it ever reaches the shared terminal. `sre-kubectl` is
+// also the *only* MCP tool exposed, and `--allowedTools` restricts the agent
+// to it plus `Task`/`TodoWrite` - it has no path to a raw Bash/Read/Write
+// tool, in the old tmux-hosted session or this one.
 
 import Foundation
 
@@ -43,38 +53,40 @@ struct SRELeadSetupError: Error {
     let message: String
 }
 
-/// A live SRE Lead session: the detached tmux session running `claude`, the
-/// bridge directory its kubectl tool and `SRELeadBridge` both watch, and the
-/// scratch directory containing both so `tearDown()` can remove everything at
-/// once.
+/// A live SRE Lead session: the MCP config `claude -p` is launched against
+/// each turn, the bridge directory its kubectl tool and `SRELeadBridge` both
+/// watch, and the scratch/working directories so `tearDown()` can remove
+/// them.
 struct SRELeadSession {
-    /// The detached tmux session's name (mirrored into the pane via
-    /// `TmuxMirror.setUp(target:)`, exactly like the Firstmate Mirror tab).
-    let tmuxSessionName: String
+    /// The `claude -p --mcp-config <this>` argument for every turn.
+    let mcpConfigPath: URL
 
     /// Where `sre_kubectl_mcp.py` writes `request-<id>.json` and
     /// `SRELeadBridge` writes `response-<id>.json` back - see
     /// `SRELeadBridge.swift`'s header for the full protocol.
     let bridgeDir: URL
 
+    /// `claude -p`'s working directory for every turn - see
+    /// `resolveWorkingDirectory()` for why this is a small, dedicated
+    /// app-owned folder rather than the captain's whole `$HOME`.
+    let workingDir: URL
+
     private let scratchDir: URL
 
-    /// Kill the tmux session (best-effort, mirrors `TmuxMirror.tearDown`),
-    /// then remove this spawn's scratch directory (wrapper script, MCP
-    /// config, and the bridge directory - nothing lingers). Safe to call
-    /// more than once.
+    /// Remove this spawn's scratch directory (MCP config and the bridge
+    /// directory's own request/response files) - nothing lingers. Safe to
+    /// call more than once. Killing an in-flight `claude -p` process is
+    /// `SRELeadRunner.cancel()`'s job, not this method's - this only cleans
+    /// up files.
     func tearDown() {
-        let env = childEnvironmentDict()
-        if let tmux = TmuxMirror.resolveTmux() {
-            _ = TmuxMirror.run(tmux, ["kill-session", "-t", tmuxSessionName], env: env)
-        }
         try? FileManager.default.removeItem(at: scratchDir)
     }
 
-    fileprivate init(tmuxSessionName: String, scratchDir: URL, bridgeDir: URL) {
-        self.tmuxSessionName = tmuxSessionName
+    fileprivate init(mcpConfigPath: URL, scratchDir: URL, bridgeDir: URL, workingDir: URL) {
+        self.mcpConfigPath = mcpConfigPath
         self.scratchDir = scratchDir
         self.bridgeDir = bridgeDir
+        self.workingDir = workingDir
     }
 }
 
@@ -84,28 +96,30 @@ enum SRELead {
     /// Engineers", mirroring this whole Firstmate system's own supervision
     /// rule). Delegation to subagents for independent checks is Claude
     /// Code's own Task-tool capability - this prompt only asks for it, it
-    /// does not implement any orchestration itself.
-    private static let persona = """
+    /// does not implement any orchestration itself. Not `private`:
+    /// `SRELeadRunner` passes this as `--append-system-prompt` for every
+    /// turn.
+    static let persona = """
     You are the SRE Lead for this Kubernetes cluster, reporting to the captain (the human at the other end of this session).
 
     You have exactly one tool: kubectl_readonly. It runs a read-only kubectl verb (get, describe, logs, top, or events) in the captain's own already-connected terminal tab for this host. Any other verb is rejected by the tool itself, not by you - do not try to work around it, and do not suggest destructive commands as something the captain could run manually instead. The tool can occasionally fail with a "busy" error if the captain is actively typing in that tab, or if another call is already running - just wait a moment and retry once.
 
-    When an investigation has genuinely independent parts (e.g. "check pod events" + "check node capacity" + "check recent logs" for one incident), delegate each part to a subagent (the Task tool) so they run in parallel, then synthesize what they found into ONE finding. The captain talks to you, not to your subagents - never relay raw tool output or a subagent's full transcript verbatim; give a short, direct diagnosis and the evidence that supports it.
+    When an investigation has genuinely independent parts (e.g. "check pod events" + "check node capacity" + "check recent logs" for one incident), delegate each part to a subagent (the Task tool) so they run in parallel, then synthesize what they found into ONE finding. The captain talks to you, not to your subagents - never relay raw tool output or a subagent's full transcript verbatim.
 
-    Be concise. This is an incident-investigation chat, not a report.
+    How to reply, every time, with no exceptions: lead with the finding or the answer to what the captain asked, in the first sentence. Do not open with what you checked, what commands you ran, what you ruled out, or hedge about tool limitations before getting there - the captain wants the conclusion first, not a walkthrough of how you reached it. After that first sentence, give only the minimum supporting evidence needed to back the finding (one or two specifics - a pod name, an error string, a count), not a narration of your investigation process. Do not describe your own methodology ("I checked X, then Y, then ruled out Z") unless the captain explicitly asks "how did you check" or "what did you rule out" - if you were genuinely unable to check something because of the read-only restriction, say so in one short clause, not a paragraph. Default to terse: a few sentences, not a report. If the finding is inconclusive, say what it points to next, still leading with that, not with everything you tried first.
     """
 
-    /// Spawn a fresh SRE Lead session. Writes this spawn's MCP config and a
-    /// wrapper script into a private scratch directory (avoids threading
-    /// `claude`'s multi-line `--append-system-prompt` text through tmux's own
-    /// shell-joining of its command argv - see the wrapper script comment
-    /// below), creates the bridge directory the MCP config points the
-    /// kubectl tool at, then creates the detached tmux session.
+    /// The `--allowedTools` value for every `claude -p` turn - the kubectl
+    /// MCP tool plus `Task`/`TodoWrite`, nothing else. Not `private`:
+    /// `SRELeadRunner` needs it too.
+    static let allowedTools = "mcp__sre-kubectl__kubectl_readonly,Task,TodoWrite"
+
+    /// Prepare a fresh SRE Lead session: writes this spawn's MCP config into
+    /// a private scratch directory and creates the bridge directory the MCP
+    /// config points the kubectl tool at. Does not spawn `claude` itself -
+    /// `SRELeadRunner` does that, once per question/follow-up.
     static func setUp() -> Result<SRELeadSession, SRELeadSetupError> {
-        guard let tmux = TmuxMirror.resolveTmux() else {
-            return .failure(SRELeadSetupError(message: "tmux not found on PATH (looked in Homebrew/usr paths)."))
-        }
-        guard let claude = resolveClaude() else {
+        guard resolveClaude() != nil else {
             return .failure(SRELeadSetupError(message: "claude CLI not found on PATH."))
         }
         guard let scriptPath = resolveKubectlScript() else {
@@ -124,9 +138,6 @@ enum SRELead {
         }
 
         let mcpConfigPath = scratchDir.appendingPathComponent("mcp-config.json")
-        let wrapperPath = scratchDir.appendingPathComponent("run-sre-lead.sh")
-        let env = childEnvironmentDict()
-
         do {
             let mcpConfig: [String: Any] = [
                 "mcpServers": [
@@ -139,78 +150,17 @@ enum SRELead {
             ]
             try JSONSerialization.data(withJSONObject: mcpConfig, options: [.prettyPrinted])
                 .write(to: mcpConfigPath)
-
-            // A wrapper script, not a tmux command argv, because tmux joins a
-            // multi-token `new-session` command with spaces and re-parses it
-            // through the login shell - fine for simple commands, but the
-            // persona prompt above contains spaces/newlines/quotes that would
-            // otherwise need fragile re-escaping through that second shell
-            // pass. `exec`ing a single, already-quoted script file sidesteps
-            // that entirely: tmux gets one argv token (the script path), no
-            // re-parsing of our own arguments happens anywhere.
-            //
-            // The explicit `export PATH` below is not redundant with the
-            // `env:` passed to `TmuxMirror.run` further down, even though
-            // both come from the same `childEnvironmentDict()` call: tmux
-            // only captures its own global environment once, at the moment
-            // its *server* process first starts, from whichever client
-            // spawned it. A `new-session -d` against an already-running
-            // server (e.g. a leftover from a previous SRE Lead spawn)
-            // inherits that originally-captured environment, not this call's
-            // `env:` dict, unless the session overrides it itself - so
-            // without baking PATH into the script directly, `claude`'s own
-            // SessionStart hooks (`gh-axi`, `lavish-axi`,
-            // `chrome-devtools-axi`) can fail with "command not found" on
-            // every session after the first, however different the server's
-            // originally-captured PATH happens to be.
-            let script = """
-            #!/bin/bash
-            export PATH=\(shellQuote(env["PATH"] ?? ""))
-            exec \(shellQuote(claude)) \\
-              --mcp-config \(shellQuote(mcpConfigPath.path)) \\
-              --strict-mcp-config \\
-              --append-system-prompt \(shellQuote(persona)) \\
-              --permission-mode bypassPermissions \\
-              --allowedTools \(shellQuote("mcp__sre-kubectl__kubectl_readonly,Task,TodoWrite"))
-            """
-            try script.write(to: wrapperPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapperPath.path)
         } catch {
             try? FileManager.default.removeItem(at: scratchDir)
             return .failure(SRELeadSetupError(message: "could not write session config: \(error.localizedDescription)"))
         }
 
-        let sessionName = "fm_srelead_\(ProcessInfo.processInfo.processIdentifier)_\(String(format: "%04x", UInt16.random(in: 0...UInt16.max)))"
         guard let workingDir = resolveWorkingDirectory() else {
             try? FileManager.default.removeItem(at: scratchDir)
             return .failure(SRELeadSetupError(message: "could not create SRE Lead working directory."))
         }
-        // `-c <workingDir>`, not the scratch dir the wrapper script itself
-        // lives in (`ProcessInfo`'s default tmux start-directory would
-        // otherwise be wherever the tmux *server* first started): a `claude`
-        // session's first-ever launch in a directory it hasn't seen before
-        // shows a one-time "do you trust this folder?" prompt - confirmed
-        // live by launching the exact wrapper-script shape this method
-        // generates in a fresh scratch dir. `workingDir` is a small,
-        // dedicated app-owned folder rather than the captain's whole
-        // `$HOME`, so that prompt (when it appears) scopes to something
-        // purpose-built and empty instead of the captain's entire home
-        // directory.
-        let created = TmuxMirror.run(tmux, ["new-session", "-d", "-s", sessionName, "-c", workingDir.path, wrapperPath.path], env: env)
-        if created.status != 0 {
-            try? FileManager.default.removeItem(at: scratchDir)
-            let detail = created.stderr.isEmpty ? "tmux could not start the session" : created.stderr
-            return .failure(SRELeadSetupError(message: detail))
-        }
-        _ = TmuxMirror.run(tmux, ["set-option", "-t", sessionName, "status", "off"], env: env)
 
-        return .success(SRELeadSession(tmuxSessionName: sessionName, scratchDir: scratchDir, bridgeDir: bridgeDir))
-    }
-
-    /// Single-quote `s` for embedding as one literal argv token in the
-    /// generated `bash` wrapper script above.
-    private static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return .success(SRELeadSession(mcpConfigPath: mcpConfigPath, scratchDir: scratchDir, bridgeDir: bridgeDir, workingDir: workingDir))
     }
 
     /// `~/Library/Application Support/FirstmateCockpit/sre-lead/`, created if
@@ -234,8 +184,9 @@ enum SRELead {
     }
 
     /// Find the `claude` binary the same way `TmuxMirror.resolveTmux()` finds
-    /// `tmux` - a Finder-launched GUI app inherits a minimal PATH.
-    private static func resolveClaude() -> String? {
+    /// `tmux` - a Finder-launched GUI app inherits a minimal PATH. Not
+    /// `private`: `SRELeadRunner` resolves this once per session too.
+    static func resolveClaude() -> String? {
         resolveExecutable(name: "claude", commonPaths: ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"])
     }
 

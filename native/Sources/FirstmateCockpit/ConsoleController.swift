@@ -115,8 +115,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var sreLeadPhase: SRELeadPhase = .notStarted
     private var sreLeadSession: SRELeadSession?
     private var sreLeadBridge: SRELeadBridge?
-    private var sreLeadMirror: TmuxMirror?
-    private var sreLeadTerminal: CockpitTerminalView?
+    private var sreLeadRunner: SRELeadRunner?
+    private var sreLeadChat: SRELeadChatView?
     private var sreLeadButton: SRELeadStatusPill?
 
     private let sreLeadPane = NSView()
@@ -160,8 +160,23 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tabBar.topAnchor.constraint(equalTo: root.topAnchor),
             tabBar.heightAnchor.constraint(equalToConstant: 42),
 
+            // `content` (and therefore every tab's terminal inside it,
+            // including the primary interactive tab SRE Lead's bridge
+            // injects into) is pinned to the root's full width, never to
+            // `sreLeadPane`'s leading edge. Opening/closing the SRE Lead
+            // pane only changes `sreLeadPaneWidthConstraint` below - it used
+            // to also resize `content` (trailing was pinned to
+            // `sreLeadPane.leadingAnchor`), and any frame change on a
+            // SwiftTerm view triggers `resize(cols:rows:)`, which reflows
+            // the buffer at the new column count and can truncate/garble
+            // scrollback the captain had already built up logging into a
+            // bastion. The pane now overlays the right edge of `content`
+            // (it's added after `content`, so it already renders on top)
+            // instead of pushing it - a real width change on `content` only
+            // ever happens from an actual window resize now, not from
+            // toggling this pane.
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
@@ -650,6 +665,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             showSRELeadError("No connected interactive tab for this host yet - connect first, then try SRE Lead again.")
             return
         }
+        guard let claude = SRELead.resolveClaude() else {
+            sreLeadPhase = .failed
+            sreLeadButton?.setState(.failed)
+            sreLeadButton?.applyTheme(theme)
+            showSRELeadError("claude CLI not found on PATH.")
+            return
+        }
         sreLeadPhase = .starting
         sreLeadButton?.setState(.starting)
         sreLeadButton?.applyTheme(theme)
@@ -664,7 +686,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                     self.sreLeadSession = session
                     self.sreLeadBridge = SRELeadBridge(bridgeDir: session.bridgeDir, target: targetTab)
                     self.sreLeadBridge?.start()
-                    self.attachSRELeadTerminal(to: session)
+                    self.sreLeadRunner = SRELeadRunner(session: session, claude: claude)
+                    let chat = self.sreLeadChat ?? self.makeSRELeadChat()
+                    self.sreLeadChat = chat
+                    chat.clearMessages()
+                    chat.append(SRELeadMessage(role: .status, text: "SRE Lead is ready. Ask a question about this cluster below."))
+                    chat.setInputEnabled(true)
+                    self.sreLeadPhase = .ready
+                    self.sreLeadButton?.setState(.ready)
+                    self.sreLeadButton?.applyTheme(self.theme)
                 case .failure(let error):
                     self.sreLeadPhase = .failed
                     self.sreLeadButton?.setState(.failed)
@@ -675,46 +705,47 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
     }
 
-    private func attachSRELeadTerminal(to session: SRELeadSession) {
-        let term = sreLeadTerminal ?? makeSRELeadTerminal()
-        sreLeadTerminal = term
-        switch TmuxMirror.setUp(target: session.tmuxSessionName) {
-        case .success(let mirror):
-            sreLeadMirror = mirror
-            term.startProcess(
-                executable: mirror.tmuxPath, args: mirror.attachArgs,
-                environment: childEnvironment(), execName: nil, currentDirectory: shellCwd()
-            )
-            sreLeadPhase = .ready
-            sreLeadButton?.setState(.ready)
-            sreLeadButton?.applyTheme(theme)
-        case .failure(let err):
-            sreLeadPhase = .failed
-            sreLeadButton?.setState(.failed)
-            sreLeadButton?.applyTheme(theme)
-            showSRELeadError(err.message)
+    /// The chat view's input submits here - the native equivalent of the
+    /// old tmux pane's "just type into the terminal" entry point, now with a
+    /// real input field instead of the captain having to click into a raw
+    /// `claude` TUI first.
+    private func handleSRELeadSubmit(_ text: String) {
+        guard let runner = sreLeadRunner, let chat = sreLeadChat else { return }
+        chat.append(SRELeadMessage(role: .user, text: text))
+        chat.setInputEnabled(false)
+        runner.ask(text) { [weak self, weak chat] result in
+            guard let chat else { return }
+            switch result {
+            case .success(let reply):
+                chat.append(SRELeadMessage(role: .assistant, text: reply))
+            case .failure(let error):
+                chat.append(SRELeadMessage(role: .error, text: error.message))
+            }
+            chat.setInputEnabled(true)
+            if let self, let window = self.view.window, window.firstResponder !== chat {
+                window.makeFirstResponder(chat)
+            }
         }
     }
 
     private func showSRELeadError(_ message: String) {
-        let term = sreLeadTerminal ?? makeSRELeadTerminal()
-        sreLeadTerminal = term
-        term.feed(text: "\r\n  \u{1b}[2m[SRE Lead]\u{1b}[0m \(message)\r\n")
+        let chat = sreLeadChat ?? makeSRELeadChat()
+        sreLeadChat = chat
+        chat.append(SRELeadMessage(role: .error, text: message))
     }
 
-    /// Toggle-close (design brief Part B): kill the tmux session + `claude`
-    /// process and remove every scratch file `SRELead.setUp` wrote, exactly
-    /// like `TmuxMirror.tearDown()`/`cleanupSSHKeyTempFile` do for a regular
-    /// tab - nothing lingers. A later toggle-open starts a genuinely fresh
-    /// session rather than reattaching to anything.
+    /// Toggle-close (design brief Part B): kill any in-flight `claude -p`
+    /// turn and remove every scratch file `SRELead.setUp` wrote, exactly
+    /// like `cleanupSSHKeyTempFile` does for a regular tab - nothing
+    /// lingers. A later toggle-open starts a genuinely fresh session rather
+    /// than reattaching to anything (there is nothing to reattach to -
+    /// `claude -p` processes are one-shot per turn).
     private func tearDownSRELead() {
         sreLeadBridge?.stop()
         sreLeadBridge = nil
-        sreLeadMirror?.tearDown()
-        sreLeadMirror = nil
-        sreLeadTerminal?.terminate()
-        sreLeadTerminal?.removeFromSuperview()
-        sreLeadTerminal = nil
+        sreLeadRunner?.cancel()
+        sreLeadRunner = nil
+        sreLeadChat?.clearMessages()
         sreLeadSession?.tearDown()
         sreLeadSession = nil
         sreLeadPhase = .notStarted
@@ -723,21 +754,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         setSRELeadPaneOpen(false)
     }
 
-    private func makeSRELeadTerminal() -> CockpitTerminalView {
-        let term = CockpitTerminalView(frame: .zero)
-        term.translatesAutoresizingMaskIntoConstraints = false
-        term.processDelegate = self
-        term.font = currentFont()
-        term.terminal?.changeScrollback(scrollbackLines)
-        sreLeadPane.addSubview(term)
+    private func makeSRELeadChat() -> SRELeadChatView {
+        let chat = SRELeadChatView(frame: .zero)
+        chat.onSubmit = { [weak self] text in self?.handleSRELeadSubmit(text) }
+        chat.setInputEnabled(false)
+        sreLeadPane.addSubview(chat)
         NSLayoutConstraint.activate([
-            term.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
-            term.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
-            term.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
-            term.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+            chat.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            chat.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            chat.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            chat.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
         ])
-        theme.apply(to: term)
-        return term
+        chat.applyTheme(theme)
+        return chat
     }
 
     private func setSRELeadPaneOpen(_ open: Bool) {
@@ -876,7 +905,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadPaneSeparator.layer?.backgroundColor = line.cgColor
         sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
         sreLeadHeaderLabel.textColor = ink
-        if let term = sreLeadTerminal { theme.apply(to: term) }
+        sreLeadChat?.applyTheme(theme)
     }
 
     private func styleChips() {
@@ -1021,8 +1050,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // `AppShellController.removeHostConsole`).
         sreLeadBridge?.stop()
         sreLeadBridge = nil
-        sreLeadMirror?.tearDown()
-        sreLeadMirror = nil
+        sreLeadRunner?.cancel()
+        sreLeadRunner = nil
         sreLeadSession?.tearDown()
         sreLeadSession = nil
         if let themeObservation {
@@ -1071,14 +1100,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// a successful `rebuild.sh` exit used to be treated like a dropped
     /// shell, restarting the whole `darwin-rebuild switch` every 2 seconds.
     func processTerminated(source: TerminalView, exitCode: Int32?) {
-        if source === sreLeadTerminal {
-            // The SRE Lead mirror (or the `claude` process behind it) ended
-            // unexpectedly - reset to a torn-down state so the pill reflects
-            // reality and a re-click starts a genuinely fresh session
-            // rather than reattaching to a dead one.
-            tearDownSRELead()
-            return
-        }
+        // The SRE Lead pane is a native `SRELeadChatView`, not a
+        // `TerminalView` - it never appears as `source` here. Each
+        // `claude -p` turn is a one-shot `Process` `SRELeadRunner` owns and
+        // waits on directly (`ask`'s completion), not something this
+        // delegate callback observes.
         guard let tab = tabs.first(where: { $0.terminal === source }) else { return }
         if tab.isClosing { return }
         tab.mirror?.tearDown()
