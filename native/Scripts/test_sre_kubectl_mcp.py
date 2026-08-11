@@ -1,59 +1,45 @@
 #!/usr/bin/env python3
-"""Tests for sre_kubectl_mcp.py's become_user escalation fix.
+"""Tests for sre_kubectl_mcp.py's shared-terminal bridge protocol
+(`fm/cockpit-sre-lead-shared-terminal`).
 
-Run with: python3 -m unittest native/Scripts/test_sre_kubectl_mcp.py -v
-(from the repo root, or `cd native/Scripts && python3 -m unittest
-test_sre_kubectl_mcp -v`).
+Run with: python3 -m unittest test_sre_kubectl_mcp -v
+(from `native/Scripts/`, or `python3 -m unittest native.Scripts.test_sre_kubectl_mcp -v`
+from the repo root).
 
 No third-party test runner is set up for this standalone stdlib script, so
 this file is plain `unittest` and can run with only a system Python 3.
 
-Covers, per fm/cockpit-sre-lead-su-stdin-pipe's acceptance criteria:
-  - the exact subprocess.run() argv + input= construction, both with and
-    without become_user set (asserted directly via a monkeypatched
-    subprocess.run, not "looks right by inspection")
-  - a local end-to-end shim reproducing the captain's two real-bastion
-    findings: a fake `su` that ignores `-c` (matching the real bastion) but
-    honors piped stdin - the new construction must succeed against it
-  - write-verb refusal and character-allowlist validation, unaffected by
-    the become_user change
+This script no longer builds or runs any `ssh`/`subprocess` command itself -
+that whole model (a second SSH connection, `become_user`/`startup_snippet`
+escalation) was removed. All it does now is write a `request-<id>.json` file
+and poll for a `response-<id>.json` file - the Swift-side half of that
+protocol (`SRELeadBridge.swift`) has its own tests
+(`SRELeadBridgeSelfTest.swift`, run via `FM_RUN_SRE_LEAD_BRIDGE_TESTS=1`).
+This file covers, on the Python side:
+  - write-verb refusal and character-allowlist validation, unaffected by the
+    execution-model change
+  - the request file is written atomically (via a `.tmp` + `os.rename`) and
+    contains exactly the validated, shell-quoted kubectl command line
+  - polling behavior: a response that appears after a short delay is picked
+    up and returned verbatim; a response that never appears within the
+    timeout produces a clear timeout error and cleans up the stale request
+    file
 """
 
 import json
 import os
-import stat
-import subprocess
 import sys
-import tempfile
-import textwrap
+import threading
+import time
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import sre_kubectl_mcp as mcp  # noqa: E402
 
 
-def _write_executable(path, contents):
-    with open(path, "w") as f:
-        f.write(contents)
-    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-
-def _write_host_config(tmpdir, ssh_executable, ssh_argv, become_user=None, startup_snippet=None):
-    path = os.path.join(tmpdir, "host_config.json")
-    cfg = {"ssh_executable": ssh_executable, "ssh_argv": ssh_argv}
-    if become_user is not None:
-        cfg["become_user"] = become_user
-    if startup_snippet is not None:
-        cfg["startup_snippet"] = startup_snippet
-    with open(path, "w") as f:
-        json.dump(cfg, f)
-    return path
-
-
 class ValidationTests(unittest.TestCase):
-    """Unaffected by this fix - re-run to prove the change didn't touch validation."""
+    """Unaffected by the execution-model change - re-run to prove it stayed that way."""
 
     def test_rejects_non_readonly_verb(self):
         err = mcp._validate_args("delete", ["pod/foo"])
@@ -74,377 +60,150 @@ class ValidationTests(unittest.TestCase):
         self.assertIsNone(err)
 
 
-class RunKubectlConstructionTests(unittest.TestCase):
-    """Assert the exact argv + input= subprocess.run() call, not just behavior."""
+class BridgeRequestTests(unittest.TestCase):
+    """Assert the request file's exact shape and that validation runs before
+    any file is ever written."""
 
     def setUp(self):
+        import tempfile
         self._tmpdir_ctx = tempfile.TemporaryDirectory()
-        self.tmpdir = self._tmpdir_ctx.name
-        self._old_env = os.environ.get("SRE_LEAD_HOST_CONFIG")
+        self.bridge_dir = self._tmpdir_ctx.name
+        self._old_env = os.environ.get("SRE_LEAD_BRIDGE_DIR")
+        os.environ["SRE_LEAD_BRIDGE_DIR"] = self.bridge_dir
 
     def tearDown(self):
-        self._tmpdir_ctx.cleanup()
         if self._old_env is None:
-            os.environ.pop("SRE_LEAD_HOST_CONFIG", None)
+            os.environ.pop("SRE_LEAD_BRIDGE_DIR", None)
         else:
-            os.environ["SRE_LEAD_HOST_CONFIG"] = self._old_env
-
-    def _fake_run(self, returncode=0, stdout="", stderr=""):
-        result = mock.Mock()
-        result.returncode = returncode
-        result.stdout = stdout
-        result.stderr = stderr
-        return result
-
-    def test_become_user_pipes_command_via_stdin_not_argv(self):
-        cfg_path = _write_host_config(
-            self.tmpdir,
-            "/usr/bin/ssh",
-            ["-o", "BatchMode=yes", "bastion.example.com"],
-            become_user="devops_k8s_preprod",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        with mock.patch.object(mcp.subprocess, "run", return_value=self._fake_run()) as run_mock:
-            mcp._run_kubectl("get", ["pods", "-n", "raas-preprod"], None)
-
-        run_mock.assert_called_once()
-        args, kwargs = run_mock.call_args
-        argv = args[0]
-
-        self.assertEqual(
-            argv,
-            [
-                "/usr/bin/ssh",
-                "-o",
-                "BatchMode=yes",
-                "bastion.example.com",
-                "--",
-                "bash",
-                "-lc",
-                "sudo su - devops_k8s_preprod",
-            ],
-        )
-        # No `-c`, and no kubectl command embedded in argv anywhere.
-        self.assertNotIn("-c", argv)
-        self.assertFalse(any("kubectl" in tok for tok in argv))
-
-        self.assertEqual(kwargs["input"], "kubectl get pods -n raas-preprod\n")
-
-    def test_become_user_with_namespace_and_extra_args_in_stdin(self):
-        cfg_path = _write_host_config(
-            self.tmpdir,
-            "/usr/bin/ssh",
-            ["prod-bastion"],
-            become_user="svc_k8s",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        with mock.patch.object(mcp.subprocess, "run", return_value=self._fake_run()) as run_mock:
-            mcp._run_kubectl("logs", ["pod/api-7f9", "--previous"], "prod")
-
-        _, kwargs = run_mock.call_args
-        self.assertEqual(kwargs["input"], "kubectl logs -n prod pod/api-7f9 --previous\n")
-
-    def test_no_become_user_is_byte_identical_to_before(self):
-        cfg_path = _write_host_config(
-            self.tmpdir,
-            "/usr/bin/ssh",
-            ["-o", "BatchMode=yes", "bastion.example.com"],
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        with mock.patch.object(mcp.subprocess, "run", return_value=self._fake_run()) as run_mock:
-            mcp._run_kubectl("get", ["pods", "-n", "raas-preprod"], None)
-
-        args, kwargs = run_mock.call_args
-        argv = args[0]
-
-        self.assertEqual(
-            argv,
-            [
-                "/usr/bin/ssh",
-                "-o",
-                "BatchMode=yes",
-                "bastion.example.com",
-                "--",
-                "bash",
-                "-lc",
-                "kubectl get pods -n raas-preprod",
-            ],
-        )
-        # No stdin plumbing at all when become_user is unset - not even "".
-        self.assertIsNone(kwargs["input"])
-
-    def _fake_popen(self):
-        written = []
-        proc = mock.Mock()
-        proc.stdin = mock.Mock()
-        proc.stdin.write.side_effect = lambda s: written.append(s)
-        proc.communicate.return_value = ("", "")
-        proc.returncode = 0
-        return proc, written
-
-    def test_startup_snippet_and_become_user_write_sequentially_with_delay(self):
-        cfg_path = _write_host_config(
-            self.tmpdir,
-            "/usr/bin/ssh",
-            ["bastion.example.com"],
-            become_user="devops_k8s_preprod",
-            startup_snippet="mpp",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        fake_proc, written = self._fake_popen()
-        with mock.patch.object(mcp.subprocess, "Popen", return_value=fake_proc) as popen_mock, \
-                mock.patch.object(mcp.time, "sleep") as sleep_mock:
-            outcome = mcp._run_kubectl("get", ["pods", "-n", "raas-preprod"], None)
-
-        popen_mock.assert_called_once()
-        argv = popen_mock.call_args[0][0]
-        self.assertEqual(argv, ["/usr/bin/ssh", "bastion.example.com", "--", "bash", "-l"])
-        # No `-c`, and every command sent as a separate stdin write, in order.
-        self.assertNotIn("-c", argv)
-        self.assertEqual(
-            written,
-            ["mpp\n", "sudo su - devops_k8s_preprod\n", "kubectl get pods -n raas-preprod\n"],
-        )
-        self.assertEqual(sleep_mock.call_count, 2)
-        # Closing stdin is left to `communicate()` itself (see the production
-        # code's comment) - not asserted here since the mock doesn't model
-        # `communicate()`'s real internal behavior.
-        self.assertTrue(outcome["ok"], outcome)
-
-    def test_startup_snippet_without_become_user_skips_escalation_step(self):
-        cfg_path = _write_host_config(
-            self.tmpdir, "/usr/bin/ssh", ["bastion.example.com"], startup_snippet="mpp",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        fake_proc, written = self._fake_popen()
-        with mock.patch.object(mcp.subprocess, "Popen", return_value=fake_proc), \
-                mock.patch.object(mcp.time, "sleep") as sleep_mock:
-            mcp._run_kubectl("get", ["pods"], None)
-
-        self.assertEqual(written, ["mpp\n", "kubectl get pods\n"])
-        self.assertEqual(sleep_mock.call_count, 1)
-
-
-class RealBastionShimTests(unittest.TestCase):
-    """Reproduces the captain's two real-bastion results with a local fake `su`/`ssh`.
-
-    fake_su mimics the confirmed real behavior: silently ignores `-c` (never
-    runs the command, just would drop into an interactive shell - here it
-    exits with a distinct marker instead so the test can detect it), but
-    reads and runs a command piped via stdin correctly.
-
-    fake_ssh mimics the ssh hop: it discards everything before `--` (the
-    connection args) and simply execs the remaining `bash -lc '<cmd>'`
-    locally, so the whole chain (ssh -> bash -lc 'sudo su - user' <- stdin)
-    runs for real, end to end, on this machine.
-    """
-
-    def setUp(self):
-        self._tmpdir_ctx = tempfile.TemporaryDirectory()
-        self.tmpdir = self._tmpdir_ctx.name
-        self.bin_dir = os.path.join(self.tmpdir, "bin")
-        os.makedirs(self.bin_dir)
-
-        _write_executable(
-            os.path.join(self.bin_dir, "sudo"),
-            "#!/bin/bash\nexec \"$@\"\n",
-        )
-
-        # Mimics the real bastion: `-c` is silently swallowed/ignored (here,
-        # surfaced as a distinct failure marker rather than actually hanging
-        # in an interactive shell, since the test has no TTY to hang on);
-        # `su - <user>` with no `-c` reads one line from stdin and runs it.
-        _write_executable(
-            os.path.join(self.bin_dir, "su"),
-            textwrap.dedent(
-                """\
-                #!/bin/bash
-                for arg in "$@"; do
-                    if [[ "$arg" == "-c" ]]; then
-                        echo "SU_IGNORED_DASH_C_MARKER" >&2
-                        exit 17
-                    fi
-                done
-                user="${@: -1}"
-                read -r cmdline
-                echo "RAN_AS:${user}:${cmdline}"
-                """
-            ),
-        )
-
-        _write_executable(
-            os.path.join(self.bin_dir, "fake_ssh"),
-            textwrap.dedent(
-                """\
-                #!/bin/bash
-                while [[ "$1" != "--" && $# -gt 0 ]]; do shift; done
-                shift
-                exec "$@"
-                """
-            ),
-        )
-
-        # `bash -lc` (what production code and this shim both use) is a
-        # *login* shell on macOS, which sources /etc/profile ->
-        # /usr/libexec/path_helper, which rebuilds PATH from /etc/paths(.d)
-        # and puts real system directories (/usr/bin, containing the real
-        # `su`) ahead of anything merely prepended to the parent's PATH
-        # beforehand - confirmed live, a plain PATH prepend is not enough to
-        # shadow the real `su`/`sudo`. A fake, isolated HOME with its own
-        # `.bash_profile` that re-prepends the fake bin dir runs *after*
-        # path_helper, so it wins.
-        self.fake_home = os.path.join(self.tmpdir, "home")
-        os.makedirs(self.fake_home)
-        with open(os.path.join(self.fake_home, ".bash_profile"), "w") as f:
-            f.write(f'export PATH="{self.bin_dir}:$PATH"\n')
-
-        self._old_home = os.environ.get("HOME")
-        os.environ["HOME"] = self.fake_home
-        self._old_env = os.environ.get("SRE_LEAD_HOST_CONFIG")
-
-    def tearDown(self):
-        if self._old_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = self._old_home
-        if self._old_env is None:
-            os.environ.pop("SRE_LEAD_HOST_CONFIG", None)
-        else:
-            os.environ["SRE_LEAD_HOST_CONFIG"] = self._old_env
+            os.environ["SRE_LEAD_BRIDGE_DIR"] = self._old_env
         self._tmpdir_ctx.cleanup()
 
-    def test_new_stdin_construction_succeeds_against_dash_c_ignoring_su(self):
-        cfg_path = _write_host_config(
-            self.tmpdir,
-            os.path.join(self.bin_dir, "fake_ssh"),
-            ["irrelevant-host-arg"],
-            become_user="devops_k8s_preprod",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
+    def _requests(self):
+        return [f for f in os.listdir(self.bridge_dir) if f.startswith("request-") and f.endswith(".json")]
 
+    def test_invalid_command_never_writes_a_request_file(self):
+        outcome = mcp._run_kubectl("delete", ["pod/foo"], None)
+        self.assertFalse(outcome["ok"])
+        self.assertIn("delete", outcome["error"])
+        self.assertEqual(self._requests(), [])
+
+    def test_writes_exactly_one_request_file_with_the_quoted_command(self):
+        # Answer the request from a background thread so `_run_kubectl`'s
+        # poll loop (which runs on this thread) doesn't block forever.
+        def respond():
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                reqs = self._requests()
+                if reqs:
+                    request_id = reqs[0][len("request-"):-len(".json")]
+                    with open(os.path.join(self.bridge_dir, reqs[0])) as f:
+                        payload = json.load(f)
+                    assert payload["command"] == "kubectl get pods -n raas-preprod", payload
+                    # Mimics `SRELeadBridge.nextPendingRequest` claiming
+                    # (deleting) the request file as soon as it's read.
+                    os.remove(os.path.join(self.bridge_dir, reqs[0]))
+                    with open(os.path.join(self.bridge_dir, f"response-{request_id}.json"), "w") as f:
+                        json.dump({"ok": True, "output": "pod/api-1   1/1   Running"}, f)
+                    return
+                time.sleep(0.05)
+            raise AssertionError("no request file appeared")
+
+        t = threading.Thread(target=respond)
+        t.start()
         outcome = mcp._run_kubectl("get", ["pods", "-n", "raas-preprod"], None)
+        t.join(timeout=5)
 
         self.assertTrue(outcome["ok"], outcome)
-        self.assertIn("RAN_AS:devops_k8s_preprod:kubectl get pods -n raas-preprod", outcome["stdout"])
-        self.assertNotIn("SU_IGNORED_DASH_C_MARKER", outcome["stderr"])
+        self.assertEqual(outcome["output"], "pod/api-1   1/1   Running")
+        # The request file is removed once the response is read.
+        self.assertEqual(self._requests(), [])
 
-    def test_old_dash_c_shape_would_have_failed_on_this_shim(self):
-        """Sanity check that the shim really does reproduce the old failure."""
-        old_style_cmd = "sudo su -c 'kubectl get pods -n raas-preprod' - devops_k8s_preprod"
-        import subprocess
+    def test_namespace_flag_is_folded_into_the_command_string(self):
+        captured = {}
 
-        proc = subprocess.run(
-            [os.path.join(self.bin_dir, "fake_ssh"), "irrelevant", "--", "bash", "-lc", old_style_cmd],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        self.assertEqual(proc.returncode, 17)
-        self.assertIn("SU_IGNORED_DASH_C_MARKER", proc.stderr)
+        def respond():
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                reqs = self._requests()
+                if reqs:
+                    request_id = reqs[0][len("request-"):-len(".json")]
+                    with open(os.path.join(self.bridge_dir, reqs[0])) as f:
+                        captured["command"] = json.load(f)["command"]
+                    with open(os.path.join(self.bridge_dir, f"response-{request_id}.json"), "w") as f:
+                        json.dump({"ok": True, "output": ""}, f)
+                    return
+                time.sleep(0.05)
+
+        t = threading.Thread(target=respond)
+        t.start()
+        mcp._run_kubectl("logs", ["pod/api-7f9", "--previous"], "prod")
+        t.join(timeout=5)
+
+        self.assertEqual(captured.get("command"), "kubectl logs -n prod pod/api-7f9 --previous")
+
+    def test_rejects_disallowed_characters_in_namespace(self):
+        outcome = mcp._run_kubectl("get", ["pods"], "prod;rm -rf")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("disallowed", outcome["error"])
+        self.assertEqual(self._requests(), [])
+
+    def test_missing_bridge_dir_env_var_fails_cleanly(self):
+        del os.environ["SRE_LEAD_BRIDGE_DIR"]
+        outcome = mcp._run_kubectl("get", ["pods"], None)
+        self.assertFalse(outcome["ok"])
+        self.assertIn("SRE_LEAD_BRIDGE_DIR", outcome["error"])
 
 
-class RealMultiHopShimTests(unittest.TestCase):
-    """Reproduces the timing race a startup snippet introduces, per
-    `fm/cockpit-sre-lead-startup-snippet`'s acceptance criteria: a fake
-    "remote" simulates a nested-ssh handshake delay right after the snippet
-    command arrives, discarding anything that shows up while it's still
-    "connecting" - mimicking a real nested `ssh` hop's own handshake. The old
-    single-`input=`-blob approach (what a naive extension of the pre-fix code
-    would have done) sends every command immediately and loses the kubectl
-    command to that window; the new sequential-write-with-delay approach in
-    `_run_via_sequential_shell` waits it out and succeeds.
-    """
+class BridgeTimeoutTests(unittest.TestCase):
+    """A response that never appears must time out cleanly, not hang, and
+    must not leave a stale request file behind."""
 
     def setUp(self):
+        import tempfile
         self._tmpdir_ctx = tempfile.TemporaryDirectory()
-        self.tmpdir = self._tmpdir_ctx.name
-
-        # A stdlib-only fake "remote shell": echoes each line it processes as
-        # "RAN:<line>". After the line that matches the snippet trigger, it
-        # simulates a nested-hop handshake by discarding (not processing) any
-        # further input that arrives during BUSY_WINDOW - a real interactive
-        # shell mid-handshake wouldn't hand typed-ahead input to the right
-        # place either.
-        self.fake_remote = os.path.join(self.tmpdir, "fake_remote.py")
-        with open(self.fake_remote, "w") as f:
-            f.write(textwrap.dedent(
-                """\
-                #!/usr/bin/env python3
-                import sys, select, time
-                BUSY_WINDOW = 0.5
-
-                def main():
-                    first = sys.stdin.readline()
-                    if not first:
-                        return
-                    first = first.rstrip("\\n")
-                    sys.stdout.write("RAN:" + first + "\\n")
-                    sys.stdout.flush()
-                    if first == "run-mpp-snippet":
-                        deadline = time.time() + BUSY_WINDOW
-                        while time.time() < deadline:
-                            remaining = deadline - time.time()
-                            ready, _, _ = select.select([sys.stdin], [], [], max(remaining, 0))
-                            if not ready:
-                                break
-                            sys.stdin.readline()  # discard - simulates a lost keystroke
-                    for line in sys.stdin:
-                        line = line.rstrip("\\n")
-                        if not line:
-                            continue
-                        sys.stdout.write("RAN:" + line + "\\n")
-                        sys.stdout.flush()
-
-                if __name__ == "__main__":
-                    main()
-                """
-            ))
-        os.chmod(self.fake_remote, os.stat(self.fake_remote).st_mode | stat.S_IEXEC)
-
-        self.fake_ssh = os.path.join(self.tmpdir, "fake_ssh")
-        _write_executable(self.fake_ssh, f"#!/bin/bash\nexec {sys.executable} {self.fake_remote}\n")
-
-        self._old_env = os.environ.get("SRE_LEAD_HOST_CONFIG")
+        self.bridge_dir = self._tmpdir_ctx.name
+        self._old_env = os.environ.get("SRE_LEAD_BRIDGE_DIR")
+        os.environ["SRE_LEAD_BRIDGE_DIR"] = self.bridge_dir
 
     def tearDown(self):
         if self._old_env is None:
-            os.environ.pop("SRE_LEAD_HOST_CONFIG", None)
+            os.environ.pop("SRE_LEAD_BRIDGE_DIR", None)
         else:
-            os.environ["SRE_LEAD_HOST_CONFIG"] = self._old_env
+            os.environ["SRE_LEAD_BRIDGE_DIR"] = self._old_env
         self._tmpdir_ctx.cleanup()
 
-    def test_old_single_blob_loses_kubectl_command_to_the_race(self):
-        # What a naive extension of the pre-fix code would have done: hand
-        # the snippet + kubectl command to subprocess.run's input= as one
-        # blob, with no delay for the snippet's simulated nested hop.
-        blob = "run-mpp-snippet\nkubectl get pods\n"
-        proc = subprocess.run([self.fake_ssh], input=blob, capture_output=True, text=True, timeout=5)
-        self.assertIn("RAN:run-mpp-snippet", proc.stdout)
-        self.assertNotIn("RAN:kubectl get pods", proc.stdout)
-
-    def test_sequential_write_with_delay_survives_the_same_race(self):
-        cfg_path = _write_host_config(
-            self.tmpdir, self.fake_ssh, ["irrelevant"], startup_snippet="run-mpp-snippet",
-        )
-        os.environ["SRE_LEAD_HOST_CONFIG"] = cfg_path
-
-        # 2.0s, comfortably longer than the shim's 0.5s simulated busy window
-        # plus any real child-process startup jitter (observed up to ~0.3s
-        # spawning python through a bash wrapper) - the margin matters here:
-        # too tight a gap made this test itself flaky, since the fake
-        # remote's busy window starts counting from when *it* reads the
-        # first line, not from when the parent wrote it.
-        with mock.patch.object(mcp, "_SNIPPET_STEP_DELAY_SECONDS", 2.0):
+    def test_times_out_and_cleans_up_the_request_file(self):
+        from unittest import mock
+        with mock.patch.object(mcp, "_TIMEOUT_SECONDS", 0.3), \
+                mock.patch.object(mcp, "_POLL_INTERVAL_SECONDS", 0.05):
             outcome = mcp._run_kubectl("get", ["pods"], None)
 
+        self.assertFalse(outcome["ok"])
+        self.assertIn("timed out", outcome["error"])
+        remaining = [f for f in os.listdir(self.bridge_dir) if f.startswith("request-")]
+        self.assertEqual(remaining, [])
+
+    def test_response_arriving_just_before_timeout_is_still_picked_up(self):
+        from unittest import mock
+
+        def respond_late():
+            time.sleep(0.15)
+            reqs = [f for f in os.listdir(self.bridge_dir) if f.startswith("request-")]
+            if not reqs:
+                return
+            request_id = reqs[0][len("request-"):-len(".json")]
+            with open(os.path.join(self.bridge_dir, f"response-{request_id}.json"), "w") as f:
+                json.dump({"ok": True, "output": "node-1   Ready"}, f)
+
+        t = threading.Thread(target=respond_late)
+        t.start()
+        with mock.patch.object(mcp, "_TIMEOUT_SECONDS", 5), \
+                mock.patch.object(mcp, "_POLL_INTERVAL_SECONDS", 0.05):
+            outcome = mcp._run_kubectl("get", ["nodes"], None)
+        t.join(timeout=5)
+
         self.assertTrue(outcome["ok"], outcome)
-        self.assertIn("RAN:run-mpp-snippet", outcome["stdout"])
-        self.assertIn("RAN:kubectl get pods", outcome["stdout"])
+        self.assertEqual(outcome["output"], "node-1   Ready")
 
 
 if __name__ == "__main__":

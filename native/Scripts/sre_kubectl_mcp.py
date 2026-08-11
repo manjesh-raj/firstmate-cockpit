@@ -1,77 +1,71 @@
 #!/usr/bin/env python3
-"""SRE Lead's one MCP tool: run a read-only kubectl command on the connected
-bastion over SSH.
+"""SRE Lead's one MCP tool: run a read-only kubectl command in the captain's
+own already-connected terminal tab for this host.
 
 Minimal MCP stdio JSON-RPC server (`initialize`, `notifications/initialized`,
 `tools/list`, `tools/call` - the whole surface one tool needs), standard
 library only, no pip install. Spawned as a subprocess of the local `claude`
-CLI (see `SRELead.swift`), configured via `--mcp-config` pointing at a small
-generated JSON file whose `env` block sets `SRE_LEAD_HOST_CONFIG` to a second
-generated JSON file (written by the Swift side per-session) holding the
-resolved `ssh` argv for the bastion the captain is already connected to
-(`Host.sshArguments(allHosts:)` plus a materialized `-i <key>` when the host
-uses a saved key - see `SRELead.swift`'s `buildSSHArgv`).
+CLI (see `SRELead.swift`).
 
-When the host config's `become_user` is set (`Host.becomeUser`, optional,
-per-host), the already-validated kubectl command is piped into
-`sudo su - <become_user>`'s stdin, rather than passed as a `-c` argument -
-see `_run_kubectl`. Unset (the default), behavior is unchanged.
+**`fm/cockpit-sre-lead-shared-terminal` replaced this tool's whole execution
+model - read this before touching anything below.** Every earlier version
+(five attempts: PRs #70/#71/#72/#73, plus an abandoned PTY investigation) ran
+kubectl over a *second*, independent SSH connection to the same bastion,
+built from `Host.sshArguments(allHosts:)` plus (depending on the attempt) a
+`become_user`/`startup_snippet` escalation. The captain then confirmed a hard
+constraint that makes the entire second-connection approach a dead end on the
+real "EKS Preprod Bastion" host: its EKS Bastion hop is username/password-
+gated *by policy* - no SSH key auth is possible there. A second, independent,
+fully-automated SSH connection can never complete that login chain, because
+nothing can supply a password that isn't stored anywhere, by design - no
+argument-shape fix, stdin-piping trick, or extra hop could ever have worked,
+because the premise (a second automated connection can finish the login) was
+false from the start. **Do not resurrect a second-connection approach for
+this or any other password-gated host** - if a future host needs kubectl
+access and also has a password-gated hop, it needs this same shared-terminal
+approach, not a variant of the old one.
 
-When the host config's `startup_snippet` is set (`Host.startupSnippetID`,
-resolved to command text by `SRELead.swift` before this script ever sees it),
-it is sent first, before the escalation and kubectl command, over the same
-persistent shell - see `_run_via_sequential_shell`. This exists because of a
-root cause the first three `become_user` attempts (PRs #70/#71/#72, all
-described above) missed entirely: on the captain's real "EKS Preprod Bastion"
-host, `Host.sshArguments` connects only as far as a jump/gateway box
-(`centos@ec2-...`), never the real target where `kubectl`/`devops_k8s_preprod`
-live - reaching it needs an *additional* hop the interactive tab already
-fires automatically via `Host.startupSnippetID` (a saved snippet, e.g. `mpp`,
-presumably a shell alias/function defined server-side in that jump box's own
-profile) roughly 1.5s after connecting. Every prior escalation attempt ran
-`sudo su - <user>` on the jump box itself, a machine that almost certainly
-doesn't have that user or the same sudoers setup as the real target - which
-is why three different `su`/stdin argument shapes all failed identically.
-Unset (the default, every host that has never used a startup snippet),
-behavior is completely unchanged from before this feature existed.
+The fix: never open a second connection at all. Run the kubectl command in
+the *same*, already-authenticated interactive terminal tab the captain used
+to log all the way into the host by hand - the same idea `Snippet`'s "Run"
+action already uses (`TerminalView.send(txt:)`), just machine-initiated. This
+script and the Swift app are different processes with no shared memory, so
+`SRELeadBridge.swift` (Swift, in the app) and this script talk over a small
+file-based request/response protocol in a per-session directory
+(`SRE_LEAD_BRIDGE_DIR`, set by `SRELead.setUp`):
 
-**`su -c` was tried twice and failed on the captain's real bastion - do not
-reintroduce it.** `fm/cockpit-sre-lead-become-user` (PR #70) used
-`sudo su - <user> -c '<kubectl ...>'`; `fm/cockpit-sre-lead-su-syntax-fix`
-(PR #71) "fixed" the ordering to `sudo su -c '<kubectl ...>' - <user>` based
-on a correct reading of util-linux's `su` option-parsing order. Both were
-guesses validated only by static reasoning about `su`'s argv parser, and the
-captain then tested PR #71's fixed ordering directly on the real bastion:
-**`-c` was silently ignored entirely** - it dropped the captain into a live
-interactive shell as `<user>` instead of running the command. So this
-bastion's `su` does not honor `-c` reliably in that shape at all, regardless
-of argument order; the argv-flag approach is a dead end on this machine.
-What the captain confirmed *does* work, live: `echo '<kubectl ...>' | sudo su
-- <user>` - piping the command into the target shell's stdin. That is what
-`_run_kubectl` does now, via `subprocess.run`'s own `input=` parameter (not
-a shell-level `echo | ...` string, which would reintroduce the nested-quoting
-fragility this whole escalation path has been trying to avoid) - see
-`fm/cockpit-sre-lead-su-stdin-pipe`.
+  1. This script writes `request-<id>.json` (`{"command": "<kubectl ...>"}`)
+     into that directory, atomically (write to a `.tmp` path, then `os.rename`
+     into place, so the Swift side never reads a half-written file).
+  2. `SRELeadBridge` notices the file, injects `<command>` into the host
+     page's one primary interactive tab wrapped with two fresh random
+     markers (`echo <start marker>; <command>; echo <end marker>`), polls
+     that tab's own terminal buffer for the end marker to appear, extracts
+     everything between the two markers as the real output, and writes
+     `response-<id>.json` back (`{"ok": true, "output": "..."}` or
+     `{"ok": false, "error": "..."}` - e.g. if the tab looked busy, if the
+     captain typed into it while the command was running, or on timeout).
+  3. This script polls for that response file to appear, reads it, and
+     returns it as this tool's result.
 
-Read-only enforcement lives HERE, not in the persona prompt: `_ALLOWED_VERBS`
-is the only set of kubectl subcommands this tool will ever exec, and
-`_validate_args` rejects anything that isn't a plain, individually-safe
-argument - no shell metacharacters, so there is no local or remote shell
-for a flag-smuggled `--dry-run=client -o yaml | kubectl apply -f -` (or any
-other `;`/`&&`/`` ` ``/`$()`-based trick) to run inside. The command runs on
-the bastion via a *second* SSH connection reusing the exact same argv this
-app's own terminal tab already trusts (`sshArguments`), never a local
-kubeconfig - so this script never talks to a Kubernetes API server directly,
-and multiple clusters "just work" because whichever bastion is connected
-already has its own authenticated `kubectl`.
+Read-only enforcement lives HERE, not in the persona prompt and not in
+`SRELeadBridge.swift`: `_ALLOWED_VERBS` is the only set of kubectl subcommands
+this tool will ever run, and `_validate_args` rejects anything that isn't a
+plain, individually-safe argument - no shell metacharacters, so there is no
+way for a flag-smuggled `--dry-run=client -o yaml | kubectl apply -f -` (or
+any other `;`/`&&`/`` ` ``/`$()`-based trick) to do anything unexpected once
+it's typed into the shared, real interactive shell. This validation runs
+before the command is even written into a request file, exactly like it ran
+before the old `ssh` argv was built - moving the execution path did not
+change this guarantee.
 """
 
 import json
 import os
 import shlex
-import subprocess
 import sys
 import time
+import uuid
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAME = "kubectl_readonly"
@@ -86,22 +80,18 @@ _ALLOWED_VERBS = {"get", "describe", "logs", "top", "events"}
 # Conservative allowlist for every individual argv token after the verb:
 # letters, digits, and a small set of punctuation kubectl args legitimately
 # use (namespace/label selectors, resource/name, jsonpath, flags). No shell
-# metacharacters ever reach this set, so there is nothing for a remote shell
-# to interpret even though `ssh` sends the joined command line through the
-# bastion's login shell.
+# metacharacters ever reach this set, so there is nothing for the shared
+# interactive shell to interpret beyond running kubectl with plain arguments.
 _SAFE_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     "-_./:=,@*{}[]'\" "
 )
 
+# How long to wait for `SRELeadBridge` to write a response file. Comfortably
+# above `SRELeadBridge.commandTimeout` (25s) so a bridge-side timeout always
+# produces a real response file before this script's own poll gives up.
 _TIMEOUT_SECONDS = 30
-
-# Best-effort delay between sequential stdin writes when a startup snippet is
-# involved (see `_run_via_sequential_shell`) - mirrors the existing ~1.5s
-# fixed-delay precedent `ConsoleController.runStartupSnippet` already uses
-# for the interactive tab, since there is no reliable "shell/nested-hop is
-# ready for more input" signal to hook here either.
-_SNIPPET_STEP_DELAY_SECONDS = 1.5
+_POLL_INTERVAL_SECONDS = 0.2
 
 
 def _validate_args(subcommand, args):
@@ -128,21 +118,11 @@ def _validate_args(subcommand, args):
     return None
 
 
-def _load_host_config():
-    path = os.environ.get("SRE_LEAD_HOST_CONFIG")
+def _bridge_dir():
+    path = os.environ.get("SRE_LEAD_BRIDGE_DIR")
     if not path:
-        raise RuntimeError("SRE_LEAD_HOST_CONFIG is not set - this script must be spawned by SRELead.swift")
-    with open(path) as f:
-        cfg = json.load(f)
-    argv = cfg.get("ssh_argv")
-    if not isinstance(argv, list) or not argv:
-        raise RuntimeError(f"{path} has no usable 'ssh_argv'")
-    return (
-        cfg.get("ssh_executable", "/usr/bin/ssh"),
-        argv,
-        cfg.get("become_user"),
-        cfg.get("startup_snippet"),
-    )
+        raise RuntimeError("SRE_LEAD_BRIDGE_DIR is not set - this script must be spawned by SRELead.swift")
+    return path
 
 
 def _run_kubectl(subcommand, args, namespace):
@@ -150,7 +130,6 @@ def _run_kubectl(subcommand, args, namespace):
     if error:
         return {"ok": False, "error": error}
 
-    ssh_exe, ssh_argv, become_user, startup_snippet = _load_host_config()
     remote = ["kubectl", subcommand]
     if namespace:
         if set(namespace) - _SAFE_CHARS:
@@ -159,130 +138,52 @@ def _run_kubectl(subcommand, args, namespace):
     remote += args
 
     # `shlex.quote` per token is defense in depth on top of
-    # `_validate_args`'s character-set check above, not a replacement for it -
-    # every token was already validated before it reaches here.
+    # `_validate_args`'s character-set check above, not a replacement for it:
+    # this string is typed directly into the shared interactive shell, so it
+    # still goes through real shell parsing once there.
     remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
 
-    if startup_snippet:
-        return _run_via_sequential_shell(
-            ssh_exe, ssh_argv, startup_snippet, become_user, remote_cmd, subcommand
-        )
-
-    # `ssh <same argv the interactive tab already uses> -- bash -lc '<...>'`:
-    # a second, independent connection to the same bastion. Forced through a
-    # login shell (`bash -lc`) so it sources the same profile
-    # (`.bash_profile`/`.profile`) the interactive tab already benefits from -
-    # a bare non-interactive `ssh ... -- kubectl ...` exec only sources
-    # `.bashrc`, and only for an interactive shell, so a `kubectl` that's only
-    # on PATH via a profile file is "command not found" for this tool even
-    # though the interactive tab finds it fine.
-    #
-    # `become_user` (`Host.becomeUser`, `fm/cockpit-sre-lead-become-user`):
-    # on some bastions the login user this host connects as cannot run
-    # `kubectl` at all - only a dedicated service user reached via
-    # `sudo su - <user>` can. Two prior attempts to deliver the kubectl
-    # command via `su -c '<kubectl ...>'` (in either argument order) both
-    # failed on the captain's real bastion - see the module docstring for
-    # the full evidence. What the captain confirmed works is piping the
-    # command into the target shell's stdin, so that's what happens here:
-    # the SSH command is just `bash -lc 'sudo su - <user>'` (no kubectl
-    # command embedded in argv at all), and the already-validated kubectl
-    # command string is handed to `subprocess.run` via `input=`, with a
-    # trailing newline so the remote shell actually executes it once read -
-    # matching the captain's own `echo '<cmd>' | sudo su - <user>` test. This
-    # single-shot path is unaffected by `startup_snippet` - no host that lacks
-    # one reaches any of the code below this comment.
-    stdin_input = None
-    if become_user:
-        shell_cmd = f"sudo su - {shlex.quote(become_user)}"
-        stdin_input = remote_cmd + "\n"
-    else:
-        shell_cmd = remote_cmd
-
-    full = [ssh_exe] + ssh_argv + ["--", "bash", "-lc", shell_cmd]
     try:
-        proc = subprocess.run(
-            full, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS,
-            input=stdin_input,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"kubectl {subcommand} timed out after {_TIMEOUT_SECONDS}s"}
-    except OSError as e:
-        return {"ok": False, "error": f"failed to run ssh: {e}"}
+        bridge_dir = _bridge_dir()
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
 
-    return {
-        "ok": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        "stdout": proc.stdout[-20000:],
-        "stderr": proc.stderr[-4000:],
-    }
-
-
-def _run_via_sequential_shell(ssh_exe, ssh_argv, startup_snippet, become_user, remote_cmd, subcommand):
-    """A host with `startup_snippet` set needs an extra hop run first, over
-    the *same* shell session, before the escalation and kubectl commands -
-    `Host.sshArguments` alone only reaches a jump/gateway box on this class
-    of host, not the real target (see the module docstring for the captain's
-    "EKS Preprod Bastion" case this was root-caused against). The snippet is
-    typically itself a further nested `ssh` (a server-side alias like `mpp`,
-    opaque to this script by design), so a fresh, separate `ssh` invocation
-    from this script could not replicate it - it depends on config that only
-    exists inside the first hop's own shell.
-
-    Unlike the single-shot `subprocess.run(..., input=...)` path above, the
-    commands here cannot be handed over as one blob: the interactive tab's
-    own `runStartupSnippet` documents that there is no reliable "the remote
-    shell is ready" signal, and firing the escalation/kubectl commands
-    immediately risks them racing ahead of the snippet's own nested-hop
-    handshake and landing nowhere useful (or in the wrong shell entirely).
-    So this opens a persistent login shell and writes each command to its
-    stdin one at a time, with a delay after each, closing stdin once the
-    kubectl command is sent so the whole chain unwinds on EOF exactly like
-    the single-shot path's `su` session already does.
-    """
-    full = [ssh_exe] + ssh_argv + ["--", "bash", "-l"]
-    try:
-        proc = subprocess.Popen(
-            full, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True,
-        )
-    except OSError as e:
-        return {"ok": False, "error": f"failed to run ssh: {e}"}
+    request_id = uuid.uuid4().hex
+    request_path = os.path.join(bridge_dir, f"request-{request_id}.json")
+    response_path = os.path.join(bridge_dir, f"response-{request_id}.json")
+    tmp_path = request_path + ".tmp"
 
     try:
-        proc.stdin.write(startup_snippet + "\n")
-        proc.stdin.flush()
-        time.sleep(_SNIPPET_STEP_DELAY_SECONDS)
-
-        if become_user:
-            proc.stdin.write(f"sudo su - {shlex.quote(become_user)}\n")
-            proc.stdin.flush()
-            time.sleep(_SNIPPET_STEP_DELAY_SECONDS)
-
-        proc.stdin.write(remote_cmd + "\n")
-        proc.stdin.flush()
-
-        # `communicate()`, not a manual `proc.stdin.close()` beforehand: it
-        # closes stdin itself (since no `input=` is passed here - every
-        # command was already written above) as part of its own internal
-        # read loop, which is what lets the remote's `bash -l` (and, if
-        # `become_user` opened one, its nested `su -` shell) see EOF and
-        # unwind - a `close()` call of our own first would make this second,
-        # redundant close raise on an already-closed file.
-        stdout, stderr = proc.communicate(timeout=_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        return {"ok": False, "error": f"kubectl {subcommand} timed out after {_TIMEOUT_SECONDS}s"}
+        with open(tmp_path, "w") as f:
+            json.dump({"command": remote_cmd}, f)
+        os.rename(tmp_path, request_path)
     except OSError as e:
-        return {"ok": False, "error": f"failed to run ssh: {e}"}
+        return {"ok": False, "error": f"could not write the bridge request: {e}"}
 
-    return {
-        "ok": proc.returncode == 0,
-        "exit_code": proc.returncode,
-        "stdout": stdout[-20000:],
-        "stderr": stderr[-4000:],
-    }
+    deadline = time.time() + _TIMEOUT_SECONDS
+    while time.time() < deadline:
+        if os.path.exists(response_path):
+            try:
+                with open(response_path) as f:
+                    outcome = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                outcome = {"ok": False, "error": f"could not read the bridge response: {e}"}
+            finally:
+                try:
+                    os.remove(response_path)
+                except OSError:
+                    pass
+            return outcome
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+    # Timed out waiting on the Swift side - clean up a still-pending request
+    # file so it isn't picked up and acted on later, after this call has
+    # already given up on it.
+    try:
+        os.remove(request_path)
+    except OSError:
+        pass
+    return {"ok": False, "error": f"timed out after {_TIMEOUT_SECONDS}s waiting for the shared-terminal bridge to respond"}
 
 
 def _tool_schema():
@@ -290,9 +191,10 @@ def _tool_schema():
         "name": TOOL_NAME,
         "description": (
             "Run a READ-ONLY kubectl command (get, describe, logs, top, or events) "
-            "against the Kubernetes cluster the currently connected bastion is already "
-            "authenticated to. Runs on the bastion over SSH, not locally. Any other "
-            "verb (apply, delete, patch, exec, ...) is refused."
+            "in the captain's own already-connected terminal tab for this host, using "
+            "whatever cluster access that tab already has. Any other verb (apply, "
+            "delete, patch, exec, ...) is refused. Can occasionally fail with a "
+            "'busy' error if that tab is actively being used - wait a moment and retry."
         ),
         "inputSchema": {
             "type": "object",
@@ -348,7 +250,7 @@ def main():
             _reply(id_, result={
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "sre-kubectl", "version": "1.0.0"},
+                "serverInfo": {"name": "sre-kubectl", "version": "2.0.0"},
             })
         elif method == "notifications/initialized":
             pass  # no response expected for a notification

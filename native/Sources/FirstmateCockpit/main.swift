@@ -444,6 +444,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// `fm/cockpit-sre-lead-shared-terminal`: `swift build && FM_RUN_SRE_LEAD_BRIDGE_TESTS=1
+// .build/debug/FirstmateCockpit` runs `SRELeadBridge`'s self-tests and exits,
+// never opening a window - this project builds with Command Line Tools only
+// (no Xcode), which has no `XCTest.framework` and, in practice, no working
+// `swift test` story for a `swift-testing`-based test target either (see
+// `SRELeadBridgeSelfTest.swift`'s header for what was actually tried and why
+// it didn't work), so this is the plain, dependency-free stand-in - the same
+// "env-var-gated verification, run and read the result" convention this
+// codebase already uses for AppKit UI probes (see AGENTS.md's "Verifying
+// native UI bugs without a real screenshot"), just kept permanently instead
+// of reverted after one use.
+if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
+    exit(SRELeadBridgeSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
