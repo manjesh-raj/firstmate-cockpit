@@ -459,6 +459,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
     exit(SRELeadBridgeSelfTest.run() ? 0 : 1)
 }
 
+// `fm/cockpit-sre-lead-reply-formatting`: same convention, for
+// `SRELeadMarkdown.parse`'s block/callout parsing - see
+// `SRELeadMarkdownSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_MARKDOWN_TESTS"] == "1" {
+    exit(SRELeadMarkdownSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
