@@ -95,6 +95,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private let tabsStack = NSStackView()
     private var plusButton = NSButton()
     private var themeButton = NSButton()
+    private var blockViewButton = NSButton()
     private var findButton = NSButton()
     private var zoomInButton = NSButton()
     private var zoomOutButton = NSButton()
@@ -208,9 +209,18 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             self?.theme = theme
             self?.applyTheme()
         }
+
+        // `fm/cockpit-block-view-terminal`: mirrors the theme observer above -
+        // one process-wide flag, every open console (and every tab within it)
+        // reacts the instant it flips, matching the captain's explicit
+        // "flip ALL currently open tabs immediately" spec.
+        blockViewObservation = BlockViewManager.shared.observe { [weak self] enabled in
+            self?.applyBlockViewVisibility(enabled)
+        }
     }
 
     private var themeObservation: ThemeObservation?
+    private var blockViewObservation: BlockViewObservation?
 
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -248,6 +258,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         zoomOutButton = makeIconButton(symbol: "minus.magnifyingglass", tooltip: "Zoom Out (⌘−)", action: #selector(zoomOut))
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
+        blockViewButton = makeIconButton(symbol: "rectangle.grid.1x2", tooltip: "Toggle Block View (⌘⌥B)", action: #selector(toggleBlockView))
         logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
 
         // SRE Lead (design brief Part C) is a dedicated-host-page-only
@@ -260,7 +271,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             sreLeadButton = pill
             toolViews.append(pill)
         }
-        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton, logButton]
+        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton, blockViewButton, logButton]
         let tools = NSStackView(views: toolViews)
         tools.orientation = .horizontal
         tools.spacing = 2
@@ -345,6 +356,35 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         let tab = TabModel(name: name, launch: launch, terminal: term, accentHex: accentHex)
         tab.isOneShotCommand = isOneShotCommand
 
+        // `fm/cockpit-block-view-terminal`: a shell/ssh tab (never a mirror,
+        // see `TabModel.supportsBlockView`) gets a block tracker attached to
+        // its `Terminal` and a sibling rendering view, both created up front
+        // so they're ready the instant the global toggle (or a later select)
+        // turns block view on for this tab - never lazily on first display.
+        if tab.supportsBlockView, let terminal = term.terminal {
+            let tracker = TerminalBlockTracker()
+            tracker.attach(to: terminal)
+            tab.blockTracker = tracker
+
+            let container = BlockContainerView(frame: .zero)
+            container.applyTheme(theme)
+            container.isHidden = true
+            content.addSubview(container)
+            NSLayoutConstraint.activate([
+                container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                container.topAnchor.constraint(equalTo: content.topAnchor),
+                container.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
+            tab.blockContainer = container
+
+            tracker.onChange = { [weak container, weak tracker] in
+                guard let container, let tracker else { return }
+                container.render(tracker.blocks)
+            }
+            term.onDataReceived = { [weak tracker] in tracker?.refreshRunningBlock() }
+        }
+
         let chip = TabChipView(tabID: tab.id, name: name)
         let id = tab.id
         chip.onSelect = { [weak self] in self?.select(tabID: id) }
@@ -379,6 +419,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         tab.started = true
         if defaultLoggingEnabled { startLogging(tab) }
+        installShellIntegrationIfSupported(tab)
+    }
+
+    /// `fm/cockpit-block-view-terminal`: best-effort, same timing convention
+    /// as `runStartupSnippet` - there is no protocol-level "the shell is
+    /// ready" signal, so this sends the hook after a fixed delay long enough
+    /// for a login shell (local, near-instant) or an ssh session
+    /// (authentication + remote prompt) to be sitting at a real prompt.
+    /// Skipped for `.mirror` (see `TabModel.supportsBlockView`) and for a
+    /// one-shot provisioning command (`isOneShotCommand`) - neither is an
+    /// interactive prompt cycle this hook has anything to attach to.
+    private func installShellIntegrationIfSupported(_ tab: TabModel) {
+        guard tab.supportsBlockView, !tab.isOneShotCommand else { return }
+        let delay: TimeInterval
+        switch tab.launch {
+        case .shell: delay = 0.2
+        case .ssh: delay = 1.5
+        case .mirror: return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak tab] in
+            guard let tab, !tab.isClosing else { return }
+            tab.terminal.send(txt: ShellIntegration.installCommand)
+        }
     }
 
     // MARK: The pinned "Firstmate" host (Fix 4)
@@ -813,6 +876,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.terminal.stopLogging()
         tab.terminal.terminate()
         tab.terminal.removeFromSuperview()
+        tab.blockContainer?.removeFromSuperview()
         tabs.remove(at: idx)
 
         // Last-tab edge case. The shared Firstmate console never leaves the
@@ -868,11 +932,68 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private func select(tabID: UUID, focus: Bool = true) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         currentTab = tab
-        for t in tabs { t.terminal.isHidden = (t !== tab) }
+        for t in tabs { updateTabViewVisibility(t) }
         styleChips()
         updateWindowTitle(from: tab)
         updateLogButton()
+        updateBlockViewButton()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
+    }
+
+    // MARK: Block view (`fm/cockpit-block-view-terminal`)
+
+    /// Mirrors `ThemeManager`'s global-instant-switch: the observer
+    /// registered in `loadView` calls this the moment the process-wide flag
+    /// changes, and it is re-applied on every `select()` too so switching
+    /// tabs never shows a stale mode.
+    private var blockViewEnabled: Bool = BlockViewManager.shared.isEnabled
+
+    private func applyBlockViewVisibility(_ enabled: Bool) {
+        blockViewEnabled = enabled
+        for tab in tabs { updateTabViewVisibility(tab) }
+        updateBlockViewButton()
+    }
+
+    /// Decides which of a tab's two views (raw `terminal` or parsed
+    /// `blockContainer`) is visible right now - never both, and never for a
+    /// tab that isn't the current one. Toggling never touches `terminal`'s
+    /// process or `startProcess` state either way - this only flips
+    /// `isHidden` on two views that have been live and receiving data all
+    /// along (see `addTab`: the block tracker is attached and already
+    /// accumulating blocks long before block view is ever shown).
+    private func updateTabViewVisibility(_ tab: TabModel) {
+        let isCurrent = (tab === currentTab)
+        guard isCurrent else {
+            tab.terminal.isHidden = true
+            tab.blockContainer?.isHidden = true
+            return
+        }
+        if blockViewEnabled, tab.supportsBlockView, let container = tab.blockContainer {
+            tab.terminal.isHidden = true
+            container.isHidden = false
+        } else {
+            tab.terminal.isHidden = false
+            tab.blockContainer?.isHidden = true
+        }
+    }
+
+    @objc func toggleBlockView() {
+        BlockViewManager.shared.toggle()
+        // `applyBlockViewVisibility` runs via the `observe` callback
+        // registered in `loadView`, so nothing else is needed here.
+    }
+
+    /// Restyle the toolbar icon for the global block-view state - filled
+    /// while on, outline otherwise, matching `updateLogButton`'s existing
+    /// filled/outline convention for a stateful toggle in this same toolbar.
+    private func updateBlockViewButton() {
+        blockViewButton.image = NSImage(
+            systemSymbolName: blockViewEnabled ? "rectangle.grid.1x2.fill" : "rectangle.grid.1x2",
+            accessibilityDescription: "Block View"
+        )
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        blockViewButton.contentTintColor = blockViewEnabled ? accent : HelmTheme.nsColor(theme.chromeInkHex)
+        blockViewButton.toolTip = blockViewEnabled ? "Show Raw Scrollback (⌘⌥B)" : "Show Block View (⌘⌥B)"
     }
 
     // MARK: Theme
@@ -884,7 +1005,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     private func applyTheme() {
-        for tab in tabs { theme.apply(to: tab.terminal) }
+        for tab in tabs {
+            theme.apply(to: tab.terminal)
+            tab.blockContainer?.applyTheme(theme)
+        }
+        updateBlockViewButton()
 
         let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -1026,6 +1151,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
+        // A reconnect is a fresh process with no relationship to the old
+        // session's blocks, and needs the shell-integration hook re-sent
+        // (`startTab` does both for a first start/auto-reconnect; ⌘R goes
+        // through this separate per-launch-kind path instead, so it repeats
+        // the same two steps here).
+        tab.blockTracker?.reset()
+        installShellIntegrationIfSupported(tab)
         view.window?.makeFirstResponder(tab.terminal)
     }
 
@@ -1057,6 +1189,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if let themeObservation {
             ThemeManager.shared.unobserve(themeObservation)
             self.themeObservation = nil
+        }
+        if let blockViewObservation {
+            BlockViewManager.shared.unobserve(blockViewObservation)
+            self.blockViewObservation = nil
         }
     }
 

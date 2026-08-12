@@ -439,6 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let themeItem = NSMenuItem(title: "Toggle Light/Dark", action: #selector(ConsoleController.toggleTheme), keyEquivalent: "t")
         themeItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(themeItem)
+        // `fm/cockpit-block-view-terminal`: same shape as the theme toggle above.
+        let blockViewItem = NSMenuItem(title: "Toggle Block View", action: #selector(ConsoleController.toggleBlockView), keyEquivalent: "b")
+        blockViewItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(blockViewItem)
 
         NSApp.mainMenu = mainMenu
     }
@@ -464,6 +468,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
 // `SRELeadMarkdownSelfTest.swift`'s header.
 if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_MARKDOWN_TESTS"] == "1" {
     exit(SRELeadMarkdownSelfTest.run() ? 0 : 1)
+}
+
+// `fm/cockpit-block-view-terminal`: same convention, for
+// `TerminalBlockTracker`'s OSC 133 parsing and its coexistence with
+// `SRELeadBridge` - see `TerminalBlockTrackerSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_TESTS"] == "1" {
+    exit(TerminalBlockTrackerSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared

@@ -137,6 +137,32 @@ final class TabModel {
     /// down by `cleanupSSHKeyTempFile` on close, reconnect, and process exit.
     var sshKeyTempPath: String?
 
+    /// `fm/cockpit-block-view-terminal`: whether this tab is a candidate for
+    /// block view at all - a plain shell or an SSH session, both of which
+    /// this app starts and controls end to end, so the shell-integration
+    /// hook (`ShellIntegration.installCommand`) can be injected right after
+    /// launch. `.mirror` is explicitly excluded: it attaches to a tmux/herdr
+    /// session this app did not start and cannot safely re-instrument after
+    /// the fact (the captain's real shell there may already be mid-session,
+    /// with no reliable moment to inject a hook, and the session is shared
+    /// with whatever else is already attached to it).
+    var supportsBlockView: Bool {
+        switch launch {
+        case .shell, .ssh: return true
+        case .mirror: return false
+        }
+    }
+
+    /// Present only when `supportsBlockView` - registers the OSC 133 handler
+    /// on this tab's `Terminal` and accumulates the parsed block list.
+    var blockTracker: TerminalBlockTracker?
+
+    /// Present only when `supportsBlockView` - the block-view rendering,
+    /// added as a sibling of `terminal` inside the console's shared content
+    /// view, visibility toggled by `ConsoleController.applyBlockViewVisibility`
+    /// without ever touching `terminal` or the underlying process.
+    var blockContainer: BlockContainerView?
+
     init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name
         self.launch = launch
