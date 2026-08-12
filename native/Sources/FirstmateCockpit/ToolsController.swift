@@ -196,11 +196,29 @@ final class ToolsController: NSViewController {
         ])
         scrollView = scroll
 
+        // Rebuild the grid's column count whenever the window resizes - a
+        // live resize (drag or `setContentSize`) doesn't reliably re-invoke
+        // this child view controller's own `viewDidLayout()` (only the
+        // window's own content view controller is guaranteed that hook, and
+        // this page is a body child of `AppShellController`, not that
+        // controller itself), so this listens for the window's own resize
+        // notification instead, registered lazily once the view actually has
+        // a window (`viewDidAppear`).
+        NotificationCenter.default.addObserver(self, selector: #selector(containerWidthMayHaveChanged), name: NSWindow.didResizeNotification, object: nil)
+
         ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
             self?.theme = theme
             self?.applyTheme()
+        }
+
+        // Every open tab's monospace text follows the same font-size source
+        // terminal tabs do (`fm/cockpit-tools-page-ui-polish`) - a change
+        // from Settings' presets while a Tools tab is already open updates
+        // it live, not just at next construction.
+        FontSizeManager.shared.observe { [weak self] size in
+            for tab in self?.tabs ?? [] { tab.applyFontSize(size) }
         }
 
         showPicker()
@@ -210,6 +228,39 @@ final class ToolsController: NSViewController {
     override func viewWillAppear() {
         super.viewWillAppear()
         scrollToTop()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // The grid's very first build (in `loadView`) happens before the view
+        // has a real width to measure, so it falls back to a guess - refine
+        // it against the real width the moment the view is actually on
+        // screen, rather than waiting for the first resize.
+        containerWidthMayHaveChanged()
+    }
+
+    /// Real container width the grid last laid itself out against -
+    /// `rebuildGrid()` re-runs whenever this drifts by more than a point, so
+    /// resizing the window live re-flows the column count instead of it
+    /// being fixed at launch size.
+    private var lastGridWidth: CGFloat = 0
+
+    @objc private func containerWidthMayHaveChanged(_ note: Notification? = nil) {
+        if let note, let win = note.object as? NSWindow, win !== view.window { return }
+        // Force Auto Layout to fully resolve the new window size down
+        // through `content`/`pageStack`/`gridContainer`'s width chain before
+        // reading it back - the resize notification can otherwise fire
+        // slightly ahead of that propagation finishing.
+        view.window?.contentView?.layoutSubtreeIfNeeded()
+        view.layoutSubtreeIfNeeded()
+        let width = gridContainer.frame.width
+        guard width > 0, abs(width - lastGridWidth) > 1 else { return }
+        lastGridWidth = width
+        rebuildGrid()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func scrollToTop() {
@@ -278,19 +329,48 @@ final class ToolsController: NSViewController {
 
     // MARK: Landing grid <-> tab panel swap
 
+    /// A real wrapping grid, sized to the space `gridContainer` actually has -
+    /// the fixed `columnsPerRow = 3` + a hardcoded `268pt` card width this
+    /// replaced (`fm/cockpit-tools-page-ui-polish`) hugged the left edge on
+    /// any window wider than ~900pt, since neither the column count nor the
+    /// card width ever responded to the container's real width. Measured live
+    /// (a temporary debug probe, `FM_DEBUG_TOOLS_GRID=1`) before this fix:
+    /// at a 1220pt window the container was 1120pt wide but 3 fixed 268pt
+    /// cards only filled 824pt of it (~300pt wasted); at 1600pt the same 3
+    /// fixed-width cards filled 824pt of a 1500pt container (~700pt wasted).
+    /// `containerWidthMayHaveChanged()` calls this again whenever
+    /// `gridContainer`'s width changes, so resizing the window re-flows the
+    /// column count live -
+    /// the same "recompute on layout, don't just size once" approach
+    /// `SettingsController.rebuildAppearanceGrid` uses for a fixed column
+    /// count, extended here to a column count derived from real width.
+    private static let minCardWidth: CGFloat = 300
+    private static let cardSpacing: CGFloat = 14
+    private static let cardPadding: CGFloat = 16
+
     private func rebuildGrid() {
         for v in gridContainer.arrangedSubviews {
             gridContainer.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
-        let columnsPerRow = 3
+        cardIconTiles.removeAll()
+        cardBorderViews.removeAll()
+        mutedLabels.removeAll()
+
+        let containerWidth = gridContainer.frame.width > 0 ? gridContainer.frame.width : 860
+        let columnsPerRow = max(1, Int((containerWidth + Self.cardSpacing) / (Self.minCardWidth + Self.cardSpacing)))
+        let cardWidth = (containerWidth - Self.cardSpacing * CGFloat(columnsPerRow - 1)) / CGFloat(columnsPerRow)
+
         for chunk in ToolKind.allCases.chunked(into: columnsPerRow) {
-            let row = NSStackView(views: chunk.map { toolCard($0) })
+            let row = NSStackView(views: chunk.map { toolCard($0, width: cardWidth) })
             row.orientation = .horizontal
-            row.spacing = 10
+            row.spacing = Self.cardSpacing
+            row.distribution = .fillEqually
             row.translatesAutoresizingMaskIntoConstraints = false
             gridContainer.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: gridContainer.widthAnchor).isActive = true
         }
+        applyTheme()
     }
 
     private func showPicker() {
@@ -314,24 +394,29 @@ final class ToolsController: NSViewController {
 
     // MARK: Landing grid card
 
-    private func toolCard(_ kind: ToolKind) -> NSView {
+    private func toolCard(_ kind: ToolKind, width: CGFloat) -> NSView {
         let tile = IconTileView()
         tile.configure(symbol: kind.symbol, tint: kind.tint)
         cardIconTiles.append(tile)
 
         let titleLabel = NSTextField(labelWithString: kind.title)
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
 
         let descLabel = NSTextField(wrappingLabelWithString: kind.description)
-        descLabel.font = .systemFont(ofSize: 10.5)
-        descLabel.preferredMaxLayoutWidth = 220
+        descLabel.font = .systemFont(ofSize: 11)
+        // Card width varies with the container (see `rebuildGrid`), so this is
+        // recomputed on every rebuild rather than a fixed guess - a stale
+        // `preferredMaxLayoutWidth` from a previous, differently-sized layout
+        // would otherwise leave the label's computed intrinsic height wrong
+        // (too tall on a wider re-flow, clipped on a narrower one).
+        descLabel.preferredMaxLayoutWidth = width - Self.cardPadding * 2 - 34 - 10
         mutedLabels.append(descLabel)
 
         let textStack = NSStackView(views: [titleLabel, descLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 3
+        textStack.spacing = 4
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let row = NSStackView(views: [tile, textStack])
@@ -345,11 +430,10 @@ final class ToolsController: NSViewController {
         card.layer?.borderWidth = 1
         card.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            card.widthAnchor.constraint(equalToConstant: 268),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: Self.cardPadding),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -Self.cardPadding),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: Self.cardPadding),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -Self.cardPadding),
         ])
         cardBorderViews.append(card)
 

@@ -79,9 +79,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// writes through it, and every window that needs to match (Hosts/Keys/
     /// Snippets) observes the same manager instead of tracking its own copy.
     private var theme: HelmTheme = ThemeManager.shared.theme
-    private var fontSize: CGFloat = AppSettings.shared.fontSize
-    private let minFont: CGFloat = 8
-    private let maxFont: CGFloat = 28
+    /// Mirrors `FontSizeManager.shared.size` (`fm/cockpit-tools-page-ui-polish`) -
+    /// same "local var kept live via `observe`" convention as `theme` above,
+    /// so every open tab's font stays in sync with Settings' presets and the
+    /// Tools page's own monospace text, regardless of which one changed it.
+    private var fontSize: CGFloat = FontSizeManager.shared.size
 
     private func currentFont() -> NSFont {
         NSFont(name: "Menlo", size: fontSize)
@@ -208,9 +210,20 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             self?.theme = theme
             self?.applyTheme()
         }
+
+        // Follow the shared font size (`fm/cockpit-tools-page-ui-polish`) the
+        // same way - a per-host page can be torn down mid-session, so the
+        // token is kept and unregistered in `shutdown()`, not discarded.
+        fontSizeObservation = FontSizeManager.shared.observe { [weak self] size in
+            guard let self else { return }
+            self.fontSize = size
+            let f = self.currentFont()
+            for tab in self.tabs { tab.terminal.font = f }
+        }
     }
 
     private var themeObservation: ThemeObservation?
+    private var fontSizeObservation: FontSizeObservation?
 
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -923,21 +936,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: Font zoom
 
-    @objc func zoomIn() { setFontSize(fontSize + 1) }
-    @objc func zoomOut() { setFontSize(fontSize - 1) }
-    @objc func zoomReset() { setFontSize(13) }
+    @objc func zoomIn() { FontSizeManager.shared.step(by: 1) }
+    @objc func zoomOut() { FontSizeManager.shared.step(by: -1) }
+    @objc func zoomReset() { FontSizeManager.shared.setSize(13) }
 
-    /// The Settings panel's font-size stepper (Fix 3) - same clamping and
-    /// persistence as the toolbar/menu zoom actions above.
-    func stepFontSize(by delta: CGFloat) { setFontSize(fontSize + delta) }
+    /// The Settings panel's font-size stepper (Fix 3) - now a thin forward
+    /// to `FontSizeManager`, which is the source of truth (`fm/cockpit-
+    /// tools-page-ui-polish`); kept as a method on this class since
+    /// `main.swift`'s existing `onFontSizeStep` wiring still calls it.
+    func stepFontSize(by delta: CGFloat) { FontSizeManager.shared.step(by: delta) }
     var currentFontSize: CGFloat { fontSize }
-
-    private func setFontSize(_ size: CGFloat) {
-        fontSize = min(maxFont, max(minFont, size))
-        AppSettings.shared.fontSize = fontSize
-        let f = currentFont()
-        for tab in tabs { tab.terminal.font = f }
-    }
 
     // MARK: Session logging (B5)
 
@@ -1057,6 +1065,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if let themeObservation {
             ThemeManager.shared.unobserve(themeObservation)
             self.themeObservation = nil
+        }
+        if let fontSizeObservation {
+            FontSizeManager.shared.unobserve(fontSizeObservation)
+            self.fontSizeObservation = nil
         }
     }
 

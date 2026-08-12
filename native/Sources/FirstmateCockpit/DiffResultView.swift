@@ -33,6 +33,11 @@ final class DiffResultView: NSView {
 
     private let stack = NSStackView()
     private var theme: HelmTheme = ThemeManager.shared.theme
+    /// Follows `FontSizeManager` (`fm/cockpit-tools-page-ui-polish`) - the
+    /// line-number/text/separator fonts below are all offset from this by
+    /// the same deltas their original hardcoded sizes had from the default
+    /// 13pt terminal size (10/11/10.5, i.e. -3/-2/-2.5).
+    private var fontSize: CGFloat = FontSizeManager.shared.size
     private var rows: [DiffRow] = []
     private var showOnlyDifferences = false
     private var expandedGroups: Set<Int> = []
@@ -74,6 +79,11 @@ final class DiffResultView: NSView {
         rebuild()
     }
 
+    func setFontSize(_ size: CGFloat) {
+        fontSize = size
+        rebuild()
+    }
+
     /// Groups consecutive unchanged rows into collapsed separators when
     /// `showOnlyDifferences` is on, unless that specific run's id (its start
     /// index in `rows`, stable across rebuilds of the same comparison) is in
@@ -111,7 +121,7 @@ final class DiffResultView: NSView {
         let items = displayItems()
         if items.isEmpty {
             let empty = NSTextField(labelWithString: rows.isEmpty ? "Click Compare to see a diff." : "No differences.")
-            empty.font = .systemFont(ofSize: 11)
+            empty.font = .systemFont(ofSize: max(8, fontSize - 2))
             empty.textColor = HelmTheme.mutedInk(theme)
             stack.addArrangedSubview(empty)
             return
@@ -120,12 +130,12 @@ final class DiffResultView: NSView {
             switch item {
             case .row(let row):
                 let rowView = DiffRowView()
-                rowView.configure(row: row, theme: theme)
+                rowView.configure(row: row, theme: theme, fontSize: fontSize)
                 stack.addArrangedSubview(rowView)
                 rowView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             case .collapsed(let id, let count):
                 let sep = CollapsedRunView()
-                sep.configure(count: count, theme: theme) { [weak self] in
+                sep.configure(count: count, theme: theme, fontSize: fontSize) { [weak self] in
                     self?.expandedGroups.insert(id)
                     self?.rebuild()
                 }
@@ -152,14 +162,12 @@ private final class DiffRowView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         for tf in [leftNumber, rightNumber] {
-            tf.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
             tf.alignment = .right
             tf.translatesAutoresizingMaskIntoConstraints = false
             tf.widthAnchor.constraint(equalToConstant: 30).isActive = true
             tf.setContentHuggingPriority(.required, for: .horizontal)
         }
         for tf in [leftText, rightText] {
-            tf.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
             tf.lineBreakMode = .byTruncatingTail
             tf.maximumNumberOfLines = 1
             tf.translatesAutoresizingMaskIntoConstraints = false
@@ -208,7 +216,12 @@ private final class DiffRowView: NSView {
         fatalError("init(coder:) not supported")
     }
 
-    func configure(row: DiffRow, theme: HelmTheme) {
+    func configure(row: DiffRow, theme: HelmTheme, fontSize: CGFloat) {
+        let numberFont = NSFont.monospacedSystemFont(ofSize: max(8, fontSize - 3), weight: .regular)
+        let textFont = NSFont.monospacedSystemFont(ofSize: max(8, fontSize - 2), weight: .regular)
+        for tf in [leftNumber, rightNumber] { tf.font = numberFont }
+        for tf in [leftText, rightText] { tf.font = textFont }
+
         leftNumber.stringValue = row.leftNumber.map(String.init) ?? ""
         rightNumber.stringValue = row.rightNumber.map(String.init) ?? ""
         let muted = HelmTheme.mutedInk(theme)
@@ -263,7 +276,6 @@ private final class CollapsedRunView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        label.font = .systemFont(ofSize: 10.5, weight: .medium)
         label.translatesAutoresizingMaskIntoConstraints = false
 
         highlight.cornerRadius = 5
@@ -290,7 +302,8 @@ private final class CollapsedRunView: NSView {
         fatalError("init(coder:) not supported")
     }
 
-    func configure(count: Int, theme: HelmTheme, onExpand: @escaping () -> Void) {
+    func configure(count: Int, theme: HelmTheme, fontSize: CGFloat, onExpand: @escaping () -> Void) {
+        label.font = .systemFont(ofSize: max(8, fontSize - 2.5), weight: .medium)
         label.stringValue = "\u{25B8} \(count) unchanged line\(count == 1 ? "" : "s") - click to expand"
         label.textColor = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
