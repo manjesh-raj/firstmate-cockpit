@@ -53,24 +53,62 @@ final class SRELeadRunner {
             args += ["--resume", sessionID]
         }
 
-        currentProcess = ClaudePrintInvoker.run(
-            claude: claude,
-            args: args,
-            currentDirectory: session.workingDir
-        ) { [weak self] result in
-            self?.currentProcess = nil
-            self?.handleResult(result, completion: completion)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: claude)
+        proc.arguments = args
+        proc.environment = childEnvironmentDict()
+        proc.currentDirectoryURL = session.workingDir
+        let out = Pipe()
+        let err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        // Without this, `claude -p` probes for piped stdin and (confirmed
+        // live) waits ~3s before proceeding without it, on every single
+        // turn - `/dev/null` tells it immediately there's nothing coming.
+        proc.standardInput = FileHandle.nullDevice
+        currentProcess = proc
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try proc.run()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.currentProcess = nil
+                    completion(.failure(SRELeadSetupError(message: "could not start claude: \(error.localizedDescription)")))
+                }
+                return
+            }
+            // Read both pipes to completion before `waitUntilExit()` - a
+            // pipe's buffer can fill and deadlock the child if the parent
+            // isn't draining it concurrently with the child still writing.
+            let outData = out.fileHandleForReading.readDataToEndOfFile()
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            let status = proc.terminationStatus
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.currentProcess = nil
+                self.handleResult(outData: outData, errData: errData, status: status, completion: completion)
+            }
         }
     }
 
     private func handleResult(
-        _ result: Result<[String: Any], ClaudeCallError>,
+        outData: Data, errData: Data, status: Int32,
         completion: (Result<String, SRELeadSetupError>) -> Void
     ) {
-        guard case .success(let obj) = result else {
-            if case .failure(let error) = result {
-                completion(.failure(SRELeadSetupError(message: error.message)))
-            }
+        let stdout = String(data: outData, encoding: .utf8) ?? ""
+        let lastNonEmptyLine = stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .last
+            .map(String.init)
+
+        guard let line = lastNonEmptyLine,
+              let jsonData = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
+            completion(.failure(SRELeadSetupError(message: detail)))
             return
         }
 

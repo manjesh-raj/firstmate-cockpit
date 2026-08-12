@@ -61,18 +61,6 @@ protocol SRELeadBridgeTerminal: AnyObject {
 /// `Timer` for this shape of "check on something periodically" work
 /// (`UpdatesController`'s self-ticking relative-time label).
 final class SRELeadBridge {
-    /// The literal prefix of every command this bridge injects
-    /// (`beginProcessing`'s `"echo \(startMarker); ..."`), before shell
-    /// history ever sees it. `TerminalBlockTracker` (`fm/cockpit-block-view-
-    /// ssh-only`) checks a closed block's command text against this to hide
-    /// the bridge's own sentinel-wrapped kubectl commands from block view -
-    /// they are internal plumbing, not something the captain typed, and
-    /// showing them as an ordinary-looking block would be confusing. Kept
-    /// here (not duplicated as a separate literal in `TerminalBlockTracker`)
-    /// so the two files can't silently drift apart if this bridge's marker
-    /// format ever changes.
-    static let sentinelCommandPrefix = "echo SRE_LEAD_START_"
-
     private let bridgeDir: URL
     private weak var target: SRELeadBridgeTerminal?
     private var timer: Timer?
