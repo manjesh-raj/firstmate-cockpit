@@ -23,7 +23,6 @@ final class AppSettings {
         static let autoReconnect = "fm.autoReconnect"
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
         static let fmHome = "fm.fmHome"
-        static let blockViewEnabled = "fm.blockViewEnabled"
     }
 
     private init() {}
@@ -87,19 +86,5 @@ final class AppSettings {
     var fmHome: String? {
         get { defaults.string(forKey: Keys.fmHome) }
         set { defaults.set(newValue, forKey: Keys.fmHome) }
-    }
-
-    /// `fm/cockpit-block-view-ssh-only`: the global "show command output as
-    /// collapsible blocks instead of raw scrollback" preference. Defaults to
-    /// on (captain-specified, "default-on for SSH host pages") - the flag
-    /// itself stays process-wide like `ThemeManager`'s, but `TabModel.
-    /// supportsBlockView` gates which tabs it can ever apply to, so a
-    /// default of `true` here only actually shows block view on SSH tabs;
-    /// the built-in Firstmate console's Shell/Mirror tabs are unaffected
-    /// regardless of this value. `BlockViewManager` is the source of truth
-    /// at runtime and persists through this key.
-    var blockViewEnabled: Bool {
-        get { defaults.object(forKey: Keys.blockViewEnabled) == nil ? true : defaults.bool(forKey: Keys.blockViewEnabled) }
-        set { defaults.set(newValue, forKey: Keys.blockViewEnabled) }
     }
 }
