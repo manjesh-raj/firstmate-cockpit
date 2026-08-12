@@ -112,5 +112,15 @@ final class CockpitTerminalView: LocalProcessTerminalView {
             logHandle.write(Data(slice))
         }
         super.dataReceived(slice: slice)
+        onDataReceived?()
     }
+
+    // MARK: Block view (`fm/cockpit-block-view-terminal`)
+
+    /// Fires after every chunk of host output has been fed to the terminal -
+    /// `ConsoleController` uses this to tell the tab's `TerminalBlockTracker`
+    /// (when present) to refresh its currently-running block's output text,
+    /// so block view streams live instead of only updating once a command
+    /// finishes and its closing OSC 133 marker fires.
+    var onDataReceived: (() -> Void)?
 }
