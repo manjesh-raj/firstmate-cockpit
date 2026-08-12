@@ -32,6 +32,23 @@ import AppKit
 
 final class SettingsController: NSViewController {
 
+    /// The three stores the "Backup & Restore" card exports from / imports
+    /// into (`BackupUI.swift`) - injected so this controller doesn't need any
+    /// persistence logic of its own, matching how `onPresentHostEditor`
+    /// keeps `AppShellController` ignorant of `HostStore`.
+    private let hostStore: HostStore
+    private let keyStore: SSHKeyStore
+    private let snippetStore: SnippetStore
+
+    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+        self.hostStore = hostStore
+        self.keyStore = keyStore
+        self.snippetStore = snippetStore
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     /// The Terminal section's font-size presets. Wired by the app delegate to
     /// `ConsoleController.stepFontSize`, since this panel never holds a
     /// direct reference to the console.
@@ -107,8 +124,9 @@ final class SettingsController: NSViewController {
         let appearance = card(icon: "paintpalette", tint: .violet, title: "Appearance", subtitle: "8 Helm themes, light and dark", content: buildAppearanceSection())
         let terminal = card(icon: "terminal", tint: .warn, title: "Terminal", subtitle: "Font size and behavior", content: buildTerminalSection())
         let security = card(icon: "lock.shield", tint: .violet, title: "Security", subtitle: "System-level convenience toggles", content: buildSecuritySection())
+        let backup = card(icon: "tray.and.arrow.up.fill", tint: .info, title: "Backup & Restore", subtitle: "Move saved hosts, snippets, and preferences between machines", content: buildBackupSection())
 
-        let stack = NSStackView(views: [header, connection, appearance, terminal, security])
+        let stack = NSStackView(views: [header, connection, appearance, terminal, security, backup])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -128,6 +146,7 @@ final class SettingsController: NSViewController {
             appearance.widthAnchor.constraint(equalTo: stack.widthAnchor),
             terminal.widthAnchor.constraint(equalTo: stack.widthAnchor),
             security.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            backup.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         let scroll = NSScrollView()
@@ -761,6 +780,54 @@ final class SettingsController: NSViewController {
         }
     }
 
+    // MARK: Backup & Restore
+
+    private let backupStatusLabel = NSTextField(wrappingLabelWithString: "")
+
+    /// Export/Import share one implementation (`BackupUI.swift`) with the
+    /// Bootstrap page's "Restore Grand Line config" step - this card is just
+    /// the two buttons plus a live counts line, never its own logic.
+    private func buildBackupSection() -> NSView {
+        let desc = NSTextField(wrappingLabelWithString: "Write everything this app knows locally - saved hosts, snippets, and the preferences above - to a single file, or bring one in from another machine. SSH private keys never leave the Keychain; a restored host referencing a key not on this machine needs that key re-added from the Keys screen.")
+        desc.font = .systemFont(ofSize: 11)
+        desc.textColor = .secondaryLabelColor
+        desc.preferredMaxLayoutWidth = 520
+
+        backupStatusLabel.font = .systemFont(ofSize: 11)
+        backupStatusLabel.textColor = .secondaryLabelColor
+
+        let exportButton = NSButton(title: "Export\u{2026}", target: self, action: #selector(exportBackupClicked))
+        exportButton.bezelStyle = .rounded
+        let importButton = NSButton(title: "Import\u{2026}", target: self, action: #selector(importBackupClicked))
+        importButton.bezelStyle = .rounded
+
+        let buttonRow = NSStackView(views: [exportButton, importButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+
+        let section = NSStackView(views: [desc, backupStatusLabel, buttonRow])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 8
+        return section
+    }
+
+    private func refreshBackupStatus() {
+        let hostCount = hostStore.hosts.count
+        let snippetCount = snippetStore.snippets.count
+        backupStatusLabel.stringValue = "Currently saved: \(hostCount) host\(hostCount == 1 ? "" : "s"), \(snippetCount) snippet\(snippetCount == 1 ? "" : "s")."
+    }
+
+    @objc private func exportBackupClicked() {
+        BackupUI.exportFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+    }
+
+    @objc private func importBackupClicked() {
+        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
+            self?.refreshFromSettings()
+        }
+    }
+
     @objc private func fontPresetClicked(_ sender: NSButton) {
         let target = CGFloat(sender.tag)
         onFontSizeStep?(target - AppSettings.shared.fontSize)
@@ -819,6 +886,7 @@ final class SettingsController: NSViewController {
 
         rebuildAppearanceGrid()
         refreshSessions()
+        refreshBackupStatus()
         applyTheme()
     }
 

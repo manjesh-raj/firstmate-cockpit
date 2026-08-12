@@ -152,6 +152,23 @@ private final class StepDotView: NSView {
 
 final class BootstrapController: NSViewController {
 
+    /// The three stores the "Restore Grand Line config" step reads/writes
+    /// through the shared `BackupUI.importFlow` (fm/cockpit-local-state-
+    /// portable) - injected the same way `AppShellController` stays ignorant
+    /// of `HostStore` via `onPresentHostEditor`.
+    private let hostStore: HostStore
+    private let keyStore: SSHKeyStore
+    private let snippetStore: SnippetStore
+
+    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+        self.hostStore = hostStore
+        self.keyStore = keyStore
+        self.snippetStore = snippetStore
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     private var theme: HelmTheme = ThemeManager.shared.theme
 
     private let subtitleLabel = NSTextField(labelWithString: "Machine setup and environment bootstrap - stored locally on this machine.")
@@ -213,6 +230,11 @@ final class BootstrapController: NSViewController {
     private var hasCheckedSoftwareOnce = false
     private let softwareStack = NSStackView()
 
+    // MARK: Restore Grand Line config state (fm/cockpit-local-state-portable)
+
+    private let restoreStack = NSStackView()
+    private let restoreStatusLabel = NSTextField(wrappingLabelWithString: "")
+
     // MARK: "Not synced here, by design" state (Part E, extended in
     // cockpit-bootstrap-vault-hardeners to add aws/codex/brew alongside gh)
 
@@ -231,7 +253,7 @@ final class BootstrapController: NSViewController {
     // MARK: "Run full setup" sequencer state (Part D)
 
     private enum SetupStepKind: CaseIterable, Hashable {
-        case firstmateHome, dotfiles, agentInstructions, software
+        case firstmateHome, dotfiles, agentInstructions, software, restoreConfig
 
         var title: String {
             switch self {
@@ -239,6 +261,7 @@ final class BootstrapController: NSViewController {
             case .dotfiles: return "Dotfiles & machine config"
             case .agentInstructions: return "Global agent instructions"
             case .software: return "Software checklist"
+            case .restoreConfig: return "Restore Grand Line config"
             }
         }
 
@@ -253,8 +276,19 @@ final class BootstrapController: NSViewController {
             case .dotfiles: return "gearshape"
             case .agentInstructions: return "doc.text"
             case .software: return "checklist"
+            case .restoreConfig: return "tray.and.arrow.down"
             }
         }
+
+        /// Whether "Run full setup" (Part D) should sequence this step. This
+        /// one is deliberately excluded: unlike the other four, restoring a
+        /// config requires the captain to pick a real file via `NSOpenPanel`
+        /// - there's nothing to automate, and forcing an import prompt into
+        /// an unattended sequence would violate "never force an import when
+        /// there's nothing to restore from." It still appears as the fifth
+        /// step in the main vertical stepper below, just outside the
+        /// automated chain.
+        var isPartOfFullSetupSequence: Bool { self != .restoreConfig }
     }
 
     private enum SetupStepStatus: Equatable {
@@ -266,7 +300,7 @@ final class BootstrapController: NSViewController {
         var status: SetupStepStatus = .pending
     }
 
-    private var setupSteps: [SetupStepState] = SetupStepKind.allCases.map { SetupStepState(kind: $0) }
+    private var setupSteps: [SetupStepState] = SetupStepKind.allCases.filter { $0.isPartOfFullSetupSequence }.map { SetupStepState(kind: $0) }
     private var isRunningFullSetup = false
     private let setupStack = NSStackView()
     private let runFullSetupButton = NSButton()
@@ -334,9 +368,14 @@ final class BootstrapController: NSViewController {
         softwareStack.alignment = .leading
         softwareStack.spacing = 10
 
-        // The four sequenced sections (home, dotfiles, agent instructions,
-        // software) are steps in one connected vertical stepper rather than
-        // four independent cards - see the `StepRowViews` doc comment.
+        restoreStack.orientation = .vertical
+        restoreStack.alignment = .leading
+        restoreStack.spacing = 10
+
+        // The five sequenced sections (home, dotfiles, agent instructions,
+        // software, restore config) are steps in one connected vertical
+        // stepper rather than independent cards - see the `StepRowViews` doc
+        // comment.
         let stepperStack = NSStackView()
         stepperStack.orientation = .vertical
         stepperStack.alignment = .leading
@@ -349,6 +388,7 @@ final class BootstrapController: NSViewController {
             case .dotfiles: content = dotfilesStack
             case .agentInstructions: content = agentStack
             case .software: content = softwareStack
+            case .restoreConfig: content = restoreStack
             }
             let row = buildStepRow(kind: kind, number: index + 1, content: content, isLast: index == kinds.count - 1)
             stepperStack.addArrangedSubview(row)
@@ -785,7 +825,7 @@ final class BootstrapController: NSViewController {
     @objc private func runFullSetupClicked() {
         guard !isRunningFullSetup else { return }
         isRunningFullSetup = true
-        setupSteps = SetupStepKind.allCases.map { SetupStepState(kind: $0) }
+        setupSteps = SetupStepKind.allCases.filter { $0.isPartOfFullSetupSequence }.map { SetupStepState(kind: $0) }
         rebuildSetupSection()
         runSetupStepHome()
     }
@@ -890,6 +930,13 @@ final class BootstrapController: NSViewController {
         case .software:
             guard !isLoadingSoftware else { return nil }
             return !softwareRows.contains { $0.status == .notInstalled }
+        case .restoreConfig:
+            // "Done" once there's something local to show for it - either a
+            // real import already happened, or the captain built up hosts/
+            // snippets by hand. Never depends on a bundle file existing, so
+            // it's never stuck "pending" on a machine that doesn't use this
+            // feature at all.
+            return !hostStore.hosts.isEmpty || !snippetStore.snippets.isEmpty
         }
     }
 
@@ -926,6 +973,11 @@ final class BootstrapController: NSViewController {
             guard !isLoadingSoftware else { return nil }
             let missing = softwareRows.filter { $0.status == .notInstalled }.count
             return missing == 0 ? ("All installed", theme.ansiHex[2]) : ("\(missing) missing", theme.ansiHex[3])
+        case .restoreConfig:
+            let hostCount = hostStore.hosts.count
+            let snippetCount = snippetStore.snippets.count
+            guard hostCount > 0 || snippetCount > 0 else { return ("Nothing to show yet", theme.chromeInkHex) }
+            return ("\(hostCount) host\(hostCount == 1 ? "" : "s"), \(snippetCount) snippet\(snippetCount == 1 ? "" : "s")", theme.ansiHex[2])
         }
     }
 
@@ -940,6 +992,8 @@ final class BootstrapController: NSViewController {
             return "Verifies the three harness-expected AGENTS.md/CLAUDE.md symlinks resolve to the dotfiles repo."
         case .software:
             return "\(softwareRows.count) tracked dependencies across \(DependencyCatalog.categoryOrder.count) categories."
+        case .restoreConfig:
+            return "Import a .glbackup file exported from another machine to bring in its saved hosts, snippets, and preferences here."
         }
     }
 
@@ -1120,7 +1174,48 @@ final class BootstrapController: NSViewController {
         rebuildDotfilesSection()
         rebuildAgentSection()
         rebuildSoftwareSection()
+        rebuildRestoreSection()
         rebuildNotSyncedSection()
+    }
+
+    // MARK: Restore Grand Line config (fm/cockpit-local-state-portable)
+
+    /// Same import action as Settings' "Backup & Restore" card
+    /// (`BackupUI.importFlow`) - not a separate implementation. "Done"-ness
+    /// (`stepIsDone(.restoreConfig)`) is derived live from the stores, so a
+    /// successful import here just needs to refresh this section and the
+    /// stepper's dot/chip, not track any state of its own.
+    private func rebuildRestoreSection() {
+        clearStack(restoreStack)
+
+        let desc = NSTextField(wrappingLabelWithString: "Bring in saved hosts, snippets, and preferences exported from another machine. SSH private keys never leave the Keychain - a restored host referencing a key not on this machine needs that key re-added from the Keys screen.")
+        desc.font = .systemFont(ofSize: 11)
+        desc.textColor = HelmTheme.mutedInk(theme)
+        desc.preferredMaxLayoutWidth = 520
+        dynamicLabels.append(desc)
+
+        let hostCount = hostStore.hosts.count
+        let snippetCount = snippetStore.snippets.count
+        restoreStatusLabel.stringValue = "Currently saved here: \(hostCount) host\(hostCount == 1 ? "" : "s"), \(snippetCount) snippet\(snippetCount == 1 ? "" : "s")."
+        restoreStatusLabel.font = .systemFont(ofSize: 11)
+        restoreStatusLabel.textColor = HelmTheme.mutedInk(theme)
+        dynamicLabels.append(restoreStatusLabel)
+
+        let importButton = NSButton(title: "Import\u{2026}", target: self, action: #selector(importRestoreConfigClicked))
+        importButton.bezelStyle = .rounded
+
+        let section = NSStackView(views: [desc, restoreStatusLabel, importButton])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 8
+        restoreStack.addArrangedSubview(section)
+        section.widthAnchor.constraint(equalTo: restoreStack.widthAnchor).isActive = true
+    }
+
+    @objc private func importRestoreConfigClicked() {
+        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
+            self?.rebuildDynamicSections()
+        }
     }
 
     private func rebuildDotfilesSection() {

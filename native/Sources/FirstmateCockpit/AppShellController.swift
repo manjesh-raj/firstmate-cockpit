@@ -43,7 +43,7 @@ final class AppShellController: NSViewController {
     private let review = ReviewController()
     private let docs = DocsController()
     private let updates = UpdatesController()
-    private let bootstrap = BootstrapController()
+    private let bootstrap: BootstrapController
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
@@ -75,12 +75,14 @@ final class AppShellController: NSViewController {
 
     init(
         hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
+        hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore,
         makeHostConsole: @escaping () -> ConsoleController
     ) {
         self.hostsPanel = hostsPanel
         self.console = console
         self.settings = settings
         self.overview = FleetController()
+        self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
         self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
     }
