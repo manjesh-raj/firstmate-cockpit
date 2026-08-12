@@ -137,6 +137,36 @@ final class TabModel {
     /// down by `cleanupSSHKeyTempFile` on close, reconnect, and process exit.
     var sshKeyTempPath: String?
 
+    /// `fm/cockpit-block-view-ssh-only`: whether this tab is a candidate for
+    /// block view at all - an SSH host page's tab (saved-host or ad-hoc),
+    /// and *only* that. Originally (`fm/cockpit-block-view-terminal`, PR #79)
+    /// this also covered `.shell`, but that shipped a crash that took down
+    /// the app on every single launch, because the built-in Firstmate
+    /// console's Shell tab auto-opens at startup - a bug on that tab has no
+    /// way to even get in and disable it. The captain's follow-up call after
+    /// seeing that outage narrowed scope to SSH host pages only: a bug there
+    /// breaks just that one page, and the feature is a better fit for a
+    /// remote bastion session's scrollback pain than a local shell anyway.
+    /// `.mirror` was already excluded from the start (see the case comment
+    /// in `TabLaunch` history) since it attaches to a tmux/herdr session this
+    /// app did not start.
+    var supportsBlockView: Bool {
+        switch launch {
+        case .ssh: return true
+        case .shell, .mirror: return false
+        }
+    }
+
+    /// Present only when `supportsBlockView` - registers the OSC 133 handler
+    /// on this tab's `Terminal` and accumulates the parsed block list.
+    var blockTracker: TerminalBlockTracker?
+
+    /// Present only when `supportsBlockView` - the block-view rendering,
+    /// added as a sibling of `terminal` inside the console's shared content
+    /// view, visibility toggled by `ConsoleController.applyBlockViewVisibility`
+    /// without ever touching `terminal` or the underlying process.
+    var blockContainer: BlockContainerView?
+
     init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name
         self.launch = launch
