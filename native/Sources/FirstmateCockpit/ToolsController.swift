@@ -101,6 +101,20 @@ final class ToolsController: NSViewController {
     private var tsHumanField: NSTextField!
     private var tsEpochOutput: NSTextField!
 
+    // Copy buttons (fm/cockpit-tools-page-copy-buttons) and the text each one
+    // currently holds - nil/empty means "nothing valid to copy yet," which is
+    // what keeps the button disabled rather than a silent no-op.
+    private var yamlCopyButton: NSButton!
+    private var jsonCopyButton: NSButton!
+    private var base64CopyButton: NSButton!
+    private var jwtHeaderCopyButton: NSButton!
+    private var jwtPayloadCopyButton: NSButton!
+    private var tsHumanCopyButton: NSButton!
+    private var tsEpochCopyButton: NSButton!
+
+    private var jwtHeaderCopyText: String?
+    private var jwtPayloadCopyText: String?
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 720))
         root.wantsLayer = true
@@ -367,6 +381,27 @@ final class ToolsController: NSViewController {
         }
     }
 
+    /// A small "Copy" button, disabled by default until real output exists.
+    private func copyButton(action: Selector) -> NSButton {
+        let button = NSButton(title: "Copy", target: self, action: action)
+        button.bezelStyle = .rounded
+        button.isEnabled = false
+        return button
+    }
+
+    /// Enables/disables a copy button based on whether `text` is non-empty -
+    /// the one place that decides "is there something valid to copy right now."
+    private func refreshCopyButton(_ button: NSButton, text: String?) {
+        button.isEnabled = !(text ?? "").isEmpty
+    }
+
+    private func copyToClipboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        Toast.show(in: view, message: "Copied to clipboard")
+    }
+
     // MARK: Panel dispatch
 
     private func buildPanel(for kind: ToolKind) -> NSView {
@@ -404,8 +439,13 @@ final class ToolsController: NSViewController {
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
+        yamlCopyButton = copyButton(action: #selector(yamlCopyClicked))
+        let outputHeaderRow = NSStackView(views: [sectionLabel("Output"), yamlCopyButton])
+        outputHeaderRow.orientation = .horizontal
+        outputHeaderRow.spacing = 8
+
         let content = NSStackView(views: [
-            note, sectionLabel("Input"), inputScroll, buttonRow, statusLabel, sectionLabel("Output"), outputScroll,
+            note, sectionLabel("Input"), inputScroll, buttonRow, statusLabel, outputHeaderRow, outputScroll,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -443,6 +483,12 @@ final class ToolsController: NSViewController {
             yamlOutput.string = ""
             setStatus(.yaml, "Invalid YAML: \(yamlErrorMessage(error))", ok: false)
         }
+        refreshCopyButton(yamlCopyButton, text: yamlOutput.string)
+    }
+
+    @objc private func yamlCopyClicked() {
+        guard !yamlOutput.string.isEmpty else { return }
+        copyToClipboard(yamlOutput.string)
     }
 
     // MARK: JSON
@@ -465,8 +511,13 @@ final class ToolsController: NSViewController {
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
+        jsonCopyButton = copyButton(action: #selector(jsonCopyClicked))
+        let outputHeaderRow = NSStackView(views: [sectionLabel("Output"), jsonCopyButton])
+        outputHeaderRow.orientation = .horizontal
+        outputHeaderRow.spacing = 8
+
         let content = NSStackView(views: [
-            sectionLabel("Input"), inputScroll, buttonRow, statusLabel, sectionLabel("Output"), outputScroll,
+            sectionLabel("Input"), inputScroll, buttonRow, statusLabel, outputHeaderRow, outputScroll,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -506,6 +557,12 @@ final class ToolsController: NSViewController {
             jsonOutput.string = ""
             setStatus(.json, "Invalid JSON: \(error.localizedDescription)", ok: false)
         }
+        refreshCopyButton(jsonCopyButton, text: jsonOutput.string)
+    }
+
+    @objc private func jsonCopyClicked() {
+        guard !jsonOutput.string.isEmpty else { return }
+        copyToClipboard(jsonOutput.string)
     }
 
     // MARK: Base64
@@ -528,8 +585,13 @@ final class ToolsController: NSViewController {
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
+        base64CopyButton = copyButton(action: #selector(base64CopyClicked))
+        let outputHeaderRow = NSStackView(views: [sectionLabel("Output"), base64CopyButton])
+        outputHeaderRow.orientation = .horizontal
+        outputHeaderRow.spacing = 8
+
         let content = NSStackView(views: [
-            sectionLabel("Input"), inputScroll, buttonRow, statusLabel, sectionLabel("Output"), outputScroll,
+            sectionLabel("Input"), inputScroll, buttonRow, statusLabel, outputHeaderRow, outputScroll,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -546,6 +608,7 @@ final class ToolsController: NSViewController {
         let data = Data(base64Input.string.utf8)
         base64Output.string = data.base64EncodedString()
         setStatus(.base64, "Encoded \(data.count) byte\(data.count == 1 ? "" : "s").", ok: true)
+        refreshCopyButton(base64CopyButton, text: base64Output.string)
     }
 
     @objc private func base64DecodeClicked() {
@@ -553,6 +616,7 @@ final class ToolsController: NSViewController {
         guard let data = Data(base64Encoded: trimmed, options: [.ignoreUnknownCharacters]), !trimmed.isEmpty else {
             base64Output.string = ""
             setStatus(.base64, "Not valid Base64.", ok: false)
+            refreshCopyButton(base64CopyButton, text: base64Output.string)
             return
         }
         if let text = String(data: data, encoding: .utf8) {
@@ -562,6 +626,12 @@ final class ToolsController: NSViewController {
             base64Output.string = data.map { String(format: "%02x", $0) }.joined(separator: " ")
             setStatus(.base64, "Decoded \(data.count) byte\(data.count == 1 ? "" : "s") - not valid UTF-8 text, showing hex.", ok: true)
         }
+        refreshCopyButton(base64CopyButton, text: base64Output.string)
+    }
+
+    @objc private func base64CopyClicked() {
+        guard !base64Output.string.isEmpty else { return }
+        copyToClipboard(base64Output.string)
     }
 
     // MARK: JWT
@@ -584,8 +654,16 @@ final class ToolsController: NSViewController {
         let decodeButton = NSButton(title: "Decode", target: self, action: #selector(jwtDecodeClicked))
         decodeButton.bezelStyle = .rounded
 
+        jwtHeaderCopyButton = copyButton(action: #selector(jwtCopyHeaderClicked))
+        jwtHeaderCopyButton.title = "Copy header"
+        jwtPayloadCopyButton = copyButton(action: #selector(jwtCopyPayloadClicked))
+        jwtPayloadCopyButton.title = "Copy payload"
+        let buttonRow = NSStackView(views: [decodeButton, jwtHeaderCopyButton, jwtPayloadCopyButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+
         let content = NSStackView(views: [
-            note, sectionLabel("Token"), inputScroll, decodeButton, statusLabel, sectionLabel("Header / Payload / Claims"), outputScroll,
+            note, sectionLabel("Token"), inputScroll, buttonRow, statusLabel, sectionLabel("Header / Payload / Claims"), outputScroll,
         ])
         content.orientation = .vertical
         content.alignment = .leading
@@ -625,14 +703,20 @@ final class ToolsController: NSViewController {
               let headerData = base64URLDecode(String(parts[0])),
               let payloadData = base64URLDecode(String(parts[1])) else {
             jwtOutput.string = ""
+            jwtHeaderCopyText = nil
+            jwtPayloadCopyText = nil
             setStatus(.jwt, "Invalid JWT - expected header.payload.signature, base64url-encoded.", ok: false)
+            refreshCopyButton(jwtHeaderCopyButton, text: jwtHeaderCopyText)
+            refreshCopyButton(jwtPayloadCopyButton, text: jwtPayloadCopyText)
             return
         }
         do {
             let header = try JSONSerialization.jsonObject(with: headerData, options: [.fragmentsAllowed])
             let payload = try JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])
+            let headerJSON = prettyJSONString(header)
+            let payloadJSON = prettyJSONString(payload)
 
-            var out = "Header:\n\(prettyJSONString(header))\n\nPayload:\n\(prettyJSONString(payload))"
+            var out = "Header:\n\(headerJSON)\n\nPayload:\n\(payloadJSON)"
             if let dict = payload as? [String: Any] {
                 var claims: [String] = []
                 if let sub = dict["sub"] { claims.append("sub: \(sub)") }
@@ -641,11 +725,27 @@ final class ToolsController: NSViewController {
                 if !claims.isEmpty { out += "\n\nClaims:\n" + claims.joined(separator: "\n") }
             }
             jwtOutput.string = out
+            jwtHeaderCopyText = headerJSON
+            jwtPayloadCopyText = payloadJSON
             setStatus(.jwt, "Decoded - signature not verified.", ok: true)
         } catch {
             jwtOutput.string = ""
+            jwtHeaderCopyText = nil
+            jwtPayloadCopyText = nil
             setStatus(.jwt, "Header/payload isn't valid JSON.", ok: false)
         }
+        refreshCopyButton(jwtHeaderCopyButton, text: jwtHeaderCopyText)
+        refreshCopyButton(jwtPayloadCopyButton, text: jwtPayloadCopyText)
+    }
+
+    @objc private func jwtCopyHeaderClicked() {
+        guard let text = jwtHeaderCopyText, !text.isEmpty else { return }
+        copyToClipboard(text)
+    }
+
+    @objc private func jwtCopyPayloadClicked() {
+        guard let text = jwtPayloadCopyText, !text.isEmpty else { return }
+        copyToClipboard(text)
     }
 
     // MARK: Timestamp
@@ -667,6 +767,7 @@ final class ToolsController: NSViewController {
 
         let (humanOutputScroll, humanOutputView) = codeEditor(height: 70, readOnly: true)
         tsHumanOutput = humanOutputView
+        tsHumanCopyButton = copyButton(action: #selector(tsCopyHumanClicked))
 
         tsHumanField = NSTextField()
         tsHumanField.placeholderString = "e.g. 2026-08-12T10:00:00Z"
@@ -681,14 +782,22 @@ final class ToolsController: NSViewController {
         tsEpochOutput = NSTextField(labelWithString: "")
         tsEpochOutput.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
         tsEpochOutput.translatesAutoresizingMaskIntoConstraints = false
+        tsEpochCopyButton = copyButton(action: #selector(tsCopyEpochClicked))
+        let epochOutputRow = NSStackView(views: [tsEpochOutput, tsEpochCopyButton])
+        epochOutputRow.orientation = .horizontal
+        epochOutputRow.spacing = 8
 
         let statusLabel = NSTextField(wrappingLabelWithString: "")
         statusLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         statusLabels[.timestamp] = statusLabel
 
+        let humanOutputHeaderRow = NSStackView(views: [sectionLabel("Epoch \u{2192} Human"), tsHumanCopyButton])
+        humanOutputHeaderRow.orientation = .horizontal
+        humanOutputHeaderRow.spacing = 8
+
         let content = NSStackView(views: [
-            sectionLabel("Epoch \u{2192} Human"), epochRow, humanOutputScroll,
-            sectionLabel("Human \u{2192} Epoch"), humanRow, tsEpochOutput,
+            humanOutputHeaderRow, epochRow, humanOutputScroll,
+            sectionLabel("Human \u{2192} Epoch"), humanRow, epochOutputRow,
             statusLabel,
         ])
         content.orientation = .vertical
@@ -719,6 +828,12 @@ final class ToolsController: NSViewController {
         df.timeStyle = .full
         tsHumanOutput.string = "\(iso.string(from: date))\n\(df.string(from: date))"
         setStatus(.timestamp, "Converted.", ok: true)
+        refreshCopyButton(tsHumanCopyButton, text: tsHumanOutput.string)
+    }
+
+    @objc private func tsCopyHumanClicked() {
+        guard !tsHumanOutput.string.isEmpty else { return }
+        copyToClipboard(tsHumanOutput.string)
     }
 
     @objc private func humanToEpochClicked() {
@@ -742,6 +857,12 @@ final class ToolsController: NSViewController {
         }
         tsEpochOutput.stringValue = String(Int(date.timeIntervalSince1970))
         setStatus(.timestamp, "Converted.", ok: true)
+        refreshCopyButton(tsEpochCopyButton, text: tsEpochOutput.stringValue)
+    }
+
+    @objc private func tsCopyEpochClicked() {
+        guard !tsEpochOutput.stringValue.isEmpty else { return }
+        copyToClipboard(tsEpochOutput.stringValue)
     }
 
     // MARK: Theme
