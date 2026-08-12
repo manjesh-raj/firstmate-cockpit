@@ -35,9 +35,18 @@ let package = Package(
                 .process("Apple/Metal/Shaders.metal")
             ]
         ),
+        // Vendored YamlSwift (behrang/YamlSwift, MIT, pinned to upstream
+        // `master` commit 063286d), not a remote SPM dependency - same
+        // zero-remote-dependencies rule SwiftTerm's vendoring already
+        // follows. Backs the Tools page's YAML validate/beautify tool
+        // (cockpit-tools-page-core); see Vendor/YamlSwift/README.md.
+        .target(
+            name: "Yaml",
+            path: "Vendor/YamlSwift/Sources/Yaml"
+        ),
         .executableTarget(
             name: "FirstmateCockpit",
-            dependencies: ["SwiftTerm"]
+            dependencies: ["SwiftTerm", "Yaml"]
         )
     ]
 )
