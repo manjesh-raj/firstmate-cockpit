@@ -196,7 +196,10 @@ enum DocsSyncSource {
     /// this is purely a rate-limit improvement (60/hr shared-by-IP anonymous
     /// vs. 5,000/hr per-account) over the unauthenticated fallback below, not
     /// a requirement - `nil` here just means "send the request as before."
-    private static func ghAuthToken() -> String? {
+    /// Not `private` - `GitHubBackupSource` (`BackupGitHub.swift`) reuses this
+    /// verbatim for its own Contents API calls rather than inventing a second
+    /// `gh auth token` shell-out.
+    static func ghAuthToken() -> String? {
         guard let ghPath = {
             let fm = FileManager.default
             if let path = ProcessInfo.processInfo.environment["PATH"] {
