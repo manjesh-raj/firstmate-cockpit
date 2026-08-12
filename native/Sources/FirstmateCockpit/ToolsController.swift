@@ -8,6 +8,13 @@
 // certificate inspector/cron explainer/resource-unit converter are
 // intentionally deferred to phases 2 and 3 - not built here.
 //
+// Phase 2 (cockpit-tools-page-diff) adds the sixth tool: a Mergely-style
+// side-by-side diff (see the "MARK: Diff" section below, plus
+// DiffEngine.swift for the line/word LCS algorithm and DiffResultView.swift
+// for the two-column rendering) - not a literal port of the reviewed HTML/
+// CSS mockup, but re-derived against this app's own HelmTheme/HelmUIComponents
+// conventions so it reads as native chrome, not an embedded web widget.
+//
 // The landing view is a wrapping grid of clickable tool cards, the same
 // icon-tile + hover-card pattern `SettingsController.rebuildAppearanceGrid`
 // already uses for its theme picker. Clicking one hides the grid and shows
@@ -21,7 +28,7 @@ import AppKit
 import Yaml
 
 private enum ToolKind: String, CaseIterable {
-    case yaml, json, base64, jwt, timestamp
+    case yaml, json, base64, jwt, timestamp, diff
 
     var title: String {
         switch self {
@@ -30,6 +37,7 @@ private enum ToolKind: String, CaseIterable {
         case .base64: return "Base64 Encode/Decode"
         case .jwt: return "JWT Decoder"
         case .timestamp: return "Unix Timestamp Converter"
+        case .diff: return "Diff"
         }
     }
 
@@ -40,6 +48,7 @@ private enum ToolKind: String, CaseIterable {
         case .base64: return "Encode plain text to Base64, or decode a Base64 string back to text."
         case .jwt: return "Inspect a JWT's header and payload claims - no signature verification."
         case .timestamp: return "Convert a Unix epoch to a human-readable date, and back."
+        case .diff: return "Compare two blocks of text side by side, with word-level highlighting."
         }
     }
 
@@ -50,6 +59,7 @@ private enum ToolKind: String, CaseIterable {
         case .base64: return "textformat.abc"
         case .jwt: return "key"
         case .timestamp: return "clock"
+        case .diff: return "arrow.left.arrow.right"
         }
     }
 
@@ -60,6 +70,7 @@ private enum ToolKind: String, CaseIterable {
         case .base64: return .good
         case .jwt: return .violet
         case .timestamp: return .accent
+        case .diff: return .neutral
         }
     }
 }
@@ -100,6 +111,10 @@ final class ToolsController: NSViewController {
     private var tsHumanOutput: NSTextView!
     private var tsHumanField: NSTextField!
     private var tsEpochOutput: NSTextField!
+    private var diffBeforeInput: NSTextView!
+    private var diffAfterInput: NSTextView!
+    private var diffResultView: DiffResultView!
+    private var diffShowOnlyDifferences: NSButton!
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 720))
@@ -376,6 +391,7 @@ final class ToolsController: NSViewController {
         case .base64: return buildBase64Panel()
         case .jwt: return buildJwtPanel()
         case .timestamp: return buildTimestampPanel()
+        case .diff: return buildDiffPanel()
         }
     }
 
@@ -744,6 +760,158 @@ final class ToolsController: NSViewController {
         setStatus(.timestamp, "Converted.", ok: true)
     }
 
+    // MARK: Diff
+
+    private static let diffBeforeExample = """
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: web-app
+      labels:
+        app: web-app
+        tier: frontend
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: web-app
+      template:
+        metadata:
+          labels:
+            app: web-app
+        spec:
+          containers:
+            - name: web-app
+              image: registry.example.com/web-app:1.4.0
+              ports:
+                - containerPort: 8080
+              env:
+                - name: LOG_LEVEL
+                  value: "info"
+              resources:
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+    """
+
+    private static let diffAfterExample = """
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: web-app
+      labels:
+        app: web-app
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: web-app
+      template:
+        metadata:
+          labels:
+            app: web-app
+        spec:
+          containers:
+            - name: web-app
+              image: registry.example.com/web-app:1.5.0
+              ports:
+                - containerPort: 8080
+              env:
+                - name: LOG_LEVEL
+                  value: "info"
+                - name: APP_ENV
+                  value: "production"
+              resources:
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+    """
+
+    private func buildDiffPanel() -> NSView {
+        let (beforeScroll, beforeView) = codeEditor(height: 220, readOnly: false)
+        beforeView.string = Self.diffBeforeExample
+        diffBeforeInput = beforeView
+        let (afterScroll, afterView) = codeEditor(height: 220, readOnly: false)
+        afterView.string = Self.diffAfterExample
+        diffAfterInput = afterView
+
+        let beforeColumn = NSStackView(views: [sectionLabel("Before"), beforeScroll])
+        beforeColumn.orientation = .vertical
+        beforeColumn.alignment = .leading
+        beforeColumn.spacing = 6
+        beforeScroll.widthAnchor.constraint(equalTo: beforeColumn.widthAnchor).isActive = true
+
+        let afterColumn = NSStackView(views: [sectionLabel("After"), afterScroll])
+        afterColumn.orientation = .vertical
+        afterColumn.alignment = .leading
+        afterColumn.spacing = 6
+        afterScroll.widthAnchor.constraint(equalTo: afterColumn.widthAnchor).isActive = true
+
+        let inputsRow = NSStackView(views: [beforeColumn, afterColumn])
+        inputsRow.orientation = .horizontal
+        inputsRow.spacing = 12
+        inputsRow.distribution = .fillEqually
+        inputsRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let compareButton = NSButton(title: "Compare", target: self, action: #selector(diffCompareClicked))
+        compareButton.bezelStyle = .rounded
+        compareButton.keyEquivalent = "\r"
+
+        diffShowOnlyDifferences = NSButton(checkboxWithTitle: "Show only differences", target: self, action: #selector(diffShowOnlyDifferencesToggled))
+
+        let statusLabel = NSTextField(wrappingLabelWithString: "")
+        statusLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        statusLabels[.diff] = statusLabel
+
+        let buttonRow = NSStackView(views: [compareButton, diffShowOnlyDifferences, statusLabel])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 12
+        buttonRow.alignment = .centerY
+
+        let result = DiffResultView()
+        diffResultView = result
+
+        let resultScroll = NSScrollView()
+        resultScroll.documentView = result
+        resultScroll.hasVerticalScroller = true
+        resultScroll.borderType = .noBorder
+        resultScroll.wantsLayer = true
+        resultScroll.layer?.cornerRadius = 8
+        resultScroll.translatesAutoresizingMaskIntoConstraints = false
+        resultScroll.heightAnchor.constraint(equalToConstant: 380).isActive = true
+        result.widthAnchor.constraint(equalTo: resultScroll.contentView.widthAnchor).isActive = true
+        editorScrollViews.append(resultScroll)
+
+        let content = NSStackView(views: [
+            inputsRow, buttonRow, sectionLabel("Comparison"), resultScroll,
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        inputsRow.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        resultScroll.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+
+        return panelCard(
+            icon: ToolKind.diff.symbol, tint: ToolKind.diff.tint, title: ToolKind.diff.title,
+            subtitle: ToolKind.diff.description, content: content
+        )
+    }
+
+    @objc private func diffCompareClicked() {
+        let rows = DiffEngine.lineDiff(before: diffBeforeInput.string, after: diffAfterInput.string)
+        diffResultView.setRows(rows)
+        let changed = rows.filter { $0.kind != .unchanged }.count
+        if changed == 0 {
+            setStatus(.diff, "No differences.", ok: true)
+        } else {
+            setStatus(.diff, "\(changed) line\(changed == 1 ? "" : "s") differ.", ok: true)
+        }
+    }
+
+    @objc private func diffShowOnlyDifferencesToggled() {
+        diffResultView.setShowOnlyDifferences(diffShowOnlyDifferences.state == .on)
+    }
+
     // MARK: Theme
 
     private func applyTheme() {
@@ -781,5 +949,6 @@ final class ToolsController: NSViewController {
             tv.selectedTextAttributes = [.backgroundColor: accent.withAlphaComponent(0.3)]
         }
         for kind in ToolKind.allCases { recolorStatus(kind) }
+        diffResultView?.applyTheme(theme)
     }
 }
