@@ -1,14 +1,20 @@
 // Manjesh Grand Line - native macOS app.
 //
 // "Tools" (cockpit-tools-page-core), phase 1 of 3 of a captain-reviewed
-// HTML mockup for everyday DevOps utilities. Six genuinely functional tools:
-// YAML validate/beautify, JSON validate/beautify, Base64 encode/decode, JWT
-// decode, a Unix timestamp converter, and (phase 2, cockpit-tools-page-diff)
-// a Mergely-style diff. A certificate inspector, cron explainer, and
-// resource-unit converter (phase 3) are intentionally deferred - not built
-// here.
+// HTML mockup for everyday DevOps utilities. Nine genuinely functional
+// tools: YAML validate/beautify, JSON validate/beautify, Base64
+// encode/decode, JWT decode, a Unix timestamp converter, a Mergely-style
+// diff (phase 2, cockpit-tools-page-diff), and - phase 3,
+// cockpit-tools-page-specialist - a certificate inspector, a cron next-run
+// explainer, and a Kubernetes resource-unit converter, closing out the
+// originally-scoped three-phase Tools page. Each kind-specific tool's own
+// UI/logic lives in `ToolInstance.swift`, not here - see that file's
+// "MARK: Certificate"/"MARK: Cron"/"MARK: Resource units" sections for the
+// three phase-3 tools, plus `CertInspector.swift`/`CronExplainer.swift`/
+// `ResourceUnits.swift` for their pure logic.
 //
-// `fm/cockpit-tools-page-multi-session` (phase 4) gave this page a tab strip
+// `fm/cockpit-tools-page-multi-session` merged before phase 3 landed and
+// gave this page a tab strip
 // mirroring Console's ([TabModel] + TabChipView, see ConsoleController.swift)
 // so a captain can hold several independent instances of a tool open at
 // once - three separate Diff sessions comparing different things, each with
@@ -33,7 +39,7 @@
 import AppKit
 
 enum ToolKind: String, CaseIterable {
-    case yaml, json, base64, jwt, timestamp, diff
+    case yaml, json, base64, jwt, timestamp, diff, cert, cron, resource
 
     var title: String {
         switch self {
@@ -43,6 +49,9 @@ enum ToolKind: String, CaseIterable {
         case .jwt: return "JWT Decoder"
         case .timestamp: return "Unix Timestamp Converter"
         case .diff: return "Diff"
+        case .cert: return "Certificate Inspector"
+        case .cron: return "Cron Next-Run Explainer"
+        case .resource: return "Resource Unit Converter"
         }
     }
 
@@ -57,6 +66,9 @@ enum ToolKind: String, CaseIterable {
         case .jwt: return "JWT"
         case .timestamp: return "Timestamp"
         case .diff: return "Diff"
+        case .cert: return "Cert"
+        case .cron: return "Cron"
+        case .resource: return "Resource"
         }
     }
 
@@ -68,6 +80,9 @@ enum ToolKind: String, CaseIterable {
         case .jwt: return "Inspect a JWT's header and payload claims - no signature verification."
         case .timestamp: return "Convert a Unix epoch to a human-readable date, and back."
         case .diff: return "Compare two blocks of text side by side, with word-level highlighting."
+        case .cert: return "Paste a PEM certificate to see its subject, issuer, validity, serial, and SANs."
+        case .cron: return "Paste a cron expression to see what it means in plain English and its next run times."
+        case .resource: return "Convert CPU millicores/cores and Kubernetes memory quantities between units."
         }
     }
 
@@ -79,6 +94,9 @@ enum ToolKind: String, CaseIterable {
         case .jwt: return "key"
         case .timestamp: return "clock"
         case .diff: return "arrow.left.arrow.right"
+        case .cert: return "checkmark.seal"
+        case .cron: return "calendar.badge.clock"
+        case .resource: return "gauge.with.dots.needle.50percent"
         }
     }
 
@@ -90,6 +108,9 @@ enum ToolKind: String, CaseIterable {
         case .jwt: return .violet
         case .timestamp: return .accent
         case .diff: return .neutral
+        case .cert: return .good
+        case .cron: return .info
+        case .resource: return .warn
         }
     }
 }
