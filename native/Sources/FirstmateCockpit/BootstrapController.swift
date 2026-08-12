@@ -63,6 +63,28 @@
 // Console tab - never a silent background `Process` (see
 // `ConsoleController.openCommandTab`).
 //
+// "Make local state portable" roadmap, part 3 of 3 (parts 1-2 - export/import
+// with GitHub support, and this page's "Restore Grand Line config" step -
+// shipped in PR #85/#86): the "Drift check" card, below the setup stepper,
+// re-runs each of the five steps' own `stepIsDone` check on demand and
+// reports anything that's no longer satisfied. It adds no new detection
+// logic - `stepIsDone`/`refreshDotfiles`/`checkAllSoftware` are the exact
+// same functions the stepper itself already calls. It is a "card, rebuilt in
+// place" section like Dotfiles/Agent/Software (`rebuildDriftSection`), not
+// mutated-in-place like the stepper rows, since its row count varies with how
+// many steps have drifted and there's no persistent inner view (like a
+// stepper row's `stepContentBox`) at risk of being reparented.
+//
+// Deliberately on-demand only, not polled on a timer: the initial status
+// shown when the page loads is *seeded for free* from the same background
+// checks `refreshDotfiles`/`checkAllSoftware` already run for the stepper
+// (`maybeSeedInitialDriftStatus`, called once both finish) - no extra
+// process/network calls happen just by visiting this page. Only clicking
+// "Re-check now" re-runs those checks a second time. A periodic auto-poll
+// was considered and rejected: re-running `git`/`brew`/`npm` checks in the
+// background on a timer is exactly the kind of surprise background work this
+// project's own guidance says to avoid by default.
+//
 // The Firstmate-home card lets the captain see and override
 // `FirstmateHome.root` - which is a `static let`, resolved once at process
 // launch (see that file) - so a change here can only take effect after a
@@ -235,6 +257,24 @@ final class BootstrapController: NSViewController {
     private let restoreStack = NSStackView()
     private let restoreStatusLabel = NSTextField(wrappingLabelWithString: "")
 
+    // MARK: Drift check state (fm/cockpit-bootstrap-drift-check)
+
+    private var driftResults: [SetupStepKind: Bool?] = [:]
+    private var driftLastChecked: Date?
+    private var isDriftChecking = false
+    private let driftStack = NSStackView()
+    private let driftDescLabel = NSTextField(wrappingLabelWithString: "Re-runs each setup step's own check to confirm nothing has drifted since setup - a dotfile that got unlinked, a tool that got uninstalled, or a config that got reverted.")
+    private let driftStatusLabel = NSTextField(labelWithString: "")
+    private let driftLastCheckedLabel = NSTextField(labelWithString: "")
+    private let driftRecheckButton = NSButton()
+
+    private static let driftTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     // MARK: "Not synced here, by design" state (Part E, extended in
     // cockpit-bootstrap-vault-hardeners to add aws/codex/brew alongside gh)
 
@@ -396,12 +436,17 @@ final class BootstrapController: NSViewController {
         }
         let stepperCard = card(icon: "list.number", title: "Setup steps", content: stepperStack)
 
+        driftStack.orientation = .vertical
+        driftStack.alignment = .leading
+        driftStack.spacing = 10
+        let driftCard = card(icon: "arrow.triangle.2.circlepath", title: "Drift check", content: buildDriftSection())
+
         notSyncedStack.orientation = .vertical
         notSyncedStack.alignment = .leading
         notSyncedStack.spacing = 10
         let notSyncedCard = card(icon: "lock.slash", title: "Not synced here, by design", content: notSyncedStack)
 
-        let stack = NSStackView(views: [header, fullSetupCard, stepperCard, notSyncedCard])
+        let stack = NSStackView(views: [header, fullSetupCard, stepperCard, driftCard, notSyncedCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -419,6 +464,7 @@ final class BootstrapController: NSViewController {
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
             fullSetupCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             stepperCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            driftCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
             notSyncedCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
@@ -1176,6 +1222,8 @@ final class BootstrapController: NSViewController {
         rebuildSoftwareSection()
         rebuildRestoreSection()
         rebuildNotSyncedSection()
+        maybeSeedInitialDriftStatus()
+        rebuildDriftSection()
     }
 
     // MARK: Restore Grand Line config (fm/cockpit-local-state-portable)
@@ -1216,6 +1264,184 @@ final class BootstrapController: NSViewController {
         BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
             self?.rebuildDynamicSections()
         }
+    }
+
+    // MARK: Drift check (fm/cockpit-bootstrap-drift-check)
+
+    private func buildDriftSection() -> NSView {
+        driftDescLabel.font = .systemFont(ofSize: 11)
+        driftDescLabel.preferredMaxLayoutWidth = 520
+
+        driftStatusLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        driftStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        driftStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        driftLastCheckedLabel.font = .systemFont(ofSize: 11)
+
+        driftRecheckButton.title = "Re-check now"
+        driftRecheckButton.bezelStyle = .rounded
+        driftRecheckButton.target = self
+        driftRecheckButton.action = #selector(driftRecheckClicked)
+        driftRecheckButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let headerRow = NSStackView(views: [driftStatusLabel, driftRecheckButton])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 12
+        headerRow.distribution = .fill
+
+        let section = NSStackView(views: [driftDescLabel, headerRow, driftLastCheckedLabel, driftStack])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 8
+        section.setCustomSpacing(12, after: driftDescLabel)
+        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        driftLastCheckedLabel.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        driftStack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        return section
+    }
+
+    /// Re-derives every step's live done/not-done state via the exact same
+    /// `stepIsDone` the stepper already reads - see this file's header
+    /// comment for why this is the one place a background poll was
+    /// deliberately not added.
+    private func captureDriftSnapshot() {
+        var results: [SetupStepKind: Bool?] = [:]
+        for kind in SetupStepKind.allCases {
+            results[kind] = stepIsDone(kind)
+        }
+        driftResults = results
+        driftLastChecked = Date()
+    }
+
+    /// Seeds the card's first status for free from whatever `refreshDotfiles`/
+    /// `checkAllSoftware` already fetched for the stepper on page load - no
+    /// second round of `git`/`brew`/`npm` calls just from visiting the page.
+    private func maybeSeedInitialDriftStatus() {
+        guard driftLastChecked == nil, !isDriftChecking, !isLoadingDotfiles, !isLoadingSoftware else { return }
+        captureDriftSnapshot()
+    }
+
+    @objc private func driftRecheckClicked() {
+        guard !isDriftChecking else { return }
+        isDriftChecking = true
+        rebuildDriftSection()
+        // Re-runs the same background checks the stepper/dotfiles/software
+        // sections already use - no new detection logic. firstmateHome and
+        // restoreConfig are read live and synchronously inside `stepIsDone`,
+        // so only dotfiles/agentInstructions (`refreshDotfiles`) and software
+        // need an explicit re-fetch first.
+        refreshDotfiles { [weak self] in
+            guard let self else { return }
+            self.checkAllSoftware {
+                self.isDriftChecking = false
+                self.captureDriftSnapshot()
+                self.rebuildDriftSection()
+            }
+        }
+    }
+
+    private func rebuildDriftSection() {
+        guard isViewLoaded else { return }
+        driftDescLabel.textColor = HelmTheme.mutedInk(theme)
+        driftLastCheckedLabel.textColor = HelmTheme.mutedInk(theme)
+
+        clearStack(driftStack)
+        if isDriftChecking {
+            driftStatusLabel.stringValue = "Checking\u{2026}"
+            driftStatusLabel.textColor = HelmTheme.mutedInk(theme)
+        } else if driftLastChecked == nil {
+            driftStatusLabel.stringValue = "Not checked yet"
+            driftStatusLabel.textColor = HelmTheme.mutedInk(theme)
+        } else {
+            let driftedKinds = SetupStepKind.allCases.filter { driftResults[$0] == false }
+            if driftedKinds.isEmpty {
+                driftStatusLabel.stringValue = "Everything matches"
+                driftStatusLabel.textColor = HelmTheme.nsColor(theme.ansiHex[2])
+            } else {
+                driftStatusLabel.stringValue = "\(driftedKinds.count) item\(driftedKinds.count == 1 ? "" : "s") drifted"
+                driftStatusLabel.textColor = HelmTheme.nsColor(theme.ansiHex[1])
+            }
+            for kind in driftedKinds {
+                let row = driftedItemRow(kind)
+                driftStack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: driftStack.widthAnchor).isActive = true
+            }
+        }
+
+        driftRecheckButton.title = isDriftChecking ? "Checking\u{2026}" : "Re-check now"
+        driftRecheckButton.isEnabled = !isDriftChecking
+
+        if let last = driftLastChecked {
+            driftLastCheckedLabel.stringValue = "Last checked: \(Self.driftTimestampFormatter.string(from: last))"
+            driftLastCheckedLabel.isHidden = false
+        } else {
+            driftLastCheckedLabel.isHidden = true
+        }
+    }
+
+    /// One drifted step, reusing the same `ToolRowLayout` chrome as every
+    /// other status row on this page - with a remedy button (`driftRemedy`)
+    /// where that step already has an obvious one-click fix, so reporting the
+    /// problem and acting on it are the same click.
+    private func driftedItemRow(_ kind: SetupStepKind) -> NSView {
+        let views = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView()
+        )
+        dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
+
+        ToolRowLayout.pill(text: "Drifted", colorHex: theme.ansiHex[1], into: views.pill, label: views.pillLabel)
+
+        var trailingViews: [NSView] = [views.pill]
+        if let (title, action) = driftRemedy(for: kind) {
+            let button = NSButton(title: title, target: self, action: action)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            trailingViews.append(button)
+        }
+
+        let row = ToolRowLayout.build(
+            views,
+            iconSymbol: kind.symbol,
+            tint: .critical,
+            name: kind.title,
+            trailingViews: trailingViews,
+            identifier: "drift-\(kind.title)",
+            showDetails: false
+        )
+        views.detailLabel.stringValue = stepDetail(for: kind)
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: true)
+        return row
+    }
+
+    /// The obvious one-click remedy for a drifted step, where one exists -
+    /// the exact same action its own card's button already triggers, never a
+    /// new action. `firstmateHome` has no single-click fix (its own card
+    /// needs a real path first), so its remedy just jumps there.
+    private func driftRemedy(for kind: SetupStepKind) -> (String, Selector)? {
+        switch kind {
+        case .firstmateHome: return ("Review", #selector(driftReviewHomeClicked))
+        case .dotfiles: return ("Create link", #selector(createLinkClicked))
+        case .agentInstructions: return ("Create link", #selector(createLinkClicked))
+        case .software: return ("Install missing", #selector(installAllMissingClicked))
+        case .restoreConfig: return ("Import\u{2026}", #selector(importRestoreConfigClicked))
+        }
+    }
+
+    @objc private func driftReviewHomeClicked() {
+        scrollToStep(.firstmateHome)
+    }
+
+    private func scrollToStep(_ kind: SetupStepKind) {
+        guard let scroll = scrollView, let documentView = scroll.documentView else { return }
+        guard let index = SetupStepKind.allCases.firstIndex(of: kind), index < stepContentBackgrounds.count else { return }
+        let target = stepContentBackgrounds[index]
+        let rect = target.convert(target.bounds, to: documentView)
+        documentView.scrollToVisible(rect)
     }
 
     private func rebuildDotfilesSection() {
@@ -1512,14 +1738,14 @@ final class BootstrapController: NSViewController {
     /// this page, so re-opening Bootstrap doesn't re-shell out to npm/brew/
     /// herdr repeatedly; the card's `Toast`-free rows re-check themselves
     /// individually after a successful Install anyway.
-    private func checkAllSoftware() {
+    private func checkAllSoftware(completion: (() -> Void)? = nil) {
         isLoadingSoftware = true
         rebuildSoftwareSection()
         let items = softwareRows.map { $0.item }
         DispatchQueue.global(qos: .userInitiated).async {
             let outcomes = items.map { ($0.id, UpdatesSource.check($0)) }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self else { completion?(); return }
                 for (id, outcome) in outcomes {
                     guard let row = self.softwareRows.first(where: { $0.item.id == id }) else { continue }
                     row.status = outcome.status
@@ -1528,6 +1754,14 @@ final class BootstrapController: NSViewController {
                 }
                 self.isLoadingSoftware = false
                 self.rebuildSoftwareSection()
+                // Dotfiles and software load independently (see
+                // `refreshDotfiles`) - whichever finishes second is the one
+                // that can actually satisfy `maybeSeedInitialDriftStatus`'s
+                // "both loaded" guard, so both completion paths need to try
+                // seeding, not just `refreshDotfiles`'s.
+                self.maybeSeedInitialDriftStatus()
+                self.rebuildDriftSection()
+                completion?()
             }
         }
     }
