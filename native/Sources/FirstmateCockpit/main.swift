@@ -477,14 +477,6 @@ if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_TESTS"] == "1" {
     exit(TerminalBlockTrackerSelfTest.run() ? 0 : 1)
 }
 
-// `fm/cockpit-block-view-error-explain`: same convention, for the "Explain
-// this" action's eligibility rule and its reuse of `SRELeadMarkdown`'s
-// renderer - see `BlockExplainSelfTest.swift`.
-if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_EXPLAIN_TESTS"] == "1" {
-    exit(BlockExplainSelfTest.run() ? 0 : 1)
-}
-
-
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

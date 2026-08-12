@@ -1157,7 +1157,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // through this separate per-launch-kind path instead, so it repeats
         // the same two steps here).
         tab.blockTracker?.reset()
-        tab.blockContainer?.resetExplanations()
         installShellIntegrationIfSupported(tab)
         view.window?.makeFirstResponder(tab.terminal)
     }
