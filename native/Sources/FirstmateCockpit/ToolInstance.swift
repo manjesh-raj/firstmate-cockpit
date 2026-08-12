@@ -154,6 +154,7 @@ final class ToolInstance: NSObject {
         case .resource: view = buildResourcePanel()
         }
         applyTheme(theme)
+        applyFontSize(FontSizeManager.shared.size)
     }
 
     // MARK: Content snapshot (Duplicate)
@@ -1281,5 +1282,26 @@ final class ToolInstance: NSObject {
         }
         recolorStatus()
         diffResultView?.applyTheme(theme)
+    }
+
+    /// Every monospace text area on this tab follows `FontSizeManager` -
+    /// the same source Settings' Terminal presets and every terminal tab
+    /// read (`fm/cockpit-tools-page-ui-polish`) - rather than a size
+    /// hardcoded per tool. `ToolsController` calls this on every open tab
+    /// when the size changes, and once right after building a new tab's
+    /// panel (`init`, below) so a tab opened after a size change starts
+    /// correct rather than only updating on the next live change. Deltas
+    /// from `size` mirror each area's original hardcoded point size at the
+    /// default 13pt terminal size (code editors were 11.5, i.e. size-1.5;
+    /// the standalone result labels were 13, i.e. size+0), so the relative
+    /// weight between them is preserved as the base size changes.
+    func applyFontSize(_ size: CGFloat) {
+        let editorFont = NSFont.monospacedSystemFont(ofSize: max(8, size - 1.5), weight: .regular)
+        for tv in editorTextViews { tv.font = editorFont }
+        let resultFont = NSFont.monospacedSystemFont(ofSize: max(8, size), weight: .medium)
+        tsEpochOutput?.font = resultFont
+        cpuCoresOutput?.font = resultFont
+        cpuMillicoresOutput?.font = resultFont
+        diffResultView?.setFontSize(size)
     }
 }
