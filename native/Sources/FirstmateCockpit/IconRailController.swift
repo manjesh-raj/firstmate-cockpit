@@ -27,8 +27,11 @@ import AppKit
 /// `.docs` (cockpit-docs-viewer) follows the identical convention too, pinned
 /// directly *above* `.updates` - so the bottom-anchored group reads Docs,
 /// Updates, Bootstrap, Settings, avatar.
+/// `.tools` (cockpit-tools-page-core) follows the identical convention too,
+/// pinned directly *above* `.docs` - so the bottom-anchored group reads
+/// Tools, Docs, Updates, Bootstrap, Settings, avatar.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, review, docs, updates, bootstrap, settings
+    case overview, console, hosts, review, tools, docs, updates, bootstrap, settings
 
     var symbol: String {
         switch self {
@@ -36,6 +39,7 @@ enum RailDestination: CaseIterable {
         case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
+        case .tools: return "wrench.and.screwdriver"
         case .docs: return "book.closed"
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
@@ -49,6 +53,7 @@ enum RailDestination: CaseIterable {
         case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
+        case .tools: return "Tools"
         case .docs: return "Docs"
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
@@ -132,7 +137,7 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs {
+        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs && dest != .tools {
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -143,12 +148,18 @@ final class IconRailController: NSViewController {
         hostsStack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(hostsStack)
 
-        // Docs (cockpit-docs-viewer) sits below the dynamic per-host icon
-        // block, directly above Updates, which sits directly above
-        // Bootstrap, which sits directly above Settings - which in turn sits
-        // directly above the avatar, per the captain's ask. All four are
-        // still real `RailDestination` cases for switching purposes; only
-        // their vertical position moves out of `navStack`.
+        // Tools (cockpit-tools-page-core) sits below the dynamic per-host
+        // icon block, directly above Docs, which sits directly above
+        // Updates, which sits directly above Bootstrap, which sits directly
+        // above Settings - which in turn sits directly above the avatar, per
+        // the captain's ask. All five are still real `RailDestination` cases
+        // for switching purposes; only their vertical position moves out of
+        // `navStack`.
+        let toolsButton = railButton(for: .tools)
+        buttons[.tools] = toolsButton
+        toolsButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(toolsButton)
+
         let docsButton = railButton(for: .docs)
         buttons[.docs] = docsButton
         docsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -197,6 +208,9 @@ final class IconRailController: NSViewController {
             hostsStack.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 10),
             hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
+            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+
             docsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
@@ -217,6 +231,7 @@ final class IconRailController: NSViewController {
             bootstrapButton.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
             updatesButton.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
             docsButton.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
+            toolsButton.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
         ])
 
         restyle(ThemeManager.shared.theme)
