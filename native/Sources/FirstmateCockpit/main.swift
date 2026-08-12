@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var hostsPanel = HostsSidebarController(store: hostStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
-    lazy var settingsController = SettingsController()
+    lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
     // Fix 1: `makeHostConsole` builds a fresh, host-scoped console (no
     // Mirror/Shell tabs) for `AppShellController.connectHost` - captured as
     // local constants (not `self`) so this closure, which `appShell` holds
@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snippetStore = self.snippetStore
         return AppShellController(
             hostsPanel: hostsPanel, console: console, settings: settingsController,
+            hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore,
             makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
         )
     }()
@@ -464,6 +465,12 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
 // `SRELeadMarkdownSelfTest.swift`'s header.
 if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_MARKDOWN_TESTS"] == "1" {
     exit(SRELeadMarkdownSelfTest.run() ? 0 : 1)
+}
+
+// fm/cockpit-local-state-portable: same convention, for the export/import/
+// diff/apply path - see `BackupSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_BACKUP_TESTS"] == "1" {
+    exit(BackupSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
