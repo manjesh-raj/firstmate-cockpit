@@ -15,6 +15,17 @@
 // CSS mockup, but re-derived against this app's own HelmTheme/HelmUIComponents
 // conventions so it reads as native chrome, not an embedded web widget.
 //
+// Phase 3 (cockpit-tools-page-specialist) adds the final three tools from
+// the reviewed mockup, closing out the originally-scoped three-phase Tools
+// page: a certificate inspector (see "MARK: Certificate" below, plus
+// CertInspector.swift, which parses PEM certs with Security.framework's own
+// SecCertificateCopyValues rather than a hand-rolled ASN.1 parser), a cron
+// next-run explainer (see "MARK: Cron" below, plus CronExplainer.swift), and
+// a Kubernetes resource-unit converter (see "MARK: Resource units" below,
+// plus ResourceUnits.swift). Multi-session tabs (letting a captain keep
+// several independent scratch pads per tool) are a separate, later addition
+// to this page, not part of this phase's scope.
+//
 // The landing view is a wrapping grid of clickable tool cards, the same
 // icon-tile + hover-card pattern `SettingsController.rebuildAppearanceGrid`
 // already uses for its theme picker. Clicking one hides the grid and shows
@@ -28,7 +39,7 @@ import AppKit
 import Yaml
 
 private enum ToolKind: String, CaseIterable {
-    case yaml, json, base64, jwt, timestamp, diff
+    case yaml, json, base64, jwt, timestamp, diff, cert, cron, resource
 
     var title: String {
         switch self {
@@ -38,6 +49,9 @@ private enum ToolKind: String, CaseIterable {
         case .jwt: return "JWT Decoder"
         case .timestamp: return "Unix Timestamp Converter"
         case .diff: return "Diff"
+        case .cert: return "Certificate Inspector"
+        case .cron: return "Cron Next-Run Explainer"
+        case .resource: return "Resource Unit Converter"
         }
     }
 
@@ -49,6 +63,9 @@ private enum ToolKind: String, CaseIterable {
         case .jwt: return "Inspect a JWT's header and payload claims - no signature verification."
         case .timestamp: return "Convert a Unix epoch to a human-readable date, and back."
         case .diff: return "Compare two blocks of text side by side, with word-level highlighting."
+        case .cert: return "Paste a PEM certificate to see its subject, issuer, validity, serial, and SANs."
+        case .cron: return "Paste a cron expression to see what it means in plain English and its next run times."
+        case .resource: return "Convert CPU millicores/cores and Kubernetes memory quantities between units."
         }
     }
 
@@ -60,6 +77,9 @@ private enum ToolKind: String, CaseIterable {
         case .jwt: return "key"
         case .timestamp: return "clock"
         case .diff: return "arrow.left.arrow.right"
+        case .cert: return "checkmark.seal"
+        case .cron: return "calendar.badge.clock"
+        case .resource: return "gauge.with.dots.needle.50percent"
         }
     }
 
@@ -71,6 +91,9 @@ private enum ToolKind: String, CaseIterable {
         case .jwt: return .violet
         case .timestamp: return .accent
         case .diff: return .neutral
+        case .cert: return .good
+        case .cron: return .info
+        case .resource: return .warn
         }
     }
 }
@@ -116,6 +139,20 @@ final class ToolsController: NSViewController {
     private var diffResultView: DiffResultView!
     private var diffShowOnlyDifferences: NSButton!
 
+    private var certInput: NSTextView!
+    private var certOutput: NSTextView!
+
+    private var cronInput: NSTextField!
+    private var cronHeadlineLabel: NSTextField!
+    private var cronOutput: NSTextView!
+
+    private var cpuMillicoresField: NSTextField!
+    private var cpuCoresOutput: NSTextField!
+    private var cpuCoresField: NSTextField!
+    private var cpuMillicoresOutput: NSTextField!
+    private var memoryQuantityField: NSTextField!
+    private var memoryOutput: NSTextView!
+
     // Copy buttons (fm/cockpit-tools-page-copy-buttons) and the text each one
     // currently holds - nil/empty means "nothing valid to copy yet," which is
     // what keeps the button disabled rather than a silent no-op.
@@ -129,6 +166,12 @@ final class ToolsController: NSViewController {
 
     private var jwtHeaderCopyText: String?
     private var jwtPayloadCopyText: String?
+
+    private var certCopyButton: NSButton!
+    private var cronCopyButton: NSButton!
+    private var cpuCoresCopyButton: NSButton!
+    private var cpuMillicoresCopyButton: NSButton!
+    private var memoryCopyButton: NSButton!
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 720))
@@ -427,6 +470,9 @@ final class ToolsController: NSViewController {
         case .jwt: return buildJwtPanel()
         case .timestamp: return buildTimestampPanel()
         case .diff: return buildDiffPanel()
+        case .cert: return buildCertPanel()
+        case .cron: return buildCronPanel()
+        case .resource: return buildResourcePanel()
         }
     }
 
@@ -1031,6 +1077,324 @@ final class ToolsController: NSViewController {
 
     @objc private func diffShowOnlyDifferencesToggled() {
         diffResultView.setShowOnlyDifferences(diffShowOnlyDifferences.state == .on)
+    }
+
+    // MARK: Certificate
+
+    private static let certExample = """
+    -----BEGIN CERTIFICATE-----
+    Paste a PEM certificate here (starts with "-----BEGIN CERTIFICATE-----").
+    -----END CERTIFICATE-----
+    """
+
+    private func buildCertPanel() -> NSView {
+        let (inputScroll, inputView) = codeEditor(height: 160, readOnly: false)
+        inputView.string = Self.certExample
+        certInput = inputView
+        let (outputScroll, outputView) = codeEditor(height: 220, readOnly: true)
+        certOutput = outputView
+
+        let statusLabel = NSTextField(wrappingLabelWithString: "")
+        statusLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        statusLabels[.cert] = statusLabel
+
+        let inspectButton = NSButton(title: "Inspect", target: self, action: #selector(certInspectClicked))
+        inspectButton.bezelStyle = .rounded
+
+        certCopyButton = copyButton(action: #selector(certCopyClicked))
+        let outputHeaderRow = NSStackView(views: [sectionLabel("Details"), certCopyButton])
+        outputHeaderRow.orientation = .horizontal
+        outputHeaderRow.spacing = 8
+
+        let content = NSStackView(views: [
+            sectionLabel("PEM Certificate"), inputScroll, inspectButton, statusLabel, outputHeaderRow, outputScroll,
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        for v in [inputScroll, outputScroll] { v.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+
+        return panelCard(
+            icon: ToolKind.cert.symbol, tint: ToolKind.cert.tint, title: ToolKind.cert.title,
+            subtitle: ToolKind.cert.description, content: content
+        )
+    }
+
+    private static let certDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
+        df.timeZone = TimeZone(identifier: "UTC")
+        return df
+    }()
+
+    @objc private func certInspectClicked() {
+        do {
+            let info = try CertInspector.parse(pem: certInput.string)
+            var lines: [String] = []
+            lines.append("Subject:  \(info.subject)")
+            lines.append("Issuer:   \(info.issuer)")
+            lines.append("Not before: \(Self.certDateFormatter.string(from: info.notBefore))")
+            lines.append("Not after:  \(Self.certDateFormatter.string(from: info.notAfter))")
+            lines.append("Serial:   \(info.serialHex)")
+            lines.append("")
+            lines.append("Subject Alternative Names:")
+            lines.append(info.sans.isEmpty ? "  (none)" : info.sans.map { "  - \($0)" }.joined(separator: "\n"))
+            certOutput.string = lines.joined(separator: "\n")
+
+            if info.isExpired {
+                setStatus(.cert, "Certificate is EXPIRED (expired \(Self.certDateFormatter.string(from: info.notAfter))).", ok: false)
+            } else if info.isNotYetValid {
+                setStatus(.cert, "Certificate is not yet valid (starts \(Self.certDateFormatter.string(from: info.notBefore))).", ok: false)
+            } else {
+                setStatus(.cert, "Valid certificate structure - not expired.", ok: true)
+            }
+        } catch {
+            certOutput.string = ""
+            setStatus(.cert, "Could not parse certificate: \(error)", ok: false)
+        }
+        refreshCopyButton(certCopyButton, text: certOutput.string)
+    }
+
+    @objc private func certCopyClicked() {
+        guard !certOutput.string.isEmpty else { return }
+        copyToClipboard(certOutput.string)
+    }
+
+    // MARK: Cron
+
+    private func buildCronPanel() -> NSView {
+        cronInput = NSTextField()
+        cronInput.stringValue = "*/15 2 * * 1-5"
+        cronInput.placeholderString = "e.g. */15 2 * * 1-5, or a shortcut like @daily"
+        cronInput.translatesAutoresizingMaskIntoConstraints = false
+        cronInput.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let explainButton = NSButton(title: "Explain", target: self, action: #selector(cronExplainClicked))
+        explainButton.bezelStyle = .rounded
+        let randomButton = NSButton(title: "Random", target: self, action: #selector(cronRandomClicked))
+        randomButton.bezelStyle = .rounded
+        let inputRow = NSStackView(views: [cronInput, explainButton, randomButton])
+        inputRow.orientation = .horizontal
+        inputRow.spacing = 8
+
+        cronHeadlineLabel = NSTextField(wrappingLabelWithString: "")
+        cronHeadlineLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        cronHeadlineLabel.preferredMaxLayoutWidth = 640
+
+        let statusLabel = NSTextField(wrappingLabelWithString: "")
+        statusLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        statusLabels[.cron] = statusLabel
+
+        let (outputScroll, outputView) = codeEditor(height: 110, readOnly: true)
+        cronOutput = outputView
+        cronCopyButton = copyButton(action: #selector(cronCopyClicked))
+        let outputHeaderRow = NSStackView(views: [sectionLabel("Next 5 runs"), cronCopyButton])
+        outputHeaderRow.orientation = .horizontal
+        outputHeaderRow.spacing = 8
+
+        let legend = NSTextField(wrappingLabelWithString:
+            "*  any value        ,  a list (1,3,5)        -  a range (1-5)        /  a step (*/15 = every 15)\n"
+            + "@yearly / @annually  (0 0 1 1 *)     @monthly  (0 0 1 * *)     @weekly  (0 0 * * 0)\n"
+            + "@daily / @midnight  (0 0 * * *)     @hourly  (0 * * * *)     @reboot  - runs at startup, not on a schedule")
+        legend.font = .systemFont(ofSize: 10.5)
+        legend.preferredMaxLayoutWidth = 640
+        mutedLabels.append(legend)
+
+        let content = NSStackView(views: [
+            sectionLabel("Cron expression"), inputRow, statusLabel, cronHeadlineLabel,
+            outputHeaderRow, outputScroll, sectionLabel("Legend"), legend,
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        for v in [inputRow, outputScroll] { v.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+
+        cronExplain(cronInput.stringValue)
+
+        return panelCard(
+            icon: ToolKind.cron.symbol, tint: ToolKind.cron.tint, title: ToolKind.cron.title,
+            subtitle: ToolKind.cron.description, content: content
+        )
+    }
+
+    private static let cronRunDateFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "EEE yyyy-MM-dd HH:mm"
+        return df
+    }()
+
+    private func cronExplain(_ expression: String) {
+        do {
+            let cron = try CronExplainer.parse(expression)
+            cronHeadlineLabel.stringValue = CronExplainer.headline(cron)
+            if cron.isReboot {
+                cronOutput.string = ""
+                setStatus(.cron, "@reboot has no next-run times.", ok: true)
+            } else {
+                let runs = CronExplainer.nextRuns(cron, after: Date(), count: 5)
+                cronOutput.string = runs.map { Self.cronRunDateFormatter.string(from: $0) }.joined(separator: "\n")
+                setStatus(.cron, runs.isEmpty ? "No matching run found in the next 8 years." : "Showing the next \(runs.count) runs.", ok: true)
+            }
+        } catch {
+            cronHeadlineLabel.stringValue = ""
+            cronOutput.string = ""
+            setStatus(.cron, "Could not parse cron expression: \(error)", ok: false)
+        }
+        refreshCopyButton(cronCopyButton, text: cronOutput.string)
+    }
+
+    @objc private func cronExplainClicked() {
+        cronExplain(cronInput.stringValue)
+    }
+
+    @objc private func cronRandomClicked() {
+        let expr = CronExplainer.randomExpression()
+        cronInput.stringValue = expr
+        cronExplain(expr)
+    }
+
+    @objc private func cronCopyClicked() {
+        guard !cronOutput.string.isEmpty else { return }
+        copyToClipboard(cronOutput.string)
+    }
+
+    // MARK: Resource units
+
+    private func buildResourcePanel() -> NSView {
+        cpuMillicoresField = NSTextField()
+        cpuMillicoresField.placeholderString = "e.g. 500m"
+        cpuMillicoresField.translatesAutoresizingMaskIntoConstraints = false
+        cpuMillicoresField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let toCoresButton = NSButton(title: "\u{2192} Cores", target: self, action: #selector(cpuToCoresClicked))
+        toCoresButton.bezelStyle = .rounded
+        let millicoresRow = NSStackView(views: [cpuMillicoresField, toCoresButton])
+        millicoresRow.orientation = .horizontal
+        millicoresRow.spacing = 8
+
+        cpuCoresOutput = NSTextField(labelWithString: "")
+        cpuCoresOutput.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        cpuCoresCopyButton = copyButton(action: #selector(cpuCoresCopyClicked))
+        let coresOutputRow = NSStackView(views: [sectionLabel("Millicores \u{2192} Cores"), cpuCoresCopyButton])
+        coresOutputRow.orientation = .horizontal
+        coresOutputRow.spacing = 8
+        let coresResultRow = NSStackView(views: [cpuCoresOutput])
+        coresResultRow.orientation = .horizontal
+
+        cpuCoresField = NSTextField()
+        cpuCoresField.placeholderString = "e.g. 0.5"
+        cpuCoresField.translatesAutoresizingMaskIntoConstraints = false
+        cpuCoresField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let toMillicoresButton = NSButton(title: "\u{2192} Millicores", target: self, action: #selector(cpuToMillicoresClicked))
+        toMillicoresButton.bezelStyle = .rounded
+        let coresRow = NSStackView(views: [cpuCoresField, toMillicoresButton])
+        coresRow.orientation = .horizontal
+        coresRow.spacing = 8
+
+        cpuMillicoresOutput = NSTextField(labelWithString: "")
+        cpuMillicoresOutput.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        cpuMillicoresCopyButton = copyButton(action: #selector(cpuMillicoresCopyClicked))
+        let millicoresOutputRow = NSStackView(views: [sectionLabel("Cores \u{2192} Millicores"), cpuMillicoresCopyButton])
+        millicoresOutputRow.orientation = .horizontal
+        millicoresOutputRow.spacing = 8
+        let millicoresResultRow = NSStackView(views: [cpuMillicoresOutput])
+        millicoresResultRow.orientation = .horizontal
+
+        let cpuStatusLabel = NSTextField(wrappingLabelWithString: "")
+        cpuStatusLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        statusLabels[.resource] = cpuStatusLabel
+
+        memoryQuantityField = NSTextField()
+        memoryQuantityField.placeholderString = "e.g. 256Mi, 1.5Gi, 500M, or a plain byte count"
+        memoryQuantityField.translatesAutoresizingMaskIntoConstraints = false
+        memoryQuantityField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let convertButton = NSButton(title: "Convert", target: self, action: #selector(memoryConvertClicked))
+        convertButton.bezelStyle = .rounded
+        let memoryRow = NSStackView(views: [memoryQuantityField, convertButton])
+        memoryRow.orientation = .horizontal
+        memoryRow.spacing = 8
+
+        let (memoryScroll, memoryView) = codeEditor(height: 110, readOnly: true)
+        memoryOutput = memoryView
+        memoryCopyButton = copyButton(action: #selector(memoryCopyClicked))
+        let memoryOutputHeaderRow = NSStackView(views: [sectionLabel("All units"), memoryCopyButton])
+        memoryOutputHeaderRow.orientation = .horizontal
+        memoryOutputHeaderRow.spacing = 8
+
+        let content = NSStackView(views: [
+            sectionLabel("CPU"),
+            millicoresRow, coresOutputRow, coresResultRow,
+            coresRow, millicoresOutputRow, millicoresResultRow,
+            cpuStatusLabel,
+            sectionLabel("Memory"), memoryRow, memoryOutputHeaderRow, memoryScroll,
+        ])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        for v in [millicoresRow, coresRow, memoryRow, memoryScroll] { v.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+
+        return panelCard(
+            icon: ToolKind.resource.symbol, tint: ToolKind.resource.tint, title: ToolKind.resource.title,
+            subtitle: ToolKind.resource.description, content: content
+        )
+    }
+
+    @objc private func cpuToCoresClicked() {
+        guard let millicores = Double(cpuMillicoresField.stringValue.trimmingCharacters(in: .whitespaces)) else {
+            setStatus(.resource, "Enter a numeric millicore value, e.g. 500.", ok: false)
+            return
+        }
+        let cores = ResourceUnits.millicoresToCores(millicores)
+        cpuCoresOutput.stringValue = "\(ResourceUnits.formatNumber(cores)) cores"
+        setStatus(.resource, "Converted.", ok: true)
+        refreshCopyButton(cpuCoresCopyButton, text: cpuCoresOutput.stringValue)
+    }
+
+    @objc private func cpuToMillicoresClicked() {
+        guard let cores = Double(cpuCoresField.stringValue.trimmingCharacters(in: .whitespaces)) else {
+            setStatus(.resource, "Enter a numeric core value, e.g. 0.5.", ok: false)
+            return
+        }
+        let millicores = ResourceUnits.coresToMillicores(cores)
+        cpuMillicoresOutput.stringValue = "\(ResourceUnits.formatNumber(millicores))m"
+        setStatus(.resource, "Converted.", ok: true)
+        refreshCopyButton(cpuMillicoresCopyButton, text: cpuMillicoresOutput.stringValue)
+    }
+
+    @objc private func cpuCoresCopyClicked() {
+        guard !cpuCoresOutput.stringValue.isEmpty else { return }
+        copyToClipboard(cpuCoresOutput.stringValue)
+    }
+
+    @objc private func cpuMillicoresCopyClicked() {
+        guard !cpuMillicoresOutput.stringValue.isEmpty else { return }
+        copyToClipboard(cpuMillicoresOutput.stringValue)
+    }
+
+    @objc private func memoryConvertClicked() {
+        do {
+            let bytes = try ResourceUnits.parseMemoryBytes(memoryQuantityField.stringValue)
+            let c = ResourceUnits.convertMemory(bytes: bytes)
+            let lines = [
+                "\(ResourceUnits.formatNumber(c.bytes, decimals: 0)) bytes",
+                "\(ResourceUnits.formatNumber(c.ki)) Ki",
+                "\(ResourceUnits.formatNumber(c.mi)) Mi",
+                "\(ResourceUnits.formatNumber(c.gi)) Gi",
+                "\(ResourceUnits.formatNumber(c.kDecimal)) K",
+                "\(ResourceUnits.formatNumber(c.mDecimal)) M",
+                "\(ResourceUnits.formatNumber(c.gDecimal)) G",
+            ]
+            memoryOutput.string = lines.joined(separator: "\n")
+            setStatus(.resource, "Converted.", ok: true)
+        } catch {
+            memoryOutput.string = ""
+            setStatus(.resource, "Not a valid quantity - use a plain byte count or a suffix like Mi/Gi/M/G.", ok: false)
+        }
+        refreshCopyButton(memoryCopyButton, text: memoryOutput.string)
+    }
+
+    @objc private func memoryCopyClicked() {
+        guard !memoryOutput.string.isEmpty else { return }
+        copyToClipboard(memoryOutput.string)
     }
 
     // MARK: Theme

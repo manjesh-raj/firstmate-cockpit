@@ -479,6 +479,19 @@ if ProcessInfo.processInfo.environment["FM_RUN_DIFF_ENGINE_TESTS"] == "1" {
     exit(DiffEngineSelfTest.run() ? 0 : 1)
 }
 
+// cockpit-tools-page-specialist: same convention, for the cron next-run
+// explainer, the resource-unit converter, and the certificate inspector -
+// see each self-test file's own header.
+if ProcessInfo.processInfo.environment["FM_RUN_CRON_EXPLAINER_TESTS"] == "1" {
+    exit(CronExplainerSelfTest.run() ? 0 : 1)
+}
+if ProcessInfo.processInfo.environment["FM_RUN_RESOURCE_UNITS_TESTS"] == "1" {
+    exit(ResourceUnitsSelfTest.run() ? 0 : 1)
+}
+if ProcessInfo.processInfo.environment["FM_RUN_CERT_INSPECTOR_TESTS"] == "1" {
+    exit(CertInspectorSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
