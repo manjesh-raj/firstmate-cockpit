@@ -23,7 +23,6 @@ final class AppSettings {
         static let autoReconnect = "fm.autoReconnect"
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
         static let fmHome = "fm.fmHome"
-        static let blockViewEnabled = "fm.blockViewEnabled"
     }
 
     private init() {}
@@ -87,15 +86,5 @@ final class AppSettings {
     var fmHome: String? {
         get { defaults.string(forKey: Keys.fmHome) }
         set { defaults.set(newValue, forKey: Keys.fmHome) }
-    }
-
-    /// `fm/cockpit-block-view-terminal`: the global "show command output as
-    /// collapsible blocks instead of raw scrollback" preference. Defaults to
-    /// on (captain-specified) - `BlockViewManager` is the source of truth at
-    /// runtime and persists through this key exactly like `ThemeManager`
-    /// persists through `fm.themeID`.
-    var blockViewEnabled: Bool {
-        get { defaults.object(forKey: Keys.blockViewEnabled) == nil ? true : defaults.bool(forKey: Keys.blockViewEnabled) }
-        set { defaults.set(newValue, forKey: Keys.blockViewEnabled) }
     }
 }
