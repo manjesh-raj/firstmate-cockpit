@@ -439,6 +439,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let themeItem = NSMenuItem(title: "Toggle Light/Dark", action: #selector(ConsoleController.toggleTheme), keyEquivalent: "t")
         themeItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(themeItem)
+        // `fm/cockpit-block-view-ssh-only`: same shape as the theme toggle
+        // above - a no-op on the shared Firstmate console/a plain shell tab
+        // since `TabModel.supportsBlockView` is false there (see
+        // `ConsoleController.updateTabViewVisibility`).
+        let blockViewItem = NSMenuItem(title: "Toggle Block View", action: #selector(ConsoleController.toggleBlockView), keyEquivalent: "b")
+        blockViewItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(blockViewItem)
 
         NSApp.mainMenu = mainMenu
     }
@@ -464,6 +471,27 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
 // `SRELeadMarkdownSelfTest.swift`'s header.
 if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_MARKDOWN_TESTS"] == "1" {
     exit(SRELeadMarkdownSelfTest.run() ? 0 : 1)
+}
+
+// `fm/cockpit-block-view-ssh-only`: same convention, for
+// `TerminalBlockTracker`'s OSC 133 parsing and its coexistence with
+// `SRELeadBridge` - see `TerminalBlockTrackerSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_TESTS"] == "1" {
+    exit(TerminalBlockTrackerSelfTest.run() ? 0 : 1)
+}
+
+// `fm/cockpit-block-view-ssh-only`: the real-view-hierarchy regression test
+// for the crash this redo fixed - see `BlockViewHierarchySelfTest.swift`'s
+// header and `BlockView.swift`'s header for the crash itself.
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_HIERARCHY_TESTS"] == "1" {
+    exit(BlockViewHierarchySelfTest.run() ? 0 : 1)
+}
+
+// `fm/cockpit-block-view-ssh-only` (originally PR #80): same convention, for
+// the "Explain this" action's eligibility rule and its reuse of
+// `SRELeadMarkdown`'s renderer - see `BlockExplainSelfTest.swift`.
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_EXPLAIN_TESTS"] == "1" {
+    exit(BlockExplainSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
