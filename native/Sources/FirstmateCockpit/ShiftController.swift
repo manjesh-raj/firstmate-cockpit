@@ -109,6 +109,20 @@ final class ShiftController: NSViewController {
             self?.store.setTaskCompleted(id: task.id, completed: task.status != .completed)
             self?.render()
         }
+        taskListView.onOpen = { [weak self] task in
+            self?.presentTaskEditor(for: task)
+        }
+
+        followUpListView.onEdit = { [weak self] item in
+            self?.presentFollowUpEditor(for: item)
+        }
+        followUpListView.onToggleDone = { [weak self] item in
+            self?.store.setFollowUpStatus(id: item.id, done: item.status != .done)
+            self?.render()
+        }
+        followUpListView.onSnooze = { [weak self] item, option in
+            self?.snoozeFollowUp(item, option: option)
+        }
 
         ThemeManager.shared.observe { [weak self, weak root] theme in
             self?.theme = theme
@@ -189,12 +203,23 @@ final class ShiftController: NSViewController {
         return container
     }
 
-    private func sectionHeaderRow(iconSymbol: String, label: NSTextField) -> NSStackView {
+    private func sectionHeaderRow(iconSymbol: String, label: NSTextField, addAction: Selector? = nil, addTooltip: String? = nil) -> NSStackView {
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
         label.font = .systemFont(ofSize: 14, weight: .semibold)
-        let row = NSStackView(views: [icon, label])
+        var views: [NSView] = [icon, label]
+        if let addAction {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let addButton = NSButton(title: "", target: self, action: addAction)
+            addButton.isBordered = false
+            addButton.image = NSImage(systemSymbolName: "plus.circle", accessibilityDescription: addTooltip)
+            addButton.toolTip = addTooltip
+            addButton.translatesAutoresizingMaskIntoConstraints = false
+            views += [spacer, addButton]
+        }
+        let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.spacing = 8
         row.alignment = .firstBaseline
@@ -203,7 +228,7 @@ final class ShiftController: NSViewController {
     }
 
     private func buildTaskSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "checklist", label: tasksHeader)
+        let headerRow = sectionHeaderRow(iconSymbol: "checklist", label: tasksHeader, addAction: #selector(newTaskClicked), addTooltip: "New Task (\u{2318}N)")
 
         taskListScroll.documentView = taskListView.tableView
         taskListScroll.hasVerticalScroller = true
@@ -219,12 +244,13 @@ final class ShiftController: NSViewController {
         section.alignment = .leading
         section.spacing = 8
         section.translatesAutoresizingMaskIntoConstraints = false
+        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         taskListScroll.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
     }
 
     private func buildFollowUpSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "bell", label: followUpsHeader)
+        let headerRow = sectionHeaderRow(iconSymbol: "bell", label: followUpsHeader, addAction: #selector(newFollowUpClicked), addTooltip: "New Follow-up (\u{2318}\u{21e7}F)")
 
         followUpScroll.documentView = followUpListView.tableView
         followUpScroll.hasVerticalScroller = true
@@ -240,6 +266,7 @@ final class ShiftController: NSViewController {
         section.alignment = .leading
         section.spacing = 8
         section.translatesAutoresizingMaskIntoConstraints = false
+        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         followUpScroll.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
     }
@@ -455,6 +482,78 @@ final class ShiftController: NSViewController {
         guard parts.count == 2 else { return }
         store.setSubtaskDone(taskID: parts[0], subtaskID: parts[1], done: sender.state == .on)
         render()
+    }
+
+    // MARK: Creation / editing (phase 2)
+
+    /// The Shift menu's "New Task…" (⌘N) - also reachable from the My Tasks
+    /// header's "+" button.
+    func presentNewTaskEditor() { presentTaskEditor(for: nil) }
+
+    /// The Shift menu's "New Follow-up…" (⌘⇧F) - also reachable from the
+    /// Follow-ups header's "+" button.
+    func presentNewFollowUpEditor() { presentFollowUpEditor(for: nil) }
+
+    @objc private func newTaskClicked() { presentTaskEditor(for: nil) }
+    @objc private func newFollowUpClicked() { presentFollowUpEditor(for: nil) }
+
+    private func presentTaskEditor(for task: ShiftTask?) {
+        let editor = ShiftTaskEditorController(task: task, projects: store.projects)
+        editor.onSave = { [weak self] saved in
+            guard let self else { return }
+            if task != nil {
+                self.store.updateTask(saved)
+            } else {
+                self.store.addTask(saved)
+            }
+            self.render()
+        }
+        presentAsSheet(editor)
+    }
+
+    private func presentFollowUpEditor(for followUp: ShiftFollowUp?) {
+        let editor = ShiftFollowUpEditorController(followUp: followUp, tasks: store.activeTasks, projects: store.projects)
+        editor.onSave = { [weak self] saved in
+            guard let self else { return }
+            if followUp != nil {
+                self.store.updateFollowUp(saved)
+            } else {
+                self.store.addFollowUp(saved)
+            }
+            self.render()
+        }
+        presentAsSheet(editor)
+    }
+
+    /// Recomputes and persists a follow-up's `follow_up_at`/`follow_up_time`
+    /// for one of the Snooze menu's presets, or opens the Custom picker
+    /// sheet for the last option - the actual write happens in
+    /// `ShiftStore.snoozeFollowUp`, this just does the relative-offset math.
+    private func snoozeFollowUp(_ item: ShiftFollowUp, option: ShiftSnoozeOption) {
+        let now = Date()
+        let current = ShiftDateFormatting.dateTime(from: item.followUpAt, time: item.followUpTime) ?? now
+        let cal = Calendar.current
+        switch option {
+        case .minutes30:
+            store.snoozeFollowUp(id: item.id, to: cal.date(byAdding: .minute, value: 30, to: now) ?? now)
+            render()
+        case .hour1:
+            store.snoozeFollowUp(id: item.id, to: cal.date(byAdding: .hour, value: 1, to: now) ?? now)
+            render()
+        case .tomorrow:
+            store.snoozeFollowUp(id: item.id, to: cal.date(byAdding: .day, value: 1, to: current) ?? now)
+            render()
+        case .nextWeek:
+            store.snoozeFollowUp(id: item.id, to: cal.date(byAdding: .day, value: 7, to: current) ?? now)
+            render()
+        case .custom:
+            let picker = ShiftSnoozeCustomController(initial: current)
+            picker.onPick = { [weak self] date in
+                self?.store.snoozeFollowUp(id: item.id, to: date)
+                self?.render()
+            }
+            presentAsSheet(picker)
+        }
     }
 
     // MARK: Theme

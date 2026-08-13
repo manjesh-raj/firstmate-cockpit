@@ -378,6 +378,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showHostsItem.target = appShell
         hostsMenu.addItem(showHostsItem)
 
+        // Shift menu (cockpit-shift-create-edit, phase 2) - task/follow-up
+        // creation. Both items target the app shell directly (like the Hosts
+        // menu's "New Host…" above), so they work regardless of which
+        // destination is currently showing - the shell switches to `.shift`
+        // itself before presenting the sheet.
+        let shiftMenuItem = NSMenuItem()
+        mainMenu.addItem(shiftMenuItem)
+        let shiftMenu = NSMenu(title: "Shift")
+        shiftMenuItem.submenu = shiftMenu
+        let newTaskItem = NSMenuItem(title: "New Task…", action: #selector(AppShellController.newShiftTaskFromMenu), keyEquivalent: "n")
+        newTaskItem.target = appShell
+        shiftMenu.addItem(newTaskItem)
+        let newFollowUpItem = NSMenuItem(title: "New Follow-up…", action: #selector(AppShellController.newShiftFollowUpFromMenu), keyEquivalent: "f")
+        newFollowUpItem.keyEquivalentModifierMask = [.command, .shift]
+        newFollowUpItem.target = appShell
+        shiftMenu.addItem(newFollowUpItem)
+
         // Keys menu - the Phase 2 Keychain screen. Both items target the app
         // delegate directly (so they work regardless of focus, like the Hosts
         // menu's New Host / Quick Connect above).
@@ -503,6 +520,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_YAML_BEAUTIFY_TESTS"] == "1" {
 // ShiftStoreSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_STORE_TESTS"] == "1" {
     exit(ShiftStoreSelfTest.run() ? 0 : 1)
+}
+
+// cockpit-shift-create-edit: same convention, for `ShiftDateParser`'s
+// natural-language date/time detection - see `ShiftDateParserSelfTest.swift`'s
+// header.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_DATE_PARSER_TESTS"] == "1" {
+    exit(ShiftDateParserSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
