@@ -32,12 +32,14 @@ import AppKit
 /// Tools, Docs, Updates, Bootstrap, Settings, avatar.
 /// `.shift` (cockpit-shift-foundation) is different from all of the above:
 /// it's a daily-use destination, not a utility, so it is NOT part of the
-/// bottom-anchored group - it lives in `navStack` right after `.overview`,
-/// which `loadView`'s `navStack` loop gets for free just by this enum
-/// declaring `.shift` immediately after `.overview` (case order drives
+/// bottom-anchored group - it lives in `navStack` alongside the other fixed
+/// destinations. `fm/cockpit-shift-rail-position` moved it from right after
+/// `.overview` to right after `.hosts` (captain correction), so `navStack`
+/// reads Overview, Console, Hosts, Shift, Review - `loadView`'s `navStack`
+/// loop gets this for free just from case order (case order drives
 /// `navStack`'s iteration order, same as every other `navStack` member).
 enum RailDestination: CaseIterable {
-    case overview, shift, console, hosts, review, tools, docs, updates, bootstrap, settings
+    case overview, console, hosts, shift, review, tools, docs, updates, bootstrap, settings
 
     var symbol: String {
         switch self {
