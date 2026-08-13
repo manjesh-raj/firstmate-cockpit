@@ -25,13 +25,17 @@ enum ShiftPriority: String, CaseIterable {
 /// A checklist item nested under a task. Subtasks are only ever rendered in
 /// a project-scoped context (never as flat rows in the main My Tasks list) -
 /// see `ShiftController`'s project section, not the task list.
-struct ShiftSubtask {
+struct ShiftSubtask: Equatable {
     var id: String
     var title: String
     var done: Bool
 }
 
-struct ShiftTask {
+/// `Equatable` (added for cockpit-shift-conflict-handling) is structural
+/// value equality only, used by `ShiftThreeWayMerge` to tell "unchanged"
+/// from "edited" when comparing a record across the merge-base/local/remote
+/// revisions - not used for identity (that's always `id`).
+struct ShiftTask: Equatable {
     var id: String
     var title: String
     var description: String
@@ -67,7 +71,7 @@ enum ShiftFollowUpStatus: String, CaseIterable {
 /// Deliberately its own type, not "a task with a reminder" - a follow-up is
 /// something to check on later, with no completion checklist or description
 /// field, and its own `followUpAt` date rather than a due date.
-struct ShiftFollowUp {
+struct ShiftFollowUp: Equatable {
     var id: String
     var title: String
     var status: ShiftFollowUpStatus
@@ -112,7 +116,7 @@ enum ShiftProjectStatus: String, CaseIterable {
 /// clicking through to a dropdown that actually persists, a task list scoped
 /// to the project (with nested subtasks - see `ShiftSubtask`'s doc comment),
 /// and an editable field set (name/description/status/start date/due date).
-struct ShiftProject {
+struct ShiftProject: Equatable {
     var id: String
     var name: String
     var description: String
