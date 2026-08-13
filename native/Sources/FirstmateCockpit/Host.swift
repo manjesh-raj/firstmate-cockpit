@@ -92,10 +92,85 @@ struct Host: Codable, Identifiable, Equatable {
     /// this narrow, single-host gate.
     var blockViewOptIn: Bool = false
 
+    /// Restores the compiler-synthesized memberwise initializer, which Swift
+    /// suppresses once any custom `init` (here, `init(from:)`) is declared -
+    /// every call site that builds a `Host` in Swift code (host editor save,
+    /// self-tests, the pinned-Firstmate-entry path) still relies on it.
+    init(
+        id: UUID = UUID(),
+        label: String,
+        address: String,
+        port: Int = 22,
+        username: String = "",
+        keyID: UUID? = nil,
+        iconSymbol: String = HostCatalog.defaultIcon,
+        accentHex: String = HostCatalog.defaultAccent,
+        group: String? = nil,
+        tags: [String] = [],
+        agentForward: Bool = false,
+        jumpVia: String? = nil,
+        portForwards: [PortForwardRule] = [],
+        startupSnippetID: UUID? = nil,
+        password: String? = nil,
+        blockViewOptIn: Bool = false
+    ) {
+        self.id = id
+        self.label = label
+        self.address = address
+        self.port = port
+        self.username = username
+        self.keyID = keyID
+        self.iconSymbol = iconSymbol
+        self.accentHex = accentHex
+        self.group = group
+        self.tags = tags
+        self.agentForward = agentForward
+        self.jumpVia = jumpVia
+        self.portForwards = portForwards
+        self.startupSnippetID = startupSnippetID
+        self.password = password
+        self.blockViewOptIn = blockViewOptIn
+    }
+
     /// Everything persisted - note `password` is intentionally absent.
     private enum CodingKeys: String, CodingKey {
         case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags,
              agentForward, jumpVia, portForwards, startupSnippetID, blockViewOptIn
+    }
+
+    /// Custom decode, deliberately NOT the compiler-synthesized one.
+    ///
+    /// Swift's synthesized `Decodable` requires every key listed in
+    /// `CodingKeys` to be present in the JSON, regardless of whether the
+    /// Swift property has its own default value - a default only applies to
+    /// Swift-side construction (`Host(label:...)`), never to key lookup for a
+    /// key that `CodingKeys` lists. `blockViewOptIn` (added by
+    /// `fm/cockpit-block-view-stage0`) hit this for real: every `hosts.json`
+    /// saved before that field existed failed to decode at all, and
+    /// `HostStore.load()` treated the failure as file corruption -
+    /// `fm/cockpit-fix-host-decode-regression` is the incident and the fix.
+    /// Every field below that has a Swift-side default now falls back to it
+    /// via `decodeIfPresent(...) ?? default` instead of `decode(...)`, so
+    /// adding one more optional-with-a-default field in the future can't
+    /// reproduce this. `label`/`address` have no default and stay required -
+    /// a `Host` with no name or destination isn't a valid host.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        label = try c.decode(String.self, forKey: .label)
+        address = try c.decode(String.self, forKey: .address)
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        keyID = try c.decodeIfPresent(UUID.self, forKey: .keyID)
+        iconSymbol = try c.decodeIfPresent(String.self, forKey: .iconSymbol) ?? HostCatalog.defaultIcon
+        accentHex = try c.decodeIfPresent(String.self, forKey: .accentHex) ?? HostCatalog.defaultAccent
+        group = try c.decodeIfPresent(String.self, forKey: .group)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        agentForward = try c.decodeIfPresent(Bool.self, forKey: .agentForward) ?? false
+        jumpVia = try c.decodeIfPresent(String.self, forKey: .jumpVia)
+        portForwards = try c.decodeIfPresent([PortForwardRule].self, forKey: .portForwards) ?? []
+        startupSnippetID = try c.decodeIfPresent(UUID.self, forKey: .startupSnippetID)
+        blockViewOptIn = try c.decodeIfPresent(Bool.self, forKey: .blockViewOptIn) ?? false
     }
 
     /// The full `ssh` argument vector for this host, minus any identity file
