@@ -78,7 +78,24 @@ enum YamlBeautify {
         case .bool(let b): return b ? "true" : "false"
         case .int(let i): return String(i)
         case .double(let d): return String(d)
-        case .string(let s): return quotedIfNeeded(s)
+        case .string(let s, let quoted):
+            // A scalar that was quoted in the source is re-emitted quoted,
+            // in the same style, unconditionally - never re-decided by the
+            // "does this need quoting" heuristic below. That heuristic is
+            // only for a genuinely unquoted (`.plain`) source scalar, where
+            // there is no original quoting to preserve and something still
+            // has to decide whether it's safe to leave bare after this
+            // beautifier re-indents/re-flows the document
+            // (fm/cockpit-tools-yaml-quotes-diff-perf - see
+            // YAMLQuoteStyle.swift's header for the full rationale: a
+            // quoted `"true"`/`"123"`/`"no"` is a *string*, and silently
+            // dropping its quotes would change what a downstream consumer
+            // parses it as, not just its formatting).
+            switch quoted {
+            case .plain: return quotedIfNeeded(s)
+            case .double: return doubleQuoted(s)
+            case .single: return singleQuoted(s)
+            }
         case .dictionary: return "{}"
         case .array: return "[]"
         }
@@ -93,7 +110,9 @@ enum YamlBeautify {
     /// A conservative "does this string need quoting to round-trip as YAML"
     /// check - errs toward quoting rather than risking an ambiguous scalar
     /// (a version string like "1.20" that would otherwise parse back as a
-    /// double, a value that looks like a YAML reserved word, etc.).
+    /// double, a value that looks like a YAML reserved word, etc.). Only
+    /// used for a scalar that was genuinely unquoted (`.plain`) in the
+    /// source - see `scalarText` above.
     private static func quotedIfNeeded(_ s: String) -> String {
         if s.isEmpty { return "\"\"" }
         let trimmed = s.trimmingCharacters(in: .whitespaces)
@@ -107,10 +126,18 @@ enum YamlBeautify {
             || s.contains(" #")
             || (s.first.map { "-?:,[]{}#&*!|>'\"%@`".contains($0) } ?? false)
         guard needsQuote else { return s }
+        return doubleQuoted(s)
+    }
+
+    private static func doubleQuoted(_ s: String) -> String {
         let escaped = s
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")
         return "\"\(escaped)\""
+    }
+
+    private static func singleQuoted(_ s: String) -> String {
+        "'\(s.replacingOccurrences(of: "'", with: "''"))'"
     }
 }

@@ -5,10 +5,15 @@ public enum Yaml: Hashable {
   case bool(Bool)
   case int(Int)
   case double(Double)
-  case string(String)
+  // `quoted` records how this scalar was actually written in the source
+  // (fm/cockpit-tools-yaml-quotes-diff-perf) - see YAMLQuoteStyle.swift's
+  // header for the full rationale. Deliberately excluded from `==` below
+  // (two `.string`s with the same text are equal regardless of how they
+  // were quoted) and therefore also from `hash(into:)` further down.
+  case string(String, quoted: YamlQuoteStyle = .plain)
   case array([Yaml])
   case dictionary(YamlOrderedMap)
-    
+
     static public func == (lhs: Yaml, rhs: Yaml) -> Bool {
         switch (lhs, rhs) {
         case (.null, .null):
@@ -23,7 +28,7 @@ public enum Yaml: Hashable {
             return lv == rv
         case (.double(let lv), .int(let rv)):
             return lv == Double(rv)
-        case (.string(let lv), .string(let rv)):
+        case (.string(let lv, _), .string(let rv, _)):
             return lv == rv
         case (.array(let lv), .array(let rv)):
             return lv == rv
@@ -31,6 +36,38 @@ public enum Yaml: Hashable {
             return lv == rv
         default:
             return false
+        }
+    }
+
+    // Manual `hash(into:)`, required now that `.string` carries a second
+    // associated value (`quoted`) that `==` above deliberately ignores - an
+    // auto-synthesized `hash(into:)` would hash that value too, silently
+    // breaking Hashable's "equal values hash equally" contract for two
+    // same-text, differently-quoted `.string`s (e.g. as `YamlOrderedMap`
+    // dictionary keys). Case discriminant + associated value(s), same shape
+    // synthesis would have produced pre-patch.
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case .null:
+            hasher.combine(0)
+        case .bool(let b):
+            hasher.combine(1)
+            hasher.combine(b)
+        case .int(let i):
+            hasher.combine(2)
+            hasher.combine(i)
+        case .double(let d):
+            hasher.combine(3)
+            hasher.combine(d)
+        case .string(let s, _):
+            hasher.combine(4)
+            hasher.combine(s)
+        case .array(let a):
+            hasher.combine(5)
+            hasher.combine(a)
+        case .dictionary(let d):
+            hasher.combine(6)
+            hasher.combine(d)
         }
     }
     
@@ -50,7 +87,7 @@ public enum Yaml: Hashable {
 
     public func getComment(forKey key: String) -> String? {
         switch self[.string("\(Yaml.commentPrefix)\(key)")] {
-            case let .string(value):
+            case let .string(value, _):
                 return value
             default:
                 return nil
@@ -129,7 +166,7 @@ extension Yaml: CustomStringConvertible {
       return "Int(\(i))"
     case .double(let f):
       return "Double(\(f))"
-    case .string(let s):
+    case .string(let s, _):
       return "String(\(s))"
     case .array(let s):
       return "Array(\(s))"
@@ -273,7 +310,7 @@ extension Yaml {
 
   public var string: String? {
     switch self {
-    case .string(let s):
+    case .string(let s, _):
       return s
     default:
       return nil

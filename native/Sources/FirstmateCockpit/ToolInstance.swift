@@ -827,14 +827,14 @@ final class ToolInstance: NSObject {
         diffResultView = result
 
         let resultScroll = NSScrollView()
-        resultScroll.documentView = result
+        resultScroll.documentView = result.tableView
         resultScroll.hasVerticalScroller = true
+        resultScroll.hasHorizontalScroller = false
         resultScroll.borderType = .noBorder
         resultScroll.wantsLayer = true
         resultScroll.layer?.cornerRadius = 8
         resultScroll.translatesAutoresizingMaskIntoConstraints = false
         resultScroll.heightAnchor.constraint(equalToConstant: 380).isActive = true
-        result.widthAnchor.constraint(equalTo: resultScroll.contentView.widthAnchor).isActive = true
         editorScrollViews.append(resultScroll)
 
         let content = NSStackView(views: [

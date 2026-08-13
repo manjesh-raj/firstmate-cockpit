@@ -569,15 +569,15 @@ private func parseString (_ context: Context) -> YAMLResult<ContextValue> {
   case .string:
     let m = normalizeBreaks(peekMatch(context))
     let folded = m |> Yaml.Regex.replace(Yaml.Regex.regex("^[ \\t\\n]+|[ \\t\\n]+$"), template: "") |> foldFlow
-    return Resulter.lift((advance(context), .string(folded)))
+    return Resulter.lift((advance(context), .string(folded, quoted: .plain)))
 
   case .stringDQ:
     let m = unwrapQuotedString(normalizeBreaks(peekMatch(context)))
-    return Resulter.lift((advance(context), .string(unescapeDoubleQuotes(foldFlow(m)))))
+    return Resulter.lift((advance(context), .string(unescapeDoubleQuotes(foldFlow(m)), quoted: .double)))
 
   case .stringSQ:
     let m = unwrapQuotedString(normalizeBreaks(peekMatch(context)))
-    return Resulter.lift((advance(context), .string(unescapeSingleQuotes(foldFlow(m)))))
+    return Resulter.lift((advance(context), .string(unescapeSingleQuotes(foldFlow(m)), quoted: .single)))
 
   default:
     return Resulter.fail(error("expected string")(context))
