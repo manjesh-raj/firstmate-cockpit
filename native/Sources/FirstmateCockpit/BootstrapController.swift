@@ -969,7 +969,11 @@ final class BootstrapController: NSViewController {
             return FirstmateHome.homeOk(at: FirstmateHome.root)
         case .dotfiles:
             guard !isLoadingDotfiles else { return nil }
-            return dotfilesRepoPath != nil
+            guard dotfilesRepoPath != nil else { return false }
+            guard let state = repoState else { return false }
+            guard state.dirtyFiles.isEmpty else { return false }
+            if let behind = state.commitsBehindOrigin, behind > 0 { return false }
+            return true
         case .agentInstructions:
             guard !isLoadingDotfiles else { return nil }
             return !agentItems.isEmpty && agentItems.allSatisfy { $0.status == .linked }
