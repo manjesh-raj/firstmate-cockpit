@@ -267,7 +267,8 @@ final class AppShellController: NSViewController {
         }
         controller.connectSSHIfNeeded(
             label: host.label, args: args, accentHex: host.accentHex,
-            keyID: host.keyID, startupSnippetID: host.startupSnippetID
+            keyID: host.keyID, startupSnippetID: host.startupSnippetID,
+            blockViewOptIn: host.blockViewOptIn
         )
 
         hideAllDestinations()

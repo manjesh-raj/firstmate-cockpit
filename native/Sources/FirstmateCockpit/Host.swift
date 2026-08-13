@@ -82,10 +82,20 @@ struct Host: Codable, Identifiable, Equatable {
     /// `ssh` prompts for it interactively on the PTY regardless.
     var password: String?
 
+    /// Block view Stage 0 opt-in (`fm/cockpit-block-view-stage0`): this host's
+    /// dedicated page renders parsed OSC-133 command blocks instead of raw
+    /// scrollback, but only when `FM_BLOCK_VIEW_ENABLED` is also set - see
+    /// `BlockViewFeature.swift`. Defaults `false` so no existing host (or a
+    /// freshly created one) picks this up implicitly; a captain opts in one
+    /// host at a time, deliberately, rather than every SSH page at once. See
+    /// AGENTS.md's block-view section for the staged-rollout reasoning behind
+    /// this narrow, single-host gate.
+    var blockViewOptIn: Bool = false
+
     /// Everything persisted - note `password` is intentionally absent.
     private enum CodingKeys: String, CodingKey {
         case id, label, address, port, username, keyID, iconSymbol, accentHex, group, tags,
-             agentForward, jumpVia, portForwards, startupSnippetID
+             agentForward, jumpVia, portForwards, startupSnippetID, blockViewOptIn
     }
 
     /// The full `ssh` argument vector for this host, minus any identity file

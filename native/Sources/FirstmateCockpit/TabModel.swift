@@ -152,6 +152,31 @@ final class TabModel {
     /// down by `cleanupSSHKeyTempFile` on close, reconnect, and process exit.
     var sshKeyTempPath: String?
 
+    /// `fm/cockpit-block-view-stage0`: whether this tab is the one, single,
+    /// opted-in host page block view applies to (`Host.blockViewOptIn`,
+    /// threaded down from `AppShellController.connectHost` through
+    /// `ConsoleController.connectSSHIfNeeded`/`openSSH`). `false` for every
+    /// other tab, including every other SSH host's tab, the Firstmate
+    /// console's Shell/Mirror tabs, and any ad-hoc quick-connect (which has
+    /// no `Host` behind it at all) - deliberately narrower than PR #79's
+    /// original "every `.shell`/`.ssh` tab" scope and PR #83's "every `.ssh`
+    /// tab" scope, per the scout report's recommendation to shrink Stage 0's
+    /// blast radius to one captain-chosen host. Combined with
+    /// `BlockViewFeature.isEnabled` (both must be true) before
+    /// `ConsoleController.addTab` attaches a tracker/container at all.
+    var blockViewOptIn = false
+
+    /// Present only when both `blockViewOptIn` and `BlockViewFeature.isEnabled`
+    /// were true at tab-creation time - registers the OSC 133 handler on this
+    /// tab's `Terminal` and accumulates the parsed block list.
+    var blockTracker: TerminalBlockTracker?
+
+    /// Present only alongside `blockTracker` - the block-view rendering,
+    /// added as a sibling of `terminal` inside the console's shared content
+    /// view, visibility toggled by `ConsoleController.updateBlockViewVisibility`
+    /// without ever touching `terminal` or the underlying process.
+    var blockContainer: BlockContainerView?
+
     init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name
         self.launch = launch

@@ -630,6 +630,24 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_CONFLICT_TESTS"] == "1" {
     exit(ShiftConflictSelfTest.run() ? 0 : 1)
 }
 
+// `fm/cockpit-block-view-stage0`: same convention, for the OSC 133 parser,
+// the real-view-hierarchy render path, the reconnect-bookkeeping
+// unification, and volume - see each file's own header for what class of
+// prior production break it targets and why the other three couldn't have
+// caught it.
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_TESTS"] == "1" {
+    exit(TerminalBlockTrackerSelfTest.run() ? 0 : 1)
+}
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_HIERARCHY_TESTS"] == "1" {
+    exit(BlockViewHierarchySelfTest.run() ? 0 : 1)
+}
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_RESTART_TESTS"] == "1" {
+    exit(BlockViewRestartIntegrationSelfTest.run() ? 0 : 1)
+}
+if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_VOLUME_TESTS"] == "1" {
+    exit(BlockViewVolumeSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
