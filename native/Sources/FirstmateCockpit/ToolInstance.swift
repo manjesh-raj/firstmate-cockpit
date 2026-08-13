@@ -343,7 +343,7 @@ final class ToolInstance: NSObject {
         sLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         statusLabel = sLabel
 
-        let note = NSTextField(wrappingLabelWithString: "Beautify sorts map keys alphabetically - the underlying parser doesn't preserve the source document's key order.")
+        let note = NSTextField(wrappingLabelWithString: "Beautify preserves each mapping's original key order.")
         note.font = .systemFont(ofSize: 10.5)
         note.preferredMaxLayoutWidth = 640
         mutedLabels.append(note)

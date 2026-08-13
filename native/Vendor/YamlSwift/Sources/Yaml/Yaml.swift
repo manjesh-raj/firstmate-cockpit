@@ -7,7 +7,7 @@ public enum Yaml: Hashable {
   case double(Double)
   case string(String)
   case array([Yaml])
-  case dictionary([Yaml: Yaml])
+  case dictionary(YamlOrderedMap)
     
     static public func == (lhs: Yaml, rhs: Yaml) -> Bool {
         switch (lhs, rhs) {
@@ -110,7 +110,7 @@ extension Yaml: ExpressibleByArrayLiteral {
 
 extension Yaml: ExpressibleByDictionaryLiteral {
   public init(dictionaryLiteral elements: (Yaml, Yaml)...) {
-    var dictionary = [Yaml: Yaml]()
+    var dictionary = YamlOrderedMap()
     for (k, v) in elements {
       dictionary[k] = v
     }
@@ -227,7 +227,7 @@ extension Yaml {
         new[key] = newValue
         self = .dictionary(new)
       default:
-        var dictionary = [Yaml: Yaml]()
+        var dictionary = YamlOrderedMap()
         dictionary[key] = newValue
         self = .dictionary(dictionary)
       }
@@ -289,7 +289,7 @@ extension Yaml {
     }
   }
 
-  public var dictionary: [Yaml: Yaml]? {
+  public var dictionary: YamlOrderedMap? {
     switch self {
     case .dictionary(let dictionary):
       return dictionary

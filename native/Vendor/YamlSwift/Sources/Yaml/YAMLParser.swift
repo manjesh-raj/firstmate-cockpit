@@ -389,7 +389,7 @@ private func appendToArray (_ array: [Yaml]) -> (Yaml) -> [Yaml] {
   }
 }
 
-private func putToMap (_ map: [Yaml: Yaml]) -> (Yaml) -> (Yaml) -> [Yaml: Yaml] {
+private func putToMap (_ map: YamlOrderedMap) -> (Yaml) -> (Yaml) -> YamlOrderedMap {
   return { key in
     return { value in
       var map = map
@@ -399,11 +399,11 @@ private func putToMap (_ map: [Yaml: Yaml]) -> (Yaml) -> (Yaml) -> [Yaml: Yaml] 
   }
 }
 
-private func checkKeyUniqueness (_ acc: [Yaml: Yaml]) -> (_ context: Context, _ key: Yaml)
+private func checkKeyUniqueness (_ acc: YamlOrderedMap) -> (_ context: Context, _ key: Yaml)
     -> YAMLResult<ContextValue> {
       return { (context, key) in
         let err = "duplicate key \(key)"
-        return Resulter.`guard`(error(err)(context), check: !acc.keys.contains(key))
+        return Resulter.`guard`(error(err)(context), check: acc[key] == nil)
             >>| Resulter.lift((context, key))
       }
 }
@@ -437,10 +437,10 @@ private func parseFlowSeq (_ acc: [Yaml]) -> (Context) -> YAMLResult<ContextValu
 private func parseFlowMap (_ context: Context) -> YAMLResult<ContextValue> {
   return Resulter.lift(context)
       >>=- expect(Yaml.TokenType.openCB, message: "expected {")
-      >>=- parseFlowMap([:])
+      >>=- parseFlowMap(YamlOrderedMap())
 }
 
-private func parseFlowMap (_ acc: [Yaml: Yaml]) -> (Context) -> YAMLResult<ContextValue> {
+private func parseFlowMap (_ acc: YamlOrderedMap) -> (Context) -> YAMLResult<ContextValue> {
   return { context in
     if peekType(context) == .closeCB {
       return Resulter.lift((advance(context), .dictionary(acc)))
@@ -491,10 +491,10 @@ private func parseBlockSeq (_ acc: [Yaml]) -> (Context) -> YAMLResult<ContextVal
 }
 
 private func parseBlockMap (_ context: Context) -> YAMLResult<ContextValue> {
-  return parseBlockMap([:])(context)
+  return parseBlockMap(YamlOrderedMap())(context)
 }
 
-private func parseBlockMap (_ acc: [Yaml: Yaml]) -> (Context) -> YAMLResult<ContextValue> {
+private func parseBlockMap (_ acc: YamlOrderedMap) -> (Context) -> YAMLResult<ContextValue> {
   return { context in
     switch peekType(context) {
 
@@ -510,7 +510,7 @@ private func parseBlockMap (_ acc: [Yaml: Yaml]) -> (Context) -> YAMLResult<Cont
   }
 }
 
-private func parseQuestionMarkkeyValue (_ acc: [Yaml: Yaml]) -> (Context) -> YAMLResult<ContextValue> {
+private func parseQuestionMarkkeyValue (_ acc: YamlOrderedMap) -> (Context) -> YAMLResult<ContextValue> {
   return { context in
     let ck = Resulter.lift(context)
         >>=- expect(Yaml.TokenType.questionMark, message: "expected ?")
@@ -544,7 +544,7 @@ private func parseColonValue (_ context: Context) -> YAMLResult<ContextValue> {
       >>=- parse
 }
 
-private func parseStringKeyValue (_ acc: [Yaml: Yaml]) -> (Context) -> YAMLResult<ContextValue> {
+private func parseStringKeyValue (_ acc: YamlOrderedMap) -> (Context) -> YAMLResult<ContextValue> {
   return { context in
     let ck = Resulter.lift(context)
         >>=- parseString

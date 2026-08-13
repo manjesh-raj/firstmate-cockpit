@@ -247,11 +247,28 @@ final class ToolsController: NSViewController {
 
     @objc private func containerWidthMayHaveChanged(_ note: Notification? = nil) {
         if let note, let win = note.object as? NSWindow, win !== view.window { return }
+        // Root-caused perf regression (fm/cockpit-tools-yaml-order-perf-fix -
+        // see that PR for the live measurements): this handler is registered
+        // globally (`object: nil`) and used to force a full Auto Layout
+        // resolve of `view`'s ENTIRE subtree on every single window resize
+        // notification, unconditionally - and every open Tools tab's full
+        // panel (`pageStack.addArrangedSubview(instance.view)`, see
+        // `addTab`) lives as a sibling of the picker's own `gridContainer`
+        // inside that same subtree, hidden but still fully participating in
+        // Auto Layout. With 20 open tabs, a live window resize measured
+        // ~20ms/frame here versus ~11ms/frame with 0 tabs open - and that
+        // cost was paid on EVERY resize regardless of whether Tools was even
+        // the visible destination, since nothing gated it on visibility. The
+        // column count this method computes only matters while the picker's
+        // grid is actually on screen, so skip the forced layout and the
+        // rebuild entirely otherwise - resizing while on another page, or
+        // while looking at a specific open tab rather than the picker, no
+        // longer touches this page's (potentially large) subtree at all.
+        guard !view.isHidden, pickerShowing else { return }
         // Force Auto Layout to fully resolve the new window size down
         // through `content`/`pageStack`/`gridContainer`'s width chain before
         // reading it back - the resize notification can otherwise fire
         // slightly ahead of that propagation finishing.
-        view.window?.contentView?.layoutSubtreeIfNeeded()
         view.layoutSubtreeIfNeeded()
         let width = gridContainer.frame.width
         guard width > 0, abs(width - lastGridWidth) > 1 else { return }
@@ -378,6 +395,11 @@ final class ToolsController: NSViewController {
         gridContainer.isHidden = false
         for tab in tabs { tab.view.isHidden = true }
         styleChips()
+        // The grid's column count is only kept up to date (via
+        // `containerWidthMayHaveChanged`) while the picker is showing, so a
+        // resize that happened while a tab was open instead needs to be
+        // picked up now that the picker is back on screen.
+        containerWidthMayHaveChanged()
     }
 
     private func showTab(_ tab: ToolInstance) {

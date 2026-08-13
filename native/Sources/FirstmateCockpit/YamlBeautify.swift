@@ -6,12 +6,15 @@
 // YamlSwift) has already parsed, so it doesn't reintroduce the "hand-rolled
 // YAML parsing" problem the vendoring was meant to avoid.
 //
-// `Yaml.dictionary` wraps a plain Swift `[Yaml: Yaml]`, which has no defined
-// iteration order, so map keys are sorted alphabetically here rather than
-// preserving the source document's original order - a deliberate,
-// documented trade-off for deterministic output (see Vendor/YamlSwift/
-// README.md), the same one `JSONSerialization.WritingOptions.sortedKeys`
-// makes for the JSON tool on this same page.
+// `Yaml.dictionary` used to wrap a plain Swift `[Yaml: Yaml]`, which has no
+// defined iteration order, so this beautifier alphabetized map keys rather
+// than preserving the source document's original order - captain-reported
+// as a real data-fidelity bug (fm/cockpit-tools-yaml-order-perf-fix), not a
+// stylistic trade-off worth keeping: YAML mapping key order is meaningful.
+// `Yaml.dictionary` now wraps `YamlOrderedMap` (Vendor/YamlSwift's local
+// patch, see its README's "Local patch" section), which preserves insertion
+// order end to end from parse to here - this file now walks `dict.pairs` in
+// that order instead of sorting, at every nesting level.
 
 import Foundation
 import Yaml
@@ -30,8 +33,7 @@ enum YamlBeautify {
         case .dictionary(let dict):
             guard !dict.isEmpty else { return [pad + "{}"] }
             var lines: [String] = []
-            for key in dict.keys.sorted(by: { sortKey($0) < sortKey($1) }) {
-                let v = dict[key] ?? .null
+            for (key, v) in dict.pairs {
                 let keyText = scalarText(key)
                 switch v {
                 case .dictionary(let d) where !d.isEmpty:
@@ -68,13 +70,6 @@ enum YamlBeautify {
         default:
             return [pad + scalarText(value)]
         }
-    }
-
-    /// A stable string to sort map keys by - the raw string for a string key
-    /// (the common case), otherwise its rendered scalar text.
-    private static func sortKey(_ key: Yaml) -> String {
-        if case let .string(s) = key { return s }
-        return scalarText(key)
     }
 
     private static func scalarText(_ value: Yaml) -> String {
