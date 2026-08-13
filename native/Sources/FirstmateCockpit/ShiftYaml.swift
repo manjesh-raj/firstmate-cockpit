@@ -190,6 +190,7 @@ enum ShiftYaml {
         m[str("timestamp")] = str(a.timestamp)
         m[str("kind")] = str(a.kind)
         m[str("summary")] = str(a.summary)
+        m[str("target_id")] = strOpt(a.targetID)
         return .dictionary(m)
     }
 
@@ -201,7 +202,8 @@ enum ShiftYaml {
             id: id,
             timestamp: reqString(dict[str("timestamp")] ?? .null),
             kind: reqString(dict[str("kind")] ?? .null),
-            summary: reqString(dict[str("summary")] ?? .null)
+            summary: reqString(dict[str("summary")] ?? .null),
+            targetID: optString(dict[str("target_id")] ?? .null)
         )
     }
 

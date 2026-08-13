@@ -132,11 +132,41 @@ struct ShiftNote {
 /// One history-log entry (the `activity/<YYYY-MM>.yaml` files) - proves out
 /// the same month-split scheme `completed/<YYYY-MM>.yaml` uses, on the
 /// second folder the brief's file layout calls for.
+///
+/// `targetID` (phase 5, cockpit-shift-power-features) is the id of the task
+/// or follow-up the entry is about, added so Weekly Review can count real
+/// "pushed back repeatedly" occurrences (`follow_up_snoozed`/
+/// `task_due_date_changed` entries grouped by this id) instead of parsing the
+/// human-readable `summary` string. `nil` for entries logged before this
+/// field existed, or for kinds that aren't about a single task/follow-up -
+/// reading an old activity file without the field is a no-op, not an error.
 struct ShiftActivityEntry {
     var id: String
     var timestamp: String
     var kind: String   // e.g. "task_completed", "task_created"
     var summary: String
+    var targetID: String?
+}
+
+/// Weekly Review's computed summary (phase 5) - `ShiftStore.weeklySummary`
+/// derives this entirely from data phases 1-4 already track (completed
+/// tasks/follow-ups, and activity log entries), never a fabricated or
+/// hand-entered figure.
+struct ShiftWeeklySummary {
+    var weekLabel: String
+    var completedCount: Int
+    var pushedBack: [ShiftPushedBackItem]
+    var upcomingCount: Int
+}
+
+/// One task or follow-up that has been snoozed/pushed-back 2+ times within
+/// the lookback window `weeklySummary` scans - see that method's header for
+/// exactly which activity kinds count.
+struct ShiftPushedBackItem {
+    var id: String
+    var title: String
+    var count: Int
+    var projectName: String?
 }
 
 /// `settings.yaml` - deliberately tiny in this phase. `syncStatus` is a

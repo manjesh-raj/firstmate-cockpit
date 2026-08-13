@@ -77,14 +77,19 @@ final class AppShellController: NSViewController {
 
     init(
         hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
-        hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore,
+        hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
         makeHostConsole: @escaping () -> ConsoleController
     ) {
         self.hostsPanel = hostsPanel
         self.console = console
         self.settings = settings
         self.overview = FleetController()
-        self.shift = ShiftController(store: ShiftStore())
+        // Phase 5 (cockpit-shift-power-features): `shiftStore` is now built
+        // once by the app delegate and shared with the menu bar item, the
+        // search palette, and quick capture - all of which need to read/
+        // write the same tasks/follow-ups this page shows, not a second
+        // independent store instance.
+        self.shift = ShiftController(store: shiftStore)
         self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
         self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
@@ -352,6 +357,39 @@ final class AppShellController: NSViewController {
     @objc func newShiftFollowUpFromMenu() {
         show(.shift)
         shift.presentNewFollowUpEditor()
+    }
+
+    // MARK: Search / menu bar / quick-capture navigation (phase 5)
+
+    /// The Shift menu's "Search Shift…" (⌘⇧P) and the search palette's own
+    /// entry point - selects the Shift destination so a result's editor
+    /// sheet (below) has somewhere to present over.
+    func showShiftDestination() { show(.shift) }
+
+    /// The ⌘⇧P search palette's "Weekly Review" navigation, and the Shift
+    /// menu's own "Weekly Review" item.
+    @objc func showShiftWeeklyReview() {
+        show(.shift)
+        shift.showWeeklyReview()
+    }
+
+    /// A search-palette or menu-bar-popover selection resolving to a task/
+    /// follow-up/project - each opens the same editor sheet the Shift page's
+    /// own row click already uses, so there is exactly one "open this task"
+    /// behavior regardless of entry point.
+    func openShiftTask(id: String) {
+        show(.shift)
+        shift.openTask(id: id)
+    }
+
+    func openShiftFollowUp(id: String) {
+        show(.shift)
+        shift.openFollowUp(id: id)
+    }
+
+    func openShiftProject(id: String) {
+        show(.shift)
+        shift.openProject(id: id)
     }
 
     /// Fix 5: a host save closes its own (separate) editor window

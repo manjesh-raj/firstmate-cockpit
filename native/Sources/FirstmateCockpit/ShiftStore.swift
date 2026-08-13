@@ -143,7 +143,7 @@ final class ShiftStore {
             activeTasks.remove(at: idx)
             persistActiveTasks()
             appendToCompletedMonth(task, month: ShiftStore.monthKey(for: now))
-            logActivity(kind: "task_completed", summary: "Completed \"\(task.title)\"", now: now)
+            logActivity(kind: "task_completed", summary: "Completed \"\(task.title)\"", targetID: task.id, now: now)
         } else {
             guard let (month, task) = findCompletedTask(id: id) else { return }
             var restored = task
@@ -153,7 +153,7 @@ final class ShiftStore {
             removeFromCompletedMonth(id: id, month: month)
             activeTasks.append(restored)
             persistActiveTasks()
-            logActivity(kind: "task_reopened", summary: "Reopened \"\(restored.title)\"", now: now)
+            logActivity(kind: "task_reopened", summary: "Reopened \"\(restored.title)\"", targetID: restored.id, now: now)
         }
         notify()
     }
@@ -191,19 +191,34 @@ final class ShiftStore {
     func addTask(_ task: ShiftTask) {
         activeTasks.append(task)
         persistActiveTasks()
-        logActivity(kind: "task_created", summary: "Created \"\(task.title)\"", now: Date())
+        logActivity(kind: "task_created", summary: "Created \"\(task.title)\"", targetID: task.id, now: Date())
         notify()
     }
 
     /// Replaces an existing task in `active.yaml` in place (same array index,
     /// same file) - a completed task isn't editable through this path since
     /// it no longer lives in `active.yaml` (see `setTaskCompleted`'s header).
+    ///
+    /// Logs a `task_due_date_changed` activity entry (phase 5) whenever an
+    /// already-set due date is edited to a different value (including
+    /// cleared) - the one signal Weekly Review's "pushed back repeatedly"
+    /// stat has for a task, since phases 1-4 never tracked due-date history
+    /// as a field on `ShiftTask` itself. A task getting its *first* due date
+    /// isn't a "push back," so this only fires when `previous.dueDate` was
+    /// already non-nil.
     func updateTask(_ task: ShiftTask, now: Date = Date()) {
         guard let idx = activeTasks.firstIndex(where: { $0.id == task.id }) else { return }
+        let previous = activeTasks[idx]
         var updated = task
         updated.updatedAt = ShiftStore.iso8601(now)
         activeTasks[idx] = updated
         persistActiveTasks()
+        if let oldDue = previous.dueDate, oldDue != updated.dueDate {
+            logActivity(
+                kind: "task_due_date_changed", summary: "Pushed back due date for \"\(updated.title)\"",
+                targetID: updated.id, now: now
+            )
+        }
         notify()
     }
 
@@ -212,7 +227,7 @@ final class ShiftStore {
     func addFollowUp(_ followUp: ShiftFollowUp) {
         followUps.append(followUp)
         persistFollowUps()
-        logActivity(kind: "follow_up_created", summary: "Created follow-up \"\(followUp.title)\"", now: Date())
+        logActivity(kind: "follow_up_created", summary: "Created follow-up \"\(followUp.title)\"", targetID: followUp.id, now: Date())
         notify()
     }
 
@@ -237,7 +252,7 @@ final class ShiftStore {
         logActivity(
             kind: done ? "follow_up_completed" : "follow_up_reopened",
             summary: "\(done ? "Completed" : "Reopened") follow-up \"\(followUps[idx].title)\"",
-            now: now
+            targetID: followUps[idx].id, now: now
         )
         notify()
     }
@@ -253,7 +268,10 @@ final class ShiftStore {
         followUps[idx].followUpTime = timeStr
         followUps[idx].status = .pending
         persistFollowUps()
-        logActivity(kind: "follow_up_snoozed", summary: "Snoozed follow-up \"\(followUps[idx].title)\"", now: now)
+        logActivity(
+            kind: "follow_up_snoozed", summary: "Snoozed follow-up \"\(followUps[idx].title)\"",
+            targetID: followUps[idx].id, now: now
+        )
         notify()
     }
 
@@ -317,10 +335,10 @@ final class ShiftStore {
         try? ShiftYaml.writeList(path: path, key: "tasks", items: tasks.map(ShiftYaml.toYaml))
     }
 
-    private func logActivity(kind: String, summary: String, now: Date) {
+    private func logActivity(kind: String, summary: String, targetID: String? = nil, now: Date) {
         let path = activityPath(forMonth: ShiftStore.monthKey(for: now))
         var entries = ShiftYaml.readList(path: path, key: "activity").compactMap(ShiftYaml.activity(from:))
-        entries.append(ShiftActivityEntry(id: UUID().uuidString, timestamp: ShiftStore.iso8601(now), kind: kind, summary: summary))
+        entries.append(ShiftActivityEntry(id: UUID().uuidString, timestamp: ShiftStore.iso8601(now), kind: kind, summary: summary, targetID: targetID))
         try? ShiftYaml.writeList(path: path, key: "activity", items: entries.map(ShiftYaml.toYaml))
     }
 
@@ -345,6 +363,115 @@ final class ShiftStore {
     static func iso8601(_ date: Date) -> String {
         let f = ISO8601DateFormatter()
         return f.string(from: date)
+    }
+
+    private static func iso8601Date(_ s: String) -> Date? {
+        ISO8601DateFormatter().date(from: s)
+    }
+
+    // MARK: Weekly review (phase 5, cockpit-shift-power-features)
+
+    /// Every activity entry from the current month plus `monthsBack` prior
+    /// months' `activity/<YYYY-MM>.yaml` files - a bounded lookback (default
+    /// 2 months) rather than scanning every month file that has ever
+    /// existed, since "pushed back repeatedly" only needs a recent window to
+    /// be useful.
+    private func recentActivityEntries(monthsBack: Int, reference: Date) -> [ShiftActivityEntry] {
+        let cal = Calendar(identifier: .gregorian)
+        var entries: [ShiftActivityEntry] = []
+        for offset in 0...monthsBack {
+            guard let month = cal.date(byAdding: .month, value: -offset, to: reference) else { continue }
+            let path = activityPath(forMonth: ShiftStore.monthKey(for: month))
+            entries.append(contentsOf: ShiftYaml.readList(path: path, key: "activity").compactMap(ShiftYaml.activity(from:)))
+        }
+        return entries
+    }
+
+    /// Computes Weekly Review's three headline numbers, entirely from data
+    /// phases 1-4 already persist - never a new tracked field on `ShiftTask`/
+    /// `ShiftFollowUp` themselves (the brief's explicit instruction). The
+    /// week is `reference`'s own `Calendar.current` week (`.weekOfYear`),
+    /// Monday-first or Sunday-first per the system calendar, matching how
+    /// every other date computation in this app already defers to
+    /// `Calendar.current` rather than hardcoding a week start.
+    ///
+    /// - "completed this week": tasks whose `completedAt` falls in the week,
+    ///   plus follow-ups with a `follow_up_completed` activity entry in the
+    ///   week (a follow-up has no completion timestamp field of its own).
+    /// - "pushed back 2+ times": groups `follow_up_snoozed` (by follow-up)
+    ///   and `task_due_date_changed` (by task) activity entries - within the
+    ///   lookback window, not just this week, since a captain re-prioritizing
+    ///   something is a signal worth surfacing even if the pushes happened
+    ///   over several weeks - by `targetID`, keeping any id with 2+
+    ///   occurrences whose task/follow-up still exists.
+    /// - "coming up next week": active tasks due, and pending follow-ups
+    ///   due, in the 7 days immediately after this week ends.
+    func weeklySummary(reference: Date = Date()) -> ShiftWeeklySummary {
+        let cal = Calendar.current
+        guard let weekInterval = cal.dateInterval(of: .weekOfYear, for: reference) else {
+            return ShiftWeeklySummary(weekLabel: "This week", completedCount: 0, pushedBack: [], upcomingCount: 0)
+        }
+        let weekStart = weekInterval.start
+        let weekEnd = weekInterval.end // exclusive
+
+        let completedTasksThisWeek = allCompletedTasks().filter { task in
+            guard let completedAt = task.completedAt, let date = ShiftStore.iso8601Date(completedAt) else { return false }
+            return date >= weekStart && date < weekEnd
+        }.count
+
+        let recent = recentActivityEntries(monthsBack: 2, reference: reference)
+
+        let completedFollowUpsThisWeek = recent.filter { entry in
+            guard entry.kind == "follow_up_completed", let date = ShiftStore.iso8601Date(entry.timestamp) else { return false }
+            return date >= weekStart && date < weekEnd
+        }.count
+
+        var pushCounts: [String: (kind: String, count: Int)] = [:]
+        for entry in recent where entry.kind == "follow_up_snoozed" || entry.kind == "task_due_date_changed" {
+            guard let targetID = entry.targetID else { continue }
+            pushCounts[targetID, default: (entry.kind, 0)].count += 1
+        }
+        let allCompleted = allCompletedTasks()
+        var pushedBack: [ShiftPushedBackItem] = pushCounts.compactMap { id, info in
+            guard info.count >= 2 else { return nil }
+            let title: String?
+            let projectID: String?
+            if info.kind == "task_due_date_changed" {
+                let task = activeTasks.first(where: { $0.id == id }) ?? allCompleted.first(where: { $0.id == id })
+                title = task?.title
+                projectID = task?.projectID
+            } else {
+                let fu = followUps.first(where: { $0.id == id })
+                title = fu?.title
+                projectID = fu?.projectID
+            }
+            guard let title else { return nil }
+            let projectName = projectID.flatMap { pid in projects.first(where: { $0.id == pid })?.name }
+            return ShiftPushedBackItem(id: id, title: title, count: info.count, projectName: projectName)
+        }
+        pushedBack.sort { $0.count > $1.count }
+
+        let nextWeekEnd = cal.date(byAdding: .day, value: 7, to: weekEnd) ?? weekEnd
+        let upcomingTasks = activeTasks.filter { task in
+            guard let due = task.dueDate.flatMap(ShiftDateFormatting.date(from:)) else { return false }
+            return due >= weekEnd && due < nextWeekEnd
+        }.count
+        let upcomingFollowUps = followUps.filter { $0.status == .pending }.filter { fu in
+            guard let due = fu.followUpAt.flatMap(ShiftDateFormatting.date(from:)) else { return false }
+            return due >= weekEnd && due < nextWeekEnd
+        }.count
+
+        let df = DateFormatter()
+        df.setLocalizedDateFormatFromTemplate("MMMd")
+        let weekEndInclusive = cal.date(byAdding: .day, value: -1, to: weekEnd) ?? weekEnd
+        let weekLabel = "Week of \(df.string(from: weekStart)) \u{2013} \(df.string(from: weekEndInclusive))"
+
+        return ShiftWeeklySummary(
+            weekLabel: weekLabel,
+            completedCount: completedTasksThisWeek + completedFollowUpsThisWeek,
+            pushedBack: pushedBack,
+            upcomingCount: upcomingTasks + upcomingFollowUps
+        )
     }
 
     // MARK: Seed data (first-run convenience only - never overwrites an
