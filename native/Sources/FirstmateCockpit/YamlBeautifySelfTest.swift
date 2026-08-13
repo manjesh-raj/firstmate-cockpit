@@ -7,17 +7,31 @@ import Yaml
 // shape the captain reported: a top-level `version` key before a `deployments`
 // sequence, each deployment mapping with 10 keys in a specific, deliberately
 // non-alphabetical order.
+//
+// fm/cockpit-tools-yaml-quotes-diff-perf extended this file (rather than
+// adding a parallel test) with quoting-fidelity cases: the captain reported
+// Beautify silently stripping quotes from a scalar like
+// `selfservice: "tenant-setup-solution-modelling-api-self-service"` - safe
+// for that specific unambiguous string, but not in general, since a quoted
+// `"true"`/`"123"`/`"no"` is a *string* in YAML while the same text
+// unquoted parses as a bool/number instead. See YAMLQuoteStyle.swift's
+// header (Vendor/YamlSwift) for the parser-side fix this exercises.
 enum YamlBeautifySelfTest {
     private static let sourceKeyOrder = [
         "name", "image", "migration", "sidekiq", "pre", "post",
         "awsbatch", "cronjob", "selfservice", "serviceaccountname",
     ]
 
-    private static func makeManifest(deploymentCount: Int) -> String {
+    /// One field's value is quoted, matching the captain's exact report -
+    /// see `test_quotingRoundTripsThroughBeautifyUnchanged` below.
+    private static let quotedKey = "selfservice"
+
+    private static func makeManifest(deploymentCount: Int, quoteSelfservice: Bool = false) -> String {
         var lines = ["version: 3", "deployments:"]
         for n in 0..<deploymentCount {
             for (i, key) in sourceKeyOrder.enumerated() {
-                let value = "\(key)-\(n)"
+                let rawValue = "\(key)-\(n)"
+                let value = (quoteSelfservice && key == quotedKey) ? "\"\(rawValue)\"" : rawValue
                 lines.append(i == 0 ? "  - \(key): \(value)" : "    \(key): \(value)")
             }
         }
@@ -95,6 +109,80 @@ enum YamlBeautifySelfTest {
             }
         } catch {
             print("FAIL: could not parse/beautify nested-map test: \(error)")
+            ok = false
+        }
+
+        // A quoted scalar that would change YAML type if unquoted must stay
+        // quoted through Beautify - the captain's core complaint (a quoted
+        // string silently losing its quotes) generalized to the unsafe
+        // cases: `"true"`/`"123"`/`"no"` are strings, not a bool/number/
+        // string-that-looks-like-a-keyword, and Beautify must not decide
+        // otherwise on its own.
+        do {
+            let source = """
+            flags:
+              boolAsString: "true"
+              boolLiteral: true
+              numAsString: "123"
+              numLiteral: 123
+              noAsString: "no"
+              singleQuoted: 'plain-ish-value'
+            """
+            let doc = try Yaml.load(source)
+            let output = YamlBeautify.dump([doc])
+            let expectedLines = [
+                "boolAsString: \"true\"",
+                "boolLiteral: true",
+                "numAsString: \"123\"",
+                "numLiteral: 123",
+                "noAsString: \"no\"",
+                "singleQuoted: 'plain-ish-value'",
+            ]
+            let missing = expectedLines.filter { !output.contains($0) }
+            if !missing.isEmpty {
+                print("FAIL: quoted scalars did not round-trip unchanged. output:\n\(output)\nmissing lines: \(missing)")
+                ok = false
+            } else {
+                print("PASS: quoted true/123/no scalars stayed quoted (type-changing quotes preserved)")
+            }
+        } catch {
+            print("FAIL: could not parse/beautify quoted-scalar-type test: \(error)")
+            ok = false
+        }
+
+        // The captain's exact reported shape: a representative sample of a
+        // real file's quoting - some fields quoted, some not - must
+        // round-trip through Beautify with quoting unchanged, using the
+        // same manifest shape the key-order tests above already cover
+        // (extended here rather than as a parallel test).
+        do {
+            let manifest = makeManifest(deploymentCount: 2, quoteSelfservice: true)
+            let docs = try Yaml.loadMultiple(manifest)
+            let output = YamlBeautify.dump(docs)
+            var failures: [String] = []
+            for n in 0..<2 {
+                let quoted = "selfservice: \"selfservice-\(n)\""
+                if !output.contains(quoted) {
+                    failures.append("expected quoted line missing: \(quoted)")
+                }
+                for key in sourceKeyOrder where key != quotedKey {
+                    let unquoted = "\(key): \(key)-\(n)"
+                    if !output.contains(unquoted) {
+                        failures.append("expected unquoted line missing: \(unquoted)")
+                    }
+                    if output.contains("\(key): \"\(key)-\(n)\"") {
+                        failures.append("field that was unquoted in source got quoted: \(key)")
+                    }
+                }
+            }
+            if !failures.isEmpty {
+                print("FAIL: mixed quoting did not round-trip.\n  \(failures.joined(separator: "\n  "))\noutput:\n\(output)")
+                ok = false
+            } else {
+                print("PASS: mixed quoted/unquoted fields round-tripped with quoting unchanged")
+            }
+        } catch {
+            print("FAIL: could not parse/beautify mixed-quoting manifest: \(error)")
             ok = false
         }
 
