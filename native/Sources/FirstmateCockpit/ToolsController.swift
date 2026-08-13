@@ -362,7 +362,21 @@ final class ToolsController: NSViewController {
         let cardWidth = (containerWidth - Self.cardSpacing * CGFloat(columnsPerRow - 1)) / CGFloat(columnsPerRow)
 
         for chunk in ToolKind.allCases.chunked(into: columnsPerRow) {
-            let row = NSStackView(views: chunk.map { toolCard($0, width: cardWidth) })
+            // `.fillEqually` divides a row's width across however many
+            // arranged subviews it has - a partial last row (fewer cards
+            // than `columnsPerRow`) would otherwise stretch its lone card(s)
+            // to fill the whole row width instead of matching a full row's
+            // card width. Pad the row out to a fixed `columnsPerRow` slots
+            // with invisible spacers so `.fillEqually` always divides by the
+            // same column count, and the real cards stay the same width as
+            // every other row.
+            var views = chunk.map { toolCard($0, width: cardWidth) }
+            while views.count < columnsPerRow {
+                let spacer = NSView()
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                views.append(spacer)
+            }
+            let row = NSStackView(views: views)
             row.orientation = .horizontal
             row.spacing = Self.cardSpacing
             row.distribution = .fillEqually

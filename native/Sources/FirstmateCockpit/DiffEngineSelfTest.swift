@@ -10,14 +10,15 @@
 //
 // Covers the pure-logic half of the Tools page's diff tool
 // (cockpit-tools-page-diff): line-level LCS grouping (unchanged/added/
-// removed/changed pairing) against the same nontrivial Kubernetes
-// Deployment manifest pair `ToolsController.diffBeforeExample`/
-// `diffAfterExample` prefill in the real panel, plus word-level highlighting
-// and the "show only differences" collapse-boundary math. The rendering
-// half (DiffResultView's NSView tree, collapse/expand click handling) has
-// no equivalent here - it was verified with a temporary env-gated launch
-// probe per the same AGENTS.md convention, reverted before commit; see this
-// task's PR description for that transcript.
+// removed/changed pairing) against a nontrivial Kubernetes Deployment
+// manifest pair (kept as local literals here - the real panel no longer
+// prefills sample content, per fm/cockpit-tools-page-partial-row-fix),
+// plus word-level highlighting and the "show only differences"
+// collapse-boundary math. The rendering half (DiffResultView's NSView tree,
+// collapse/expand click handling) has no equivalent here - it was verified
+// with a temporary env-gated launch probe per the same AGENTS.md
+// convention, reverted before commit; see this task's PR description for
+// that transcript.
 import Foundation
 
 enum DiffEngineSelfTest {
