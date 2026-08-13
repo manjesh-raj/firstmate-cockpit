@@ -280,6 +280,36 @@ enum ShiftStoreSelfTest {
         check(followUpAfterWeek?.followUpAt == "2026-08-22", "next-week snooze should recompute follow_up_at to 2026-08-22, got \(followUpAfterWeek?.followUpAt ?? "nil")")
         check(followUpAfterWeek?.followUpTime == "09:30", "next-week snooze should preserve the same time-of-day, got \(followUpAfterWeek?.followUpTime ?? "nil")")
 
+        // MARK: cockpit-fix-shift-new-project - project creation actually
+        // appears in projects.yaml, in the fixed field order, and survives a
+        // reload (phase 3 shipped updateProject only, no creation path).
+
+        var newProject = ShiftProject.fresh()
+        newProject.name = "Native rewrite"
+        newProject.description = "Track the native app migration."
+        newProject.status = .inProgress
+        newProject.startDate = "2026-08-13"
+        afterFollowUpAddReload.addProject(newProject)
+        check(afterFollowUpAddReload.projects.contains { $0.id == newProject.id }, "addProject should add the project in memory")
+
+        let afterProjectAddReload = ShiftStore()
+        let reloadedNewProject = afterProjectAddReload.projects.first { $0.id == newProject.id }
+        check(reloadedNewProject != nil, "created project should survive a reload")
+        check(reloadedNewProject?.name == "Native rewrite", "created project's name should survive a reload")
+        check(reloadedNewProject?.description == "Track the native app migration.", "created project's description should survive a reload")
+        check(reloadedNewProject?.status == .inProgress, "created project's status should survive a reload")
+        check(reloadedNewProject?.startDate == "2026-08-13", "created project's start_date should survive a reload")
+        check(reloadedNewProject?.dueDate == nil, "created project's due_date should stay nil when never set")
+
+        let projectsPathAfterAdd = try? String(contentsOfFile: scratchRoot.appendingPathComponent("projects/projects.yaml").path, encoding: .utf8)
+        check(projectsPathAfterAdd?.contains("\"Native rewrite\"") == true, "created project's name should be written double-quoted")
+        let projectIDKeyIndex = projectsPathAfterAdd?.range(of: "\"id\":")?.lowerBound
+        let projectNameKeyIndex = projectsPathAfterAdd?.range(of: "\"name\":")?.lowerBound
+        check(
+            projectIDKeyIndex != nil && projectNameKeyIndex != nil && projectIDKeyIndex! < projectNameKeyIndex!,
+            "id should come before name in projects.yaml's fixed field order"
+        )
+
         return report(failures)
     }
 

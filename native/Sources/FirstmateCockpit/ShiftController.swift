@@ -446,7 +446,10 @@ final class ShiftController: NSViewController {
     /// fine here: a captain's project count is nowhere near the scale that
     /// justified a table view for tasks/follow-ups.
     private func buildProjectsSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge)
+        let headerRow = sectionHeaderRow(
+            iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge,
+            addAction: #selector(newProjectClicked), addTooltip: "New Project"
+        )
 
         projectsGridContainer.orientation = .vertical
         projectsGridContainer.alignment = .leading
@@ -1132,8 +1135,13 @@ final class ShiftController: NSViewController {
     /// Follow-ups header's "+" button.
     func presentNewFollowUpEditor() { presentFollowUpEditor(for: nil) }
 
+    /// The Shift menu's "New Project…" - also reachable from the Projects
+    /// header's "+" button (cockpit-fix-shift-new-project).
+    func presentNewProjectEditor() { presentProjectEditor() }
+
     @objc private func newTaskClicked() { presentTaskEditor(for: nil) }
     @objc private func newFollowUpClicked() { presentFollowUpEditor(for: nil) }
+    @objc private func newProjectClicked() { presentProjectEditor() }
 
     private func presentTaskEditor(for task: ShiftTask?) {
         let editor = ShiftTaskEditorController(task: task, projects: store.projects)
@@ -1158,6 +1166,19 @@ final class ShiftController: NSViewController {
             } else {
                 self.store.addFollowUp(saved)
             }
+            self.render()
+        }
+        presentAsSheet(editor)
+    }
+
+    /// Presents the New Project sheet (cockpit-fix-shift-new-project) - the
+    /// grid re-renders immediately on save so the new project shows up
+    /// without navigating away and back, exactly like a new task/follow-up.
+    private func presentProjectEditor() {
+        let editor = ShiftProjectEditorController()
+        editor.onSave = { [weak self] saved in
+            guard let self else { return }
+            self.store.addProject(saved)
             self.render()
         }
         presentAsSheet(editor)

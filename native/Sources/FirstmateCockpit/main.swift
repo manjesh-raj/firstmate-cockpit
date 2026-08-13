@@ -446,6 +446,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newFollowUpItem.keyEquivalentModifierMask = [.command, .shift]
         newFollowUpItem.target = appShell
         shiftMenu.addItem(newFollowUpItem)
+        // cockpit-fix-shift-new-project: no keyEquivalent - ⌘⇧P is already
+        // "Search Shift…" below, and this menu follows that item's own
+        // no-shortcut precedent ("Weekly Review") rather than force a
+        // collision.
+        let newProjectItem = NSMenuItem(title: "New Project…", action: #selector(AppShellController.newShiftProjectFromMenu), keyEquivalent: "")
+        newProjectItem.target = appShell
+        shiftMenu.addItem(newProjectItem)
         shiftMenu.addItem(NSMenuItem.separator())
         // Phase 5 (cockpit-shift-power-features): ⌘⇧P rather than the
         // reviewed mockup's own ⌘K, which this app already bound to "Find in

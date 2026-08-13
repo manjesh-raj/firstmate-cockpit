@@ -359,6 +359,15 @@ final class AppShellController: NSViewController {
         shift.presentNewFollowUpEditor()
     }
 
+    /// The Shift menu's "New Project…" (cockpit-fix-shift-new-project) - no
+    /// keyboard shortcut, since ⌘⇧P (the pattern ⌘N/⌘⇧F would suggest for a
+    /// third Shift creation action) is already claimed by "Search Shift…"
+    /// below - same shape as "Weekly Review", which also has no shortcut.
+    @objc func newShiftProjectFromMenu() {
+        show(.shift)
+        shift.presentNewProjectEditor()
+    }
+
     // MARK: Search / menu bar / quick-capture navigation (phase 5)
 
     /// The Shift menu's "Search Shift…" (⌘⇧P) and the search palette's own
