@@ -19,6 +19,11 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
     private let editing: ShiftTask?
     private let projects: [ShiftProject]
+    /// Pre-selects the Project popup for a brand-new task opened from inside
+    /// a project's own detail page ("+ Add Task", fm/cockpit-shift-project-
+    /// page-redesign) - ignored when editing an existing task, which already
+    /// has its own `projectID`.
+    private let defaultProjectID: String?
 
     /// Called with the assembled task on Save. The caller (`ShiftController`)
     /// persists it via `ShiftStore.addTask`/`updateTask`.
@@ -43,9 +48,10 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// index 0 is always "None"; index n+1 is `projects[n]`.
     private var projectIDs: [String?] = []
 
-    init(task: ShiftTask?, projects: [ShiftProject]) {
+    init(task: ShiftTask?, projects: [ShiftProject], defaultProjectID: String? = nil) {
         self.editing = task
         self.projects = projects
+        self.defaultProjectID = defaultProjectID
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -117,7 +123,7 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         projectIDs = [nil] + projects.map { $0.id }
         projectPopup.addItem(withTitle: "None")
         for p in projects { projectPopup.addItem(withTitle: p.name) }
-        if let pid = editing?.projectID, let idx = projectIDs.firstIndex(of: pid) {
+        if let pid = editing?.projectID ?? defaultProjectID, let idx = projectIDs.firstIndex(of: pid) {
             projectPopup.selectItem(at: idx)
         } else {
             projectPopup.selectItem(at: 0)
