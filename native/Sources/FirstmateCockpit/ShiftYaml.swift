@@ -136,7 +136,10 @@ enum ShiftYaml {
         var m = YamlOrderedMap()
         m[str("id")] = str(p.id)
         m[str("name")] = str(p.name)
+        m[str("description")] = str(p.description)
         m[str("status")] = str(p.status.rawValue)
+        m[str("start_date")] = strOpt(p.startDate)
+        m[str("due_date")] = strOpt(p.dueDate)
         m[str("created_at")] = str(p.createdAt)
         return .dictionary(m)
     }
@@ -148,7 +151,10 @@ enum ShiftYaml {
         return ShiftProject(
             id: id,
             name: reqString(dict[str("name")] ?? .null),
-            status: ShiftProjectStatus(rawValue: reqString(dict[str("status")] ?? .null)) ?? .active,
+            description: reqString(dict[str("description")] ?? .null),
+            status: ShiftProjectStatus(rawValue: reqString(dict[str("status")] ?? .null)) ?? .notStarted,
+            startDate: optString(dict[str("start_date")] ?? .null),
+            dueDate: optString(dict[str("due_date")] ?? .null),
             createdAt: reqString(dict[str("created_at")] ?? .null)
         )
     }

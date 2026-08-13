@@ -127,16 +127,27 @@ final class ShiftStore {
         notify()
     }
 
-    /// Toggles one subtask's done state on a task that's currently in
-    /// `active.yaml`. Subtasks on a completed task are read-only in this
-    /// phase (editing history isn't in scope) - callers should not offer the
-    /// control there.
+    /// Toggles one subtask's done state on a task, wherever it currently
+    /// lives - `active.yaml` or the right completed month file. Phase 1 only
+    /// needed the active case; phase 3's project detail (cockpit-shift-
+    /// projects) lists a project's completed tasks alongside its active
+    /// ones, and the brief's own acceptance bar requires a subtask toggle on
+    /// a completed task to persist to the correct month file too.
     func setSubtaskDone(taskID: String, subtaskID: String, done: Bool, now: Date = Date()) {
-        guard let taskIdx = activeTasks.firstIndex(where: { $0.id == taskID }),
-              let subIdx = activeTasks[taskIdx].subtasks.firstIndex(where: { $0.id == subtaskID }) else { return }
-        activeTasks[taskIdx].subtasks[subIdx].done = done
-        activeTasks[taskIdx].updatedAt = ShiftStore.iso8601(now)
-        persistActiveTasks()
+        if let taskIdx = activeTasks.firstIndex(where: { $0.id == taskID }),
+           let subIdx = activeTasks[taskIdx].subtasks.firstIndex(where: { $0.id == subtaskID }) {
+            activeTasks[taskIdx].subtasks[subIdx].done = done
+            activeTasks[taskIdx].updatedAt = ShiftStore.iso8601(now)
+            persistActiveTasks()
+            notify()
+            return
+        }
+        guard let found = findCompletedTask(id: taskID) else { return }
+        var task = found.task
+        guard let subIdx = task.subtasks.firstIndex(where: { $0.id == subtaskID }) else { return }
+        task.subtasks[subIdx].done = done
+        task.updatedAt = ShiftStore.iso8601(now)
+        appendToCompletedMonth(task, month: found.month)
         notify()
     }
 
@@ -219,6 +230,34 @@ final class ShiftStore {
         try? ShiftYaml.writeList(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
     }
 
+    // MARK: Projects (phase 3)
+
+    /// Persists a project's edited fields (status, name, description, dates)
+    /// back to `projects/projects.yaml` in full - there is no partial-field
+    /// write, callers pass the whole struct with their edit applied.
+    func updateProject(_ project: ShiftProject) {
+        guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        projects[idx] = project
+        persistProjects()
+        notify()
+    }
+
+    /// `(completed, total)` task counts for one project, counting both
+    /// active and completed tasks - what a project card's "X of Y tasks
+    /// completed" line and progress bar need.
+    func taskCounts(forProject projectID: String) -> (completed: Int, total: Int) {
+        let activeCount = activeTasks.filter { $0.projectID == projectID }.count
+        let completedCount = allCompletedTasks().filter { $0.projectID == projectID }.count
+        return (completedCount, activeCount + completedCount)
+    }
+
+    /// Every task belonging to a project, active and completed alike - what
+    /// project detail's task list shows (never the flat My Tasks list, which
+    /// stays active-only and never renders subtasks - see ShiftModels.swift).
+    func allTasks(forProject projectID: String) -> [ShiftTask] {
+        activeTasks.filter { $0.projectID == projectID } + allCompletedTasks().filter { $0.projectID == projectID }
+    }
+
     private func findCompletedTask(id: String) -> (month: String, task: ShiftTask)? {
         let completedDir = root.appendingPathComponent("tasks/completed", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: completedDir.path) else { return nil }
@@ -258,6 +297,10 @@ final class ShiftStore {
         try? ShiftYaml.writeList(path: activeTasksPath, key: "tasks", items: activeTasks.map(ShiftYaml.toYaml))
     }
 
+    private func persistProjects() {
+        try? ShiftYaml.writeList(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
+    }
+
     private func notify() { changeHandlers.forEach { $0() } }
 
     static func iso8601(_ date: Date) -> String {
@@ -279,9 +322,12 @@ final class ShiftStore {
         df.dateFormat = "yyyy-MM-dd"
         let today = df.string(from: now)
 
-        let project = ShiftProject(id: UUID().uuidString, name: "Shift", status: .active, createdAt: iso)
+        let project = ShiftProject(
+            id: UUID().uuidString, name: "Shift", description: "Building the Shift feature itself.",
+            status: .inProgress, startDate: today, dueDate: nil, createdAt: iso
+        )
         projects = [project]
-        try? ShiftYaml.writeList(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
+        persistProjects()
 
         activeTasks = [
             ShiftTask(

@@ -87,18 +87,38 @@ struct ShiftFollowUp {
     }
 }
 
+/// `active`/`archived` (phase 1's placeholder pair) became this 5-state set
+/// in phase 3 (cockpit-shift-projects), matching the real status dropdown on
+/// a project's card - not just an "is this archived" flag.
 enum ShiftProjectStatus: String, CaseIterable {
-    case active, archived
+    case notStarted = "not_started"
+    case inProgress = "in_progress"
+    case onHold = "on_hold"
+    case completed
+    case archived
+
+    var displayName: String {
+        switch self {
+        case .notStarted: return "Not Started"
+        case .inProgress: return "In Progress"
+        case .onHold: return "On Hold"
+        case .completed: return "Completed"
+        case .archived: return "Archived"
+        }
+    }
 }
 
-/// Minimal placeholder per the phase-1 brief - a real Projects page with a
-/// status control is a later phase. This exists mainly to give tasks a real
-/// `projectID` to point at and to prove out project-scoped subtask
-/// rendering.
+/// A real project (cockpit-shift-projects, phase 3): a status control
+/// clicking through to a dropdown that actually persists, a task list scoped
+/// to the project (with nested subtasks - see `ShiftSubtask`'s doc comment),
+/// and an editable field set (name/description/status/start date/due date).
 struct ShiftProject {
     var id: String
     var name: String
+    var description: String
     var status: ShiftProjectStatus
+    var startDate: String?  // "YYYY-MM-DD"
+    var dueDate: String?    // "YYYY-MM-DD"
     var createdAt: String
 }
 

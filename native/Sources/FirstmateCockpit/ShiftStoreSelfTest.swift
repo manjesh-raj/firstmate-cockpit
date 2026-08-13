@@ -108,6 +108,59 @@ enum ShiftStoreSelfTest {
             failures.append("expected a reopened task with subtasks to toggle")
         }
 
+        // MARK: Project status update persists (cockpit-shift-projects)
+
+        guard var project = afterReopenReload.projects.first else {
+            return report(failures + ["no seeded project to update"])
+        }
+        check(project.status == .inProgress, "seeded project should start in_progress, got \(project.status.rawValue)")
+        project.status = .onHold
+        afterReopenReload.updateProject(project)
+        check(afterReopenReload.projects.first { $0.id == project.id }?.status == .onHold, "in-memory project should reflect the new status")
+        let afterProjectUpdateReload = ShiftStore()
+        check(
+            afterProjectUpdateReload.projects.first { $0.id == project.id }?.status == .onHold,
+            "project status change should survive a reload"
+        )
+
+        // MARK: Subtask toggle on a completed task persists to its month file
+        // (not just active.yaml) - the acceptance bar cockpit-shift-projects'
+        // project detail needs, since a project's task list includes
+        // completed work alongside active work. `taskWithSubtasks` was
+        // reopened back to active.yaml earlier in this test, so re-complete
+        // it here to set up a completed task that actually has subtasks.
+
+        guard let taskWithSubtasksID = taskWithSubtasks?.id else {
+            return report(failures + ["expected a task with subtasks for the completed-subtask-toggle check"])
+        }
+        let febFirst = ShiftStoreSelfTest.date(year: 2027, month: 2, day: 1)
+        afterProjectUpdateReload.setTaskCompleted(id: taskWithSubtasksID, completed: true, now: febFirst)
+
+        let completedWithSubtasksReload = ShiftStore()
+        guard let completedTask = completedWithSubtasksReload.allCompletedTasks().first(where: { $0.id == taskWithSubtasksID }),
+              let completedSubtask = completedTask.subtasks.first else {
+            return report(failures + ["expected the just-completed task to still have subtasks in its month file"])
+        }
+        let wasDone = completedSubtask.done
+        completedWithSubtasksReload.setSubtaskDone(taskID: completedTask.id, subtaskID: completedSubtask.id, done: !wasDone)
+        let afterCompletedSubtaskReload = ShiftStore()
+        let reloadedCompleted = afterCompletedSubtaskReload.allCompletedTasks().first { $0.id == completedTask.id }
+        check(
+            reloadedCompleted?.subtasks.first { $0.id == completedSubtask.id }?.done == !wasDone,
+            "a completed task's subtask toggle should persist to its month file and survive a reload"
+        )
+
+        // MARK: allTasks(forProject:)/taskCounts(forProject:) see both active
+        // and completed tasks, which is what a project card's "X of Y tasks
+        // completed" line and progress bar - and project detail's task list -
+        // depend on.
+
+        let finalStore = ShiftStore()
+        let projectTasks = finalStore.allTasks(forProject: project.id)
+        let (completedCount, totalCount) = finalStore.taskCounts(forProject: project.id)
+        check(totalCount == projectTasks.count, "taskCounts total should match allTasks(forProject:).count")
+        check(completedCount == projectTasks.filter { $0.status == .completed }.count, "taskCounts completed should match the completed subset")
+
         // MARK: Reserved-word-looking scalars stay strings, not coerced
 
         let trickyTask = ShiftTask(
