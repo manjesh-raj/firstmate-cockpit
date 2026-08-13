@@ -245,7 +245,24 @@ final class ShiftController: NSViewController {
         syncPill.addGestureRecognizer(syncPillClick)
         applySyncPill()
 
-        let row = NSStackView(views: [textStack, spacer, syncPill])
+        // `store.gitSync` is fixed for this controller's whole lifetime (a
+        // `let` on `ShiftStore`, decided once at store construction by
+        // whether `FM_SHIFT_DIR` was set), so whether the pill belongs in
+        // the header at all is also decided once, here - rather than only
+        // ever toggling its `isHidden` flag. This is deliberately stronger
+        // than `isHidden`: a view never added as an arranged subview can't
+        // be shown by any later code path that forgets this rule, and can't
+        // report a stale on-screen frame to anything inspecting the view
+        // tree (isHidden was already correct at every layer verified live -
+        // see fm/cockpit-fix-shift-sync-pill - but leaving a real, non-empty
+        // pill sitting hidden in the tree is an unnecessary trap for the
+        // next person who touches this header).
+        let row: NSStackView
+        if store.gitSync != nil {
+            row = NSStackView(views: [textStack, spacer, syncPill])
+        } else {
+            row = NSStackView(views: [textStack, spacer])
+        }
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
@@ -255,13 +272,10 @@ final class ShiftController: NSViewController {
 
     /// Reflects `ShiftGitSync`'s real status - never a timer or a fake cycle.
     /// `nil` `store.gitSync` (an explicit `FM_SHIFT_DIR` override with no git
-    /// backing) hides the pill entirely rather than showing a status that
-    /// doesn't mean anything for that setup.
+    /// backing) means the pill was never added to the header at all (see
+    /// `buildHeader()`) - nothing to style.
     private func applySyncPill() {
-        guard store.gitSync != nil else {
-            syncPill.isHidden = true
-            return
-        }
+        guard store.gitSync != nil else { return }
         syncPill.isHidden = false
         let (text, colorHex): (String, String)
         switch syncStatus {
