@@ -91,7 +91,7 @@ final class ShiftProjectCardView: NSView {
         let openClick = NSClickGestureRecognizer(target: self, action: #selector(openClicked))
         openRegion.addGestureRecognizer(openClick)
 
-        statusLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        statusLabel.font = ShiftFont.mono(10.5, weight: .semibold)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusPill.wantsLayer = true
         statusPill.layer?.cornerRadius = 9

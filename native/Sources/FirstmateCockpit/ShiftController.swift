@@ -31,17 +31,22 @@ final class ShiftController: NSViewController {
     private let syncPill = NSView()
     private let syncPillLabel = NSTextField(labelWithString: "")
     private let statsRow = NSStackView()
-    private var stashedTileParts: [(NSView, NSTextField, NSTextField)] = []
+    private var stashedTileParts: [(container: NSView, valueLabel: NSTextField, nameLabel: NSTextField, tint: HelmTint)] = []
 
     private let taskListView = ShiftTaskListView()
     private let taskListScroll = NSScrollView()
     private let tasksHeader = NSTextField(labelWithString: "")
+    private let tasksCountBadge = NSTextField(labelWithString: "")
+    private let taskPanel = ShiftPanelView()
 
     private let followUpListView = ShiftFollowUpListView()
     private let followUpScroll = NSScrollView()
     private let followUpsHeader = NSTextField(labelWithString: "")
+    private let followUpsCountBadge = NSTextField(labelWithString: "")
+    private let followUpPanel = ShiftPanelView()
 
     private let projectsHeader = NSTextField(labelWithString: "")
+    private let projectsCountBadge = NSTextField(labelWithString: "")
     private let projectsGridContainer = NSStackView()
     private let projectsDetailContainer = NSStackView()
 
@@ -186,7 +191,7 @@ final class ShiftController: NSViewController {
     // MARK: Building chrome
 
     private func buildHeader() -> NSView {
-        greetingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        greetingLabel.font = ShiftFont.serif(23)
         subtitleLabel.font = .systemFont(ofSize: 12)
         let textStack = NSStackView(views: [greetingLabel, subtitleLabel])
         textStack.orientation = .vertical
@@ -231,6 +236,11 @@ final class ShiftController: NSViewController {
             syncPill.toolTip = nil
         }
         ToolRowLayout.pill(text: text, colorHex: colorHex, into: syncPill, label: syncPillLabel)
+        // Mono pill text, per the mockup's `--mono` role for pill labels -
+        // `ToolRowLayout.pill` is shared app-wide and stays sans for its
+        // other callers (Updates/Bootstrap rows), so the override happens
+        // here rather than in the shared helper.
+        syncPillLabel.font = ShiftFont.mono(10.5, weight: .semibold)
     }
 
     private func buildStatsRow() {
@@ -240,7 +250,7 @@ final class ShiftController: NSViewController {
         statsRow.translatesAutoresizingMaskIntoConstraints = false
     }
 
-    private func statTile(icon: String, value: String, label: String) -> NSView {
+    private func statTile(icon: String, value: String, label: String, tint: HelmTint = .neutral) -> NSView {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = 10
@@ -252,7 +262,7 @@ final class ShiftController: NSViewController {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
+        valueLabel.font = ShiftFont.mono(19, weight: .semibold)
 
         let nameLabel = NSTextField(labelWithString: label)
         nameLabel.font = .systemFont(ofSize: 9.5)
@@ -275,16 +285,27 @@ final class ShiftController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
             container.heightAnchor.constraint(equalToConstant: 56),
         ])
-        stashedTileParts.append((container, valueLabel, nameLabel))
+        stashedTileParts.append((container, valueLabel, nameLabel, tint))
         return container
     }
 
-    private func sectionHeaderRow(iconSymbol: String, label: NSTextField, addAction: Selector? = nil, addTooltip: String? = nil) -> NSStackView {
+    /// A panel header row: icon + serif title + a small muted monospace
+    /// count badge (the mockup's `.cnt` - "My Tasks 12", not text baked into
+    /// the title itself) + an optional "+" add action. `countBadge` is
+    /// `nil` for sections (Projects) that don't need a live count.
+    private func sectionHeaderRow(
+        iconSymbol: String, label: NSTextField, countBadge: NSTextField? = nil,
+        addAction: Selector? = nil, addTooltip: String? = nil
+    ) -> NSStackView {
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.font = ShiftFont.serif(15)
         var views: [NSView] = [icon, label]
+        if let countBadge {
+            countBadge.font = ShiftFont.mono(11, weight: .medium)
+            views.append(countBadge)
+        }
         if let addAction {
             let spacer = NSView()
             spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -304,47 +325,43 @@ final class ShiftController: NSViewController {
     }
 
     private func buildTaskSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "checklist", label: tasksHeader, addAction: #selector(newTaskClicked), addTooltip: "New Task (\u{2318}N)")
+        let headerRow = sectionHeaderRow(
+            iconSymbol: "checklist", label: tasksHeader, countBadge: tasksCountBadge,
+            addAction: #selector(newTaskClicked), addTooltip: "New Task (\u{2318}N)"
+        )
 
         taskListScroll.documentView = taskListView.tableView
         taskListScroll.hasVerticalScroller = true
         taskListScroll.hasHorizontalScroller = false
         taskListScroll.borderType = .noBorder
-        taskListScroll.wantsLayer = true
-        taskListScroll.layer?.cornerRadius = 8
+        taskListScroll.drawsBackground = false
         taskListScroll.translatesAutoresizingMaskIntoConstraints = false
         taskListScroll.heightAnchor.constraint(equalToConstant: 300).isActive = true
 
-        let section = NSStackView(views: [headerRow, taskListScroll])
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 8
-        section.translatesAutoresizingMaskIntoConstraints = false
-        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        taskListScroll.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        return section
+        taskPanel.setHeader(headerRow)
+        taskPanel.setBody(taskListScroll)
+        taskPanel.translatesAutoresizingMaskIntoConstraints = false
+        return taskPanel
     }
 
     private func buildFollowUpSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "bell", label: followUpsHeader, addAction: #selector(newFollowUpClicked), addTooltip: "New Follow-up (\u{2318}\u{21e7}F)")
+        let headerRow = sectionHeaderRow(
+            iconSymbol: "bell", label: followUpsHeader, countBadge: followUpsCountBadge,
+            addAction: #selector(newFollowUpClicked), addTooltip: "New Follow-up (\u{2318}\u{21e7}F)"
+        )
 
         followUpScroll.documentView = followUpListView.tableView
         followUpScroll.hasVerticalScroller = true
         followUpScroll.hasHorizontalScroller = false
         followUpScroll.borderType = .noBorder
-        followUpScroll.wantsLayer = true
-        followUpScroll.layer?.cornerRadius = 8
+        followUpScroll.drawsBackground = false
         followUpScroll.translatesAutoresizingMaskIntoConstraints = false
         followUpScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        let section = NSStackView(views: [headerRow, followUpScroll])
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 8
-        section.translatesAutoresizingMaskIntoConstraints = false
-        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        followUpScroll.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        return section
+        followUpPanel.setHeader(headerRow)
+        followUpPanel.setBody(followUpScroll)
+        followUpPanel.translatesAutoresizingMaskIntoConstraints = false
+        return followUpPanel
     }
 
     /// The Projects section (cockpit-shift-projects, phase 3): a real
@@ -354,7 +371,7 @@ final class ShiftController: NSViewController {
     /// fine here: a captain's project count is nowhere near the scale that
     /// justified a table view for tasks/follow-ups.
     private func buildProjectsSection() -> NSView {
-        let headerRow = sectionHeaderRow(iconSymbol: "shippingbox", label: projectsHeader)
+        let headerRow = sectionHeaderRow(iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge)
 
         projectsGridContainer.orientation = .vertical
         projectsGridContainer.alignment = .leading
@@ -415,10 +432,12 @@ final class ShiftController: NSViewController {
             }
         }
         taskListView.setTasks(sortedTasks, projects: store.projects)
-        tasksHeader.stringValue = "My Tasks (\(tasks.count))"
+        tasksHeader.stringValue = "My Tasks"
+        tasksCountBadge.stringValue = "\(tasks.count)"
 
         followUpListView.setItems(followUps)
-        followUpsHeader.stringValue = "Follow-ups (\(pendingFollowUps.count) pending)"
+        followUpsHeader.stringValue = "Follow-ups"
+        followUpsCountBadge.stringValue = "\(pendingFollowUps.count) pending"
 
         renderProjectsSection()
 
@@ -430,7 +449,8 @@ final class ShiftController: NSViewController {
         case .grid:
             projectsGridContainer.isHidden = false
             projectsDetailContainer.isHidden = true
-            projectsHeader.stringValue = "Projects (\(store.projects.count))"
+            projectsHeader.stringValue = "Projects"
+            projectsCountBadge.stringValue = "\(store.projects.count)"
             rebuildProjectsGrid()
         case .detail(let projectID):
             guard let project = store.projects.first(where: { $0.id == projectID }) else {
@@ -457,7 +477,7 @@ final class ShiftController: NSViewController {
         stashedTileParts.removeAll()
         statsRow.addArrangedSubview(statTile(icon: "sun.max", value: "\(tasksToday)", label: "tasks today"))
         statsRow.addArrangedSubview(statTile(icon: "bell", value: "\(followUps)", label: "follow-ups"))
-        statsRow.addArrangedSubview(statTile(icon: "exclamationmark.triangle", value: "\(overdue)", label: "overdue"))
+        statsRow.addArrangedSubview(statTile(icon: "exclamationmark.triangle", value: "\(overdue)", label: "overdue", tint: .critical))
     }
 
     // MARK: Projects - grid
@@ -473,10 +493,17 @@ final class ShiftController: NSViewController {
         }
         let projects = store.projects
         guard !projects.isEmpty else {
-            let label = NSTextField(labelWithString: "No projects yet.")
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = HelmTheme.mutedInk(theme)
-            projectsGridContainer.addArrangedSubview(label)
+            // Built fresh each call (not the retained `projectsEmptyState`
+            // property elsewhere) so its one-time width/height constraints
+            // never accumulate across repeated rebuilds - `rebuildProjectsGrid`
+            // removes the view from its superview each time but never tears
+            // down constraints, which would otherwise pile up duplicates.
+            let empty = ShiftEmptyStateView(symbol: "shippingbox", text: "No projects yet.\nCreate one to start tracking tasks against it.")
+            empty.applyTheme(theme)
+            empty.translatesAutoresizingMaskIntoConstraints = false
+            empty.heightAnchor.constraint(equalToConstant: 110).isActive = true
+            projectsGridContainer.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: projectsGridContainer.widthAnchor).isActive = true
             return
         }
 
@@ -540,7 +567,7 @@ final class ShiftController: NSViewController {
 
         let form = buildDetailForm()
 
-        detailTasksHeader.font = .systemFont(ofSize: 13, weight: .semibold)
+        detailTasksHeader.font = ShiftFont.serif(14)
         detailTasksStack.orientation = .vertical
         detailTasksStack.alignment = .leading
         detailTasksStack.spacing = 8
@@ -867,16 +894,18 @@ final class ShiftController: NSViewController {
         projectsHeader.textColor = ink
         detailTasksHeader.textColor = ink
 
-        for (container, valueLabel, nameLabel) in stashedTileParts {
+        for (container, valueLabel, nameLabel, tint) in stashedTileParts {
             container.layer?.backgroundColor = surface.cgColor
             container.layer?.borderWidth = 1
             container.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-            valueLabel.textColor = ink
+            valueLabel.textColor = tint == .neutral ? ink : HelmTheme.nsColor(tint.hex(in: theme))
             nameLabel.textColor = muted
         }
-        for scroll in [taskListScroll, followUpScroll] {
-            scroll.layer?.backgroundColor = surface.cgColor
-        }
+        taskPanel.applyTheme(theme)
+        followUpPanel.applyTheme(theme)
+        tasksCountBadge.textColor = muted
+        followUpsCountBadge.textColor = muted
+        projectsCountBadge.textColor = muted
         for container in subtaskContainers {
             container.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
         }

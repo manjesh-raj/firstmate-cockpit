@@ -68,14 +68,16 @@ final class ShiftTaskListView: NSObject {
 extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { max(tasks.count, 1) }
 
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        tasks.isEmpty ? 120 : 44
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !tasks.isEmpty else {
-            let label = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? NSTextField)
-                ?? { let l = NSTextField(labelWithString: ""); l.identifier = Self.emptyViewID; return l }()
-            label.stringValue = "Nothing on your plate. Enjoy it."
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = HelmTheme.mutedInk(theme)
-            return label
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
+                ?? { let v = ShiftEmptyStateView(symbol: "checklist", text: "Nothing on your plate. Enjoy it."); v.identifier = Self.emptyViewID; return v }()
+            empty.applyTheme(theme)
+            return empty
         }
         let rowView = (tableView.makeView(withIdentifier: Self.rowViewID, owner: nil) as? ShiftTaskRowView)
             ?? { let v = ShiftTaskRowView(); v.identifier = Self.rowViewID; return v }()
@@ -88,6 +90,7 @@ extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
 }
 
 private final class ShiftTaskRowView: NSView {
+    private let hoverBackground = HoverHighlightView()
     private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let titleLabel = NSTextField(labelWithString: "")
     private let subLabel = NSTextField(labelWithString: "")
@@ -98,6 +101,16 @@ private final class ShiftTaskRowView: NSView {
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+
+        hoverBackground.cornerRadius = 6
+        hoverBackground.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hoverBackground)
+        NSLayoutConstraint.activate([
+            hoverBackground.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            hoverBackground.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            hoverBackground.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            hoverBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+        ])
 
         checkbox.target = self
         checkbox.action = #selector(checkboxClicked)
@@ -119,7 +132,7 @@ private final class ShiftTaskRowView: NSView {
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        priorityLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        priorityLabel.font = ShiftFont.mono(10, weight: .semibold)
         priorityLabel.translatesAutoresizingMaskIntoConstraints = false
         priorityPill.wantsLayer = true
         priorityPill.layer?.cornerRadius = 8
@@ -140,11 +153,11 @@ private final class ShiftTaskRowView: NSView {
         row.spacing = 8
         row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
+        hoverBackground.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.leadingAnchor.constraint(equalTo: hoverBackground.leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: hoverBackground.trailingAnchor, constant: -6),
+            row.centerYAnchor.constraint(equalTo: hoverBackground.centerYAnchor),
         ])
     }
 
@@ -152,6 +165,8 @@ private final class ShiftTaskRowView: NSView {
 
     func configure(task: ShiftTask, project: ShiftProject?, theme: HelmTheme, onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
+        hoverBackground.normalColor = .clear
+        hoverBackground.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.16)
         checkbox.state = task.status == .completed ? .on : .off
 
         titleLabel.stringValue = task.title
@@ -300,14 +315,16 @@ extension ShiftFollowUpListView: NSMenuDelegate {
 extension ShiftFollowUpListView: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { max(items.count, 1) }
 
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        items.isEmpty ? 110 : 40
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !items.isEmpty else {
-            let label = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? NSTextField)
-                ?? { let l = NSTextField(labelWithString: ""); l.identifier = Self.emptyViewID; return l }()
-            label.stringValue = "No follow-ups pending."
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = HelmTheme.mutedInk(theme)
-            return label
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
+                ?? { let v = ShiftEmptyStateView(symbol: "bell", text: "No follow-ups pending."); v.identifier = Self.emptyViewID; return v }()
+            empty.applyTheme(theme)
+            return empty
         }
         let rowView = (tableView.makeView(withIdentifier: Self.rowViewID, owner: nil) as? ShiftFollowUpRowView)
             ?? { let v = ShiftFollowUpRowView(); v.identifier = Self.rowViewID; return v }()
@@ -317,6 +334,7 @@ extension ShiftFollowUpListView: NSTableViewDataSource, NSTableViewDelegate {
 }
 
 private final class ShiftFollowUpRowView: NSView {
+    private let hoverBackground = HoverHighlightView()
     private let dot = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subLabel = NSTextField(labelWithString: "")
@@ -326,6 +344,16 @@ private final class ShiftFollowUpRowView: NSView {
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+
+        hoverBackground.cornerRadius = 6
+        hoverBackground.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hoverBackground)
+        NSLayoutConstraint.activate([
+            hoverBackground.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            hoverBackground.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            hoverBackground.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            hoverBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+        ])
 
         dot.wantsLayer = true
         dot.translatesAutoresizingMaskIntoConstraints = false
@@ -350,7 +378,7 @@ private final class ShiftFollowUpRowView: NSView {
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        statusLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        statusLabel.font = ShiftFont.mono(10, weight: .semibold)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusPill.wantsLayer = true
         statusPill.layer?.cornerRadius = 8
@@ -371,17 +399,19 @@ private final class ShiftFollowUpRowView: NSView {
         row.spacing = 10
         row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
+        hoverBackground.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.leadingAnchor.constraint(equalTo: hoverBackground.leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: hoverBackground.trailingAnchor, constant: -6),
+            row.centerYAnchor.constraint(equalTo: hoverBackground.centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     func configure(item: ShiftFollowUp, theme: HelmTheme) {
+        hoverBackground.normalColor = .clear
+        hoverBackground.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.16)
         titleLabel.stringValue = item.title
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
 
