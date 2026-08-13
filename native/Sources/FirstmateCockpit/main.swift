@@ -529,6 +529,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_DATE_PARSER_TESTS"] == "1" 
     exit(ShiftDateParserSelfTest.run() ? 0 : 1)
 }
 
+// cockpit-shift-git-sync: same convention, for `ShiftGitSync`'s clone/commit/
+// push/pull/debounce/status logic against a real disposable local bare repo -
+// see ShiftGitSyncSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_GIT_SYNC_TESTS"] == "1" {
+    exit(ShiftGitSyncSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

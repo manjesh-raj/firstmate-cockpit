@@ -28,6 +28,8 @@ final class ShiftController: NSViewController {
 
     private let greetingLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
+    private let syncPill = NSView()
+    private let syncPillLabel = NSTextField(labelWithString: "")
     private let statsRow = NSStackView()
     private var stashedTileParts: [(NSView, NSTextField, NSTextField)] = []
 
@@ -45,6 +47,7 @@ final class ShiftController: NSViewController {
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var expandedTaskIDs: Set<String> = []
+    private var syncStatus: ShiftGitSync.Status = .synced
 
     /// The Projects section's own navigation state - a grid of cards, or one
     /// project's detail (task list + edit form). Kept separate from the
@@ -148,6 +151,11 @@ final class ShiftController: NSViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(containerWidthMayHaveChanged), name: NSWindow.didResizeNotification, object: nil
         )
+
+        store.gitSync?.observeStatus { [weak self] status in
+            self?.syncStatus = status
+            self?.applySyncPill()
+        }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -180,12 +188,49 @@ final class ShiftController: NSViewController {
     private func buildHeader() -> NSView {
         greetingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
         subtitleLabel.font = .systemFont(ofSize: 12)
-        let stack = NSStackView(views: [greetingLabel, subtitleLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        return stack
+        let textStack = NSStackView(views: [greetingLabel, subtitleLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 4
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        syncPill.translatesAutoresizingMaskIntoConstraints = false
+        applySyncPill()
+
+        let row = NSStackView(views: [textStack, spacer, syncPill])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    /// Reflects `ShiftGitSync`'s real status - never a timer or a fake cycle.
+    /// `nil` `store.gitSync` (an explicit `FM_SHIFT_DIR` override with no git
+    /// backing) hides the pill entirely rather than showing a status that
+    /// doesn't mean anything for that setup.
+    private func applySyncPill() {
+        guard store.gitSync != nil else {
+            syncPill.isHidden = true
+            return
+        }
+        syncPill.isHidden = false
+        let (text, colorHex): (String, String)
+        switch syncStatus {
+        case .synced: (text, colorHex) = ("Synced", theme.ansiHex[2])
+        case .localChanges: (text, colorHex) = ("Local changes", theme.ansiHex[3])
+        case .syncing: (text, colorHex) = ("Syncing\u{2026}", theme.accentHex)
+        case .failed(let reason):
+            (text, colorHex) = ("Failed", theme.ansiHex[1])
+            syncPill.toolTip = reason
+        }
+        if case .failed = syncStatus {} else {
+            syncPill.toolTip = nil
+        }
+        ToolRowLayout.pill(text: text, colorHex: colorHex, into: syncPill, label: syncPillLabel)
     }
 
     private func buildStatsRow() {
@@ -837,5 +882,6 @@ final class ShiftController: NSViewController {
         }
         taskListView.applyTheme(theme)
         followUpListView.applyTheme(theme)
+        applySyncPill()
     }
 }
