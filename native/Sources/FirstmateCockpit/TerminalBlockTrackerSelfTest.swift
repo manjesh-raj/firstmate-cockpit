@@ -35,6 +35,10 @@ enum TerminalBlockTrackerSelfTest {
             ("resetClearsBlocksAndOpenState", test_resetClearsBlocksAndOpenState),
             ("aDCloseWithNothingOpenIsIgnored", test_closeWithNothingOpenIsIgnored),
             ("trimsOldestBlocksBeyondTheCap", test_trimsOldestBlocksBeyondCap),
+            ("blankEnterDoesNotCreatePhantomBlock", test_blankEnterDoesNotCreatePhantomBlock),
+            ("repeatedIdenticalCommandStillProducesTwoRealBlocks", test_repeatedIdenticalCommandStillProducesTwoRealBlocks),
+            ("blankEnterBetweenTwoRealRepeatsIsDroppedNotTheReals", test_blankEnterBetweenTwoRealRepeatsIsDroppedNotTheReals),
+            ("oldStyleThreeFieldDMarkerStillTreatedAsReal", test_oldStyleThreeFieldDMarkerStillTreatedAsReal),
         ]
         var failures = 0
         for (name, testCase) in cases {
@@ -63,8 +67,27 @@ enum TerminalBlockTrackerSelfTest {
     /// Builds the raw byte stream a real PTY would deliver for one prompt
     /// cycle: the `B` marker, the terminal's own echo of the typed command,
     /// a newline, the command's output, then the `D` marker closing it.
-    private static func promptCycle(command: String, output: String, exitCode: Int32) -> String {
-        "\u{1b}]133;B\u{07}" + command + "\r\n" + output + "\r\n" + "\u{1b}]133;D;\(exitCode);\(b64(command))\u{07}"
+    /// `real` mirrors the shell hook's own history-number-based flag (see
+    /// `ShellIntegration.swift`'s header) - omit it (`nil`) to build an
+    /// old-style, 3-field `D` marker (no flag at all), matching a session
+    /// that hasn't reinstalled the newer hook yet.
+    private static func promptCycle(command: String, output: String, exitCode: Int32, real: Bool? = true) -> String {
+        let dMarker: String
+        if let real {
+            dMarker = "\u{1b}]133;D;\(exitCode);\(b64(command));\(real ? "1" : "0")\u{07}"
+        } else {
+            dMarker = "\u{1b}]133;D;\(exitCode);\(b64(command))\u{07}"
+        }
+        return "\u{1b}]133;B\u{07}" + command + "\r\n" + output + "\r\n" + dMarker
+    }
+
+    /// A prompt cycle with nothing typed - a blank Enter. Only `B` fires
+    /// from the redrawn prompt, then `D` closes it with `real=0` and
+    /// whatever the *previous* real command's text/exit code happened to
+    /// be (since `history 1`/`fc -ln -1` didn't change) - exactly what the
+    /// real shell hook sends in this case.
+    private static func blankEnterCycle(previousCommand: String, previousExitCode: Int32) -> String {
+        "\u{1b}]133;B\u{07}" + "\r\n" + "\u{1b}]133;D;\(previousExitCode);\(b64(previousCommand));0\u{07}"
     }
 
     private static func feed(_ terminal: Terminal, _ text: String) {
@@ -151,6 +174,92 @@ enum TerminalBlockTrackerSelfTest {
         }
         guard tracker.blocks.first?.commandText == "echo 20" else {
             return "expected the oldest 20 blocks to be trimmed, first surviving is \(tracker.blocks.first?.commandText ?? "nil")"
+        }
+        return nil
+    }
+
+    /// `fm/cockpit-fix-block-view-stage0-bugs`, bug 1: reproduced live (see
+    /// this task's PR description for the pty-based transcripts) that a
+    /// captain hitting Enter on a blank prompt line - a common habit -
+    /// produced a spurious extra block labeled with the *previous* real
+    /// command's text, its old exit code, and empty output, indistinguishable
+    /// in the UI from a genuine repeat of that command. A blank Enter still
+    /// fires `B` then `D` (nothing in the protocol suppresses that), but the
+    /// hook's `D` now carries `real=0` for it - `closeBlock` must discard
+    /// that close rather than finalize it.
+    private static func test_blankEnterDoesNotCreatePhantomBlock() -> String? {
+        let terminal = makeTerminal()
+        let tracker = TerminalBlockTracker()
+        tracker.attach(to: terminal)
+
+        feed(terminal, promptCycle(command: "ls -ltrh", output: "total 0", exitCode: 0))
+        guard tracker.blocks.count == 1 else { return "expected 1 block after the real command, got \(tracker.blocks.count)" }
+
+        feed(terminal, blankEnterCycle(previousCommand: "ls -ltrh", previousExitCode: 0))
+        guard tracker.blocks.count == 1 else {
+            return "a blank Enter created a phantom block: \(tracker.blocks)"
+        }
+        return nil
+    }
+
+    /// The other half of bug 1: a *genuine* back-to-back repeat of the same
+    /// command (the captain's actual reported scenario - re-running
+    /// `ls -ltrh` a few times) must still produce its own real, populated
+    /// block each time - the fix must not overcorrect into treating every
+    /// repeat as a no-op.
+    private static func test_repeatedIdenticalCommandStillProducesTwoRealBlocks() -> String? {
+        let terminal = makeTerminal()
+        let tracker = TerminalBlockTracker()
+        tracker.attach(to: terminal)
+
+        feed(terminal, promptCycle(command: "ls -ltrh", output: "total 4\nfile-a.txt", exitCode: 0))
+        feed(terminal, promptCycle(command: "ls -ltrh", output: "total 4\nfile-a.txt", exitCode: 0))
+
+        guard tracker.blocks.count == 2 else { return "expected 2 real blocks for 2 real repeats, got \(tracker.blocks.count)" }
+        for (i, block) in tracker.blocks.enumerated() {
+            guard block.commandText == "ls -ltrh" else { return "block \(i) has wrong command text: \(block.commandText)" }
+            guard block.outputText.contains("file-a.txt") else { return "block \(i) has empty/wrong output: \(block.outputText.debugDescription)" }
+            guard block.status == .finished(exitCode: 0) else { return "block \(i) has wrong status: \(block.status)" }
+        }
+        return nil
+    }
+
+    /// A blank Enter sandwiched between two real repeats (closest to what
+    /// the captain actually did) - exactly one phantom must be dropped, the
+    /// two real commands must both survive with real output, in order.
+    private static func test_blankEnterBetweenTwoRealRepeatsIsDroppedNotTheReals() -> String? {
+        let terminal = makeTerminal()
+        let tracker = TerminalBlockTracker()
+        tracker.attach(to: terminal)
+
+        feed(terminal, promptCycle(command: "ls -ltrh", output: "total 4\nfile-a.txt", exitCode: 0))
+        feed(terminal, blankEnterCycle(previousCommand: "ls -ltrh", previousExitCode: 0))
+        feed(terminal, promptCycle(command: "ls -ltrh manjesh/", output: "total 8\nfile-b.txt\nfile-c.txt", exitCode: 0))
+
+        guard tracker.blocks.count == 2 else { return "expected 2 real blocks (blank Enter dropped), got \(tracker.blocks.count): \(tracker.blocks)" }
+        guard tracker.blocks[0].commandText == "ls -ltrh", tracker.blocks[0].outputText.contains("file-a.txt") else {
+            return "first real block wrong: \(tracker.blocks[0])"
+        }
+        guard tracker.blocks[1].commandText == "ls -ltrh manjesh/", tracker.blocks[1].outputText.contains("file-b.txt") else {
+            return "second real block wrong: \(tracker.blocks[1])"
+        }
+        return nil
+    }
+
+    /// Backward compatibility: an old-format, 3-field `D` marker (no `real`
+    /// flag at all - a tab whose remote hook hasn't been reinstalled with
+    /// this fix yet) must still be treated as a real close, matching every
+    /// pre-fix self-test case above that still uses this shape.
+    private static func test_oldStyleThreeFieldDMarkerStillTreatedAsReal() -> String? {
+        let terminal = makeTerminal()
+        let tracker = TerminalBlockTracker()
+        tracker.attach(to: terminal)
+
+        feed(terminal, promptCycle(command: "echo legacy", output: "legacy-output", exitCode: 0, real: nil))
+
+        guard tracker.blocks.count == 1 else { return "expected 1 block, got \(tracker.blocks.count)" }
+        guard tracker.blocks[0].outputText.contains("legacy-output") else {
+            return "unexpected output text: \(tracker.blocks[0].outputText.debugDescription)"
         }
         return nil
     }

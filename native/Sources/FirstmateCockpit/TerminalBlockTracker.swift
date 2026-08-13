@@ -105,14 +105,22 @@ final class TerminalBlockTracker {
 
     private func handleOSC133(_ data: ArraySlice<UInt8>) {
         guard let terminal, let text = String(bytes: data, encoding: .utf8) else { return }
-        let parts = text.split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+        let parts = text.split(separator: ";", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
         guard let kind = parts.first else { return }
         switch kind {
         case "B":
             openNewBlock(terminal: terminal)
         case "D":
             guard parts.count >= 3, let exitCode = Int32(parts[1]) else { return }
-            closeBlock(exitCode: exitCode, base64CommandText: parts[2], terminal: terminal)
+            // The 4th field (`fm/cockpit-fix-block-view-stage0-bugs`) is
+            // whether the shell hook thinks a real command actually ran
+            // since the last close - see `ShellIntegration.swift`'s header
+            // for why `D` still fires unconditionally (even for a blank
+            // Enter) and what "real" means. Missing entirely (an old/
+            // not-yet-reinstalled hook from before this field existed)
+            // defaults to real, matching the previous unconditional behavior.
+            let isReal = parts.count >= 4 ? (parts[3] != "0") : true
+            closeBlock(exitCode: exitCode, base64CommandText: parts[2], isReal: isReal, terminal: terminal)
         default:
             break
         }
@@ -127,9 +135,24 @@ final class TerminalBlockTracker {
         onChange?()
     }
 
-    private func closeBlock(exitCode: Int32, base64CommandText: String, terminal: Terminal) {
-        let commandText = Self.decodeBase64(base64CommandText) ?? ""
-
+    /// Closes the currently-open block, unless `isReal` is false, in which
+    /// case the block is discarded entirely instead of finalized.
+    ///
+    /// `isReal` comes from the shell hook's own history-number comparison
+    /// (see `ShellIntegration.swift`'s header): a `D` fires for *every*
+    /// prompt cycle, including one triggered by pressing Enter on a blank
+    /// line with nothing typed - bash/zsh don't add an empty line to
+    /// history, so the hook can tell "nothing really happened here" from
+    /// "the history number moved" and flags the close accordingly. Before
+    /// this existed, a blank Enter closed the open block as a normal,
+    /// visible, `.finished(exitCode: <whatever $? was before>)` block with
+    /// empty output and the *previous* real command's text (since that's
+    /// what `history 1`/`fc -ln -1` still returned) - a real, reproduced bug
+    /// (see this task's PR description for the pty-based repro). Discarding
+    /// rather than finalizing means B/D still pair up 1:1 (the shell always
+    /// sends D, so no block is ever left permanently stuck `.running`), but
+    /// nothing spurious ever reaches `blocks`.
+    private func closeBlock(exitCode: Int32, base64CommandText: String, isReal: Bool, terminal: Terminal) {
         guard let id = openBlockID, let idx = blocks.firstIndex(where: { $0.id == id }) else {
             // A `D` with nothing open (e.g. the very first prompt cycle
             // after the hook installs, before any `B` has fired) - nothing
@@ -137,9 +160,16 @@ final class TerminalBlockTracker {
             return
         }
         openBlockID = nil
-
         let startSnapshot = openBlockStartSnapshot ?? []
         openBlockStartSnapshot = nil
+
+        guard isReal else {
+            blocks.remove(at: idx)
+            onChange?()
+            return
+        }
+
+        let commandText = Self.decodeBase64(base64CommandText) ?? ""
         let outputText = Self.outputRegion(from: startSnapshot, current: Self.bufferLines(terminal))
 
         blocks[idx].commandText = commandText

@@ -501,9 +501,37 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// this hook has anything to attach to.
     private func installShellIntegrationIfSupported(_ tab: TabModel) {
         guard tab.blockTracker != nil, !tab.isOneShotCommand else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak tab] in
-            guard let tab, !tab.isClosing else { return }
-            tab.terminal.send(txt: ShellIntegration.installCommand)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.sendShellIntegrationLines(ShellIntegration.installSequence, to: tab)
+        }
+    }
+
+    /// Sends `ShellIntegration.installSequence` one line at a time, each
+    /// after the previous, rather than as one concatenated blob.
+    ///
+    /// `fm/cockpit-fix-block-view-stage0-bugs`: verified live (pty-based
+    /// repro, see this task's PR description) that this genuinely needs to
+    /// be paced, not just ordered - with zsh's line editor (ZLE) disabled
+    /// (part of this sequence's own echo-suppression trick, see
+    /// `ShellIntegration.swift`'s header), sending every line back-to-back
+    /// with no gap at all made zsh's parser lose track of line boundaries
+    /// entirely (it read the whole blob as one unterminated multi-line
+    /// double-quoted string, dropping into a `dquote>` continuation prompt
+    /// and never running anything) - reproduced consistently at a 0ms gap,
+    /// gone at every gap tested down to 20ms. 120ms per line (a handful of
+    /// lines, so under half a second in total - negligible next to the
+    /// existing 1.5s post-connect delay above) is a comfortable margin
+    /// above that, not a tuned-to-the-edge minimum.
+    private func sendShellIntegrationLines(_ lines: [String], to tab: TabModel) {
+        guard !lines.isEmpty else { return }
+        guard !tab.isClosing else { return }
+        tab.terminal.send(txt: lines[0])
+        let remaining = Array(lines.dropFirst())
+        guard !remaining.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.sendShellIntegrationLines(remaining, to: tab)
         }
     }
 
