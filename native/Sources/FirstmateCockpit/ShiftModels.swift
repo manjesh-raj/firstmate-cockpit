@@ -46,6 +46,18 @@ struct ShiftTask {
     var completedAt: String?
     var notes: String?
     var subtasks: [ShiftSubtask]
+
+    /// A blank task ready for `ShiftStore.addTask` - the New Task editor
+    /// (phase 2) fills fields into this rather than hand-assembling every
+    /// property inline.
+    static func fresh(now: Date = Date()) -> ShiftTask {
+        let iso = ShiftStore.iso8601(now)
+        return ShiftTask(
+            id: UUID().uuidString, title: "", description: "", status: .todo, priority: .normal,
+            dueDate: nil, dueTime: nil, projectID: nil, tags: [], createdAt: iso, updatedAt: iso,
+            completedAt: nil, notes: nil, subtasks: []
+        )
+    }
 }
 
 enum ShiftFollowUpStatus: String, CaseIterable {
@@ -61,9 +73,18 @@ struct ShiftFollowUp {
     var status: ShiftFollowUpStatus
     var priority: ShiftPriority
     var followUpAt: String?  // "YYYY-MM-DD"
+    var followUpTime: String?  // "HH:MM", mirrors ShiftTask.dueTime
     var relatedTaskID: String?
     var projectID: String?
     var notes: String?
+
+    /// A blank follow-up ready for `ShiftStore.addFollowUp`.
+    static func fresh() -> ShiftFollowUp {
+        ShiftFollowUp(
+            id: UUID().uuidString, title: "", status: .pending, priority: .normal,
+            followUpAt: nil, followUpTime: nil, relatedTaskID: nil, projectID: nil, notes: nil
+        )
+    }
 }
 
 enum ShiftProjectStatus: String, CaseIterable {

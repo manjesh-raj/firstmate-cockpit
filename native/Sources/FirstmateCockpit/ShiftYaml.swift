@@ -106,6 +106,7 @@ enum ShiftYaml {
         m[str("status")] = str(f.status.rawValue)
         m[str("priority")] = str(f.priority.rawValue)
         m[str("follow_up_at")] = strOpt(f.followUpAt)
+        m[str("follow_up_time")] = strOpt(f.followUpTime)
         m[str("related_task_id")] = strOpt(f.relatedTaskID)
         m[str("project_id")] = strOpt(f.projectID)
         m[str("notes")] = strOpt(f.notes)
@@ -122,6 +123,7 @@ enum ShiftYaml {
             status: ShiftFollowUpStatus(rawValue: reqString(dict[str("status")] ?? .null)) ?? .pending,
             priority: ShiftPriority(rawValue: reqString(dict[str("priority")] ?? .null)) ?? .normal,
             followUpAt: optString(dict[str("follow_up_at")] ?? .null),
+            followUpTime: optString(dict[str("follow_up_time")] ?? .null),
             relatedTaskID: optString(dict[str("related_task_id")] ?? .null),
             projectID: optString(dict[str("project_id")] ?? .null),
             notes: optString(dict[str("notes")] ?? .null)

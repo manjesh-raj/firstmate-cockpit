@@ -140,6 +140,85 @@ final class ShiftStore {
         notify()
     }
 
+    // MARK: Creation / editing (phase 2)
+
+    /// Appends a brand-new task to `active.yaml` and persists immediately.
+    /// The caller is responsible for filling in `id`/`createdAt`/`updatedAt`
+    /// (`ShiftTask.fresh` on the model side does this) - this is purely the
+    /// "append and write" half.
+    func addTask(_ task: ShiftTask) {
+        activeTasks.append(task)
+        persistActiveTasks()
+        logActivity(kind: "task_created", summary: "Created \"\(task.title)\"", now: Date())
+        notify()
+    }
+
+    /// Replaces an existing task in `active.yaml` in place (same array index,
+    /// same file) - a completed task isn't editable through this path since
+    /// it no longer lives in `active.yaml` (see `setTaskCompleted`'s header).
+    func updateTask(_ task: ShiftTask, now: Date = Date()) {
+        guard let idx = activeTasks.firstIndex(where: { $0.id == task.id }) else { return }
+        var updated = task
+        updated.updatedAt = ShiftStore.iso8601(now)
+        activeTasks[idx] = updated
+        persistActiveTasks()
+        notify()
+    }
+
+    /// Appends a brand-new follow-up to `follow-ups.yaml` and persists
+    /// immediately.
+    func addFollowUp(_ followUp: ShiftFollowUp) {
+        followUps.append(followUp)
+        persistFollowUps()
+        logActivity(kind: "follow_up_created", summary: "Created follow-up \"\(followUp.title)\"", now: Date())
+        notify()
+    }
+
+    /// Replaces an existing follow-up in place.
+    func updateFollowUp(_ followUp: ShiftFollowUp) {
+        guard let idx = followUps.firstIndex(where: { $0.id == followUp.id }) else { return }
+        followUps[idx] = followUp
+        persistFollowUps()
+        notify()
+    }
+
+    /// Marks a follow-up done/pending - stays in `follow-ups.yaml` either way
+    /// (unlike a task, there's no month-split "completed" file for
+    /// follow-ups in this phase's file layout), but a `done` follow-up drops
+    /// out of the "active follow-ups" view (`ShiftController` already
+    /// filters by `status == .pending`) and gets an activity log entry, which
+    /// is what "moves it out of the active list, into activity" means here.
+    func setFollowUpStatus(id: String, done: Bool, now: Date = Date()) {
+        guard let idx = followUps.firstIndex(where: { $0.id == id }) else { return }
+        followUps[idx].status = done ? .done : .pending
+        persistFollowUps()
+        logActivity(
+            kind: done ? "follow_up_completed" : "follow_up_reopened",
+            summary: "\(done ? "Completed" : "Reopened") follow-up \"\(followUps[idx].title)\"",
+            now: now
+        )
+        notify()
+    }
+
+    /// Recomputes and persists `follow_up_at`/`follow_up_time` from a new
+    /// target `Date` - the one place Snooze writes back, whether the preset
+    /// was a relative offset (30 min / 1 hour) or an absolute pick (Tomorrow /
+    /// Next week / Custom).
+    func snoozeFollowUp(id: String, to date: Date, now: Date = Date()) {
+        guard let idx = followUps.firstIndex(where: { $0.id == id }) else { return }
+        let (dateStr, timeStr) = ShiftDateFormatting.components(from: date)
+        followUps[idx].followUpAt = dateStr
+        followUps[idx].followUpTime = timeStr
+        followUps[idx].status = .pending
+        persistFollowUps()
+        logActivity(kind: "follow_up_snoozed", summary: "Snoozed follow-up \"\(followUps[idx].title)\"", now: now)
+        notify()
+    }
+
+    private func persistFollowUps() {
+        try? ShiftYaml.writeList(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
+    }
+
     private func findCompletedTask(id: String) -> (month: String, task: ShiftTask)? {
         let completedDir = root.appendingPathComponent("tasks/completed", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: completedDir.path) else { return nil }
@@ -227,7 +306,7 @@ final class ShiftStore {
         followUps = [
             ShiftFollowUp(
                 id: UUID().uuidString, title: "Check back on the Projects page plan",
-                status: .pending, priority: .normal, followUpAt: today, relatedTaskID: nil,
+                status: .pending, priority: .normal, followUpAt: today, followUpTime: nil, relatedTaskID: nil,
                 projectID: project.id, notes: nil
             ),
         ]

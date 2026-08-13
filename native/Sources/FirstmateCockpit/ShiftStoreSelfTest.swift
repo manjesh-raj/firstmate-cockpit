@@ -140,6 +140,93 @@ enum ShiftStoreSelfTest {
         check(decodedTask?.title == "true", "typed decode of title should be the string \"true\"")
         check(decodedTask?.tags.contains("123") == true, "typed decode of tags should include the string \"123\"")
 
+        // MARK: Phase 2 - task creation actually appears in active.yaml and survives a reload
+
+        let createdTask = ShiftTask.fresh()
+        var newTask = createdTask
+        newTask.title = "Ship the create/edit flow"
+        newTask.dueDate = "2026-08-20"
+        newTask.dueTime = "15:00"
+        newTask.tags = ["shift", "phase2"]
+        afterReopenReload.addTask(newTask)
+        check(afterReopenReload.activeTasks.contains { $0.id == newTask.id }, "addTask should add the task in memory")
+
+        let afterAddReload = ShiftStore()
+        let reloadedNewTask = afterAddReload.activeTasks.first { $0.id == newTask.id }
+        check(reloadedNewTask != nil, "created task should survive a reload")
+        check(reloadedNewTask?.title == "Ship the create/edit flow", "created task's title should survive a reload")
+        check(reloadedNewTask?.dueDate == "2026-08-20", "created task's due_date should survive a reload")
+        check(reloadedNewTask?.dueTime == "15:00", "created task's due_time should survive a reload")
+        check(reloadedNewTask?.tags == ["shift", "phase2"], "created task's tags should survive a reload")
+
+        // MARK: Phase 2 - task editing updates in place, preserving field order/quoting
+
+        let activePathBeforeEdit = try? String(contentsOfFile: scratchRoot.appendingPathComponent("tasks/active.yaml").path, encoding: .utf8)
+        let idKeyIndex = activePathBeforeEdit?.range(of: "\"id\":")?.lowerBound
+        let titleKeyIndex = activePathBeforeEdit?.range(of: "\"title\":")?.lowerBound
+        check(idKeyIndex != nil && titleKeyIndex != nil && idKeyIndex! < titleKeyIndex!, "id should still come before title in the fixed field order before editing")
+
+        var editedTask = reloadedNewTask ?? newTask
+        editedTask.title = "Ship the create/edit flow (v2)"
+        editedTask.priority = .high
+        afterAddReload.updateTask(editedTask)
+
+        let afterEditReload = ShiftStore()
+        let reloadedEditedTask = afterEditReload.activeTasks.first { $0.id == newTask.id }
+        check(reloadedEditedTask?.title == "Ship the create/edit flow (v2)", "edited task's title should persist across reload")
+        check(reloadedEditedTask?.priority == .high, "edited task's priority should persist across reload")
+        check(reloadedEditedTask?.dueDate == "2026-08-20", "editing one field should not clobber an untouched field (due_date)")
+
+        let activePathAfterEdit = try? String(contentsOfFile: scratchRoot.appendingPathComponent("tasks/active.yaml").path, encoding: .utf8)
+        check(activePathAfterEdit?.contains("\"Ship the create/edit flow (v2)\"") == true, "edited title should be written double-quoted")
+        let idKeyIndexAfter = activePathAfterEdit?.range(of: "\"id\":")?.lowerBound
+        let titleKeyIndexAfter = activePathAfterEdit?.range(of: "\"title\":")?.lowerBound
+        check(idKeyIndexAfter != nil && titleKeyIndexAfter != nil && idKeyIndexAfter! < titleKeyIndexAfter!, "id should still come before title in the fixed field order after editing")
+
+        // MARK: Phase 2 - follow-up creation/editing round trip
+
+        var newFollowUp = ShiftFollowUp.fresh()
+        newFollowUp.title = "Check on the migration"
+        newFollowUp.followUpAt = "2026-08-15"
+        newFollowUp.followUpTime = "09:30"
+        afterEditReload.addFollowUp(newFollowUp)
+
+        let afterFollowUpAddReload = ShiftStore()
+        let reloadedFollowUp = afterFollowUpAddReload.followUps.first { $0.id == newFollowUp.id }
+        check(reloadedFollowUp?.title == "Check on the migration", "created follow-up's title should survive a reload")
+        check(reloadedFollowUp?.followUpAt == "2026-08-15", "created follow-up's follow_up_at should survive a reload")
+        check(reloadedFollowUp?.followUpTime == "09:30", "created follow-up's follow_up_time should survive a reload")
+
+        var editedFollowUp = reloadedFollowUp ?? newFollowUp
+        editedFollowUp.notes = "Escalated to the platform team"
+        afterFollowUpAddReload.updateFollowUp(editedFollowUp)
+        let afterFollowUpEditReload = ShiftStore()
+        check(afterFollowUpEditReload.followUps.first { $0.id == newFollowUp.id }?.notes == "Escalated to the platform team", "edited follow-up's notes should persist across reload")
+
+        // MARK: Phase 2 - Done moves a follow-up out of the active (pending) view
+
+        afterFollowUpEditReload.setFollowUpStatus(id: newFollowUp.id, done: true)
+        check(afterFollowUpEditReload.followUps.first { $0.id == newFollowUp.id }?.status == .done, "marking a follow-up done should flip its status")
+        let afterDoneReload = ShiftStore()
+        check(afterDoneReload.followUps.first { $0.id == newFollowUp.id }?.status == .done, "done status should persist across reload")
+
+        // MARK: Phase 2 - Snooze recomputes and persists follow_up_at/follow_up_time
+
+        let snoozeBase = ShiftStoreSelfTest.dateTime(year: 2026, month: 8, day: 15, hour: 9, minute: 30)
+        afterDoneReload.snoozeFollowUp(id: newFollowUp.id, to: cal30Minutes(from: snoozeBase), now: snoozeBase)
+        let after30MinReload = ShiftStore()
+        let followUpAfter30Min = after30MinReload.followUps.first { $0.id == newFollowUp.id }
+        check(followUpAfter30Min?.followUpAt == "2026-08-15", "30-minute snooze should keep the same date here")
+        check(followUpAfter30Min?.followUpTime == "10:00", "30-minute snooze from 09:30 should recompute to 10:00, got \(followUpAfter30Min?.followUpTime ?? "nil")")
+        check(followUpAfter30Min?.status == .pending, "a snooze should bring a done follow-up back to pending")
+
+        let oneWeekLater = Calendar.current.date(byAdding: .day, value: 7, to: snoozeBase) ?? snoozeBase
+        after30MinReload.snoozeFollowUp(id: newFollowUp.id, to: oneWeekLater, now: snoozeBase)
+        let afterWeekReload = ShiftStore()
+        let followUpAfterWeek = afterWeekReload.followUps.first { $0.id == newFollowUp.id }
+        check(followUpAfterWeek?.followUpAt == "2026-08-22", "next-week snooze should recompute follow_up_at to 2026-08-22, got \(followUpAfterWeek?.followUpAt ?? "nil")")
+        check(followUpAfterWeek?.followUpTime == "09:30", "next-week snooze should preserve the same time-of-day, got \(followUpAfterWeek?.followUpTime ?? "nil")")
+
         return report(failures)
     }
 
@@ -147,6 +234,16 @@ enum ShiftStoreSelfTest {
         var comps = DateComponents()
         comps.year = year; comps.month = month; comps.day = day; comps.hour = 12
         return Calendar(identifier: .gregorian).date(from: comps) ?? Date()
+    }
+
+    private static func dateTime(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        var comps = DateComponents()
+        comps.year = year; comps.month = month; comps.day = day; comps.hour = hour; comps.minute = minute
+        return Calendar(identifier: .gregorian).date(from: comps) ?? Date()
+    }
+
+    private static func cal30Minutes(from date: Date) -> Date {
+        Calendar.current.date(byAdding: .minute, value: 30, to: date) ?? date
     }
 
     private static func report(_ failures: [String]) -> Bool {

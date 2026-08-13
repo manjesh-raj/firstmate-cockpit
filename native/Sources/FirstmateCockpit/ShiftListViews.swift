@@ -21,6 +21,9 @@ final class ShiftTaskListView: NSObject {
     private var tasks: [ShiftTask] = []
     private var projectsByID: [String: ShiftProject] = [:]
     var onToggleCompleted: ((ShiftTask) -> Void)?
+    /// Double-clicking a row (anywhere but the checkbox) opens the Edit Task
+    /// sheet, pre-filled - phase 2's "clicking an existing task" behavior.
+    var onOpen: ((ShiftTask) -> Void)?
 
     private static let columnID = NSUserInterfaceItemIdentifier("shiftTaskCol")
     private static let rowViewID = NSUserInterfaceItemIdentifier("shiftTaskRow")
@@ -40,6 +43,14 @@ final class ShiftTaskListView: NSObject {
         tableView.rowHeight = 44
         tableView.dataSource = self
         tableView.delegate = self
+        tableView.target = self
+        tableView.doubleAction = #selector(rowDoubleClicked)
+    }
+
+    @objc private func rowDoubleClicked() {
+        let row = tableView.clickedRow
+        guard row >= 0, row < tasks.count else { return }
+        onOpen?(tasks[row])
     }
 
     func setTasks(_ tasks: [ShiftTask], projects: [ShiftProject]) {
@@ -174,11 +185,26 @@ private final class ShiftTaskRowView: NSView {
 
 // MARK: - Follow-up list
 
+/// The Snooze preset options (phase 2 acceptance criteria). `.custom` opens a
+/// small date/time picker sheet - `ShiftController` owns presenting it, since
+/// this list view has no window context of its own.
+enum ShiftSnoozeOption {
+    case minutes30, hour1, tomorrow, nextWeek, custom
+}
+
 final class ShiftFollowUpListView: NSObject {
     let tableView = NSTableView()
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var items: [ShiftFollowUp] = []
+
+    /// Edit (double-click, or the context menu's Edit item).
+    var onEdit: ((ShiftFollowUp) -> Void)?
+    /// Done (toggles pending <-> done).
+    var onToggleDone: ((ShiftFollowUp) -> Void)?
+    /// Snooze - the concrete recompute/persist happens in `ShiftController`,
+    /// which knows "now" and how to present the Custom picker.
+    var onSnooze: ((ShiftFollowUp, ShiftSnoozeOption) -> Void)?
 
     private static let columnID = NSUserInterfaceItemIdentifier("shiftFollowUpCol")
     private static let rowViewID = NSUserInterfaceItemIdentifier("shiftFollowUpRow")
@@ -198,6 +224,9 @@ final class ShiftFollowUpListView: NSObject {
         tableView.rowHeight = 40
         tableView.dataSource = self
         tableView.delegate = self
+        tableView.target = self
+        tableView.doubleAction = #selector(rowDoubleClicked)
+        tableView.menu = rowMenu()
     }
 
     func setItems(_ items: [ShiftFollowUp]) {
@@ -208,6 +237,63 @@ final class ShiftFollowUpListView: NSObject {
     func applyTheme(_ theme: HelmTheme) {
         self.theme = theme
         tableView.reloadData()
+    }
+
+    @objc private func rowDoubleClicked() {
+        let row = tableView.clickedRow
+        guard row >= 0, row < items.count else { return }
+        onEdit?(items[row])
+    }
+
+    private var clickedItem: ShiftFollowUp? {
+        let row = tableView.clickedRow
+        guard row >= 0, row < items.count else { return nil }
+        return items[row]
+    }
+
+    private func rowMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Mark Done", action: #selector(doneClicked), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Reopen", action: #selector(reopenClicked), keyEquivalent: ""))
+        menu.addItem(.separator())
+        let snooze = NSMenuItem(title: "Snooze", action: nil, keyEquivalent: "")
+        let snoozeMenu = NSMenu()
+        snoozeMenu.addItem(NSMenuItem(title: "30 Minutes", action: #selector(snooze30), keyEquivalent: ""))
+        snoozeMenu.addItem(NSMenuItem(title: "1 Hour", action: #selector(snoozeHour), keyEquivalent: ""))
+        snoozeMenu.addItem(NSMenuItem(title: "Tomorrow", action: #selector(snoozeTomorrow), keyEquivalent: ""))
+        snoozeMenu.addItem(NSMenuItem(title: "Next Week", action: #selector(snoozeNextWeek), keyEquivalent: ""))
+        snoozeMenu.addItem(.separator())
+        snoozeMenu.addItem(NSMenuItem(title: "Custom\u{2026}", action: #selector(snoozeCustom), keyEquivalent: ""))
+        for item in snoozeMenu.items { item.target = self }
+        snooze.submenu = snoozeMenu
+        menu.addItem(snooze)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Edit\u{2026}", action: #selector(editClicked), keyEquivalent: ""))
+        for item in menu.items { item.target = self }
+        menu.delegate = self
+        return menu
+    }
+
+    @objc private func doneClicked() { if let item = clickedItem { onToggleDone?(item) } }
+    @objc private func reopenClicked() { if let item = clickedItem { onToggleDone?(item) } }
+    @objc private func editClicked() { if let item = clickedItem { onEdit?(item) } }
+    @objc private func snooze30() { if let item = clickedItem { onSnooze?(item, .minutes30) } }
+    @objc private func snoozeHour() { if let item = clickedItem { onSnooze?(item, .hour1) } }
+    @objc private func snoozeTomorrow() { if let item = clickedItem { onSnooze?(item, .tomorrow) } }
+    @objc private func snoozeNextWeek() { if let item = clickedItem { onSnooze?(item, .nextWeek) } }
+    @objc private func snoozeCustom() { if let item = clickedItem { onSnooze?(item, .custom) } }
+}
+
+extension ShiftFollowUpListView: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let isDone = clickedItem?.status == .done
+        for item in menu.items {
+            switch item.action {
+            case #selector(doneClicked): item.isHidden = isDone
+            case #selector(reopenClicked): item.isHidden = !isDone
+            default: break
+            }
+        }
     }
 }
 
@@ -300,7 +386,7 @@ private final class ShiftFollowUpRowView: NSView {
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
 
         var bits: [String] = []
-        if let at = item.followUpAt { bits.append(ShiftDateFormatting.friendly(at)) }
+        if let at = item.followUpAt { bits.append(ShiftDateFormatting.friendly(at, time: item.followUpTime)) }
         subLabel.stringValue = bits.joined(separator: " \u{00B7} ")
         subLabel.textColor = HelmTheme.mutedInk(theme)
 
@@ -332,6 +418,19 @@ enum ShiftDateFormatting {
         return f
     }()
 
+    private static let hhmm: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        f.calendar = Calendar(identifier: .gregorian)
+        return f
+    }()
+
+    private static let friendlyTime: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("jm")
+        return f
+    }()
+
     static func date(from yyyyMMdd: String) -> Date? { iso.date(from: yyyyMMdd) }
 
     /// "Today" / "Tomorrow" / "Aug 12" - never a raw ISO string in the UI.
@@ -344,5 +443,34 @@ enum ShiftDateFormatting {
         let f = DateFormatter()
         f.setLocalizedDateFormatFromTemplate("MMMd")
         return f.string(from: date)
+    }
+
+    /// "Today at 3:00 PM" / "Aug 12" (no time shown when `hhmm` is nil).
+    static func friendly(_ yyyyMMdd: String, time hhmmStr: String?) -> String {
+        let dayPart = friendly(yyyyMMdd)
+        guard let hhmmStr, let t = hhmm.date(from: hhmmStr) else { return dayPart }
+        return "\(dayPart) at \(friendlyTime.string(from: t))"
+    }
+
+    /// Combines a `"YYYY-MM-DD"` date string with an optional `"HH:MM"` time
+    /// string into one `Date` - the shared "read the two persisted scalar
+    /// fields back into a real moment in time" used by both sorting (task due
+    /// dates) and Snooze's relative-offset math (follow-up date + time).
+    /// Falls back to local midnight when `timeStr` is nil/unparseable.
+    static func dateTime(from yyyyMMdd: String?, time timeStr: String?) -> Date? {
+        guard let yyyyMMdd, let base = date(from: yyyyMMdd) else { return nil }
+        guard let timeStr, let t = hhmm.date(from: timeStr) else { return base }
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: base)
+        let timeComps = Calendar.current.dateComponents([.hour, .minute], from: t)
+        comps.hour = timeComps.hour
+        comps.minute = timeComps.minute
+        return Calendar.current.date(from: comps)
+    }
+
+    /// Splits a real `Date` back into the `("YYYY-MM-DD", "HH:MM")` pair the
+    /// YAML layer persists - the inverse of `dateTime(from:time:)`, used by
+    /// Snooze to write its recomputed moment back to the two scalar fields.
+    static func components(from date: Date) -> (dateStr: String, timeStr: String) {
+        (iso.string(from: date), hhmm.string(from: date))
     }
 }

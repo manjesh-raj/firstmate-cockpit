@@ -339,6 +339,21 @@ final class AppShellController: NSViewController {
         show(.hosts)
     }
 
+    /// The Shift menu's "New Task…" (⌘N) - selects the Shift destination
+    /// first so the sheet has something to present over, then opens the New
+    /// Task editor regardless of whichever destination was showing before.
+    @objc func newShiftTaskFromMenu() {
+        show(.shift)
+        shift.presentNewTaskEditor()
+    }
+
+    /// The Shift menu's "New Follow-up…" (⌘⇧F) - same shape as
+    /// `newShiftTaskFromMenu` above.
+    @objc func newShiftFollowUpFromMenu() {
+        show(.shift)
+        shift.presentNewFollowUpEditor()
+    }
+
     /// Fix 5: a host save closes its own (separate) editor window
     /// immediately, so the confirmation has to live somewhere that's still
     /// around afterward - the main window, regardless of which destination
