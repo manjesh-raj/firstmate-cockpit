@@ -608,6 +608,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_WEEKLY_SUMMARY_TESTS"] == "
     exit(ShiftWeeklySummarySelfTest.run() ? 0 : 1)
 }
 
+// cockpit-shift-conflict-handling: same convention, for the record-level
+// 3-way merge and conflict-resolution flow layered on top of
+// `ShiftGitSync.pullNow`'s `.diverged` case - see
+// ShiftConflictSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_CONFLICT_TESTS"] == "1" {
+    exit(ShiftConflictSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

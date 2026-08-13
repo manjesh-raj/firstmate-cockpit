@@ -241,6 +241,8 @@ final class ShiftController: NSViewController {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         syncPill.translatesAutoresizingMaskIntoConstraints = false
+        let syncPillClick = NSClickGestureRecognizer(target: self, action: #selector(syncPillClicked))
+        syncPill.addGestureRecognizer(syncPillClick)
         applySyncPill()
 
         let row = NSStackView(views: [textStack, spacer, syncPill])
@@ -269,9 +271,13 @@ final class ShiftController: NSViewController {
         case .failed(let reason):
             (text, colorHex) = ("Failed", theme.ansiHex[1])
             syncPill.toolTip = reason
+        case .conflict(let fileCount):
+            (text, colorHex) = ("Conflict \u{2013} click to resolve", theme.ansiHex[1])
+            syncPill.toolTip = "\(fileCount) file\(fileCount == 1 ? "" : "s") need a decision - click to resolve."
         }
-        if case .failed = syncStatus {} else {
-            syncPill.toolTip = nil
+        switch syncStatus {
+        case .failed, .conflict: break
+        default: syncPill.toolTip = nil
         }
         ToolRowLayout.pill(text: text, colorHex: colorHex, into: syncPill, label: syncPillLabel)
         // Mono pill text, per the mockup's `--mono` role for pill labels -
@@ -279,6 +285,23 @@ final class ShiftController: NSViewController {
         // other callers (Updates/Bootstrap rows), so the override happens
         // here rather than in the shared helper.
         syncPillLabel.font = ShiftFont.mono(10.5, weight: .semibold)
+    }
+
+    /// Only meaningful while the pill is in `.conflict` - opens the
+    /// resolution sheet. A click in any other state is a harmless no-op
+    /// (the gesture recognizer is unconditionally attached rather than
+    /// added/removed per state, since that's simpler and there is nothing
+    /// to do for any other status anyway).
+    @objc private func syncPillClicked() {
+        guard case .conflict = syncStatus, let gitSync = store.gitSync, let conflictSet = gitSync.pendingConflictSet else { return }
+        let resolver = ShiftConflictController(conflictSet: conflictSet)
+        resolver.onResolve = { [weak self] choices, completion in
+            gitSync.resolveConflictsAsync(choices: choices) { ok in
+                completion(ok)
+                if ok { self?.render() }
+            }
+        }
+        presentAsSheet(resolver)
     }
 
     private func buildStatsRow() {

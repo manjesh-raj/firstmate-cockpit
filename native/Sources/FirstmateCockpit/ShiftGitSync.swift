@@ -19,6 +19,7 @@
 // commit+push, and a periodic/launch-time pull. The UI never waits on
 // anything in this file.
 import Foundation
+import Yaml
 
 final class ShiftGitSync {
 
@@ -27,6 +28,13 @@ final class ShiftGitSync {
         case localChanges
         case syncing
         case failed(String)
+        /// A non-fast-forward pull that genuinely can't be auto-merged - see
+        /// `detectAndResolveConflicts()`. `fileCount` is how many of Shift's
+        /// three list files have at least one record needing a captain
+        /// decision; the actual `ShiftConflictSet` lives in
+        /// `pendingConflictSet`, not in this case's payload, so `Status`
+        /// itself stays trivially `Equatable`.
+        case conflict(fileCount: Int)
     }
 
     /// `personal-tasks/` inside the local working tree - what `ShiftStore`
@@ -47,6 +55,14 @@ final class ShiftGitSync {
     private var statusHandlers: [(Status) -> Void] = []
     private var pendingCommit: DispatchWorkItem?
     private var pullTimer: Timer?
+
+    /// Set by `detectAndResolveConflicts()` whenever it finds real per-record
+    /// conflicts (status flips to `.conflict`) - cleared once
+    /// `resolveConflicts(choices:)` successfully applies a resolution. The UI
+    /// reads this to build the resolution screen; it is never used to decide
+    /// anything on its own (that's always driven by an explicit captain
+    /// choice or an already-proven-unambiguous auto-merge).
+    private(set) var pendingConflictSet: ShiftConflictSet?
 
     /// Only ever `true` for `.shared` (the one production instance) - see
     /// `migrateLegacyDataIfNeeded()`. A disposable test instance (this
@@ -150,14 +166,17 @@ final class ShiftGitSync {
             // A fresh clone already has the latest commit; only a
             // pre-existing checkout (every launch after the first) needs its
             // own explicit launch-time pull.
-            if ok, existedAlready {
-                _ = self.pullNow()
+            if ok, existedAlready, self.pullNow() == .diverged {
+                _ = self.detectAndResolveConflicts()
             }
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.pullTimer == nil else { return }
             self.pullTimer = Timer.scheduledTimer(withTimeInterval: self.periodicPullInterval, repeats: true) { [weak self] _ in
-                self?.queue.async { _ = self?.pullNow() }
+                self?.queue.async {
+                    guard let self else { return }
+                    if self.pullNow() == .diverged { _ = self.detectAndResolveConflicts() }
+                }
             }
         }
     }
@@ -412,6 +431,197 @@ final class ShiftGitSync {
         let dirty = !uncommittedFiles().isEmpty
         setStatus(dirty ? .localChanges : .synced)
         return .fastForwarded
+    }
+
+    // MARK: Conflict detection and resolution (cockpit-shift-conflict-handling)
+
+    enum ConflictResolutionOutcome: Equatable {
+        case autoMerged(recordCount: Int)
+        case needsResolution
+        case failed(String)
+    }
+
+    /// Called after `pullNow()` reports `.diverged` - never anywhere else,
+    /// and never changes what `pullNow()` itself does (see that method's own
+    /// doc comment). Commits any still-uncommitted local edit first (so
+    /// "local" below means the real current state, not a stale HEAD), then
+    /// runs a record-level 3-way merge across the merge-base/local/origin
+    /// revisions of Shift's three list files. If every difference turns out
+    /// to be unambiguous (the common shape in practice - e.g. two different
+    /// tasks added on two machines with no overlapping ids), this applies
+    /// and pushes the merge itself with no captain interaction at all,
+    /// exactly like a normal sync. Only genuine per-record conflicts (the
+    /// same record edited differently on both sides) stop here and wait for
+    /// `resolveConflicts(choices:)`.
+    @discardableResult
+    func detectAndResolveConflicts() -> ConflictResolutionOutcome {
+        commitLocalIfDirty()
+        guard let base = mergeBaseRef() else {
+            let reason = "Could not compute a merge base with origin/\(branch)."
+            setStatus(.failed(reason))
+            return .failed(reason)
+        }
+        let set = computeConflictSet(base: base)
+        if !set.hasConflicts {
+            guard applyConflictResolution(set, choices: [:]) else {
+                return .failed("Automatic merge failed - see the sync pill for the reason.")
+            }
+            return .autoMerged(recordCount: set.autoMergeNotes.count)
+        }
+        pendingConflictSet = set
+        setStatus(.conflict(fileCount: set.affectedFileCount))
+        return .needsResolution
+    }
+
+    /// Applies the captain's resolution of `pendingConflictSet` - every
+    /// conflicting record must have an explicit choice in `choices` (keyed
+    /// by record id), or this refuses to write anything. Synchronous core
+    /// method (used directly by tests); `resolveConflictsAsync` wraps it for
+    /// UI callers.
+    @discardableResult
+    func resolveConflicts(choices: [String: ShiftConflictChoice]) -> Bool {
+        guard let set = pendingConflictSet else { return false }
+        guard applyConflictResolution(set, choices: choices) else { return false }
+        pendingConflictSet = nil
+        return true
+    }
+
+    /// UI-facing wrapper - runs on the sync queue (never blocking the
+    /// caller's thread) and delivers `completion` on the main thread.
+    func resolveConflictsAsync(choices: [String: ShiftConflictChoice], completion: @escaping (Bool) -> Void) {
+        queue.async { [weak self] in
+            let ok = self?.resolveConflicts(choices: choices) ?? false
+            DispatchQueue.main.async { completion(ok) }
+        }
+    }
+
+    /// Writes the final per-file record lists (the conflict set's own
+    /// unambiguous `resolved*` arrays, plus - for every conflict - whichever
+    /// side `choices` picked) straight to the working tree, then completes a
+    /// real two-parent merge commit via `git merge -s ours --no-commit`,
+    /// which stages the merge parents without touching any file, followed by
+    /// overwriting the working tree with this method's own resolved content
+    /// and committing that. Deliberately never lets git's own line-based
+    /// merge algorithm decide file content - two different fields on the
+    /// same record edited on different lines could textually merge with no
+    /// git-level conflict marker at all, silently producing a record that's
+    /// part-local/part-remote in a way neither side chose and nothing here
+    /// would notice.
+    @discardableResult
+    private func applyConflictResolution(_ set: ShiftConflictSet, choices: [String: ShiftConflictChoice]) -> Bool {
+        let allConflictIDs = set.taskConflicts.map(\.id) + set.followUpConflicts.map(\.id) + set.projectConflicts.map(\.id)
+        guard allConflictIDs.allSatisfy({ choices[$0] != nil }) else {
+            setStatus(.failed("Conflict resolution incomplete - not every conflicting record has a choice."))
+            return false
+        }
+
+        var finalTasks = set.resolvedTasks
+        for c in set.taskConflicts {
+            if let chosen: ShiftTask = choices[c.id] == .keepLocal ? c.local : c.remote { finalTasks.append(chosen) }
+        }
+        var finalFollowUps = set.resolvedFollowUps
+        for c in set.followUpConflicts {
+            if let chosen: ShiftFollowUp = choices[c.id] == .keepLocal ? c.local : c.remote { finalFollowUps.append(chosen) }
+        }
+        var finalProjects = set.resolvedProjects
+        for c in set.projectConflicts {
+            if let chosen: ShiftProject = choices[c.id] == .keepLocal ? c.local : c.remote { finalProjects.append(chosen) }
+        }
+
+        setStatus(.syncing)
+        let mergeStart = runGit(["merge", "-s", "ours", "--no-commit", "origin/\(branch)"], cwd: workingTree, authenticated: false)
+        guard mergeStart.status == 0 else {
+            setStatus(.failed("Could not start merge: \(mergeStart.stderr.isEmpty ? "unknown error" : mergeStart.stderr)"))
+            return false
+        }
+        do {
+            try ShiftYaml.writeList(path: dataRoot.appendingPathComponent("tasks/active.yaml").path, key: "tasks", items: finalTasks.map(ShiftYaml.toYaml))
+            try ShiftYaml.writeList(path: dataRoot.appendingPathComponent("follow-ups/follow-ups.yaml").path, key: "follow_ups", items: finalFollowUps.map(ShiftYaml.toYaml))
+            try ShiftYaml.writeList(path: dataRoot.appendingPathComponent("projects/projects.yaml").path, key: "projects", items: finalProjects.map(ShiftYaml.toYaml))
+        } catch {
+            _ = runGit(["merge", "--abort"], cwd: workingTree, authenticated: false)
+            setStatus(.failed("Could not write resolved files: \(error)"))
+            return false
+        }
+        let add = runGit(["add", "-A", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        guard add.status == 0 else {
+            _ = runGit(["merge", "--abort"], cwd: workingTree, authenticated: false)
+            setStatus(.failed("git add failed: \(add.stderr)"))
+            return false
+        }
+        let commit = runGit(["commit", "-m", "Shift: resolve \(set.totalConflictCount) conflict(s) with origin/\(branch)"], cwd: workingTree, authenticated: false)
+        guard commit.status == 0 else {
+            setStatus(.failed("git commit failed: \(commit.stderr)"))
+            return false
+        }
+        return pushOnly()
+    }
+
+    /// Commits (never pushes - the caller is about to attempt a merge that
+    /// needs its own commit) any still-uncommitted local edit so HEAD
+    /// reflects the true current local state before a 3-way comparison.
+    private func commitLocalIfDirty() {
+        guard !uncommittedFiles().isEmpty else { return }
+        _ = runGit(["add", "-A", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        _ = runGit(["commit", "-m", "Shift: local changes before conflict resolution"], cwd: workingTree, authenticated: false)
+    }
+
+    private func mergeBaseRef() -> String? {
+        let result = runGit(["merge-base", "HEAD", "origin/\(branch)"], cwd: workingTree, authenticated: false)
+        guard result.status == 0, !result.stdout.isEmpty else { return nil }
+        return result.stdout
+    }
+
+    /// Runs the generic 3-way merge for all three known record kinds against
+    /// one merge-base commit. `origin/<branch>` must already be up to date -
+    /// true whenever this is called right after `pullNow()`'s own `git
+    /// fetch`, which is the only production call path.
+    private func computeConflictSet(base: String) -> ShiftConflictSet {
+        var set = ShiftConflictSet()
+
+        let taskPath = "personal-tasks/tasks/active.yaml"
+        let taskMerge = ShiftThreeWayMerge.run(
+            kind: .task,
+            base: loadRecords(ref: base, path: taskPath, key: "tasks", parse: ShiftYaml.task),
+            local: loadRecords(ref: "HEAD", path: taskPath, key: "tasks", parse: ShiftYaml.task),
+            remote: loadRecords(ref: "origin/\(branch)", path: taskPath, key: "tasks", parse: ShiftYaml.task)
+        )
+        set.taskConflicts = taskMerge.conflicts
+        set.resolvedTasks = taskMerge.resolved
+
+        let followUpPath = "personal-tasks/follow-ups/follow-ups.yaml"
+        let followUpMerge = ShiftThreeWayMerge.run(
+            kind: .followUp,
+            base: loadRecords(ref: base, path: followUpPath, key: "follow_ups", parse: ShiftYaml.followUp),
+            local: loadRecords(ref: "HEAD", path: followUpPath, key: "follow_ups", parse: ShiftYaml.followUp),
+            remote: loadRecords(ref: "origin/\(branch)", path: followUpPath, key: "follow_ups", parse: ShiftYaml.followUp)
+        )
+        set.followUpConflicts = followUpMerge.conflicts
+        set.resolvedFollowUps = followUpMerge.resolved
+
+        let projectPath = "personal-tasks/projects/projects.yaml"
+        let projectMerge = ShiftThreeWayMerge.run(
+            kind: .project,
+            base: loadRecords(ref: base, path: projectPath, key: "projects", parse: ShiftYaml.project),
+            local: loadRecords(ref: "HEAD", path: projectPath, key: "projects", parse: ShiftYaml.project),
+            remote: loadRecords(ref: "origin/\(branch)", path: projectPath, key: "projects", parse: ShiftYaml.project)
+        )
+        set.projectConflicts = projectMerge.conflicts
+        set.resolvedProjects = projectMerge.resolved
+
+        set.autoMergeNotes = taskMerge.notes + followUpMerge.notes + projectMerge.notes
+        return set
+    }
+
+    /// `git show <ref>:<path>` - a file absent at that revision (never
+    /// created yet on that side) is treated as an empty record list, not an
+    /// error.
+    private func loadRecords<T>(ref: String, path: String, key: String, parse: (Yaml) -> T?) -> [T] {
+        let result = runGit(["show", "\(ref):\(path)"], cwd: workingTree, authenticated: false)
+        guard result.status == 0, !result.stdout.isEmpty else { return [] }
+        guard let doc = try? Yaml.load(result.stdout) else { return [] }
+        let arr = doc.dictionary?[.string(key, quoted: .double)]?.array ?? []
+        return arr.compactMap(parse)
     }
 
     /// `git status --short -- personal-tasks` lines - what decides whether
