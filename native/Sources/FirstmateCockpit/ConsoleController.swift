@@ -101,6 +101,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var zoomInButton = NSButton()
     private var zoomOutButton = NSButton()
     private var logButton = NSButton()
+    /// `fm/cockpit-block-view-stage0` - only ever shown for the one opted-in
+    /// host's tab, see `updateBlockViewControls`.
+    private var blockViewToggleButton = NSButton()
+    private var blockViewRefreshButton = NSButton()
     private let separator = NSView()
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
@@ -262,10 +266,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
         logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
+        blockViewToggleButton = makeIconButton(symbol: "rectangle.grid.1x2", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
+        blockViewRefreshButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Refresh Blocks", action: #selector(refreshBlockView))
 
-        // SRE Lead (design brief Part C) is a dedicated-host-page-only
-        // affordance - the shared Firstmate console has no single host
-        // cluster to investigate.
+        // SRE Lead (design brief Part C) and block view (`fm/cockpit-block-
+        // view-stage0`) are both dedicated-host-page-only affordances - the
+        // shared Firstmate console has no single host cluster to
+        // investigate, and its Shell/Mirror tabs never get a block tracker
+        // at all (see `TabModel.blockViewOptIn`) - a bug there took down the
+        // whole app on every launch in the original PR #79/#80 attempt.
         var toolViews: [NSView] = []
         if !isFirstmateConsole {
             let pill = SRELeadStatusPill()
@@ -273,7 +282,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             sreLeadButton = pill
             toolViews.append(pill)
         }
-        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton, logButton]
+        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton]
+        if !isFirstmateConsole {
+            toolViews += [blockViewToggleButton, blockViewRefreshButton]
+        }
+        toolViews.append(logButton)
         let tools = NSStackView(views: toolViews)
         tools.orientation = .horizontal
         tools.spacing = 2
@@ -365,12 +378,44 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     /// Add a tab for `launch`, build its chip, and (if the view is already on
-    /// screen) start its process. Returns the new tab.
+    /// screen) start its process. Returns the new tab. `blockViewOptIn` is
+    /// `fm/cockpit-block-view-stage0`'s single-host gate - `true` only for
+    /// the one saved host whose `Host.blockViewOptIn` is set, threaded down
+    /// from `AppShellController.connectHost` through `connectSSHIfNeeded`/
+    /// `openSSH`; every other caller (⌘T, ⌘D, the Firstmate console's
+    /// Shell/Mirror pair, an ad-hoc quick-connect with no saved `Host`)
+    /// leaves it at the default `false`.
     @discardableResult
-    private func addTab(launch: TabLaunch, name: String, select: Bool, accentHex: String? = nil, isOneShotCommand: Bool = false) -> TabModel {
+    private func addTab(launch: TabLaunch, name: String, select: Bool, accentHex: String? = nil, isOneShotCommand: Bool = false, blockViewOptIn: Bool = false) -> TabModel {
         let term = makeTerminal()
         let tab = TabModel(name: name, launch: launch, terminal: term, accentHex: accentHex)
         tab.isOneShotCommand = isOneShotCommand
+
+        // `fm/cockpit-block-view-stage0`: only ever true for an `.ssh` tab on
+        // the one opted-in host, and only when the whole feature is enabled
+        // (`BlockViewFeature.isEnabled`) - see `TabModel.blockViewOptIn`'s
+        // doc comment for why this is narrower than both prior attempts.
+        // Created up front (not lazily on first display) so the tracker is
+        // already accumulating blocks the instant the captain looks at the
+        // block-view panel, and torn down explicitly in `closeTab`.
+        if case .ssh = launch, blockViewOptIn, BlockViewFeature.isEnabled, let terminal = term.terminal {
+            tab.blockViewOptIn = true
+            let tracker = TerminalBlockTracker()
+            tracker.attach(to: terminal)
+            tab.blockTracker = tracker
+
+            let container = BlockContainerView(frame: .zero)
+            container.applyTheme(theme)
+            container.isHidden = true
+            content.addSubview(container)
+            NSLayoutConstraint.activate([
+                container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                container.topAnchor.constraint(equalTo: content.topAnchor),
+                container.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
+            tab.blockContainer = container
+        }
 
         let chip = TabChipView(tabID: tab.id, name: name)
         let id = tab.id
@@ -388,7 +433,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         return tab
     }
 
-    /// Start (or restart) a tab's child process from its launch spec.
+    /// Start (or restart) a tab's child process from its launch spec. This
+    /// is the path both a first-ever start (`addTab`) AND an automatic
+    /// reconnect (`processTerminated`'s `AppSettings.shared.autoReconnect`
+    /// timer) go through - `restartTabBookkeeping` below is called from
+    /// exactly here and from `reconnectActive` (the manual ⌘R path), so both
+    /// "a process just (re)started" cases share one bookkeeping step. See
+    /// `restartTabBookkeeping`'s own doc comment for why this unification
+    /// exists.
     private func startTab(_ tab: TabModel) {
         switch tab.launch {
         case .shell(let exe, let args, let cwd):
@@ -406,6 +458,53 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         tab.started = true
         if defaultLoggingEnabled { startLogging(tab) }
+        restartTabBookkeeping(tab)
+    }
+
+    /// `fm/cockpit-block-view-stage0`: the one entry point for "a tab's
+    /// process just (re)started" bookkeeping, called from both `startTab`
+    /// (covering the very first start AND `processTerminated`'s automatic-
+    /// reconnect timer, since that timer calls `startTab` directly) and
+    /// `reconnectActive` (the manual ⌘R path, which restarts a process
+    /// through a different switch over `tab.launch` and never calls
+    /// `startTab` itself).
+    ///
+    /// This exists because of a structural gap the scout report
+    /// (`data/cockpit-block-view-scout/report.md`, "Mechanism A") found in
+    /// the previous attempt: `reconnectActive` explicitly reset the block
+    /// tracker after restarting, but `processTerminated`'s auto-reconnect
+    /// timer called `startTab` directly and `startTab` never reset anything -
+    /// so a real network drop with a command mid-flight left a permanently
+    /// "running" block from the dead session, and the *next* session's
+    /// output could bleed into that stale block's text once the tracker's
+    /// stale buffer snapshot diverged from the new session's buffer. Stage 0
+    /// avoids that class of bug by construction rather than by remembering
+    /// to call `reset()` in two places that have to stay in sync: there is
+    /// exactly one place a restart's bookkeeping is defined, and every
+    /// restart path is required to call it - a future addition to this
+    /// bookkeeping can't be added to only one of the two paths again, since
+    /// there is only one path to add it to.
+    private func restartTabBookkeeping(_ tab: TabModel) {
+        tab.blockTracker?.reset()
+        tab.blockContainer?.clear()
+        installShellIntegrationIfSupported(tab)
+    }
+
+    /// `fm/cockpit-block-view-stage0`: best-effort, same timing convention as
+    /// `runStartupSnippet` - there is no protocol-level "the shell is ready"
+    /// signal, so this sends the hook after a fixed delay long enough for
+    /// the remote SSH session (authentication + remote prompt) to be sitting
+    /// at a real prompt. A no-op unless this tab has a block tracker at all
+    /// (i.e. `blockViewOptIn && BlockViewFeature.isEnabled` at tab-creation
+    /// time - see `addTab`) and for a one-shot provisioning command
+    /// (`isOneShotCommand`), neither of which is an interactive prompt cycle
+    /// this hook has anything to attach to.
+    private func installShellIntegrationIfSupported(_ tab: TabModel) {
+        guard tab.blockTracker != nil, !tab.isOneShotCommand else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak tab] in
+            guard let tab, !tab.isClosing else { return }
+            tab.terminal.send(txt: ShellIntegration.installCommand)
+        }
     }
 
     // MARK: The pinned "Firstmate" host (Fix 4)
@@ -472,13 +571,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// works), and `accentHex` tints its chip with the host colour (A3).
     /// Duplicating this tab (Phase 0) re-runs the same connection, re-resolving
     /// `keyID` independently for the new tab. `startupSnippetID` (B2/B5), when
-    /// set, is sent into the shell once the session looks ready.
-    func openSSH(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID? = nil) {
+    /// set, is sent into the shell once the session looks ready. `blockViewOptIn`
+    /// (`fm/cockpit-block-view-stage0`) defaults `false` - only
+    /// `connectSSHIfNeeded` (a saved host's dedicated page) ever passes
+    /// `true`, and only for the one host whose `Host.blockViewOptIn` is set;
+    /// an ad-hoc quick-connect has no `Host` to read that flag from at all.
+    func openSSH(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID? = nil, blockViewOptIn: Bool = false) {
         let launch = TabLaunch.ssh(
             label: label, executable: HostCatalog.sshExecutable, hostArgs: args,
             keyID: keyID, startupSnippetID: startupSnippetID
         )
-        addTab(launch: launch, name: numberedName(for: launch), select: true, accentHex: accentHex)
+        addTab(launch: launch, name: numberedName(for: launch), select: true, accentHex: accentHex, blockViewOptIn: blockViewOptIn)
         // Bring the console forward if the user was in the sidebar.
         if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
     }
@@ -493,9 +596,9 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// part) instead of implicitly stacking a second tab. A deliberate
     /// second session to the same host still works via the tab chip's own
     /// Duplicate affordance (⌘D / `duplicateTab`).
-    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?) {
+    func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?, blockViewOptIn: Bool = false) {
         guard tabs.isEmpty else { return }
-        openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID)
+        openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID, blockViewOptIn: blockViewOptIn)
         // The tab `openSSH` just appended is this page's one primary
         // interactive tab (`tabs` was empty a moment ago) - the only tab
         // `SRELeadBridge` will ever inject commands into. A later ⌘D on this
@@ -821,7 +924,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     private func duplicateTab(id: UUID) {
         guard let src = tabs.first(where: { $0.id == id }) else { return }
-        addTab(launch: src.launch, name: numberedName(for: src.launch), select: true, accentHex: src.accentHex)
+        addTab(launch: src.launch, name: numberedName(for: src.launch), select: true, accentHex: src.accentHex, blockViewOptIn: src.blockViewOptIn)
     }
 
     /// ⌘W: close the current tab.
@@ -851,6 +954,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.terminal.stopLogging()
         tab.terminal.terminate()
         tab.terminal.removeFromSuperview()
+        tab.blockContainer?.removeFromSuperview()
         tabs.remove(at: idx)
 
         // Last-tab edge case. The shared Firstmate console never leaves the
@@ -913,11 +1017,85 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private func select(tabID: UUID, focus: Bool = true) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         currentTab = tab
-        for t in tabs { t.terminal.isHidden = (t !== tab) }
+        for t in tabs { updateTabViewVisibility(t) }
         styleChips()
         updateWindowTitle(from: tab)
         updateLogButton()
+        updateBlockViewControls()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
+    }
+
+    // MARK: Block view (`fm/cockpit-block-view-stage0`)
+
+    /// Whether the current tab is showing parsed blocks instead of raw
+    /// scrollback right now - a per-console, session-only toggle (not
+    /// persisted, not a process-wide flag like the original PR #79/#83
+    /// attempts' `BlockViewManager`) since Stage 0 only ever has at most one
+    /// opted-in tab per console to toggle at all. Only ever visibly matters
+    /// for a tab with a `blockContainer` - see `updateTabViewVisibility`.
+    private var blockViewShowing = false
+
+    /// Decides which of a tab's two views (raw `terminal` or parsed
+    /// `blockContainer`) is visible right now - never both, and never for a
+    /// tab that isn't the current one. Toggling never touches `terminal`'s
+    /// process or `startProcess` state either way. A tab with no
+    /// `blockContainer` (every tab except the one opted-in host's, when the
+    /// feature is enabled - see `TabModel.blockViewOptIn`) always shows raw
+    /// `terminal` regardless of `blockViewShowing`.
+    private func updateTabViewVisibility(_ tab: TabModel) {
+        let isCurrent = (tab === currentTab)
+        guard isCurrent else {
+            tab.terminal.isHidden = true
+            tab.blockContainer?.isHidden = true
+            return
+        }
+        if blockViewShowing, let container = tab.blockContainer {
+            tab.terminal.isHidden = true
+            container.isHidden = false
+        } else {
+            tab.terminal.isHidden = false
+            tab.blockContainer?.isHidden = true
+        }
+    }
+
+    /// Toolbar toggle - only meaningful (and only shown at all, see
+    /// `updateBlockViewControls`) for the one opted-in host's tab.
+    @objc private func toggleBlockView() {
+        guard currentTab?.blockContainer != nil else { return }
+        blockViewShowing.toggle()
+        if let tab = currentTab { updateTabViewVisibility(tab) }
+        updateBlockViewControls()
+    }
+
+    /// Stage 0's one interactive action on the block view: re-parse
+    /// `blockTracker.blocks` (already kept current by the OSC 133 handler -
+    /// see `TerminalBlockTracker`'s header for why that's not the same as
+    /// live-streaming) into the visible list. Nothing calls `render`
+    /// automatically - this manual click is the only way the panel updates,
+    /// by design (see `BlockView.swift`'s header).
+    @objc private func refreshBlockView() {
+        guard let tab = currentTab, let tracker = tab.blockTracker, let container = tab.blockContainer else { return }
+        container.render(tracker.blocks)
+    }
+
+    /// Shows/hides and restyles the two block-view toolbar buttons - only
+    /// present at all when the current tab has a tracker (i.e. is the one
+    /// opted-in host's tab with the feature enabled); every other tab hides
+    /// both, matching `sreLeadButton`'s existing per-tab-relevance pattern.
+    private func updateBlockViewControls() {
+        let available = currentTab?.blockContainer != nil
+        blockViewToggleButton.isHidden = !available
+        blockViewRefreshButton.isHidden = !available || !blockViewShowing
+        guard available else { return }
+        blockViewToggleButton.image = NSImage(
+            systemSymbolName: blockViewShowing ? "rectangle.grid.1x2.fill" : "rectangle.grid.1x2",
+            accessibilityDescription: "Block View"
+        )
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        blockViewToggleButton.contentTintColor = blockViewShowing ? accent : HelmTheme.nsColor(theme.chromeInkHex)
+        blockViewToggleButton.toolTip = blockViewShowing ? "Show Raw Scrollback" : "Show Parsed Blocks (Stage 0)"
+        blockViewRefreshButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+        blockViewRefreshButton.toolTip = "Refresh Blocks"
     }
 
     // MARK: Theme
@@ -929,7 +1107,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     private func applyTheme() {
-        for tab in tabs { theme.apply(to: tab.terminal) }
+        for tab in tabs {
+            theme.apply(to: tab.terminal)
+            tab.blockContainer?.applyTheme(theme)
+        }
 
         let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -944,6 +1125,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         styleChips()
         updateLogButton()
+        updateBlockViewControls()
 
         sreLeadButton?.applyTheme(theme)
         sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
@@ -1085,6 +1267,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
+        // The manual-reconnect path's own restart bookkeeping - see
+        // `restartTabBookkeeping`'s doc comment for why `startTab` and this
+        // method are the only two callers, and why that matters.
+        restartTabBookkeeping(tab)
         view.window?.makeFirstResponder(tab.terminal)
     }
 
@@ -1214,5 +1400,62 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 self.startTab(tab)
             }
         }
+    }
+
+    // MARK: Test support (`fm/cockpit-block-view-stage0`)
+    //
+    // `BlockViewRestartIntegrationSelfTest` needs to drive this controller's
+    // *real* restart machinery - `startTab`/`reconnectActive` themselves,
+    // not a reimplementation of them in the test - to prove both restart
+    // paths leave the block tracker in the same clean state (the scout
+    // report's Mechanism A: the original attempt only reset it correctly
+    // from `reconnectActive`, not from the auto-reconnect timer that calls
+    // `startTab` directly). These five methods exist for exactly that; no
+    // production code calls them.
+
+    /// Opens a real `.ssh` tab on this (non-Firstmate) console, exactly the
+    /// way `AppShellController.connectHost` does for an opted-in host, minus
+    /// needing a real `Host`/`AppShellController`. `127.0.0.1` with a 1s
+    /// connect timeout fails fast (nothing real listens on the ssh port
+    /// there in this environment) - the test only needs a real `Terminal`
+    /// and a real `TerminalBlockTracker` attached to it, not a working
+    /// connection.
+    func debugOpenTestSSHTab(label: String) {
+        openSSH(
+            label: label,
+            args: ["-o", "ConnectTimeout=1", "-o", "BatchMode=yes", "127.0.0.1"],
+            accentHex: nil, keyID: nil, startupSnippetID: nil, blockViewOptIn: true
+        )
+    }
+
+    /// The real `Terminal` behind the current tab, so a test can feed
+    /// synthetic OSC 133 bytes into it directly - mirroring
+    /// `TerminalBlockTrackerSelfTest`'s `HeadlessTerminal` technique - without
+    /// a live shell actually emitting them.
+    func debugCurrentTerminal() -> Terminal? { currentTab?.terminal.terminal }
+
+    /// The two facts Mechanism A's bug corrupts: how many blocks the tracker
+    /// holds, and whether any of them is still `.running` (the permanently-
+    /// stuck-spinner symptom).
+    func debugBlockState() -> (count: Int, hasRunning: Bool)? {
+        guard let tracker = currentTab?.blockTracker else { return nil }
+        let hasRunning = tracker.blocks.contains {
+            if case .running = $0.status { return true }
+            return false
+        }
+        return (tracker.blocks.count, hasRunning)
+    }
+
+    /// Drives the exact "initial start / automatic reconnect" path -
+    /// `processTerminated`'s auto-reconnect timer calls `startTab` directly,
+    /// so this does too, rather than reimplementing what it does.
+    func debugSimulateAutoReconnectRestart() {
+        guard let tab = currentTab else { return }
+        startTab(tab)
+    }
+
+    /// Drives the exact manual ⌘R path.
+    func debugSimulateManualReconnectRestart() {
+        reconnectActive()
     }
 }

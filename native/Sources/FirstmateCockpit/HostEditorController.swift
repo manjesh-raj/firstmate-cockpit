@@ -78,6 +78,10 @@ final class HostEditorController: NSViewController {
     private let groupField = NSTextField()
     private let tagsField = NSTextField()
     private let agentForwardCheckbox = NSButton(checkboxWithTitle: "Forward SSH agent (-A)", target: nil, action: nil)
+    /// Block view Stage 0 opt-in (`fm/cockpit-block-view-stage0`) - see
+    /// `Host.blockViewOptIn`'s doc comment. Only meaningful when
+    /// `FM_BLOCK_VIEW_ENABLED` is also set; the caption below says so.
+    private let blockViewCheckbox = NSButton(checkboxWithTitle: "Render command blocks (Stage 0, needs FM_BLOCK_VIEW_ENABLED)", target: nil, action: nil)
     private let jumpViaField = NSTextField()
     private let portForwardingButton = NSButton()
     private let snippetPopup = NSPopUpButton()
@@ -155,6 +159,11 @@ final class HostEditorController: NSViewController {
         agentForwardCheckbox.state = (editing?.agentForward ?? false) ? .on : .off
         agentForwardCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
+        blockViewCheckbox.target = self
+        blockViewCheckbox.action = #selector(blockViewToggled)
+        blockViewCheckbox.state = (editing?.blockViewOptIn ?? false) ? .on : .off
+        blockViewCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         configure(jumpViaField, placeholder: "Jump via (host label or user@bastion)", value: editing?.jumpVia)
 
         portForwardingButton.target = self
@@ -180,6 +189,7 @@ final class HostEditorController: NSViewController {
             [rowLabel("Group"), groupField],
             [rowLabel("Tags"), tagsField],
             [rowLabel(""), agentForwardCheckbox],
+            [rowLabel(""), blockViewCheckbox],
             [rowLabel("Jump via"), jumpViaField],
             [rowLabel("Forwarding"), portForwardingButton],
             [rowLabel("Startup snippet"), snippetPopup],
@@ -420,6 +430,10 @@ final class HostEditorController: NSViewController {
         // Nothing to react to beyond the checkbox's own state; read at Save.
     }
 
+    @objc private func blockViewToggled() {
+        // Nothing to react to beyond the checkbox's own state; read at Save.
+    }
+
     /// Open the rules sheet on top of this one (a sheet-on-sheet, which
     /// AppKit supports); the edited list only lands on `portForwards` - and
     /// therefore on the host - when that sheet's own Save is clicked.
@@ -548,6 +562,7 @@ final class HostEditorController: NSViewController {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         host.agentForward = agentForwardCheckbox.state == .on
+        host.blockViewOptIn = blockViewCheckbox.state == .on
         let jumpVia = jumpViaField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         host.jumpVia = jumpVia.isEmpty ? nil : jumpVia
         host.portForwards = portForwards
