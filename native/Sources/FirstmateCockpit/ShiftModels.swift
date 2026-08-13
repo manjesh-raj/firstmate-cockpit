@@ -124,6 +124,17 @@ struct ShiftProject: Equatable {
     var startDate: String?  // "YYYY-MM-DD"
     var dueDate: String?    // "YYYY-MM-DD"
     var createdAt: String
+
+    /// A blank project ready for `ShiftStore.addProject` (cockpit-fix-shift-
+    /// new-project) - the New Project editor fills fields into this rather
+    /// than hand-assembling every property inline, mirroring `ShiftTask.fresh`/
+    /// `ShiftFollowUp.fresh` above.
+    static func fresh(now: Date = Date()) -> ShiftProject {
+        ShiftProject(
+            id: UUID().uuidString, name: "", description: "", status: .notStarted,
+            startDate: nil, dueDate: nil, createdAt: ShiftStore.iso8601(now)
+        )
+    }
 }
 
 struct ShiftNote {

@@ -281,6 +281,17 @@ final class ShiftStore {
 
     // MARK: Projects (phase 3)
 
+    /// Appends a brand-new project to `projects/projects.yaml` and persists
+    /// immediately (cockpit-fix-shift-new-project) - the counterpart to
+    /// `addTask`/`addFollowUp` above that phase 3 never added when it shipped
+    /// `updateProject` (edit-only, no creation path).
+    func addProject(_ project: ShiftProject) {
+        projects.append(project)
+        persistProjects()
+        logActivity(kind: "project_created", summary: "Created project \"\(project.name)\"", targetID: project.id, now: Date())
+        notify()
+    }
+
     /// Persists a project's edited fields (status, name, description, dates)
     /// back to `projects/projects.yaml` in full - there is no partial-field
     /// write, callers pass the whole struct with their edit applied.
