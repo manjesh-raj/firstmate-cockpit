@@ -492,6 +492,12 @@ if ProcessInfo.processInfo.environment["FM_RUN_CERT_INSPECTOR_TESTS"] == "1" {
     exit(CertInspectorSelfTest.run() ? 0 : 1)
 }
 
+// fm/cockpit-tools-yaml-order-perf-fix: same convention, for YamlBeautify's
+// key-order fidelity - see YamlBeautifySelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_YAML_BEAUTIFY_TESTS"] == "1" {
+    exit(YamlBeautifySelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
