@@ -17,6 +17,15 @@ final class HostStore {
 
     private(set) var hosts: [Host] = []
 
+    /// Set once, at `load()`, if `hosts.json` existed but couldn't be read as
+    /// valid JSON - the file itself has already been backed up aside by then
+    /// (see `load()`), but the in-memory list is empty either way, and
+    /// nothing else here can tell "genuinely nothing saved yet" apart from
+    /// "a corrupted file was just discarded" without this. A caller (e.g.
+    /// `AppDelegate`) should surface this once, then it plays no further role -
+    /// it is not cleared on a later successful `persist()`.
+    private(set) var loadFailureBackupPath: String?
+
     /// Fired after any mutation - the Hosts sidebar and the rail's per-host
     /// icons (Fix 3, fixes4) both need to hear about every add/rename/delete,
     /// so this is a list of observers rather than a single overwritable
@@ -81,7 +90,24 @@ final class HostStore {
             hosts = []
             return
         }
-        hosts = (try? JSONDecoder().decode([Host].self, from: data)) ?? []
+        if let decoded = try? JSONDecoder().decode([Host].self, from: data) {
+            hosts = decoded
+            return
+        }
+        // The file exists but isn't valid `[Host]` JSON - back it up before
+        // proceeding with an empty list, so the very next `persist()` (the
+        // first host add/edit/delete) doesn't atomically overwrite it and
+        // permanently discard whatever was actually in there.
+        hosts = []
+        let backupURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("hosts.json.corrupt-\(Int(Date().timeIntervalSince1970))")
+        do {
+            try FileManager.default.copyItem(at: fileURL, to: backupURL)
+            loadFailureBackupPath = backupURL.path
+            NSLog("[cockpit] hosts.json failed to decode - backed up to \(backupURL.path)")
+        } catch {
+            NSLog("[cockpit] hosts.json failed to decode AND could not be backed up: \(error.localizedDescription)")
+        }
     }
 
     private func persist() {

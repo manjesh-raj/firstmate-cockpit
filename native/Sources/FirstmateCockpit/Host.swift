@@ -205,7 +205,11 @@ enum HostCatalog {
 
     /// Parse a quick-connect string into a tab label + `ssh` argv. Accepts an
     /// optional leading `ssh ` and the classic `[user@]host[:port]` form, e.g.
-    /// `ssh deploy@10.0.0.4:2222` or `db.internal`. Returns `nil` when there is
+    /// `ssh deploy@10.0.0.4:2222` or `db.internal`. An IPv6 literal needs
+    /// bracket notation to pair with an explicit port - `[::1]:2222` - the
+    /// same convention URLs/`scp` use; a bare, unbracketed IPv6 literal
+    /// (`::1`, `2001:db8::1`) is treated as the whole host with the default
+    /// port, never mis-split on its last colon. Returns `nil` when there is
     /// no host to connect to.
     static func parseQuickConnect(_ raw: String) -> (label: String, args: [String])? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -222,14 +226,44 @@ enum HostCatalog {
         }
         guard !rest.isEmpty else { return nil }
 
-        var host = rest
+        var host: String
         var port = 22
-        if let colon = rest.lastIndex(of: ":") {
+
+        if rest.hasPrefix("[") {
+            // Bracketed IPv6 literal: `[<addr>]` or `[<addr>]:<port>`.
+            guard let close = rest.firstIndex(of: "]") else { return nil }
+            host = String(rest[rest.index(after: rest.startIndex)..<close])
+            guard !host.isEmpty else { return nil }
+            let afterBracket = rest[rest.index(after: close)...]
+            if afterBracket.isEmpty {
+                // No port suffix - default port, bracket-only form.
+            } else if afterBracket.hasPrefix(":") {
+                let portStr = String(afterBracket.dropFirst())
+                guard let p = Int(portStr), p > 0, p <= 65_535 else { return nil }
+                port = p
+            } else {
+                // Trailing garbage after `]` that isn't `:port` - malformed.
+                return nil
+            }
+        } else if rest.filter({ $0 == ":" }).count > 1 {
+            // More than one colon with no brackets: a bare IPv6 literal, not
+            // a `host:port` pair - splitting on the last colon would corrupt
+            // it (e.g. "::1" -> host ":", port 1). Treat the whole thing as
+            // the host, default port; use bracket notation for an explicit
+            // port on a literal.
+            host = rest
+        } else if let colon = rest.lastIndex(of: ":") {
             let portStr = String(rest[rest.index(after: colon)...])
+            host = String(rest[..<colon])
             if let p = Int(portStr), p > 0, p <= 65_535 {
-                host = String(rest[..<colon])
                 port = p
             }
+            // else: non-numeric/empty port suffix (e.g. "myhost:") - fall
+            // through with the colon already stripped from `host` above and
+            // the default port, rather than leaving a stray trailing colon
+            // attached to the destination `ssh` receives.
+        } else {
+            host = rest
         }
         guard !host.isEmpty else { return nil }
 
