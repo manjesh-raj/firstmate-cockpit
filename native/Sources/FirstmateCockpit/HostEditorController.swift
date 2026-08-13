@@ -50,6 +50,14 @@ final class HostEditorController: NSViewController {
     /// create a new snippet).
     private let snippets: [Snippet]
 
+    /// Every other saved host's label (never including `editing`'s own, and
+    /// never the pinned "Firstmate" entry's fixed display name - see
+    /// `save()`), used only to warn on a duplicate label at Save time
+    /// (Finding 5, cockpit-audit-core) - quick-connect resolves an ambiguous
+    /// exact-label match with a plain `first(where:)`, so two hosts sharing a
+    /// label can silently connect to the wrong one.
+    private let existingLabels: Set<String>
+
     /// The key popup's "+ New Key…" sentinel item, used to detect that
     /// selection (rather than a real key) in `keyPopupChanged`.
     private var newKeyMenuItem: NSMenuItem!
@@ -86,10 +94,11 @@ final class HostEditorController: NSViewController {
 
     // MARK: Init
 
-    init(host: Host?, keyStore: SSHKeyStore, snippets: [Snippet]) {
+    init(host: Host?, keyStore: SSHKeyStore, snippets: [Snippet], existingLabels: Set<String> = []) {
         self.editing = host
         self.keyStore = keyStore
         self.snippets = snippets
+        self.existingLabels = existingLabels
         self.portForwards = host?.portForwards ?? []
         self.selectedIcon = host?.iconSymbol ?? HostCatalog.defaultIcon
         self.selectedAccent = host?.accentHex ?? HostCatalog.defaultAccent
@@ -512,10 +521,22 @@ final class HostEditorController: NSViewController {
             flag(addressField)
             return
         }
+        guard let port = Int(portField.stringValue), (1...65535).contains(port) else {
+            flag(portField)
+            warn(title: "Invalid port", body: "Port must be a whole number between 1 and 65535.")
+            return
+        }
+
         var host = editing ?? Host(label: "", address: "")
-        host.label = label.isEmpty ? address : label
+        let resolvedLabel = label.isEmpty ? address : label
+        if existingLabels.contains(resolvedLabel) {
+            flag(labelField)
+            warn(title: "Duplicate label", body: "Another saved host already uses the label \u{201C}\(resolvedLabel)\u{201D}. Quick-connect can't tell them apart - pick a unique label.")
+            return
+        }
+        host.label = resolvedLabel
         host.address = address
-        host.port = Int(portField.stringValue) ?? 22
+        host.port = port
         host.username = usernameField.stringValue.trimmingCharacters(in: .whitespaces)
         let pw = passwordField.stringValue
         host.password = pw.isEmpty ? nil : pw
@@ -552,6 +573,16 @@ final class HostEditorController: NSViewController {
     private func flag(_ field: NSTextField) {
         view.window?.makeFirstResponder(field)
         NSSound.beep()
+    }
+
+    /// A blocking validation warning at Save time (Finding 5, cockpit-audit-core) -
+    /// same `NSAlert` shape as the Keychain-save-failure alert above.
+    private func warn(title: String, body: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = body
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     /// cockpit-native-host-form-fixes, Fix 2: this editor is presented as its

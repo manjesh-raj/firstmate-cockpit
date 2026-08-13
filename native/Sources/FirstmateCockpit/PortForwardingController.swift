@@ -114,9 +114,38 @@ final class PortForwardingController: NSViewController {
         addRow(for: PortForwardRule())
     }
 
+    /// Finding 5 (cockpit-audit-core): listen/dest ports used to be `Int(text)
+    /// ?? 0` with no range check, and a Local/Remote rule could be saved with
+    /// an empty dest host - both only failed later, silently, when the ssh
+    /// tab actually connected. Validate every row at Save time instead.
     @objc private func save() {
-        onSave?(rows.map { $0.currentRule })
+        let rules = rows.map { $0.currentRule }
+        for rule in rules {
+            guard (1...65535).contains(rule.listenPort) else {
+                warn(title: "Invalid listen port", body: "Listen port must be a whole number between 1 and 65535.")
+                return
+            }
+            if rule.kind != .dynamic {
+                guard (1...65535).contains(rule.destPort) else {
+                    warn(title: "Invalid destination port", body: "Destination port must be a whole number between 1 and 65535.")
+                    return
+                }
+                guard !rule.destHost.isEmpty else {
+                    warn(title: "Missing destination host", body: "Local and Remote forwarding rules need a destination host.")
+                    return
+                }
+            }
+        }
+        onSave?(rules)
         dismiss(self)
+    }
+
+    private func warn(title: String, body: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = body
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     @objc private func cancel() {

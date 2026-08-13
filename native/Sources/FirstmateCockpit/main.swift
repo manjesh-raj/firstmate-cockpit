@@ -96,6 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dedicated per-host page via `connectToHost`).
         appShell.rail.setHosts(hostStore.hosts)
         knownHostIDs = Set(hostStore.hosts.map { $0.id })
+        // Finding 4 (cockpit-audit-core): a corrupted hosts.json comes up as
+        // an empty list with no other signal - surface that once here rather
+        // than letting the captain mistake it for "nothing saved yet".
+        if let backupPath = hostStore.loadFailureBackupPath {
+            appShell.showToast("Couldn't read saved hosts - backed up the old file to \((backupPath as NSString).lastPathComponent)")
+        }
         hostStore.observe { [weak self] in
             guard let self else { return }
             let currentIDs = Set(self.hostStore.hosts.map { $0.id })
@@ -208,7 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// "+ New Key…" flow (which still opens as a sheet on top of *this*
     /// window) are unchanged from PR #14.
     func presentHostEditor(for host: Host?) {
-        let editor = HostEditorController(host: host, keyStore: keyStore, snippets: snippetStore.snippets)
+        let existingLabels = Set(hostStore.hosts.filter { $0.id != host?.id }.map { $0.label } + ["Firstmate"])
+        let editor = HostEditorController(host: host, keyStore: keyStore, snippets: snippetStore.snippets, existingLabels: existingLabels)
         editor.onSave = { [weak self] saved in
             guard let self else { return }
             if self.hostStore.host(id: saved.id) != nil {

@@ -32,6 +32,11 @@ final class FleetNotifier {
 
     private func start() {
         guard timer == nil else { return }
+        // UNUserNotificationCenter.current() throws an uncaught NSInternalInconsistencyException
+        // ("bundleProxyForCurrentProcess is nil") on a process with no real bundle identifier -
+        // true for the bare `.build/debug/FirstmateCockpit`/`swift run` dev binary. See
+        // UpdatesController.notify/ShiftNotifications' identical guard for the same reason.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         // Prime the "already seen" set with whatever is parked right now, so
         // enabling the toggle doesn't immediately fire a notification for

@@ -350,6 +350,20 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         return term
     }
 
+    /// Finding 6 (cockpit-audit-core, captain decision): port the Tools
+    /// page's numbered-disambiguation convention into Console - bare kind
+    /// name for the first currently-open tab of a kind, "N" appended for
+    /// each subsequent concurrent one (e.g. "Shell 2", "myhost 3"), counting
+    /// only tabs currently open (never a running total), so closing "Shell 2"
+    /// and opening a new shell reuses that name rather than climbing to
+    /// "Shell 3".
+    private func numberedName(for launch: TabLaunch) -> String {
+        let bare = launch.defaultName
+        let kind = launch.kindIdentity
+        let existing = tabs.filter { $0.launch.kindIdentity == kind }.count
+        return existing == 0 ? bare : "\(bare) \(existing + 1)"
+    }
+
     /// Add a tab for `launch`, build its chip, and (if the view is already on
     /// screen) start its process. Returns the new tab.
     @discardableResult
@@ -413,10 +427,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // bar order and the ⌘1…⌘9 shortcut numbering follow `tabs`' append
         // order, so this tab must be created before the shell tab.
         let mirror = TabLaunch.mirror(target: mirrorTarget())
-        addTab(launch: mirror, name: mirror.defaultName, select: false)
+        addTab(launch: mirror, name: numberedName(for: mirror), select: false)
         let s = shellArgv()
         let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
-        let shellTab = addTab(launch: shell, name: shell.defaultName, select: false)
+        let shellTab = addTab(launch: shell, name: numberedName(for: shell), select: false)
         select(tabID: shellTab.id, focus: focus)
         return shellTab
     }
@@ -464,7 +478,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             label: label, executable: HostCatalog.sshExecutable, hostArgs: args,
             keyID: keyID, startupSnippetID: startupSnippetID
         )
-        addTab(launch: launch, name: label, select: true, accentHex: accentHex)
+        addTab(launch: launch, name: numberedName(for: launch), select: true, accentHex: accentHex)
         // Bring the console forward if the user was in the sidebar.
         if let tab = currentTab { view.window?.makeFirstResponder(tab.terminal) }
     }
@@ -797,7 +811,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     @objc func newShellTab() {
         let s = shellArgv()
         let launch = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
-        addTab(launch: launch, name: launch.defaultName, select: true)
+        addTab(launch: launch, name: numberedName(for: launch), select: true)
     }
 
     /// ⌘D: a new tab running the same argv as the current one.
@@ -807,7 +821,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     private func duplicateTab(id: UUID) {
         guard let src = tabs.first(where: { $0.id == id }) else { return }
-        addTab(launch: src.launch, name: src.name, select: true, accentHex: src.accentHex)
+        addTab(launch: src.launch, name: numberedName(for: src.launch), select: true, accentHex: src.accentHex)
     }
 
     /// ⌘W: close the current tab.
@@ -818,6 +832,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private func closeTab(id: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[idx]
+
+        // Finding 11 (cockpit-audit-core): `shutdown()` already tears SRE
+        // Lead down when the whole page goes away, but closing just this one
+        // dependent tab (the host page's `primarySSHTab`) left the pane
+        // sitting in a stale "ready" state with its chat input still
+        // enabled - the bridge only discovered the tab was gone the next
+        // time a question was asked, surfacing a runtime error instead of
+        // the pane immediately reflecting disconnection.
+        if tab === primarySSHTab, sreLeadPhase != .notStarted {
+            tearDownSRELead()
+        }
 
         tab.isClosing = true
         tab.mirror?.tearDown()
@@ -858,13 +883,20 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         currentTab?.chip.beginRename()
     }
 
+    /// Finding 7 (cockpit-audit-core): right-click "Rename" on a *background*
+    /// tab's chip doesn't select it first (`TabChipView.rightMouseDown`), so
+    /// `tab` here can be a hidden tab, not `currentTab`. Restoring focus to
+    /// `tab.terminal` unconditionally silently stole keyboard focus away from
+    /// whichever tab was actually on screen. Restore focus to `currentTab`
+    /// instead - renaming the active tab (the double-click / ⌘⇧R path) is
+    /// unaffected, since `tab === currentTab` there anyway.
     private func renameTab(id: UUID, to newName: String) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         tab.name = trimmed.isEmpty ? tab.launch.defaultName : trimmed
         tab.chip.setName(tab.name)
         styleChips()
-        view.window?.makeFirstResponder(tab.terminal)
+        if let current = currentTab { view.window?.makeFirstResponder(current.terminal) }
     }
 
     /// ⌘1…⌘9: select the Nth tab (menu items carry a 1-based tag).
@@ -973,7 +1005,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let slug = tab.name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
-        let fileName = "\(String(slug))-\(formatter.string(from: Date())).log"
+        // Finding 8 (cockpit-audit-core): the timestamp alone is only
+        // second-resolution, so two tabs created (e.g. via rapid ⌘D) within
+        // the same wall-clock second used to compute the identical log path -
+        // the second `startLogging` truncated the file the first tab's still-
+        // open `FileHandle` was writing to, interleaving/corrupting both
+        // transcripts. Including the tab's own UUID makes every tab's log
+        // path unique regardless of name or timing.
+        let shortID = tab.id.uuidString.split(separator: "-").first.map(String.init) ?? tab.id.uuidString
+        let fileName = "\(String(slug))-\(formatter.string(from: Date()))-\(shortID).log"
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try tab.terminal.startLogging(to: dir.appendingPathComponent(fileName))
@@ -1022,7 +1062,18 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         case .mirror(let target):
             tab.mirror?.tearDown()
             tab.mirror = nil
-            connectMirror(tab, target: target)
+            // Finding 9 (cockpit-audit-core): `tearDown()` kills the tmux/
+            // herdr session synchronously, but the still-attached client
+            // notices and exits on its own, asynchronous timing - if
+            // SwiftTerm's `LocalProcess` hasn't yet reaped that exit,
+            // `startProcess`'s own `if running { return }` guard silently
+            // drops this reconnect attempt with no error shown. Wait for the
+            // old process to actually finish (bounded, so a truly stuck
+            // process still surfaces a message instead of hanging forever)
+            // before starting the new one.
+            waitForProcessExit(tab, thenRun: { [weak self] in
+                self?.connectMirror(tab, target: target)
+            })
         case .shell(let exe, let args, let cwd):
             tab.terminal.startProcess(
                 executable: exe,
@@ -1035,6 +1086,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
         view.window?.makeFirstResponder(tab.terminal)
+    }
+
+    /// Polls `tab.terminal.process.running` (bridged from SwiftTerm's
+    /// `LocalProcess`) every 50ms, up to `maxAttempts` times, then runs
+    /// `thenRun` - immediately if the process has already exited, otherwise
+    /// once it does. If it's still running after the bound, `thenRun` still
+    /// runs (matching this app's other "degrade gracefully, don't hang
+    /// forever" races) but a visible message explains why the reconnect may
+    /// not have taken effect, rather than silently doing nothing.
+    private func waitForProcessExit(_ tab: TabModel, maxAttempts: Int = 40, thenRun: @escaping () -> Void) {
+        guard tab.terminal.process.running else {
+            thenRun()
+            return
+        }
+        guard maxAttempts > 0 else {
+            tab.terminal.feed(text: "\r\n  \u{1b}[2m[reconnect]\u{1b}[0m previous session hadn't exited yet - retrying anyway\u{1b}[0m\r\n")
+            thenRun()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak tab] in
+            guard let self, let tab else { return }
+            self.waitForProcessExit(tab, maxAttempts: maxAttempts - 1, thenRun: thenRun)
+        }
     }
 
     /// Tear down every mirror's grouped session, every materialized ssh key

@@ -95,11 +95,43 @@ enum FirstmateBackend {
     private static func hasLiveHerdrSession() -> Bool {
         guard let herdr = HerdrMirror.resolveHerdr() else { return false }
         let session = herdrSessionName()
-        let result = HerdrMirror.run(herdr, ["session", "list", "--json"], session: session, env: childEnvironmentDict())
+        // Finding 10 (cockpit-audit-core): `resolve()` runs synchronously on
+        // the main thread at several call sites (app launch, every Mirror tab
+        // (re)start, `reconnectActive`, `renameTab`'s empty-name fallback).
+        // 73ms measured live is cheap, but nothing bounded it - a slow/hung
+        // `herdr` invocation would freeze the whole UI for however long that
+        // takes. `HerdrMirror.run` doesn't expose its `Process` to kill
+        // outright, so bound the wait itself: run it on a background queue
+        // and give up after `subprocessTimeout` if it hasn't returned,
+        // falling back to "no live evidence" (-> `.tmux`, today's existing
+        // default for every other failure mode here) rather than hanging.
+        guard let result = runWithTimeout(subprocessTimeout, work: {
+            HerdrMirror.run(herdr, ["session", "list", "--json"], session: session, env: childEnvironmentDict())
+        }) else { return false }
         guard result.status == 0, let data = result.stdout.data(using: .utf8) else { return false }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let sessions = obj["sessions"] as? [[String: Any]] else { return false }
         return sessions.contains { ($0["name"] as? String) == session && ($0["running"] as? Bool) == true }
+    }
+
+    /// How long `resolve()`'s subprocess calls are allowed to block the
+    /// caller (usually the main thread) before giving up and falling back to
+    /// this file's existing "any failure -> `.tmux`" default.
+    private static let subprocessTimeout: TimeInterval = 3
+
+    /// Runs `work` (itself a blocking call) on a background queue and waits
+    /// up to `timeout` - `nil` if it hasn't finished by then. The background
+    /// work is left to finish on its own in that case (there's no handle to
+    /// cancel it), but the caller is no longer blocked on it.
+    private static func runWithTimeout<T>(_ timeout: TimeInterval, work: @escaping () -> T) -> T? {
+        let sema = DispatchSemaphore(value: 0)
+        var result: T?
+        DispatchQueue.global(qos: .userInitiated).async {
+            result = work()
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + timeout)
+        return result
     }
 
     /// The herdr session firstmate itself would target for its own ambient
@@ -133,8 +165,19 @@ enum FirstmateBackend {
         proc.standardOutput = out
         proc.standardError = Pipe()
         do { try proc.run() } catch { return nil }
+
+        // Finding 10: bound this the same way `FleetData.crewState`'s
+        // watchdog does - a real, hard-kill timeout, since this call owns
+        // its own `Process` and can terminate it directly (unlike
+        // `hasLiveHerdrSession`'s wrapped `HerdrMirror.run` call above).
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
+        if exited.wait(timeout: .now() + subprocessTimeout) == .timedOut {
+            proc.terminationHandler = nil
+            if proc.isRunning { proc.terminate() }
+            return nil
+        }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
         guard proc.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }

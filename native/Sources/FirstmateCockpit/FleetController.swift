@@ -341,8 +341,18 @@ final class FleetController: NSViewController {
         guard !isLoading else { return }
         isLoading = true
         refreshButton.isEnabled = false
+        // snapshot() (~0.5s: task/backlog counts, watcher health) and
+        // OpenPRsSource.fetch() (the slow, network-bound per-clone PR scan)
+        // are independent - render the fast fields the moment snapshot()
+        // finishes instead of blocking that on the PR fetch too, then
+        // re-render once the PR list itself lands. The "Ready to merge"
+        // section/stat tile shows its own loading state in between.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let snapshot = FleetDataSource.snapshot()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.render(snapshot: snapshot, mergedPRs: nil)
+            }
             let openPRs = OpenPRsSource.fetch()
             let merged = FleetDataSource.mergedPRs(openPRs: openPRs, tasks: snapshot.tasks)
             DispatchQueue.main.async {
@@ -356,7 +366,11 @@ final class FleetController: NSViewController {
 
     // MARK: Rendering
 
-    private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]) {
+    /// `mergedPRs == nil` means the (slow) PR fetch hasn't finished yet -
+    /// every other field from `snapshot` still renders immediately, and the
+    /// "Ready to merge" section shows a loading placeholder instead of a
+    /// premature "nothing waiting on you" empty state.
+    private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]?) {
         if !hasLoadedOnce {
             hasLoadedOnce = true
             loadingSpinner.stopAnimation(nil)
@@ -382,12 +396,17 @@ final class FleetController: NSViewController {
             ? "\(df.string(from: Date())) \u{00B7} the fleet is yours"
             : "firstmate home not found at \(FirstmateHome.root.path) - set FM_HOME"
 
-        renderBanner(needs: needs, working: working, readyCount: mergedPRs.count)
-        rebuildStats(working: working.count, ready: mergedPRs.count, snapshot: snapshot)
+        renderBanner(needs: needs, working: working, readyCount: mergedPRs?.count ?? 0)
+        rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot)
         rebuildTaskRows(into: inFlightStack, tasks: working, emptyTitle: "All hands idle", emptyBody: "No crew are working right now. Send your first mate a task from the console and this board lights up.")
         inFlightHeader.stringValue = "In flight (\(working.count))"
-        rebuildPRRows(mergedPRs)
-        readyHeader.stringValue = "Ready to merge (\(mergedPRs.count))"
+        if let mergedPRs {
+            rebuildPRRows(mergedPRs)
+            readyHeader.stringValue = "Ready to merge (\(mergedPRs.count))"
+        } else {
+            rebuildPRRowsLoading()
+            readyHeader.stringValue = "Ready to merge"
+        }
 
         applyTheme()
 
@@ -460,6 +479,14 @@ final class FleetController: NSViewController {
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+    }
+
+    private func rebuildPRRowsLoading() {
+        for v in readyStack.arrangedSubviews {
+            readyStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        readyStack.addArrangedSubview(emptyStateView(icon: "arrow.triangle.2.circlepath", title: "Checking for open pull requests…", body: "Scanning your project clones for anything ready to merge."))
     }
 
     private func rebuildPRRows(_ prs: [MergedPR]) {

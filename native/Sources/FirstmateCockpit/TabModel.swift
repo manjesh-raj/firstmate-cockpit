@@ -76,6 +76,21 @@ enum TabLaunch {
         case .ssh(let label, _, _, _, _): return label
         }
     }
+
+    /// Groups tabs for the numbered-disambiguation naming convention
+    /// (Finding 6, cockpit-audit-core - Console adopting the Tools page's
+    /// established "bare kind name for the first instance, N appended for
+    /// subsequent concurrent ones" scheme). Unlike `defaultName`, this never
+    /// changes with which mirror backend happens to be live right now - two
+    /// concurrently open Mirror/Herdr tabs are still the same "kind" for
+    /// counting purposes.
+    var kindIdentity: String {
+        switch self {
+        case .shell: return "shell"
+        case .mirror: return "mirror"
+        case .ssh(let label, _, _, _, _): return "ssh:\(label)"
+        }
+    }
 }
 
 /// One console tab. A reference type because it owns a live terminal view, a
