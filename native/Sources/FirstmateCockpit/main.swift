@@ -498,6 +498,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_YAML_BEAUTIFY_TESTS"] == "1" {
     exit(YamlBeautifySelfTest.run() ? 0 : 1)
 }
 
+// cockpit-shift-foundation: same convention, for ShiftStore's completion/
+// reopen file-move logic and YAML scalar fidelity - see
+// ShiftStoreSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_STORE_TESTS"] == "1" {
+    exit(ShiftStoreSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

@@ -40,6 +40,7 @@ final class AppShellController: NSViewController {
     private let console: ConsoleController
     private let settings: SettingsController
     private let overview: FleetController
+    private let shift: ShiftController
     private let review = ReviewController()
     private let tools = ToolsController()
     private let docs = DocsController()
@@ -83,6 +84,7 @@ final class AppShellController: NSViewController {
         self.console = console
         self.settings = settings
         self.overview = FleetController()
+        self.shift = ShiftController(store: ShiftStore())
         self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
         self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
@@ -113,6 +115,7 @@ final class AppShellController: NSViewController {
         addChild(hostsPanel)
         addChild(console)
         addChild(overview)
+        addChild(shift)
         addChild(review)
         addChild(tools)
         addChild(docs)
@@ -120,7 +123,7 @@ final class AppShellController: NSViewController {
         addChild(bootstrap)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, review.view, tools.view, docs.view, updates.view, bootstrap.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, docs.view, updates.view, bootstrap.view, settings.view] {
             embed(destinationView)
         }
 
@@ -206,6 +209,9 @@ final class AppShellController: NSViewController {
         case .overview:
             overview.view.isHidden = false
             topBar.setTitle("Overview")
+        case .shift:
+            shift.view.isHidden = false
+            topBar.setTitle("Shift")
         case .hosts:
             hostsPanel.view.isHidden = false
             topBar.setTitle("Hosts")
@@ -285,6 +291,7 @@ final class AppShellController: NSViewController {
         hostsPanel.view.isHidden = true
         console.view.isHidden = true
         overview.view.isHidden = true
+        shift.view.isHidden = true
         review.view.isHidden = true
         tools.view.isHidden = true
         docs.view.isHidden = true

@@ -30,12 +30,19 @@ import AppKit
 /// `.tools` (cockpit-tools-page-core) follows the identical convention too,
 /// pinned directly *above* `.docs` - so the bottom-anchored group reads
 /// Tools, Docs, Updates, Bootstrap, Settings, avatar.
+/// `.shift` (cockpit-shift-foundation) is different from all of the above:
+/// it's a daily-use destination, not a utility, so it is NOT part of the
+/// bottom-anchored group - it lives in `navStack` right after `.overview`,
+/// which `loadView`'s `navStack` loop gets for free just by this enum
+/// declaring `.shift` immediately after `.overview` (case order drives
+/// `navStack`'s iteration order, same as every other `navStack` member).
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, review, tools, docs, updates, bootstrap, settings
+    case overview, shift, console, hosts, review, tools, docs, updates, bootstrap, settings
 
     var symbol: String {
         switch self {
         case .overview: return "square.grid.2x2"
+        case .shift: return "checkmark.circle"
         case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
@@ -50,6 +57,7 @@ enum RailDestination: CaseIterable {
     var title: String {
         switch self {
         case .overview: return "Overview"
+        case .shift: return "Shift"
         case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
