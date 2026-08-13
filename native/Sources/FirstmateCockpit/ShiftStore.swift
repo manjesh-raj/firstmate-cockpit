@@ -28,22 +28,53 @@ final class ShiftStore {
 
     let root: URL
 
+    /// `nil` when `FM_SHIFT_DIR` explicitly overrides `root` (every self-test
+    /// in this file, and any captain who wants a plain local-only folder with
+    /// no git backing at all) - in that case this store never shells out to
+    /// git or touches the network, matching phases 1-3's exact behavior.
+    /// Otherwise (the production default) this is `ShiftGitSync.shared`, and
+    /// every persisted mutation below calls its `markDirty()` after writing -
+    /// see `notify()`.
+    let gitSync: ShiftGitSync?
+
     init() {
-        root = ShiftStore.resolveRoot()
+        if let override = ProcessInfo.processInfo.environment["FM_SHIFT_DIR"], !override.isEmpty {
+            root = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+            gitSync = nil
+        } else {
+            let sync = ShiftGitSync.shared
+            sync.start()
+            root = sync.dataRoot
+            gitSync = sync
+        }
         reloadAll()
     }
 
     // MARK: Location
 
-    /// `~/Library/Application Support/FirstmateCockpit/shift/`, overridable
-    /// via `FM_SHIFT_DIR` - same convention as `HostStore`'s `FM_HOSTS_FILE`.
+    /// `personal-tasks/` inside a local clone of the captain's `manjesh-
+    /// config` GitHub repo (`ShiftGitSync.shared.dataRoot`), overridable via
+    /// `FM_SHIFT_DIR` - same convention as `HostStore`'s `FM_HOSTS_FILE`, and
+    /// unchanged from phases 1-3's own `FM_SHIFT_DIR` in that setting it still
+    /// points straight at the data root and bypasses everything else,
+    /// including git sync entirely (see `gitSync`'s doc comment above). What
+    /// changed in this phase (cockpit-shift-git-sync) is only the *default*
+    /// when `FM_SHIFT_DIR` is unset: phases 1-3 defaulted to a bare, non-git
+    /// `~/Library/Application Support/FirstmateCockpit/shift/` folder; that
+    /// folder's real data (if any) is migrated automatically into the new
+    /// git-backed location the first time `ShiftGitSync` runs - see
+    /// `ShiftGitSync.migrateLegacyDataIfNeeded()`. The local git clone itself
+    /// lives at `ShiftGitSync.resolveDefaultWorkingTree()`, overridable via
+    /// `FM_SHIFT_GIT_CLONE_PATH`; the remote it clones/pulls/pushes is
+    /// `ShiftGitSync.resolveDefaultRemoteURL()`, overridable via
+    /// `FM_SHIFT_REMOTE_URL` (how this phase's own verification pointed a
+    /// whole test instance of the app at a disposable local bare repo instead
+    /// of the captain's real `manjesh-config`).
     static func resolveRoot() -> URL {
         if let override = ProcessInfo.processInfo.environment["FM_SHIFT_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
         }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("FirstmateCockpit", isDirectory: true).appendingPathComponent("shift", isDirectory: true)
+        return ShiftGitSync.shared.dataRoot
     }
 
     private var activeTasksPath: String { root.appendingPathComponent("tasks/active.yaml").path }
@@ -301,7 +332,15 @@ final class ShiftStore {
         try? ShiftYaml.writeList(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
     }
 
-    private func notify() { changeHandlers.forEach { $0() } }
+    /// Every mutation above already wrote its YAML file synchronously before
+    /// calling this - `markDirty()` only ever schedules the debounced
+    /// git commit/push that happens afterward, on a background queue. Never
+    /// called when `gitSync` is `nil` (an explicit `FM_SHIFT_DIR` override),
+    /// so a self-test or a plain local-only setup never shells out to git.
+    private func notify() {
+        changeHandlers.forEach { $0() }
+        gitSync?.markDirty()
+    }
 
     static func iso8601(_ date: Date) -> String {
         let f = ISO8601DateFormatter()
