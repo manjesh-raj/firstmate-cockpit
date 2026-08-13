@@ -88,7 +88,6 @@ final class ShiftController: NSViewController {
         case detail(String)
     }
     private var projectsView: ShiftProjectsView = .grid
-    private var subtaskContainers: [NSView] = []
 
     private static let projectCardMinWidth: CGFloat = 260
     private static let projectCardSpacing: CGFloat = 12
@@ -860,110 +859,222 @@ final class ShiftController: NSViewController {
     }
 
     // MARK: Projects - detail
+    //
+    // Rebuilt to read like a real dedicated page (fm/cockpit-shift-project-
+    // page-redesign) - "clicking a project should feel like clicking into a
+    // Tool on the Tools page," per the captain's own comparison, not a form
+    // squeezed into leftover space. Built once (in `buildProjectsSection`),
+    // never torn down - the fixed chrome (back button, header, edit form,
+    // task list) needs to survive a `render()` triggered by something
+    // unrelated (a subtask toggle, an expand/collapse) without losing
+    // whatever the captain has half-typed into the form. `detailTaskListView`
+    // (an `NSTableView`, see `ShiftProjectDetailView.swift`) is refreshed on
+    // every render; the edit form's field values only refresh the first time
+    // a given project is shown - see `rebuildProjectDetail`.
 
-    /// Built once (in `buildProjectsSection`), never torn down and rebuilt -
-    /// the fixed chrome (back button, edit form) needs to survive a
-    /// `render()` triggered by something unrelated (a subtask toggle)
-    /// without losing whatever the captain has half-typed into the form.
-    /// Only the task list below it (`detailTasksStack`) is rebuilt every
-    /// time - see `rebuildDetailTasks`.
     private let detailBackButton = NSButton(title: "\u{2039} Back to Projects", target: nil, action: nil)
+    private let detailIconTile = IconTileView(size: 40, cornerRadius: 10)
+    private let detailNameLabel = NSTextField(labelWithString: "")
+    private let detailStatusPill = NSView()
+    private let detailStatusPillLabel = NSTextField(labelWithString: "")
+    private let detailMetaLabel = NSTextField(labelWithString: "")
+    private let detailDescriptionLabel = NSTextField(wrappingLabelWithString: "")
+
+    private let detailFormPanel = ShiftPanelView()
     private let detailNameField = NSTextField()
     private let detailDescriptionField = NSTextField()
     private let detailStatusPopup = NSPopUpButton()
     private let detailStartDateField = NSTextField()
     private let detailDueDateField = NSTextField()
     private let detailSaveButton = NSButton(title: "Save", target: nil, action: nil)
+
+    private let detailTasksPanel = ShiftPanelView()
     private let detailTasksHeader = NSTextField(labelWithString: "Tasks")
-    private let detailTasksStack = NSStackView()
+    private let detailTasksCountBadge = NSTextField(labelWithString: "")
+    private let detailTaskListView = ShiftProjectTaskListView()
+    private let detailTaskListScroll = NSScrollView()
+
     private var lastDetailProjectID: String?
+    /// The project the detail page currently shows - kept separate from
+    /// `lastDetailProjectID` (which only tracks "should the form re-fill")
+    /// so "+ Add Task" always knows which project to pre-select, even on a
+    /// `render()` that doesn't touch the form.
+    private var currentDetailProjectID: String?
 
     private func buildDetailChrome() {
-        detailBackButton.bezelStyle = .rounded
+        detailBackButton.isBordered = false
+        detailBackButton.contentTintColor = nil
         detailBackButton.target = self
         detailBackButton.action = #selector(detailBackClicked)
+        detailBackButton.font = .systemFont(ofSize: 12, weight: .medium)
         detailBackButton.translatesAutoresizingMaskIntoConstraints = false
 
+        let header = buildDetailHeader()
         let form = buildDetailForm()
+        detailFormPanel.setHeader(sectionHeaderRow(iconSymbol: "pencil", label: NSTextField(labelWithString: "Details")))
+        detailFormPanel.setBody(form)
+        detailFormPanel.translatesAutoresizingMaskIntoConstraints = false
 
-        detailTasksHeader.font = ShiftFont.serif(14)
-        detailTasksStack.orientation = .vertical
-        detailTasksStack.alignment = .leading
-        detailTasksStack.spacing = 8
-        detailTasksStack.translatesAutoresizingMaskIntoConstraints = false
+        let tasksHeaderRow = sectionHeaderRow(
+            iconSymbol: "checklist", label: detailTasksHeader, countBadge: detailTasksCountBadge,
+            addAction: #selector(addTaskToProjectClicked), addTooltip: "Add Task"
+        )
+        detailTaskListScroll.documentView = detailTaskListView.tableView
+        detailTaskListScroll.hasVerticalScroller = true
+        detailTaskListScroll.hasHorizontalScroller = false
+        detailTaskListScroll.borderType = .noBorder
+        detailTaskListScroll.drawsBackground = false
+        detailTaskListScroll.translatesAutoresizingMaskIntoConstraints = false
+        detailTaskListScroll.heightAnchor.constraint(equalToConstant: 280).isActive = true
+        detailTasksPanel.setHeader(tasksHeaderRow)
+        detailTasksPanel.setBody(detailTaskListScroll)
+        detailTasksPanel.translatesAutoresizingMaskIntoConstraints = false
+
+        detailTaskListView.onToggleExpand = { [weak self] taskID in
+            guard let self else { return }
+            if self.expandedTaskIDs.contains(taskID) { self.expandedTaskIDs.remove(taskID) } else { self.expandedTaskIDs.insert(taskID) }
+            self.render()
+        }
+        detailTaskListView.onToggleTaskCompleted = { [weak self] task in
+            self?.store.setTaskCompleted(id: task.id, completed: task.status != .completed)
+            self?.render()
+        }
+        detailTaskListView.onToggleSubtask = { [weak self] taskID, subtaskID, done in
+            self?.store.setSubtaskDone(taskID: taskID, subtaskID: subtaskID, done: done)
+            self?.render()
+        }
+        detailTaskListView.onOpenTask = { [weak self] task in
+            self?.presentTaskEditor(for: task)
+        }
 
         projectsDetailContainer.addArrangedSubview(detailBackButton)
-        projectsDetailContainer.addArrangedSubview(form)
-        projectsDetailContainer.addArrangedSubview(detailTasksHeader)
-        projectsDetailContainer.addArrangedSubview(detailTasksStack)
-        form.widthAnchor.constraint(equalTo: projectsDetailContainer.widthAnchor).isActive = true
-        detailTasksStack.widthAnchor.constraint(equalTo: projectsDetailContainer.widthAnchor).isActive = true
+        projectsDetailContainer.addArrangedSubview(header)
+        projectsDetailContainer.addArrangedSubview(detailFormPanel)
+        projectsDetailContainer.addArrangedSubview(detailTasksPanel)
+        header.widthAnchor.constraint(equalTo: projectsDetailContainer.widthAnchor).isActive = true
+        detailFormPanel.widthAnchor.constraint(equalTo: projectsDetailContainer.widthAnchor).isActive = true
+        detailTasksPanel.widthAnchor.constraint(equalTo: projectsDetailContainer.widthAnchor).isActive = true
     }
 
+    /// The page-header block: an icon tile, the project name as a real
+    /// serif title (matching My Tasks' own greeting treatment), a read-only
+    /// status pill + start/due date meta line, and the description as a
+    /// wrapping paragraph - all presentation, no input fields. Editing lives
+    /// entirely in the "Details" panel below, so there is exactly one place
+    /// that changes a project's fields, not a header control and a form both
+    /// claiming to own status.
+    private func buildDetailHeader() -> NSView {
+        detailIconTile.configure(symbol: "shippingbox", tint: .accent)
+
+        detailNameLabel.font = ShiftFont.serif(22)
+        detailNameLabel.lineBreakMode = .byTruncatingTail
+
+        detailStatusPillLabel.font = ShiftFont.mono(10.5, weight: .semibold)
+        detailStatusPillLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailStatusPill.wantsLayer = true
+        detailStatusPill.layer?.cornerRadius = 8
+        detailStatusPill.translatesAutoresizingMaskIntoConstraints = false
+        detailStatusPill.addSubview(detailStatusPillLabel)
+        NSLayoutConstraint.activate([
+            detailStatusPillLabel.leadingAnchor.constraint(equalTo: detailStatusPill.leadingAnchor, constant: 8),
+            detailStatusPillLabel.trailingAnchor.constraint(equalTo: detailStatusPill.trailingAnchor, constant: -8),
+            detailStatusPillLabel.topAnchor.constraint(equalTo: detailStatusPill.topAnchor, constant: 3),
+            detailStatusPillLabel.bottomAnchor.constraint(equalTo: detailStatusPill.bottomAnchor, constant: -3),
+        ])
+        detailStatusPill.setContentHuggingPriority(.required, for: .horizontal)
+
+        detailMetaLabel.font = .systemFont(ofSize: 11)
+
+        let metaRow = NSStackView(views: [detailStatusPill, detailMetaLabel])
+        metaRow.orientation = .horizontal
+        metaRow.alignment = .centerY
+        metaRow.spacing = 10
+        metaRow.translatesAutoresizingMaskIntoConstraints = false
+
+        detailDescriptionLabel.font = .systemFont(ofSize: 12.5)
+        detailDescriptionLabel.preferredMaxLayoutWidth = 640
+        detailDescriptionLabel.lineBreakMode = .byWordWrapping
+
+        let textStack = NSStackView(views: [detailNameLabel, metaRow, detailDescriptionLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 8
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        detailDescriptionLabel.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+
+        let row = NSStackView(views: [detailIconTile, textStack])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 14
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    /// The editable field set, laid out in an `NSGridView` (the same
+    /// approach `ShiftTaskEditorController`'s sheet uses) rather than a
+    /// hand-stacked column of rows - a fixed, right-aligned label column and
+    /// a fill-width field column read as a real form, not a raw debug
+    /// dump of controls.
     private func buildDetailForm() -> NSView {
-        let nameRow = formRow(label: "Name", field: detailNameField)
-        let descRow = formRow(label: "Description", field: detailDescriptionField)
-        let startRow = formRow(label: "Start date", field: detailStartDateField)
-        let dueRow = formRow(label: "Due date", field: detailDueDateField)
+        detailNameField.translatesAutoresizingMaskIntoConstraints = false
+        detailDescriptionField.translatesAutoresizingMaskIntoConstraints = false
 
         detailStatusPopup.removeAllItems()
         detailStatusPopup.addItems(withTitles: ShiftProjectStatus.allCases.map(\.displayName))
         detailStatusPopup.translatesAutoresizingMaskIntoConstraints = false
-        detailStatusPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let statusLabel = NSTextField(labelWithString: "Status")
-        statusLabel.font = .systemFont(ofSize: 11.5)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
-        statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let statusRow = NSStackView(views: [statusLabel, detailStatusPopup])
-        statusRow.orientation = .horizontal
-        statusRow.spacing = 10
-        statusRow.distribution = .fill
-        statusRow.translatesAutoresizingMaskIntoConstraints = false
+
+        detailStartDateField.placeholderString = "YYYY-MM-DD"
+        detailStartDateField.translatesAutoresizingMaskIntoConstraints = false
+        detailDueDateField.placeholderString = "YYYY-MM-DD"
+        detailDueDateField.translatesAutoresizingMaskIntoConstraints = false
+
+        let grid = NSGridView(views: [
+            [gridLabel("Name"), detailNameField],
+            [gridLabel("Description"), detailDescriptionField],
+            [gridLabel("Status"), detailStatusPopup],
+            [gridLabel("Start date"), detailStartDateField],
+            [gridLabel("Due date"), detailDueDateField],
+        ])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 14
+        grid.columnSpacing = 14
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).width = 100
+        grid.column(at: 1).xPlacement = .fill
 
         detailSaveButton.bezelStyle = .rounded
         detailSaveButton.target = self
         detailSaveButton.action = #selector(detailSaveClicked)
         detailSaveButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let rows = [nameRow, descRow, statusRow, startRow, dueRow]
-        let stack = NSStackView(views: rows + [detailSaveButton])
+        let saveRow = NSStackView(views: [NSView(), detailSaveButton])
+        saveRow.orientation = .horizontal
+        saveRow.distribution = .fill
+        saveRow.translatesAutoresizingMaskIntoConstraints = false
+        saveRow.arrangedSubviews[0].setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let stack = NSStackView(views: [grid, saveRow])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = 18
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for row in rows {
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
+        grid.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        saveRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
-    private func formRow(label text: String, field: NSTextField) -> NSStackView {
+    private func gridLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11.5)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        label.setContentHuggingPriority(.required, for: .horizontal)
-        label.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let row = NSStackView(views: [label, field])
-        row.orientation = .horizontal
-        row.spacing = 10
-        row.distribution = .fill
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
+        label.font = .systemFont(ofSize: 12)
+        return label
     }
 
-    /// Refreshes the task list unconditionally, and the edit form's field
-    /// values only the first time this particular project is shown - a
+    /// Refreshes the header + task list unconditionally, and the edit form's
+    /// field values only the first time this particular project is shown - a
     /// `render()` triggered by, say, a subtask toggle re-enters this with the
     /// same `project.id` and must not clobber an in-progress edit.
     private func rebuildProjectDetail(_ project: ShiftProject) {
+        currentDetailProjectID = project.id
         if lastDetailProjectID != project.id {
             lastDetailProjectID = project.id
             detailNameField.stringValue = project.name
@@ -974,7 +1085,35 @@ final class ShiftController: NSViewController {
                 detailStatusPopup.selectItem(at: idx)
             }
         }
+        applyDetailHeader(project)
         rebuildDetailTasks(project)
+    }
+
+    private func applyDetailHeader(_ project: ShiftProject) {
+        detailNameLabel.stringValue = project.name
+        var meta: [String] = []
+        if let start = project.startDate { meta.append("Starts \(ShiftDateFormatting.friendly(start))") }
+        if let due = project.dueDate { meta.append("Due \(ShiftDateFormatting.friendly(due))") }
+        detailMetaLabel.stringValue = meta.joined(separator: "  \u{00B7}  ")
+        detailDescriptionLabel.stringValue = project.description
+        detailDescriptionLabel.isHidden = project.description.isEmpty
+        applyDetailStatusPill(project.status)
+    }
+
+    private func applyDetailStatusPill(_ status: ShiftProjectStatus) {
+        let tint: HelmTint = {
+            switch status {
+            case .notStarted: return .neutral
+            case .inProgress: return .info
+            case .onHold: return .warn
+            case .completed: return .good
+            case .archived: return .critical
+            }
+        }()
+        let color = HelmTheme.nsColor(tint.hex(in: theme))
+        detailStatusPill.layer?.backgroundColor = color.withAlphaComponent(0.16).cgColor
+        detailStatusPillLabel.stringValue = status.displayName
+        detailStatusPillLabel.textColor = color
     }
 
     /// The one place subtasks render - nested under their parent task inside
@@ -983,122 +1122,25 @@ final class ShiftController: NSViewController {
     /// Includes both active and completed tasks, since a project's real task
     /// breakdown includes finished work, not just what's still open.
     private func rebuildDetailTasks(_ project: ShiftProject) {
-        for v in detailTasksStack.arrangedSubviews {
-            detailTasksStack.removeArrangedSubview(v)
-            v.removeFromSuperview()
-        }
-        subtaskContainers.removeAll()
         let tasks = store.allTasks(forProject: project.id)
-        guard !tasks.isEmpty else {
-            let label = NSTextField(labelWithString: "No tasks in this project.")
-            label.font = .systemFont(ofSize: 11.5)
-            label.textColor = HelmTheme.mutedInk(theme)
-            detailTasksStack.addArrangedSubview(label)
-            return
-        }
-        for task in tasks {
-            let block = detailTaskBlock(task)
-            detailTasksStack.addArrangedSubview(block)
-            block.widthAnchor.constraint(equalTo: detailTasksStack.widthAnchor).isActive = true
-        }
-    }
-
-    private func detailTaskBlock(_ task: ShiftTask) -> NSView {
-        let expanded = expandedTaskIDs.contains(task.id)
-        let chevron = NSImageView()
-        chevron.image = NSImage(
-            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: nil
-        )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-
-        let titleLabel = NSTextField(labelWithString: task.title)
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-
-        var bits: [String] = []
-        if task.status == .completed { bits.append("Completed") }
-        if !task.subtasks.isEmpty { bits.append("\(task.subtasks.filter(\.done).count)/\(task.subtasks.count) subtasks") }
-        let statusLabel = NSTextField(labelWithString: bits.joined(separator: " \u{00B7} "))
-        statusLabel.font = .systemFont(ofSize: 10.5)
-        statusLabel.textColor = HelmTheme.mutedInk(theme)
-
-        let headerRow = NSStackView(views: [chevron, titleLabel, statusLabel])
-        headerRow.orientation = .horizontal
-        headerRow.spacing = 8
-        headerRow.alignment = .centerY
-        headerRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerContainer = HoverHighlightView()
-        headerContainer.cornerRadius = 6
-        headerContainer.normalColor = .clear
-        headerContainer.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.18)
-        headerContainer.translatesAutoresizingMaskIntoConstraints = false
-        headerContainer.addSubview(headerRow)
-        NSLayoutConstraint.activate([
-            headerRow.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 6),
-            headerRow.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -6),
-            headerRow.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 5),
-            headerRow.bottomAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -5),
-        ])
-        let click = NSClickGestureRecognizer(target: self, action: #selector(detailTaskHeaderClicked(_:)))
-        headerContainer.addGestureRecognizer(click)
-        headerContainer.identifier = NSUserInterfaceItemIdentifier(task.id)
-
-        let column = NSStackView(views: [headerContainer])
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 4
-        column.translatesAutoresizingMaskIntoConstraints = false
-        headerContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-
-        guard expanded else { return column }
-
-        if task.subtasks.isEmpty {
-            let label = NSTextField(labelWithString: "No subtasks.")
-            label.font = .systemFont(ofSize: 11)
-            label.textColor = HelmTheme.mutedInk(theme)
-            column.addArrangedSubview(label)
-            return column
-        }
-
-        let subStack = NSStackView()
-        subStack.orientation = .vertical
-        subStack.alignment = .leading
-        subStack.spacing = 4
-        subStack.translatesAutoresizingMaskIntoConstraints = false
-        for subtask in task.subtasks {
-            let checkbox = NSButton(checkboxWithTitle: subtask.title, target: self, action: #selector(subtaskToggled(_:)))
-            checkbox.state = subtask.done ? .on : .off
-            checkbox.font = .systemFont(ofSize: 11.5)
-            checkbox.identifier = NSUserInterfaceItemIdentifier("\(task.id)\u{0}\(subtask.id)")
-            subStack.addArrangedSubview(checkbox)
-        }
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 8
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(subStack)
-        NSLayoutConstraint.activate([
-            subStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-            subStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            subStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            subStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
-        ])
-        subtaskContainers.append(container)
-        column.addArrangedSubview(container)
-        container.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-        return column
-    }
-
-    @objc private func detailTaskHeaderClicked(_ sender: NSClickGestureRecognizer) {
-        guard let id = sender.view?.identifier?.rawValue else { return }
-        if expandedTaskIDs.contains(id) { expandedTaskIDs.remove(id) } else { expandedTaskIDs.insert(id) }
-        render()
+        detailTasksCountBadge.stringValue = "\(tasks.count)"
+        detailTaskListView.setTasks(tasks, expandedTaskIDs: expandedTaskIDs)
+        detailTaskListView.applyTheme(theme)
     }
 
     @objc private func detailBackClicked() {
         projectsView = .grid
         render()
+    }
+
+    /// "+ Add Task" (fm/cockpit-shift-project-page-redesign) - opens the
+    /// same New Task sheet the My Tasks header's "+" uses, pre-selecting
+    /// the project currently open. `presentTaskEditor`'s existing `onSave`
+    /// calls `render()`, which re-enters `rebuildProjectDetail` for this
+    /// same project and re-reads `store.allTasks(forProject:)` - the new
+    /// task appears immediately, no navigation required.
+    @objc private func addTaskToProjectClicked() {
+        presentTaskEditor(for: nil, defaultProjectID: currentDetailProjectID)
     }
 
     @objc private func detailSaveClicked() {
@@ -1114,14 +1156,6 @@ final class ShiftController: NSViewController {
         project.dueDate = detailDueDateField.stringValue.isEmpty ? nil : detailDueDateField.stringValue
         store.updateProject(project)
         Toast.show(in: view, message: "Project saved")
-        render()
-    }
-
-    @objc private func subtaskToggled(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue else { return }
-        let parts = raw.components(separatedBy: "\u{0}")
-        guard parts.count == 2 else { return }
-        store.setSubtaskDone(taskID: parts[0], subtaskID: parts[1], done: sender.state == .on)
         render()
     }
 
@@ -1143,8 +1177,8 @@ final class ShiftController: NSViewController {
     @objc private func newFollowUpClicked() { presentFollowUpEditor(for: nil) }
     @objc private func newProjectClicked() { presentProjectEditor() }
 
-    private func presentTaskEditor(for task: ShiftTask?) {
-        let editor = ShiftTaskEditorController(task: task, projects: store.projects)
+    private func presentTaskEditor(for task: ShiftTask?, defaultProjectID: String? = nil) {
+        let editor = ShiftTaskEditorController(task: task, projects: store.projects, defaultProjectID: defaultProjectID)
         editor.onSave = { [weak self] saved in
             guard let self else { return }
             if task != nil {
@@ -1243,12 +1277,22 @@ final class ShiftController: NSViewController {
         tasksCountBadge.textColor = muted
         followUpsCountBadge.textColor = muted
         projectsCountBadge.textColor = muted
-        for container in subtaskContainers {
-            container.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-        }
         taskListView.applyTheme(theme)
         followUpListView.applyTheme(theme)
         applySyncPill()
+
+        detailBackButton.contentTintColor = muted
+        detailIconTile.applyTheme(theme)
+        detailNameLabel.textColor = ink
+        detailMetaLabel.textColor = muted
+        detailDescriptionLabel.textColor = muted
+        detailFormPanel.applyTheme(theme)
+        detailTasksPanel.applyTheme(theme)
+        detailTasksCountBadge.textColor = muted
+        if case .detail(let projectID) = projectsView, let project = store.projects.first(where: { $0.id == projectID }) {
+            applyDetailStatusPill(project.status)
+        }
+        detailTaskListView.applyTheme(theme)
 
         let accent = HelmTheme.nsColor(theme.accentHex)
         let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
