@@ -648,6 +648,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_VOLUME_TESTS"] == "1" 
     exit(BlockViewVolumeSelfTest.run() ? 0 : 1)
 }
 
+// `fm/cockpit-fix-host-decode-regression`: same convention, for `Host`'s
+// custom decode fallback (a new `CodingKeys` entry with a Swift-side default,
+// like `blockViewOptIn`, must not break decoding of pre-existing `hosts.json`
+// files) - see HostStoreSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_HOST_STORE_TESTS"] == "1" {
+    exit(HostStoreSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
