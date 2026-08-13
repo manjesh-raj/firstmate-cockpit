@@ -24,11 +24,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // host's startup snippet through it at connect time, and the Snippets
     // window's "Run" sends a snippet straight to the active tab.
     let snippetStore = SnippetStore()
+    // Phase 5 (cockpit-shift-power-features): one `ShiftStore` shared by the
+    // main window's Shift page, the menu bar item, the search palette, and
+    // quick capture - all read/write the same tasks/follow-ups, never
+    // separate store instances that could drift out of sync with each other.
+    let shiftStore = ShiftStore()
     lazy var console = ConsoleController(keyStore: keyStore, snippetStore: snippetStore)
     lazy var hostsPanel = HostsSidebarController(store: hostStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
     lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+    lazy var shiftMenuBar = ShiftMenuBarController(store: shiftStore)
+    lazy var shiftSearch = ShiftSearchController(store: shiftStore)
+    lazy var shiftQuickCapture = ShiftQuickCaptureController(store: shiftStore)
+    lazy var shiftNotifications = ShiftNotificationScheduler(store: shiftStore)
+    lazy var shiftHotkey = ShiftGlobalHotkey { [weak self] in self?.shiftQuickCapture.present() }
     // Fix 1: `makeHostConsole` builds a fresh, host-scoped console (no
     // Mirror/Shell tabs) for `AppShellController.connectHost` - captured as
     // local constants (not `self`) so this closure, which `appShell` holds
@@ -38,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snippetStore = self.snippetStore
         return AppShellController(
             hostsPanel: hostsPanel, console: console, settings: settingsController,
-            hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore,
+            hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, shiftStore: shiftStore,
             makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
         )
     }()
@@ -118,6 +128,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch, and again whenever the toggle flips.
         FleetNotifier.shared.setEnabled(AppSettings.shared.notifyOnNeedsDecision)
 
+        // Phase 5 (cockpit-shift-power-features): search palette + menu bar
+        // popover + global quick capture + due-item notifications. All four
+        // read/write the one shared `shiftStore` above - never a second
+        // instance.
+        shiftSearch.onSelectTask = { [weak self] id in self?.appShell.openShiftTask(id: id) }
+        shiftSearch.onSelectFollowUp = { [weak self] id in self?.appShell.openShiftFollowUp(id: id) }
+        shiftSearch.onSelectProject = { [weak self] id in self?.appShell.openShiftProject(id: id) }
+        shiftQuickCapture.onCaptured = { [weak self] in
+            self?.appShell.showToast("Task captured")
+        }
+        // The global hotkey's system-wide (other-app-frontmost) case needs
+        // Accessibility permission - see `ShiftGlobalHotkey`'s header for
+        // exactly why. Requesting it here (once, at launch) surfaces the
+        // real macOS prompt the first time this app ever runs rather than
+        // silently failing later.
+        shiftHotkey.requestPermissionIfNeeded()
+        shiftHotkey.start()
+        shiftNotifications.start()
+        // `shiftMenuBar` is `lazy` - force it into existence now so its
+        // `NSStatusItem` actually appears at launch rather than only the
+        // first time something else happens to reference the property.
+        _ = shiftMenuBar
+
         buildMenu()
 
         let frame = NSRect(x: 0, y: 0, width: 1220, height: 720)
@@ -149,6 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         console.shutdown()
         appShell.shutdownAllHostConsoles()
+        shiftHotkey.stop()
+        shiftNotifications.stop()
     }
 
     // MARK: Host connect (Fix 1: dedicated per-host pages)
@@ -304,6 +339,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         snippetsController.newSnippet()
     }
 
+    // MARK: Shift power features (phase 5)
+
+    @objc func showShiftSearch() {
+        shiftSearch.present()
+    }
+
+    @objc func showShiftQuickCapture() {
+        shiftQuickCapture.present()
+    }
+
     // MARK: Menu
 
     /// The main menu. Three load-bearing groups:
@@ -394,6 +439,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newFollowUpItem.keyEquivalentModifierMask = [.command, .shift]
         newFollowUpItem.target = appShell
         shiftMenu.addItem(newFollowUpItem)
+        shiftMenu.addItem(NSMenuItem.separator())
+        // Phase 5 (cockpit-shift-power-features): ⌘⇧P rather than the
+        // reviewed mockup's own ⌘K, which this app already bound to "Find in
+        // Terminal" above, well before this phase existed.
+        let searchShiftItem = NSMenuItem(title: "Search Shift…", action: #selector(AppDelegate.showShiftSearch), keyEquivalent: "p")
+        searchShiftItem.keyEquivalentModifierMask = [.command, .shift]
+        searchShiftItem.target = self
+        shiftMenu.addItem(searchShiftItem)
+        let weeklyReviewItem = NSMenuItem(title: "Weekly Review", action: #selector(AppShellController.showShiftWeeklyReview), keyEquivalent: "")
+        weeklyReviewItem.target = appShell
+        shiftMenu.addItem(weeklyReviewItem)
+        // In-app fallback for quick capture's global ⌥Space hotkey (see
+        // `ShiftGlobalHotkey`'s header) - works with no Accessibility
+        // permission at all as long as this app is frontmost, so it's a
+        // meaningful discoverability aid even before that permission is
+        // granted.
+        let quickCaptureItem = NSMenuItem(title: "Quick Capture", action: #selector(AppDelegate.showShiftQuickCapture), keyEquivalent: " ")
+        quickCaptureItem.keyEquivalentModifierMask = [.option]
+        quickCaptureItem.target = self
+        shiftMenu.addItem(quickCaptureItem)
 
         // Keys menu - the Phase 2 Keychain screen. Both items target the app
         // delegate directly (so they work regardless of focus, like the Hosts
@@ -534,6 +599,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_DATE_PARSER_TESTS"] == "1" 
 // see ShiftGitSyncSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_GIT_SYNC_TESTS"] == "1" {
     exit(ShiftGitSyncSelfTest.run() ? 0 : 1)
+}
+
+// cockpit-shift-power-features: same convention, for `ShiftStore.weeklySummary`'s
+// completed/pushed-back/upcoming counting - see
+// ShiftWeeklySummarySelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_WEEKLY_SUMMARY_TESTS"] == "1" {
+    exit(ShiftWeeklySummarySelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
