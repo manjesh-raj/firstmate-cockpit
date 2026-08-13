@@ -784,77 +784,10 @@ final class ToolInstance: NSObject {
 
     // MARK: Diff
 
-    private static let diffBeforeExample = """
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: web-app
-      labels:
-        app: web-app
-        tier: frontend
-    spec:
-      replicas: 2
-      selector:
-        matchLabels:
-          app: web-app
-      template:
-        metadata:
-          labels:
-            app: web-app
-        spec:
-          containers:
-            - name: web-app
-              image: registry.example.com/web-app:1.4.0
-              ports:
-                - containerPort: 8080
-              env:
-                - name: LOG_LEVEL
-                  value: "info"
-              resources:
-                limits:
-                  cpu: "500m"
-                  memory: "256Mi"
-    """
-
-    private static let diffAfterExample = """
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: web-app
-      labels:
-        app: web-app
-    spec:
-      replicas: 2
-      selector:
-        matchLabels:
-          app: web-app
-      template:
-        metadata:
-          labels:
-            app: web-app
-        spec:
-          containers:
-            - name: web-app
-              image: registry.example.com/web-app:1.5.0
-              ports:
-                - containerPort: 8080
-              env:
-                - name: LOG_LEVEL
-                  value: "info"
-                - name: APP_ENV
-                  value: "production"
-              resources:
-                limits:
-                  cpu: "500m"
-                  memory: "256Mi"
-    """
-
     private func buildDiffPanel() -> NSView {
         let (beforeScroll, beforeView) = codeEditor(height: 220, readOnly: false)
-        beforeView.string = Self.diffBeforeExample
         diffBeforeInput = beforeView
         let (afterScroll, afterView) = codeEditor(height: 220, readOnly: false)
-        afterView.string = Self.diffAfterExample
         diffAfterInput = afterView
 
         let beforeColumn = NSStackView(views: [sectionLabel("Before"), beforeScroll])
