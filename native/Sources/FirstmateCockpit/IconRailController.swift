@@ -36,6 +36,14 @@ import AppKit
 /// pinned directly *above* `.docs` and below `.tools` - so the bottom-
 /// anchored group reads Tools, Vault, Docs, Updates, Bootstrap, Settings,
 /// avatar.
+/// `fm/grandline-rail-setup-group` merged `.updates`/`.bootstrap`'s two
+/// standalone rail rows into one "Setup" entry, directly above `.docs`, that
+/// opens a small flyout `NSPopover` listing Updates and Bootstrap - so the
+/// bottom-anchored group visually reads Tools, Vault, Docs, Setup
+/// (-> Updates, Bootstrap flyout), Settings, avatar. Both cases remain real
+/// `RailDestination`s for switching purposes - only their rail position/
+/// visibility changed; see `IconRailController.buildSetupButton()`/
+/// `showSetupFlyout()`.
 /// `.shift` (cockpit-shift-foundation) is different from all of the above:
 /// it's a daily-use destination, not a utility, so it is NOT part of the
 /// bottom-anchored group - it lives in `navStack` alongside the other fixed
@@ -176,6 +184,34 @@ final class IconRailController: NSViewController {
     /// style as those two, for visual consistency.
     private let dividerAboveNav = NSBox()
 
+    /// fm/grandline-rail-setup-group: "Setup" merges the standalone Updates
+    /// and Bootstrap rail entries into one entry after a captain-approved
+    /// discussion (both are environment/dependency setup concerns, distinct
+    /// from Settings' app preferences, which stays its own separate top-level
+    /// icon, untouched). `.updates`/`.bootstrap` remain real
+    /// `RailDestination` cases with unchanged pages - only their rail
+    /// position/visibility changed. Hovering "Setup" reveals them as a small
+    /// flyout `NSPopover` anchored to the button's trailing edge (two captain
+    /// corrections from the first pass: an in-rail expanding drawer pushed
+    /// every row below it up and down as it opened/closed, disrupting the
+    /// rail's fixed divider rhythm - a flyout to the side leaves the rail's
+    /// own layout untouched; and the flyout should open on hover, Dock/menu-
+    /// bar-submenu style, not a click, so the disclosure chevron affordance
+    /// a click-to-open control would need is gone too). See
+    /// `HoverTrackingButton`, `buildSetupButton()`, `scheduleShowSetupFlyout()`/
+    /// `scheduleCloseSetupFlyout()`. "Setup" itself is a pure UI toggle, not a
+    /// `RailDestination` - it never calls `onSelect`.
+    private let setupButton = HoverTrackingButton()
+    private var setupPopover: NSPopover?
+
+    /// Closing the flyout on mouse-exit is delayed slightly (`closeDelay`) so
+    /// moving the cursor from the Setup button to the flyout's own content -
+    /// two disconnected views with a small gap between them - doesn't close
+    /// it out from under the captain; `scheduleShowSetupFlyout` cancels this
+    /// timer the moment either view reports the mouse back over it.
+    private var setupCloseWorkItem: DispatchWorkItem?
+    private static let setupCloseDelay: TimeInterval = 0.2
+
     /// Theme-audit task: this used to be `NSVisualEffectView(.sidebar,
     /// .behindWindow)` - the exact material/blending pair `HostsSidebarController`
     /// already diagnosed and ripped out (its Fix 6 comment) for rendering an
@@ -271,13 +307,13 @@ final class IconRailController: NSViewController {
 
         // Tools (cockpit-tools-page-core) sits below the dynamic per-host
         // icon block, directly above Vault, which sits directly above Docs,
-        // which sits directly above Updates, which sits directly above
-        // Bootstrap, which sits directly above Settings - which in turn sits
-        // directly above the avatar, per the captain's ask. All six are
-        // still real `RailDestination` cases for switching purposes; only
-        // their vertical position moves out of `navStack`. This whole group
-        // stays compact/icon-only, unlabeled (fm/grandline-sidebar-labeled-nav)
-        // - a deliberate decision, not a scope gap.
+        // which sits directly above the "Setup" group (fm/grandline-rail-setup-group
+        // - Bootstrap and Updates, collapsed into one entry, see
+        // `buildSetupButton()`), which sits directly above Settings - which in
+        // turn sits directly above the avatar, per the captain's ask. All of
+        // these are still real `RailDestination` cases for switching
+        // purposes (Bootstrap/Updates included); only their vertical
+        // position moves out of `navStack`.
         let toolsButton = railButton(for: .tools)
         buttons[.tools] = toolsButton
         toolsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -293,15 +329,9 @@ final class IconRailController: NSViewController {
         docsButton.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(docsButton)
 
-        let updatesButton = railButton(for: .updates)
-        buttons[.updates] = updatesButton
-        updatesButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(updatesButton)
-
-        let bootstrapButton = railButton(for: .bootstrap)
-        buttons[.bootstrap] = bootstrapButton
-        bootstrapButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(bootstrapButton)
+        let setupGroup = buildSetupButton()
+        setupGroup.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(setupGroup)
 
         let settingsButton = railButton(for: .settings)
         buttons[.settings] = settingsButton
@@ -329,9 +359,8 @@ final class IconRailController: NSViewController {
         }
         let dividerToolsVault = utilityDivider()
         let dividerVaultDocs = utilityDivider()
-        let dividerDocsUpdates = utilityDivider()
-        let dividerUpdatesBootstrap = utilityDivider()
-        let dividerBootstrapSettings = utilityDivider()
+        let dividerDocsSetup = utilityDivider()
+        let dividerSetupSettings = utilityDivider()
         // fm/grandline-vault-header-and-avatar-divider: same treatment,
         // between the last utility row (Settings) and the avatar pinned at
         // the very bottom - the one boundary in this bottom-up chain that
@@ -396,11 +425,8 @@ final class IconRailController: NSViewController {
             docsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            updatesButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
-            updatesButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            bootstrapButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
-            bootstrapButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            setupGroup.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
             settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -411,12 +437,10 @@ final class IconRailController: NSViewController {
             avatar.heightAnchor.constraint(equalToConstant: 36),
             dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -10),
             settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -10),
-            dividerBootstrapSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
-            bootstrapButton.bottomAnchor.constraint(equalTo: dividerBootstrapSettings.topAnchor, constant: -4),
-            dividerUpdatesBootstrap.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
-            updatesButton.bottomAnchor.constraint(equalTo: dividerUpdatesBootstrap.topAnchor, constant: -4),
-            dividerDocsUpdates.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
-            docsButton.bottomAnchor.constraint(equalTo: dividerDocsUpdates.topAnchor, constant: -4),
+            dividerSetupSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
+            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupSettings.topAnchor, constant: -4),
+            dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -4),
+            docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -4),
             dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
             vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDocs.topAnchor, constant: -4),
             dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -4),
@@ -471,6 +495,95 @@ final class IconRailController: NSViewController {
         ])
         attachBadge(to: button, dest: dest)
         return button
+    }
+
+    /// Builds the "Setup" rail button (fm/grandline-rail-setup-group): one
+    /// entry that reveals a small flyout `NSPopover` on hover (see
+    /// `scheduleShowSetupFlyout()`/`scheduleCloseSetupFlyout()`) listing
+    /// Updates and Bootstrap. "Setup" has no destination of its own and never
+    /// calls `onSelect` directly - it's a plain UI toggle occupying the rail
+    /// slot the two standalone icons used to. Otherwise built exactly like
+    /// `railButton(for:)`, minus the tag (there's no `RailDestination` case
+    /// to dispatch through) and minus a click target/action (hover-driven,
+    /// not click-driven - see `HoverTrackingButton`).
+    private func buildSetupButton() -> NSButton {
+        setupButton.cell = CenteredImageAboveButtonCell()
+        setupButton.title = "Setup"
+        setupButton.isBordered = false
+        setupButton.wantsLayer = true
+        setupButton.layer?.cornerRadius = 10
+        setupButton.imagePosition = .imageAbove
+        setupButton.imageScaling = .scaleProportionallyDown
+        setupButton.alignment = .center
+        setupButton.font = .systemFont(ofSize: 10, weight: .medium)
+        setupButton.lineBreakMode = .byTruncatingTail
+        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        // "wrench.adjustable" - wrench-family like Tools' own icon, but a
+        // visually distinct glyph so the two never look like duplicates in
+        // the rail; also doesn't collide with Settings' `gearshape`.
+        setupButton.image = NSImage(systemSymbolName: "wrench.adjustable", accessibilityDescription: "Setup")?
+            .withSymbolConfiguration(config)
+        setupButton.toolTip = "Setup (Bootstrap, Updates)"
+        NSLayoutConstraint.activate([
+            setupButton.widthAnchor.constraint(equalToConstant: Self.width - 12),
+            setupButton.heightAnchor.constraint(equalToConstant: 52),
+        ])
+        setupButton.onHoverChange = { [weak self] isHovering in
+            isHovering ? self?.scheduleShowSetupFlyout() : self?.scheduleCloseSetupFlyout()
+        }
+        return setupButton
+    }
+
+    /// Cancels any pending close and shows the flyout immediately if it
+    /// isn't already showing - called both when the cursor enters the Setup
+    /// button and when it enters the flyout's own content (so moving between
+    /// the two never triggers a flicker-close in between).
+    private func scheduleShowSetupFlyout() {
+        setupCloseWorkItem?.cancel()
+        setupCloseWorkItem = nil
+        guard setupPopover?.isShown != true else { return }
+        showSetupFlyout()
+    }
+
+    /// Closes the flyout after a short delay (`setupCloseDelay`) rather than
+    /// immediately, so leaving the Setup button to cross the small gap into
+    /// the flyout's own content doesn't dismiss it before the cursor arrives.
+    /// `scheduleShowSetupFlyout` cancels this the moment either view reports
+    /// the mouse back over it.
+    private func scheduleCloseSetupFlyout() {
+        setupCloseWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in self?.setupPopover?.performClose(nil) }
+        setupCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.setupCloseDelay, execute: workItem)
+    }
+
+    /// Shows the Updates/Bootstrap flyout, anchored to the Setup button's
+    /// trailing edge (captain correction from an earlier in-rail expanding
+    /// drawer - see the property's doc comment above). `.applicationDefined`
+    /// behavior since show/hide is fully hover-driven here, not click-driven
+    /// - `NSPopover`'s own `.transient` click-outside dismissal would fight
+    /// with that. Selecting a row dispatches through `onSelect`/`setActive`
+    /// exactly like clicking either destination's old standalone icon did,
+    /// then closes the flyout immediately (no hover-out delay needed once a
+    /// choice has actually been made).
+    private func showSetupFlyout() {
+        let popover = NSPopover()
+        popover.behavior = .applicationDefined
+        popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
+        popover.contentViewController = SetupFlyoutViewController(
+            destinations: [.updates, .bootstrap],
+            onHoverChange: { [weak self] isHovering in
+                isHovering ? self?.scheduleShowSetupFlyout() : self?.scheduleCloseSetupFlyout()
+            },
+            onSelect: { [weak self] dest in
+                self?.setupCloseWorkItem?.cancel()
+                self?.setupPopover?.performClose(nil)
+                self?.setActive(dest)
+                self?.onSelect?(dest)
+            }
+        )
+        popover.show(relativeTo: setupButton.bounds, of: setupButton, preferredEdge: .maxX)
+        setupPopover = popover
     }
 
     /// Pins a small count-badge overlay to `button`'s top-trailing corner.
@@ -710,9 +823,171 @@ final class IconRailController: NSViewController {
             button.attributedTitle = attributedRowTitle(host.label, color: hostAccent)
             button.layer?.backgroundColor = (isActive ? hostAccent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14) : .clear).cgColor
         }
+
+        // "Setup" itself highlights whenever one of its sub-items
+        // (Bootstrap/Updates) is the active destination - it has no
+        // `RailDestination` of its own, so it isn't covered by the `buttons`
+        // loop above.
+        let setupIsActive = activeHostID == nil && (active == .updates || active == .bootstrap)
+        let setupColor = setupIsActive ? accent : ink.withAlphaComponent(0.65)
+        setupButton.contentTintColor = setupColor
+        setupButton.attributedTitle = attributedRowTitle("Setup", color: setupColor)
+        setupButton.layer?.backgroundColor = (setupIsActive ? accentTint : .clear).cgColor
         avatar.contentTintColor = ink
         avatar.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4).cgColor
     }
+}
+
+/// The "Setup" flyout's content (fm/grandline-rail-setup-group) - a small,
+/// themed popover listing Bootstrap and Updates as icon+label rows,
+/// side-by-side rather than icon-above-label (this is a horizontal list, not
+/// another rail column). Reuses `IconTileView`/`HoverHighlightView` from
+/// `HelmUIComponents.swift`, the same building blocks Settings/Updates/
+/// Bootstrap/Vault already use, so the flyout reads as this app's own chrome
+/// rather than a generic system menu. Each row is a plain `NSClickGestureRecognizer`
+/// on a `HoverHighlightView` containing no nested real control, so there's no
+/// hit-testing ambiguity between a gesture recognizer and a button (see the
+/// Vault section's header comment on that exact hazard).
+private final class SetupFlyoutViewController: NSViewController {
+    private let destinations: [RailDestination]
+    private let onHoverChange: (Bool) -> Void
+    private let onSelect: (RailDestination) -> Void
+    private var themeObservation: ThemeObservation?
+
+    init(destinations: [RailDestination], onHoverChange: @escaping (Bool) -> Void, onSelect: @escaping (RailDestination) -> Void) {
+        self.destinations = destinations
+        self.onHoverChange = onHoverChange
+        self.onSelect = onSelect
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    deinit {
+        if let themeObservation { ThemeManager.shared.unobserve(themeObservation) }
+    }
+
+    override func loadView() {
+        let root = HoverTrackingView()
+        root.wantsLayer = true
+        root.onHoverChange = { [weak self] isHovering in self?.onHoverChange(isHovering) }
+        view = root
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+        ])
+
+        var rowIcons: [IconTileView] = []
+        for dest in destinations {
+            let row = HoverHighlightView()
+            row.cornerRadius = 8
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let icon = IconTileView(size: 26, cornerRadius: 7)
+            icon.configure(symbol: dest.symbol, tint: .accent, pointSize: 12)
+            rowIcons.append(icon)
+
+            let label = NSTextField(labelWithString: dest.title)
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+
+            let rowStack = NSStackView(views: [icon, label])
+            rowStack.orientation = .horizontal
+            rowStack.spacing = 8
+            rowStack.alignment = .centerY
+            rowStack.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(rowStack)
+            NSLayoutConstraint.activate([
+                rowStack.topAnchor.constraint(equalTo: row.topAnchor, constant: 6),
+                rowStack.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -6),
+                rowStack.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
+                rowStack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+                row.widthAnchor.constraint(equalToConstant: 168),
+            ])
+
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(rowClicked(_:)))
+            row.addGestureRecognizer(recognizer)
+            row.identifier = NSUserInterfaceItemIdentifier(String(RailDestination.allCases.firstIndex(of: dest) ?? 0))
+
+            stack.addArrangedSubview(row)
+        }
+
+        themeObservation = ThemeManager.shared.observe { [weak root] theme in
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+            let ink = HelmTheme.nsColor(theme.chromeInkHex)
+            let hoverTint = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(theme.mode == .dark ? 0.25 : 0.5)
+            for icon in rowIcons { icon.applyTheme(theme) }
+            for case let row as HoverHighlightView in stack.arrangedSubviews {
+                row.normalColor = .clear
+                row.hoverColor = hoverTint
+                for case let rowStack as NSStackView in row.subviews {
+                    for case let label as NSTextField in rowStack.arrangedSubviews {
+                        label.textColor = ink
+                    }
+                }
+            }
+        }
+    }
+
+    @objc private func rowClicked(_ sender: NSClickGestureRecognizer) {
+        guard let view = sender.view,
+              let idString = view.identifier?.rawValue,
+              let index = Int(idString) else { return }
+        onSelect(RailDestination.allCases[index])
+    }
+
+}
+
+/// A plain `NSButton` that reports mouse-enter/exit via a closure instead of
+/// a click target/action - what the "Setup" rail button uses so its flyout
+/// opens on hover (fm/grandline-rail-setup-group). `.activeAlways` rather
+/// than `HoverHighlightView`'s own `.activeInKeyWindow` (fine there, since
+/// its rows only ever live inside the always-key main window) because this
+/// button's hover state has to stay correct even while a separate popover
+/// window is transiently key.
+private final class HoverTrackingButton: NSButton {
+    var onHoverChange: ((Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
+    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
+}
+
+/// Same idea as `HoverTrackingButton`, for the flyout's own content root -
+/// lets `IconRailController` know when the cursor has moved from the Setup
+/// button into the flyout itself, so the hover-out close timer gets
+/// cancelled instead of dismissing the flyout out from under the cursor.
+private final class HoverTrackingView: NSView {
+    var onHoverChange: ((Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
+    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 }
 
 /// See `IconRailController.centeredTitleStyle`'s doc comment for the full
