@@ -1047,6 +1047,53 @@ final class BootstrapController: NSViewController {
         }
     }
 
+    /// The drift card's own detail line for a drifted step - unlike
+    /// `stepDetail(for:)` above (a generic "what this step checks" caption
+    /// shown on the stepper itself), this names the *specific* thing(s) that
+    /// drifted, using data each check already collected. Falls back to
+    /// `stepDetail(for:)` for the two steps with no natural itemized
+    /// breakdown (`firstmateHome`/`restoreConfig` are plain existence
+    /// checks).
+    private func driftDetail(for kind: SetupStepKind) -> String {
+        switch kind {
+        case .dotfiles:
+            guard let state = repoState else { return stepDetail(for: kind) }
+            var bits: [String] = []
+            if !state.dirtyFiles.isEmpty {
+                let names = state.dirtyFiles.map { line -> String in
+                    // `git status --short` lines are "XY path" (or "XY old -> new"
+                    // for a rename) - drop the two-char status code + separating
+                    // space to show just the path.
+                    line.count > 3 ? String(line.dropFirst(3)) : line
+                }
+                let shown = names.prefix(3).joined(separator: ", ")
+                let more = names.count > 3 ? " +\(names.count - 3) more" : ""
+                bits.append("\(names.count) file\(names.count == 1 ? "" : "s") changed: \(shown)\(more)")
+            }
+            if let behind = state.commitsBehindOrigin, behind > 0 {
+                bits.append("\(behind) commit\(behind == 1 ? "" : "s") behind origin")
+            }
+            return bits.isEmpty ? stepDetail(for: kind) : bits.joined(separator: " \u{00B7} ")
+        case .agentInstructions:
+            let unresolved = agentItems.filter { $0.status != .linked }
+            guard !unresolved.isEmpty else { return stepDetail(for: kind) }
+            let names = unresolved.map { item -> String in
+                switch item.status {
+                case .wrongTarget: return "\(item.label) points elsewhere"
+                default: return "\(item.label) not linked"
+                }
+            }
+            return names.joined(separator: ", ")
+        case .software:
+            let missing = softwareRows.filter { $0.status == .notInstalled }
+            guard !missing.isEmpty else { return stepDetail(for: kind) }
+            let names = missing.map { $0.item.name }
+            return "\(names.joined(separator: ", ")) not installed"
+        case .firstmateHome, .restoreConfig:
+            return stepDetail(for: kind)
+        }
+    }
+
     /// Builds one step's row scaffolding once - see the `StepRowViews` doc
     /// comment for why this isn't torn down and rebuilt like this file's other
     /// dynamic sections.
@@ -1417,7 +1464,7 @@ final class BootstrapController: NSViewController {
             identifier: "drift-\(kind.title)",
             showDetails: false
         )
-        views.detailLabel.stringValue = stepDetail(for: kind)
+        views.detailLabel.stringValue = driftDetail(for: kind)
         ToolRowLayout.applyTheme(views, theme: theme, detailFailed: true)
         return row
     }
