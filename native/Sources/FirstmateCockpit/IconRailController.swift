@@ -144,6 +144,53 @@ final class IconRailController: NSViewController {
     private static let rowSpacing: CGFloat = 3
     private static let sectionGap: CGFloat = 14
 
+    /// `fm/grandline-rail-overflow-and-spacing`: the boundary between the
+    /// HOSTS section and the utility group (Tools/Vault/Docs/Setup/Settings)
+    /// used to be the one boundary in the rail with only a floor
+    /// (`greaterThanOrEqualTo: ..., constant: sectionGap`) and no ceiling -
+    /// the daily-use group and the utility+avatar block were each
+    /// independently anchored (top block from the window's top edge, bottom
+    /// block from the window's bottom edge via `avatar`'s fixed offset), so
+    /// any window taller than the bare minimum let that one boundary's gap
+    /// grow without limit while every other boundary in the rail stayed a
+    /// fixed `sectionGap`. A captain screenshot on a taller/maximized window
+    /// showed this as a large, visually dead void in the middle of the rail
+    /// - live-measured (a temporary debug probe, reverted before commit) at
+    /// +259pt of extra gap for +280pt of extra window height, confirming the
+    /// growth was literally unbounded, one-to-one with window height.
+    ///
+    /// `sectionGapMax` caps that boundary's gap the same way every other
+    /// boundary already reads as a fixed, deliberate distance - paired with
+    /// `avatarBottomPinPriority` below (see `loadView`'s constraint block for
+    /// the full mechanism): the avatar's own fixed distance from the
+    /// window's bottom edge, previously a hard requirement, becomes a
+    /// preference instead, so Auto Layout is free to slide the whole utility
+    /// group + avatar (still one rigid unit, offsets between its own rows
+    /// unchanged) up within `[sectionGap, sectionGapMax]` of the HOSTS
+    /// section rather than leaving it pinned to the window's bottom edge
+    /// unconditionally. This was NOT simplified into one fully top-anchored
+    /// chain (mark -> nav -> hosts -> utility -> avatar, no bottom pin at
+    /// all) even though that also removes the unbounded-gap bug: live-
+    /// measured (same probe) that the rail's total required content height
+    /// at this row/spacing budget is close to 730pt - taller than this app's
+    /// own default 720pt-tall launch window - so a purely top-anchored chain
+    /// with no bottom safety net clips the avatar off the bottom of the
+    /// window entirely at the app's own default size. The floor+cap range
+    /// plus a soft (not required) bottom pin keeps that same graceful
+    /// degradation the old bottom-anchored design already had at a short
+    /// window (the gap shrinks below `sectionGap` rather than clipping
+    /// anything) while still capping the opposite failure mode (an
+    /// unbounded gap on a tall window).
+    private static let sectionGapMax: CGFloat = 40
+
+    /// See `sectionGapMax`'s doc comment - keeps the avatar hugging the
+    /// window's bottom edge whenever there's slack to do so without
+    /// conflicting with the required `[sectionGap, sectionGapMax]` range
+    /// above, but yields (rather than clipping or throwing an unsatisfiable-
+    /// constraint conflict) the moment honoring both would require less than
+    /// `sectionGap` of separation from the HOSTS section.
+    private static let avatarBottomPinPriority = NSLayoutConstraint.Priority(800)
+
     var onSelect: ((RailDestination) -> Void)?
 
     /// Fix 3 (fixes4): clicking a saved host's pinned rail icon connects to
@@ -461,7 +508,13 @@ final class IconRailController: NSViewController {
             dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
+            // `fm/grandline-rail-overflow-and-spacing`: floor unchanged from
+            // before; the added ceiling is what stops this boundary's gap
+            // from growing without bound on a tall window - see
+            // `sectionGapMax`'s doc comment above for the full mechanism
+            // (paired with the now-soft `avatar` bottom pin below).
             toolsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
+            toolsButton.topAnchor.constraint(lessThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGapMax),
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
             vaultButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
@@ -476,7 +529,17 @@ final class IconRailController: NSViewController {
             settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
+            {
+                // Soft, not required (see `avatarBottomPinPriority`'s doc
+                // comment) - keeps the avatar hugging the window's bottom
+                // edge when there's slack to do so, but yields to the
+                // required `[sectionGap, sectionGapMax]` range on
+                // `toolsButton` above rather than clipping anything off a
+                // short window.
+                let pin = avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14)
+                pin.priority = Self.avatarBottomPinPriority
+                return pin
+            }(),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
@@ -728,9 +791,11 @@ final class IconRailController: NSViewController {
     ///
     /// `fm/grandline-lock-and-rail-fixes`: with 2+ pinned hosts, only the
     /// first host gets its own row - every host after it collapses into one
-    /// "more hosts" entry in that same slot (the captain's explicit ask,
-    /// scoped to "more than 1 host", so a single pinned host is byte-for-byte
-    /// unaffected). This reuses the exact hover-flyout mechanism the "Setup"
+    /// "more hosts" entry in that same slot. `fm/grandline-rail-overflow-and-spacing`
+    /// raised the threshold after captain feedback that collapsing at exactly
+    /// 2 hosts (1 shown + a "+1" entry) was premature - overflow now only
+    /// kicks in at 3+ pinned hosts; exactly 2 hosts show both normally, same
+    /// as exactly 1. This reuses the exact hover-flyout mechanism the "Setup"
     /// group already established (`HoverTrackingButton` + an `NSPopover`
     /// shown on hover, closed on a short hover-out delay) rather than a
     /// second interaction pattern - see `scheduleShowHostsOverflowFlyout()`.
@@ -746,13 +811,13 @@ final class IconRailController: NSViewController {
         }
         hostButtons.removeAll()
         hostsOverflowButton.removeFromSuperview()
-        let visibleHosts = hosts.count > 1 ? [hosts[0]] : hosts
+        let visibleHosts = hosts.count > 2 ? [hosts[0]] : hosts
         for host in visibleHosts {
             let button = hostRailButton(for: host)
             hostButtons[host.id] = button
             hostsStack.addArrangedSubview(button)
         }
-        if hosts.count > 1 {
+        if hosts.count > 2 {
             hostsStack.addArrangedSubview(buildHostsOverflowButton(remainingCount: hosts.count - 1))
         }
         restyle(ThemeManager.shared.theme)
