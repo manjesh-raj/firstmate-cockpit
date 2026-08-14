@@ -43,6 +43,7 @@ final class AppShellController: NSViewController {
     private let shift: ShiftController
     private let review = ReviewController()
     private let tools = ToolsController()
+    private let vault = VaultController()
     private let docs = DocsController()
     private let updates = UpdatesController()
     private let bootstrap: BootstrapController
@@ -123,12 +124,13 @@ final class AppShellController: NSViewController {
         addChild(shift)
         addChild(review)
         addChild(tools)
+        addChild(vault)
         addChild(docs)
         addChild(updates)
         addChild(bootstrap)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, docs.view, updates.view, bootstrap.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, docs.view, updates.view, bootstrap.view, settings.view] {
             embed(destinationView)
         }
 
@@ -173,6 +175,14 @@ final class AppShellController: NSViewController {
         // instead.
         settings.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
         settings.onRunCommandTracked = { [weak self] label, command, completion in
+            self?.runInConsole(label: label, command: command, completion: completion)
+        }
+        // fm/grandline-vault-tab: `av save`/`av inject` both need a real
+        // interactive terminal (see `VaultController`'s header) - same
+        // one-shot Console command-tab mechanism as every other
+        // interactive/sudo action in this app.
+        vault.onRunCommand = { [weak self] label, command in self?.runInConsole(label: label, command: command) }
+        vault.onRunCommandTracked = { [weak self] label, command, completion in
             self?.runInConsole(label: label, command: command, completion: completion)
         }
 
@@ -229,6 +239,9 @@ final class AppShellController: NSViewController {
         case .tools:
             tools.view.isHidden = false
             topBar.setTitle("Tools")
+        case .vault:
+            vault.view.isHidden = false
+            topBar.setTitle("Vault")
         case .docs:
             docs.view.isHidden = false
             topBar.setTitle("Docs")
@@ -300,6 +313,7 @@ final class AppShellController: NSViewController {
         shift.view.isHidden = true
         review.view.isHidden = true
         tools.view.isHidden = true
+        vault.view.isHidden = true
         docs.view.isHidden = true
         updates.view.isHidden = true
         bootstrap.view.isHidden = true

@@ -656,6 +656,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_HOST_STORE_TESTS"] == "1" {
     exit(HostStoreSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-vault-tab`: same convention, for `VaultSource`'s pure logic
+// (shell-token safety, the two command-string builders, `av doctor --json`
+// parsing) - see VaultDataSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_VAULT_DATA_TESTS"] == "1" {
+    exit(VaultDataSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
