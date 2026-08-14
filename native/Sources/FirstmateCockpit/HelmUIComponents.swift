@@ -204,6 +204,15 @@ enum ToolRowLayout {
     /// items"/"Global agent instructions"/"Run full setup" step rows, which
     /// have no log to show) - `detailsTarget`/`detailsAction` are only
     /// meaningful when `showDetails` is true.
+    ///
+    /// `cardStyle` (default `false`, so every existing caller - Updates,
+    /// Bootstrap - is byte-for-byte unchanged) switches the row from
+    /// "flat, hover-only highlight" to a clearly bounded card: a persistent
+    /// `chromeBackgroundHex` fill + `chromeLineHex` border (the exact tokens
+    /// `ShiftPanelView.applyTheme` already uses for its own card look, not a
+    /// new color scheme) and roomier internal padding, for a page whose rows
+    /// are the primary content rather than a dense checklist (fm/grandline-
+    /// vault-row-polish). Pair with `applyTheme(cardStyle:attentionHex:)`.
     static func build(
         _ views: Views,
         iconSymbol: String,
@@ -213,7 +222,8 @@ enum ToolRowLayout {
         detailsTarget: AnyObject? = nil,
         detailsAction: Selector? = nil,
         identifier: String,
-        showDetails: Bool = true
+        showDetails: Bool = true,
+        cardStyle: Bool = false
     ) -> NSView {
         views.iconTile.configure(symbol: iconSymbol, tint: tint, pointSize: 14)
         views.iconTile.setContentHuggingPriority(.required, for: .horizontal)
@@ -311,15 +321,17 @@ enum ToolRowLayout {
             views.logContainer.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         }
 
-        views.rowContainer.cornerRadius = 8
+        views.rowContainer.cornerRadius = cardStyle ? 10 : 8
         views.rowContainer.translatesAutoresizingMaskIntoConstraints = false
+        let inset: CGFloat = cardStyle ? 14 : 4
+        let verticalInset: CGFloat = cardStyle ? 12 : 4
         if column.superview !== views.rowContainer {
             views.rowContainer.addSubview(column)
             NSLayoutConstraint.activate([
-                column.leadingAnchor.constraint(equalTo: views.rowContainer.leadingAnchor, constant: 4),
-                column.trailingAnchor.constraint(equalTo: views.rowContainer.trailingAnchor, constant: -4),
-                column.topAnchor.constraint(equalTo: views.rowContainer.topAnchor, constant: 4),
-                column.bottomAnchor.constraint(equalTo: views.rowContainer.bottomAnchor, constant: -4),
+                column.leadingAnchor.constraint(equalTo: views.rowContainer.leadingAnchor, constant: inset),
+                column.trailingAnchor.constraint(equalTo: views.rowContainer.trailingAnchor, constant: -inset),
+                column.topAnchor.constraint(equalTo: views.rowContainer.topAnchor, constant: verticalInset),
+                column.bottomAnchor.constraint(equalTo: views.rowContainer.bottomAnchor, constant: -verticalInset),
             ])
         }
         return views.rowContainer
@@ -351,7 +363,14 @@ enum ToolRowLayout {
     /// Re-themes the shared chrome. `detailFailed` routes the detail label
     /// through the theme's error color, matching `UpdatesController`'s
     /// existing failed-state treatment.
-    static func applyTheme(_ views: Views, theme: HelmTheme, detailFailed: Bool) {
+    ///
+    /// `cardStyle` mirrors `build(cardStyle:)` - `false` (the default)
+    /// reproduces every existing caller's flat, hover-only look byte for
+    /// byte. `attentionHex`, meaningful only when `cardStyle` is true, tints
+    /// the card's border instead of the default neutral line - a row with a
+    /// real, data-backed "needs attention" state (e.g. Vault's launcher
+    /// rows) can call this out without a separate one-off view.
+    static func applyTheme(_ views: Views, theme: HelmTheme, detailFailed: Bool, cardStyle: Bool = false, attentionHex: String? = nil) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -361,8 +380,18 @@ enum ToolRowLayout {
         views.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
         views.logField.textColor = muted
         views.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        views.rowContainer.normalColor = .clear
-        views.rowContainer.hoverColor = line.withAlphaComponent(0.18)
+        if cardStyle {
+            let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+            views.rowContainer.normalColor = cardFill
+            views.rowContainer.hoverColor = cardFill.blended(withFraction: 0.08, of: line) ?? cardFill
+            views.rowContainer.layer?.borderWidth = 1
+            let borderColor = attentionHex.map { HelmTheme.nsColor($0).withAlphaComponent(0.55) } ?? line.withAlphaComponent(0.6)
+            views.rowContainer.layer?.borderColor = borderColor.cgColor
+        } else {
+            views.rowContainer.normalColor = .clear
+            views.rowContainer.hoverColor = line.withAlphaComponent(0.18)
+            views.rowContainer.layer?.borderWidth = 0
+        }
     }
 
     /// Toggles the chevron image, the log container's visibility, and the

@@ -289,7 +289,7 @@ final class VaultController: NSViewController {
         let header = sectionHeaderRow(title: "Secrets", badge: secretsCountBadge, trailing: addSecretButton)
         secretsStack.orientation = .vertical
         secretsStack.alignment = .leading
-        secretsStack.spacing = 8
+        secretsStack.spacing = 10
         secretsStack.translatesAutoresizingMaskIntoConstraints = false
 
         secretsPanel.setHeader(header)
@@ -302,7 +302,7 @@ final class VaultController: NSViewController {
         let header = sectionHeaderRow(title: "Verified Launchers", badge: toolsCountBadge, trailing: nil)
         toolsStack.orientation = .vertical
         toolsStack.alignment = .leading
-        toolsStack.spacing = 8
+        toolsStack.spacing = 10
         toolsStack.translatesAutoresizingMaskIntoConstraints = false
 
         toolsPanel.setHeader(header)
@@ -620,11 +620,12 @@ final class VaultController: NSViewController {
             name: secret.name,
             trailingViews: [views.pill, runButton, copyButton],
             identifier: "secret:\(secret.name)",
-            showDetails: false
+            showDetails: false,
+            cardStyle: true
         )
         views.detailLabel.stringValue = "Stored in Automic Vault's Keychain"
         row.identifier = NSUserInterfaceItemIdentifier("secret:\(secret.name)")
-        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false)
+        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false, cardStyle: true)
         return row
     }
 
@@ -641,23 +642,32 @@ final class VaultController: NSViewController {
         case .hardened: isHardened = true
         case .needsAttention: isHardened = false
         }
+        // "Needs attention" (real `av doctor` issues) reads as amber, not
+        // red - red is reserved elsewhere on this page for a genuine
+        // check/update failure (`installPillVisuals`); a tool with issues to
+        // review isn't broken the same way, matching the mockup's calm/
+        // informational/needs-attention pill semantics.
         ToolRowLayout.pill(
             text: tool.status.label,
-            colorHex: isHardened ? theme.ansiHex[2] : theme.ansiHex[1],
+            colorHex: isHardened ? theme.ansiHex[2] : theme.ansiHex[3],
             into: views.pill, label: views.pillLabel
         )
 
         let row = ToolRowLayout.build(
             views,
             iconSymbol: "checkmark.shield",
-            tint: isHardened ? .good : .critical,
+            tint: isHardened ? .good : .warn,
             name: tool.name,
             trailingViews: [views.pill],
             identifier: "tool:\(tool.name)",
-            showDetails: false
+            showDetails: false,
+            cardStyle: true
         )
         views.detailLabel.stringValue = tool.commands.isEmpty ? " " : tool.commands.joined(separator: ", ")
-        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: !isHardened)
+        ToolRowLayout.applyTheme(
+            views, theme: theme, detailFailed: false, cardStyle: true,
+            attentionHex: isHardened ? nil : theme.ansiHex[3]
+        )
         return row
     }
 
