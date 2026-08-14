@@ -308,6 +308,31 @@ final class IconRailController: NSViewController {
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(settingsButton)
 
+        // fm/grandline-rail-utility-separators: a hairline separator between
+        // each utility row (Tools | Vault | Docs | Updates | Bootstrap |
+        // Settings), matching the daily-use group's own `NSBox(.separator)`
+        // treatment (fm/grandline-rail-followup-fixes) - captain ask, scoped
+        // to this group only. These buttons aren't in a stack view (they're
+        // individually positioned so the per-host block above them can grow),
+        // so each divider is a plain sibling view sized/centered the same way
+        // the daily-use dividers are (`navStack.widthAnchor - 16`, i.e.
+        // `Self.width - 28` here since these buttons live directly in `root`
+        // rather than an inset stack).
+        func utilityDivider() -> NSBox {
+            let divider = NSBox()
+            divider.boxType = .separator
+            divider.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(divider)
+            divider.widthAnchor.constraint(equalToConstant: Self.width - 28).isActive = true
+            divider.centerXAnchor.constraint(equalTo: root.centerXAnchor).isActive = true
+            return divider
+        }
+        let dividerToolsVault = utilityDivider()
+        let dividerVaultDocs = utilityDivider()
+        let dividerDocsUpdates = utilityDivider()
+        let dividerUpdatesBootstrap = utilityDivider()
+        let dividerBootstrapSettings = utilityDivider()
+
         avatar.title = "M"
         avatar.isBordered = false
         avatar.wantsLayer = true
@@ -380,11 +405,16 @@ final class IconRailController: NSViewController {
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
             settingsButton.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -14),
-            bootstrapButton.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
-            updatesButton.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
-            docsButton.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
-            vaultButton.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
-            toolsButton.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -4),
+            dividerBootstrapSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
+            bootstrapButton.bottomAnchor.constraint(equalTo: dividerBootstrapSettings.topAnchor, constant: -4),
+            dividerUpdatesBootstrap.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
+            updatesButton.bottomAnchor.constraint(equalTo: dividerUpdatesBootstrap.topAnchor, constant: -4),
+            dividerDocsUpdates.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
+            docsButton.bottomAnchor.constraint(equalTo: dividerDocsUpdates.topAnchor, constant: -4),
+            dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
+            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDocs.topAnchor, constant: -4),
+            dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -4),
+            toolsButton.bottomAnchor.constraint(equalTo: dividerToolsVault.topAnchor, constant: -4),
         ])
 
         restyle(ThemeManager.shared.theme)
