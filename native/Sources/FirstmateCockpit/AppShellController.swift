@@ -244,7 +244,7 @@ final class AppShellController: NSViewController {
             topBar.setTitle("Overview")
         case .shift:
             shift.view.isHidden = false
-            topBar.setTitle("Shift")
+            topBar.setTitle("Tasks")
         case .hosts:
             hostsPanel.view.isHidden = false
             topBar.setTitle("Hosts")

@@ -60,6 +60,16 @@ enum RailDestination: CaseIterable {
     var symbol: String {
         switch self {
         case .overview: return "square.grid.2x2"
+        // fm/grandline-rail-followup-fixes: the captain asked for the menu
+        // bar's Shift/Tasks status item to use the same "sailboat" glyph as
+        // the app's own logo mark, since that standalone item has no nearby
+        // app branding to associate it back to this app (see
+        // `ShiftMenuBarController.init`). The rail's own `.shift` row
+        // deliberately keeps `checkmark.circle` rather than also switching
+        // to `sailboat` - the rail already shows the real sailboat logo mark
+        // directly above this row (`IconRailController.loadView`'s `mark`),
+        // so a second sailboat a few rows down would read as a duplicate
+        // icon rather than a clearer one.
         case .shift: return "checkmark.circle"
         case .hosts: return "server.rack"
         case .console: return "terminal"
@@ -76,7 +86,7 @@ enum RailDestination: CaseIterable {
     var title: String {
         switch self {
         case .overview: return "Overview"
-        case .shift: return "Shift"
+        case .shift: return "Tasks"
         case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
@@ -131,6 +141,12 @@ final class IconRailController: NSViewController {
     /// count is zero, per PRODUCT.md's "quiet until it matters."
     private var badgeContainers: [RailDestination: NSView] = [:]
     private var badgeLabels: [RailDestination: NSTextField] = [:]
+
+    /// The per-badge constraints `setBadgeCount` re-tunes for a double-digit
+    /// (or "99+") count - see that method's doc comment for why a fixed
+    /// single-digit sizing overflows once the count grows a second digit.
+    private var badgeLabelInsets: [RailDestination: (leading: NSLayoutConstraint, trailing: NSLayoutConstraint)] = [:]
+    private var badgeOffsets: [RailDestination: (top: NSLayoutConstraint, trailing: NSLayoutConstraint)] = [:]
 
     /// The saved hosts currently pinned to the rail, and the vertical stack
     /// they render into - below the fixed destinations, above the utility
@@ -228,7 +244,21 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases where dest.isDailyUse {
+        let dailyUseDestinations = RailDestination.allCases.filter { $0.isDailyUse }
+        for (index, dest) in dailyUseDestinations.enumerated() {
+            // fm/grandline-rail-followup-fixes: a hairline separator between
+            // each daily-use row (Overview | Console | Hosts | Tasks |
+            // Review), matching the existing `NSBox(.separator)` style
+            // already used above/below the per-host block - captain ask was
+            // scoped to this group only, so the per-host and utility groups
+            // are untouched.
+            if index > 0 {
+                let divider = NSBox()
+                divider.boxType = .separator
+                divider.translatesAutoresizingMaskIntoConstraints = false
+                navStack.addArrangedSubview(divider)
+                divider.widthAnchor.constraint(equalTo: navStack.widthAnchor, constant: -16).isActive = true
+            }
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -381,7 +411,11 @@ final class IconRailController: NSViewController {
     /// labeled shape instead of the two different button sizes it originally
     /// had to handle.
     private func railButton(for dest: RailDestination) -> NSButton {
-        let button = NSButton(title: dest.title, target: self, action: #selector(navClicked(_:)))
+        let button = NSButton()
+        button.cell = CenteredImageAboveButtonCell()
+        button.title = dest.title
+        button.target = self
+        button.action = #selector(navClicked(_:))
         button.isBordered = false
         button.wantsLayer = true
         button.layer?.cornerRadius = 10
@@ -426,18 +460,24 @@ final class IconRailController: NSViewController {
         container.addSubview(label)
         button.addSubview(container)
 
+        let leadingInset = label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4)
+        let trailingInset = label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4)
+        let topOffset = container.topAnchor.constraint(equalTo: button.topAnchor, constant: -4)
+        let trailingOffset = container.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: 4)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            leadingInset,
+            trailingInset,
             label.topAnchor.constraint(equalTo: container.topAnchor, constant: 1),
             label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1),
             container.heightAnchor.constraint(equalToConstant: 16),
             container.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
-            container.topAnchor.constraint(equalTo: button.topAnchor, constant: -4),
-            container.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: 4),
+            topOffset,
+            trailingOffset,
         ])
         badgeContainers[dest] = container
         badgeLabels[dest] = label
+        badgeLabelInsets[dest] = (leadingInset, trailingInset)
+        badgeOffsets[dest] = (topOffset, trailingOffset)
     }
 
     /// Sets the "needs you" count badge for `dest`. `count <= 0` hides the
@@ -446,11 +486,31 @@ final class IconRailController: NSViewController {
     /// "needs you" means for their destination (e.g. open PRs on `.review`,
     /// tasks needing a decision on `.overview`) - this view only renders
     /// whatever number it's given.
+    ///
+    /// A double-digit (or "99+") count needs its own, tighter sizing - a
+    /// captain screenshot showed the badge's fixed single-digit padding/
+    /// offset (4pt label insets, pinned 4pt past the button's top-trailing
+    /// corner) growing the whole pill wide enough, and far enough outside
+    /// the button, to visibly overflow past its icon. `label.font`/the
+    /// insets/the offsets all shrink specifically once the string is 2+
+    /// characters, pulling the badge back in against the icon; a
+    /// single-digit count keeps the original sizing untouched.
     func setBadgeCount(_ count: Int, for dest: RailDestination) {
         guard let container = badgeContainers[dest], let label = badgeLabels[dest] else { return }
         container.isHidden = count <= 0
         guard count > 0 else { return }
-        label.stringValue = count > 99 ? "99+" : "\(count)"
+        let text = count > 99 ? "99+" : "\(count)"
+        label.stringValue = text
+        let isMultiDigit = text.count > 1
+        label.font = .monospacedDigitSystemFont(ofSize: isMultiDigit ? 8 : 9, weight: .bold)
+        if let insets = badgeLabelInsets[dest] {
+            insets.leading.constant = isMultiDigit ? 3 : 4
+            insets.trailing.constant = isMultiDigit ? -3 : -4
+        }
+        if let offsets = badgeOffsets[dest] {
+            offsets.top.constant = isMultiDigit ? -2 : -4
+            offsets.trailing.constant = isMultiDigit ? 2 : 4
+        }
     }
 
     @objc private func navClicked(_ sender: NSButton) {
@@ -488,7 +548,11 @@ final class IconRailController: NSViewController {
     /// since a host has no `RailDestination` case/tag - it dispatches
     /// through `hostClicked(_:)` via its `identifier`, not `navClicked(_:)`.
     private func hostRailButton(for host: Host) -> NSButton {
-        let button = NSButton(title: host.label, target: self, action: #selector(hostClicked(_:)))
+        let button = NSButton()
+        button.cell = CenteredImageAboveButtonCell()
+        button.title = host.label
+        button.target = self
+        button.action = #selector(hostClicked(_:))
         button.isBordered = false
         button.wantsLayer = true
         button.layer?.cornerRadius = 10
@@ -537,17 +601,39 @@ final class IconRailController: NSViewController {
     }
 
     /// Centered paragraph style shared by every labeled row's `attributedTitle`
-    /// (fm/grandline-sidebar-nav-polish). This is the actual fix for the
-    /// off-center active-highlight bug: `NSButton.attributedTitle` lays out
-    /// its text using the attributed string's own paragraph alignment, not
-    /// the button's `alignment` property - an attributed title built with no
-    /// explicit alignment defaults to natural/left, which then also drags
-    /// `imagePosition = .imageAbove`'s icon left (the cell centers the image
-    /// over the title's actual (left-aligned) glyph run, not over the full
-    /// button width), so both the icon and the label end up shifted left
-    /// inside the full-width tinted highlight box. Confirmed by inspection:
-    /// this is the only place `attributedTitle` was constructed, and it had
-    /// no `.paragraphStyle` attribute at all.
+    /// (fm/grandline-sidebar-nav-polish). This fixed the *horizontal*
+    /// centering: `NSButton.attributedTitle` lays out its text using the
+    /// attributed string's own paragraph alignment, not the button's
+    /// `alignment` property, so an attributed title built with no explicit
+    /// alignment defaults to natural/left. Re-verified live (fm/grandline-
+    /// rail-followup-fixes) via real rendered geometry - `NSButtonCell.
+    /// titleRect(forBounds:)`/`imageRect(forBounds:)` on an actually-active
+    /// row - and this part is correct: title/image/bounds center-X all
+    /// agree exactly (36pt each in an 84pt-wide rail).
+    ///
+    /// The captain's follow-up report ("still off-center") turned out to be
+    /// a *vertical* bug this paragraph-style fix never touched, and PR
+    /// #123's own claim to have fully verified it was wrong - a real
+    /// rendered bitmap of the active row (not just constraint math) showed
+    /// the highlight box with a large empty gap above the icon and the
+    /// label crammed against the box's bottom edge. Root cause:
+    /// `NSButtonCell`'s built-in `.imageAbove` layout does not vertically
+    /// center the image+title content block within the cell's actual
+    /// resolved bounds - `imageRect`/`titleRect` anchor the content near a
+    /// fixed low offset regardless of how tall the button's bounds actually
+    /// are (confirmed live: every row's cell resolves several points taller
+    /// than the requested 52pt height - an unrelated `NSButtonCell` quirk
+    /// for borderless `.imageAbove` buttons - and 100% of that slack lands
+    /// above the content, never split between top and bottom). No amount of
+    /// `.paragraphStyle`/`alignment` tuning can fix this, since both of
+    /// those only affect the glyph run *within* the rect the cell already
+    /// decided on, not the rect itself. Fixed with `CenteredImageAboveButtonCell`
+    /// (below), a small `NSButtonCell` subclass that overrides `imageRect`/
+    /// `titleRect` to explicitly center the image-above-title block, both
+    /// horizontally and vertically, within whatever bounds the button
+    /// actually resolves to - verified by re-running the same real-bitmap
+    /// render and confirming the gap above the icon and below the label are
+    /// now equal.
     private static let centeredTitleStyle: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
@@ -590,5 +676,48 @@ final class IconRailController: NSViewController {
         }
         avatar.contentTintColor = ink
         avatar.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4).cgColor
+    }
+}
+
+/// See `IconRailController.centeredTitleStyle`'s doc comment for the full
+/// investigation. `NSButtonCell`'s stock `.imageAbove` layout anchors the
+/// image+title block near a fixed low offset instead of centering it
+/// vertically in the cell's actual bounds, so any extra height the button
+/// resolves to beyond its own internal "ideal" size shows up entirely as a
+/// dead gap above the icon - invisible on an inactive row (no background to
+/// reveal it against) but obvious on the active row's tinted highlight.
+/// This subclass computes the image+title block's total height itself and
+/// centers it directly, both horizontally and vertically, in whatever
+/// bounds the button actually has.
+private final class CenteredImageAboveButtonCell: NSButtonCell {
+    var iconSize: CGFloat = 20
+    var contentSpacing: CGFloat = 4
+
+    private func measuredTitleHeight() -> CGFloat {
+        let titleFont = font ?? .systemFont(ofSize: 10, weight: .medium)
+        return ceil(titleFont.ascender - titleFont.descender)
+    }
+
+    /// The smaller-y edge of the vertically-centered image+title block.
+    /// Note: for this cell, a *smaller* y renders visually *higher* -
+    /// confirmed empirically via a real rendered bitmap (the stock,
+    /// un-centered cell placed its image at the smaller-y sub-range and its
+    /// title at the larger-y sub-range, and rendered image-above-title as
+    /// `.imageAbove` promises) - so the image occupies the low end of this
+    /// range and the title the high end, not the other way around.
+    private func contentLow(in bounds: NSRect) -> CGFloat {
+        let contentHeight = iconSize + contentSpacing + measuredTitleHeight()
+        return bounds.midY - contentHeight / 2
+    }
+
+    override func imageRect(forBounds theRect: NSRect) -> NSRect {
+        let low = contentLow(in: theRect)
+        return NSRect(x: theRect.midX - iconSize / 2, y: low, width: iconSize, height: iconSize)
+    }
+
+    override func titleRect(forBounds theRect: NSRect) -> NSRect {
+        let titleHeight = measuredTitleHeight()
+        let low = contentLow(in: theRect) + iconSize + contentSpacing
+        return NSRect(x: theRect.minX, y: low, width: theRect.width, height: titleHeight)
     }
 }
