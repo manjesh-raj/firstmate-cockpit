@@ -350,8 +350,25 @@ final class VaultController: NSViewController {
         recipeDetailLabel.textColor = HelmTheme.mutedInk(theme)
         recipeDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // `ShiftPanelView.setBody` pins its argument flush to the body
+        // container's edges with zero inset - callers with more than a
+        // single full-bleed view (a list stack whose own rows carry their
+        // own inset) are expected to pad themselves. Matches
+        // ShiftConflictController's established padded-body convention
+        // (14 leading/trailing, 4 top, 12 bottom - the same left inset as
+        // this panel's own header) rather than a one-off value.
+        let paddedBody = NSView()
+        paddedBody.translatesAutoresizingMaskIntoConstraints = false
+        paddedBody.addSubview(recipeDetailLabel)
+        NSLayoutConstraint.activate([
+            recipeDetailLabel.leadingAnchor.constraint(equalTo: paddedBody.leadingAnchor, constant: 14),
+            recipeDetailLabel.trailingAnchor.constraint(equalTo: paddedBody.trailingAnchor, constant: -14),
+            recipeDetailLabel.topAnchor.constraint(equalTo: paddedBody.topAnchor, constant: 4),
+            recipeDetailLabel.bottomAnchor.constraint(equalTo: paddedBody.bottomAnchor, constant: -12),
+        ])
+
         recipePanel.setHeader(header)
-        recipePanel.setBody(recipeDetailLabel)
+        recipePanel.setBody(paddedBody)
         return recipePanel
     }
 
@@ -871,8 +888,23 @@ final class VaultRecipeChecklistSheetController: NSViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 540))
+        // Deliberately no fixed frame height (unlike this file's other
+        // sheets/pages, which do use a fixed frame - see e.g.
+        // `VaultInjectSheetController`) - a checklist can be anywhere from
+        // one row to dozens, and a hardcoded height either wastes space
+        // (a short list left a large dead gap between `help` and the rows,
+        // captain-reported) or clips a long one. `root` keeps only a fixed
+        // width; its height is left to the required top/bottom pins on
+        // `stack` below plus the scroll view's own hug/cap constraints, so
+        // AppKit sizes the sheet to fit real content - the same "let a
+        // required constraint chain determine size" shape `HostEditorController`
+        // already relies on for its own standalone window (see AGENTS.md's
+        // AppKit-gotcha (3) for why this only works with inequalities, not a
+        // fixed-frame TAMIC=true view).
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
         view = root
+        root.widthAnchor.constraint(equalToConstant: 480).isActive = true
         ThemeManager.shared.observe { [weak self, weak root] theme in
             self?.theme = theme
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
@@ -903,11 +935,38 @@ final class VaultRecipeChecklistSheetController: NSViewController {
             }
         }
 
+        // A plain `NSStackView` document view is not flipped, so short
+        // content (fewer rows than the scroll's height) sits at the
+        // *bottom* of the clip view rather than the top - the exact AppKit
+        // gotcha AGENTS.md documents (#9) for `FleetController`/`ReviewController`.
+        // That's what put the dead space between `help` and the rows here:
+        // wrapping in `FlippedView` pins the rows to the top instead.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(listStack)
+        NSLayoutConstraint.activate([
+            listStack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            listStack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            listStack.topAnchor.constraint(equalTo: document.topAnchor),
+            listStack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+        ])
+
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.documentView = listStack
+        scroll.documentView = document
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
+
+        // Hug the real content height (so a short list shrinks the sheet
+        // instead of leaving dead space) but cap it so a long list scrolls
+        // within a reasonably sized window instead of growing unbounded -
+        // the standard min/max "hug + cap" pair: the `.defaultHigh` hug
+        // yields to the required cap once content exceeds it.
+        let hugContent = scroll.heightAnchor.constraint(equalTo: document.heightAnchor)
+        hugContent.priority = .defaultHigh
+        hugContent.isActive = true
+        scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
 
         let close = NSButton(title: "Close", target: self, action: #selector(closeTapped))
         close.bezelStyle = .rounded
@@ -931,9 +990,7 @@ final class VaultRecipeChecklistSheetController: NSViewController {
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            listStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
     }
 
