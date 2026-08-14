@@ -49,6 +49,12 @@ final class ShiftController: NSViewController {
     private let projectsCountBadge = NSTextField(labelWithString: "")
     private let projectsGridContainer = NSStackView()
     private let projectsDetailContainer = NSStackView()
+    /// The Projects section's own header row ("Projects"/"Project: X" + the
+    /// count badge + "New Project" button) - hidden while a project's detail
+    /// is open (fm/cockpit-fix-shift-project-detail-fullpage), since the
+    /// detail view already has its own header and this row's "+ New Project"
+    /// action makes no sense in that context.
+    private var projectsSectionHeaderRow: NSView!
 
     // MARK: Weekly Review (phase 5, cockpit-shift-power-features)
 
@@ -449,6 +455,7 @@ final class ShiftController: NSViewController {
             iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge,
             addAction: #selector(newProjectClicked), addTooltip: "New Project"
         )
+        projectsSectionHeaderRow = headerRow
 
         projectsGridContainer.orientation = .vertical
         projectsGridContainer.alignment = .leading
@@ -762,9 +769,26 @@ final class ShiftController: NSViewController {
         applyTheme()
     }
 
+    /// Whether a project's detail is the whole page right now - `statsRow`/
+    /// `taskPanel`/`followUpPanel` and this section's own header row all
+    /// hide entirely (not just scrolled past) while true, matching how
+    /// `switchTopLevelView` already hides `dashboardContainer` in favor of
+    /// `weeklyReviewContainer` (fm/cockpit-fix-shift-project-detail-
+    /// fullpage). The top-level greeting header and the My Tasks/Weekly
+    /// Review tab row are deliberately left alone - they're app-level
+    /// navigation chrome, not dashboard content, exactly as Weekly Review's
+    /// own toggle already treats them.
+    private func applyProjectDetailFullPage(_ isDetail: Bool) {
+        statsRow.isHidden = isDetail
+        taskPanel.isHidden = isDetail
+        followUpPanel.isHidden = isDetail
+        projectsSectionHeaderRow.isHidden = isDetail
+    }
+
     private func renderProjectsSection() {
         switch projectsView {
         case .grid:
+            applyProjectDetailFullPage(false)
             projectsGridContainer.isHidden = false
             projectsDetailContainer.isHidden = true
             projectsHeader.stringValue = "Projects"
@@ -780,6 +804,7 @@ final class ShiftController: NSViewController {
                 renderProjectsSection()
                 return
             }
+            applyProjectDetailFullPage(true)
             projectsGridContainer.isHidden = true
             projectsDetailContainer.isHidden = false
             projectsHeader.stringValue = "Project: \(project.name)"
