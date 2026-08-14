@@ -47,13 +47,13 @@ import AppKit
 ///
 /// `isDailyUse` (fm/grandline-sidebar-labeled-nav) marks exactly the 5
 /// `navStack` members (Overview, Console, Hosts, Shift, Review) as the set
-/// that renders as a labeled icon+text row - captain-approved design plan,
-/// not derived from `navStack` membership itself (`navStack`'s loop below
-/// filters on the bottom-anchored utility cases directly, same as before;
-/// this property exists purely so `railButton(for:)` knows which visual
-/// shape to build). Every other case renders compact/icon-only, unlabeled -
-/// a deliberate choice, not a scope gap: 11 fully-labeled items would make
-/// the rail too tall.
+/// that lives in the top `navStack` block rather than the bottom-anchored
+/// utility group - `navStack`'s loop and the bottom-anchored `loadView` block
+/// both filter on this directly. It no longer selects a *different visual
+/// style*: `fm/grandline-sidebar-nav-polish` gave every row (daily-use,
+/// utility, and per-host) the same labeled icon-over-text treatment after
+/// live captain feedback that icon-only utility rows looked inconsistent
+/// once the rest of the rail had labels - see `labeledRailButton(for:)`.
 enum RailDestination: CaseIterable {
     case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, settings
 
@@ -153,6 +153,13 @@ final class IconRailController: NSViewController {
     private let dividerAboveHosts = NSBox()
     private let dividerBelowHosts = NSBox()
 
+    /// fm/grandline-sidebar-nav-polish: a hairline divider between the logo
+    /// mark and the first daily-use row (Overview) - the captain noticed the
+    /// mark/nav boundary had no divider while every other section boundary
+    /// (above/below the per-host block) already does. Same `NSBox(.separator)`
+    /// style as those two, for visual consistency.
+    private let dividerAboveNav = NSBox()
+
     /// Theme-audit task: this used to be `NSVisualEffectView(.sidebar,
     /// .behindWindow)` - the exact material/blending pair `HostsSidebarController`
     /// already diagnosed and ripped out (its Fix 6 comment) for rendering an
@@ -178,10 +185,13 @@ final class IconRailController: NSViewController {
             edgeLine.widthAnchor.constraint(equalToConstant: 1),
         ])
 
+        dividerAboveNav.boxType = .separator
+        dividerAboveNav.translatesAutoresizingMaskIntoConstraints = false
         dividerAboveHosts.boxType = .separator
         dividerAboveHosts.translatesAutoresizingMaskIntoConstraints = false
         dividerBelowHosts.boxType = .separator
         dividerBelowHosts.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(dividerAboveNav)
         root.addSubview(dividerAboveHosts)
         root.addSubview(dividerBelowHosts)
 
@@ -290,7 +300,11 @@ final class IconRailController: NSViewController {
             mark.widthAnchor.constraint(equalToConstant: 34),
             mark.heightAnchor.constraint(equalToConstant: 34),
 
-            navStack.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 14),
+            dividerAboveNav.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 10),
+            dividerAboveNav.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            dividerAboveNav.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+
+            navStack.topAnchor.constraint(equalTo: dividerAboveNav.bottomAnchor, constant: 10),
             navStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
             navStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
 
@@ -347,55 +361,33 @@ final class IconRailController: NSViewController {
         setActive(active)
     }
 
-    /// Builds a rail row for `dest`. Daily-use destinations
-    /// (`RailDestination.isDailyUse`) get the new Slack-inspired
-    /// icon-over-label vertical layout (fm/grandline-sidebar-labeled-nav);
-    /// every utility destination keeps the original compact icon-only
-    /// button, unlabeled, exactly as before this task. Every row also gets a
-    /// "needs you" count badge overlay (fm/grandline-sidebar-badges) - cheap
-    /// to attach on all of them (hidden by default) rather than threading a
-    /// second "does this destination want a badge" flag through here; only
-    /// `setBadgeCount` ever makes one visible.
-    private func railButton(for dest: RailDestination) -> NSButton {
-        let button = dest.isDailyUse ? labeledRailButton(for: dest) : compactRailButton(for: dest)
-        attachBadge(to: button, dest: dest)
-        return button
-    }
-
-    private func compactRailButton(for dest: RailDestination) -> NSButton {
-        let button = NSButton(title: "", target: self, action: #selector(navClicked(_:)))
-        button.isBordered = false
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 11
-        button.imageScaling = .scaleProportionallyDown
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        button.image = NSImage(systemSymbolName: dest.symbol, accessibilityDescription: dest.title)?
-            .withSymbolConfiguration(config)
-        button.toolTip = dest.title
-        button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 44),
-            button.heightAnchor.constraint(equalToConstant: 40),
-        ])
-        return button
-    }
-
-    /// A labeled row for a daily-use destination: icon above a small text
-    /// label, both centered, inside one clickable `NSButton` sized to the
-    /// full rail content width so the tinted active-state background reads
-    /// as a full-width row rather than a small icon-sized square. Built as
-    /// an `NSButton` with `imagePosition = .imageAbove` (not a separate
+    /// Builds a rail row for `dest`: icon above a small text label, both
+    /// centered, inside one clickable `NSButton` sized to the full rail
+    /// content width so the tinted active-state background reads as a
+    /// full-width row rather than a small icon-sized square. Built as an
+    /// `NSButton` with `imagePosition = .imageAbove` (not a separate
     /// icon+label stack overlaid on a button) so the existing single-view
     /// `contentTintColor`/`layer?.backgroundColor` restyle path in
-    /// `restyle(_:)` keeps working unchanged for both button shapes - no
-    /// second highlight mechanism to keep in sync.
-    private func labeledRailButton(for dest: RailDestination) -> NSButton {
+    /// `restyle(_:)` covers every row with one mechanism. Every
+    /// `RailDestination` uses this same builder (fm/grandline-sidebar-nav-polish)
+    /// - the earlier compact icon-only style for utility destinations is
+    /// gone; see `isDailyUse`'s doc comment. Every row also gets a "needs
+    /// you" count badge overlay (fm/grandline-sidebar-badges) - cheap to
+    /// attach on all of them (hidden by default) rather than threading a
+    /// second "does this destination want a badge" flag through here; only
+    /// `setBadgeCount` ever makes one visible. `attachBadge` positions the
+    /// badge relative to `button`'s own top-trailing corner, so it still
+    /// lands correctly now that every row shares this one taller, wider
+    /// labeled shape instead of the two different button sizes it originally
+    /// had to handle.
+    private func railButton(for dest: RailDestination) -> NSButton {
         let button = NSButton(title: dest.title, target: self, action: #selector(navClicked(_:)))
         button.isBordered = false
         button.wantsLayer = true
         button.layer?.cornerRadius = 10
         button.imagePosition = .imageAbove
         button.imageScaling = .scaleProportionallyDown
+        button.alignment = .center
         button.font = .systemFont(ofSize: 10, weight: .medium)
         button.lineBreakMode = .byTruncatingTail
         let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
@@ -407,6 +399,7 @@ final class IconRailController: NSViewController {
             button.widthAnchor.constraint(equalToConstant: Self.width - 12),
             button.heightAnchor.constraint(equalToConstant: 52),
         ])
+        attachBadge(to: button, dest: dest)
         return button
     }
 
@@ -488,21 +481,31 @@ final class IconRailController: NSViewController {
         restyle(ThemeManager.shared.theme)
     }
 
+    /// Labeled the same way as `railButton(for:)` (fm/grandline-sidebar-nav-polish
+    /// - the captain's screenshot showed pinned hosts with an icon but no
+    /// name underneath, inconsistent with the rest of the now fully-labeled
+    /// rail). Kept as its own function rather than folded into `railButton`
+    /// since a host has no `RailDestination` case/tag - it dispatches
+    /// through `hostClicked(_:)` via its `identifier`, not `navClicked(_:)`.
     private func hostRailButton(for host: Host) -> NSButton {
-        let button = NSButton(title: "", target: self, action: #selector(hostClicked(_:)))
+        let button = NSButton(title: host.label, target: self, action: #selector(hostClicked(_:)))
         button.isBordered = false
         button.wantsLayer = true
-        button.layer?.cornerRadius = 11
+        button.layer?.cornerRadius = 10
+        button.imagePosition = .imageAbove
         button.imageScaling = .scaleProportionallyDown
-        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        button.alignment = .center
+        button.font = .systemFont(ofSize: 10, weight: .medium)
+        button.lineBreakMode = .byTruncatingTail
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
         button.image = (NSImage(systemSymbolName: host.iconSymbol, accessibilityDescription: host.label)
             ?? NSImage(systemSymbolName: HostCatalog.defaultIcon, accessibilityDescription: host.label))?
             .withSymbolConfiguration(config)
         button.toolTip = host.label
         button.identifier = NSUserInterfaceItemIdentifier(host.id.uuidString)
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 44),
-            button.heightAnchor.constraint(equalToConstant: 36),
+            button.widthAnchor.constraint(equalToConstant: Self.width - 12),
+            button.heightAnchor.constraint(equalToConstant: 52),
         ])
         return button
     }
@@ -533,27 +536,48 @@ final class IconRailController: NSViewController {
         restyle(ThemeManager.shared.theme)
     }
 
+    /// Centered paragraph style shared by every labeled row's `attributedTitle`
+    /// (fm/grandline-sidebar-nav-polish). This is the actual fix for the
+    /// off-center active-highlight bug: `NSButton.attributedTitle` lays out
+    /// its text using the attributed string's own paragraph alignment, not
+    /// the button's `alignment` property - an attributed title built with no
+    /// explicit alignment defaults to natural/left, which then also drags
+    /// `imagePosition = .imageAbove`'s icon left (the cell centers the image
+    /// over the title's actual (left-aligned) glyph run, not over the full
+    /// button width), so both the icon and the label end up shifted left
+    /// inside the full-width tinted highlight box. Confirmed by inspection:
+    /// this is the only place `attributedTitle` was constructed, and it had
+    /// no `.paragraphStyle` attribute at all.
+    private static let centeredTitleStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        return style
+    }()
+
+    private func attributedRowTitle(_ text: String, color: NSColor) -> NSAttributedString {
+        NSAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: color,
+                .paragraphStyle: Self.centeredTitleStyle,
+            ]
+        )
+    }
+
     private func restyle(_ theme: HelmTheme) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
         let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
         for (dest, button) in buttons {
             let isActive = activeHostID == nil && dest == active
-            button.contentTintColor = isActive ? accent : ink.withAlphaComponent(0.65)
-            if dest.isDailyUse {
-                // Labeled buttons render their title via `NSButton`'s own
-                // attributed-title machinery, which resets on every
-                // `contentTintColor` set - restate the tinted title here so
-                // the label always matches the icon's active/inactive color.
-                let color = isActive ? accent : ink.withAlphaComponent(0.65)
-                button.attributedTitle = NSAttributedString(
-                    string: dest.title,
-                    attributes: [
-                        .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-                        .foregroundColor: color,
-                    ]
-                )
-            }
+            let color = isActive ? accent : ink.withAlphaComponent(0.65)
+            button.contentTintColor = color
+            // Labeled buttons render their title via `NSButton`'s own
+            // attributed-title machinery, which resets on every
+            // `contentTintColor` set - restate the tinted title here so
+            // the label always matches the icon's active/inactive color.
+            button.attributedTitle = attributedRowTitle(dest.title, color: color)
             button.layer?.backgroundColor = (isActive ? accentTint : .clear).cgColor
         }
         for host in hosts {
@@ -561,6 +585,7 @@ final class IconRailController: NSViewController {
             let hostAccent = HelmTheme.nsColor(host.accentHex)
             let isActive = host.id == activeHostID
             button.contentTintColor = hostAccent
+            button.attributedTitle = attributedRowTitle(host.label, color: hostAccent)
             button.layer?.backgroundColor = (isActive ? hostAccent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14) : .clear).cgColor
         }
         avatar.contentTintColor = ink
