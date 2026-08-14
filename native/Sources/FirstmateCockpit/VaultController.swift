@@ -541,7 +541,38 @@ final class VaultController: NSViewController {
         views.detailLabel.stringValue = "Stored in Automic Vault's Keychain"
         row.identifier = NSUserInterfaceItemIdentifier("secret:\(secret.name)")
         ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false)
-        return row
+
+        // Icon-only, borderless - the same "small icon button" convention the
+        // header's Refresh button already uses on this page. Copies only the
+        // NAME string already shown in this row; the secret's value never
+        // touches this app (see this file's header comment). Pinned to the
+        // true trailing edge of the row (captain's explicit ask, matching
+        // this section's own "+ Add Secret" placement) rather than clustered
+        // with the pill/Run injected button, via the same `.fill` distribution
+        // + required-hugging-on-the-fixed-view pattern this file's header
+        // gotcha catalogue already documents for pinning a control to a row's
+        // trailing edge.
+        let copyButton = NSButton()
+        copyButton.title = ""
+        copyButton.isBordered = false
+        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy secret name")
+        copyButton.target = self
+        copyButton.action = #selector(copyNameTapped(_:))
+        copyButton.toolTip = "Copy secret name"
+        copyButton.identifier = NSUserInterfaceItemIdentifier("secret-copy:\(secret.name)")
+        copyButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
+        copyButton.setContentHuggingPriority(.required, for: .horizontal)
+        copyButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let outer = NSStackView(views: [row, copyButton])
+        outer.orientation = .horizontal
+        outer.alignment = .centerY
+        outer.spacing = 10
+        outer.distribution = .fill
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        return outer
     }
 
     private func toolRowView(_ tool: VaultTool) -> NSView {
@@ -598,6 +629,15 @@ final class VaultController: NSViewController {
         guard let raw = sender.identifier?.rawValue, raw.hasPrefix("secret-run:") else { return }
         let name = String(raw.dropFirst("secret-run:".count))
         presentInjectSheet(preselected: name)
+    }
+
+    @objc private func copyNameTapped(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue, raw.hasPrefix("secret-copy:") else { return }
+        let name = String(raw.dropFirst("secret-copy:".count))
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(name, forType: .string)
+        Toast.show(in: view, message: "Copied \u{201c}\(name)\u{201d} to clipboard")
     }
 
     private func presentInjectSheet(preselected: String?) {
