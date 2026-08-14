@@ -62,7 +62,6 @@ final class VaultController: NSViewController {
     private let scroll = NSScrollView()
     private let contentStack = NSStackView()
 
-    private let titleLabel = NSTextField(labelWithString: "Vault")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let refreshButton = NSButton()
 
@@ -180,7 +179,6 @@ final class VaultController: NSViewController {
     // MARK: Building the static chrome
 
     private func buildHeader() -> NSView {
-        titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -192,13 +190,13 @@ final class VaultController: NSViewController {
         refreshButton.toolTip = "Refresh Vault status"
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [titleLabel, subtitleLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 4
-
-        let row = NSStackView(views: [textStack, refreshButton])
+        // No in-page "Vault" title - the top bar already shows the
+        // destination name (see TopBarController), matching Tools/
+        // Updates/Bootstrap/Settings/Overview, which likewise show only a
+        // subtitle here rather than repeating the destination name.
+        let row = NSStackView(views: [subtitleLabel, refreshButton])
         row.orientation = .horizontal
+        row.alignment = .centerY
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
@@ -529,50 +527,31 @@ final class VaultController: NSViewController {
         runButton.controlSize = .small
         runButton.identifier = NSUserInterfaceItemIdentifier("secret-run:\(secret.name)")
 
+        // A real labeled button, styled identically to "Run injected..." -
+        // sits right next to it so the row's two actions read as one group,
+        // rather than the icon-only button PR #116 pinned to the row's far
+        // trailing edge. Still only ever copies the NAME already shown in
+        // this row; the secret's value never touches this app (see this
+        // file's header comment).
+        let copyButton = NSButton(title: "Copy Name", target: self, action: #selector(copyNameTapped(_:)))
+        copyButton.bezelStyle = .rounded
+        copyButton.controlSize = .small
+        copyButton.toolTip = "Copy secret name to clipboard"
+        copyButton.identifier = NSUserInterfaceItemIdentifier("secret-copy:\(secret.name)")
+
         let row = ToolRowLayout.build(
             views,
             iconSymbol: "key.fill",
             tint: .good,
             name: secret.name,
-            trailingViews: [views.pill, runButton],
+            trailingViews: [views.pill, runButton, copyButton],
             identifier: "secret:\(secret.name)",
             showDetails: false
         )
         views.detailLabel.stringValue = "Stored in Automic Vault's Keychain"
         row.identifier = NSUserInterfaceItemIdentifier("secret:\(secret.name)")
         ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false)
-
-        // Icon-only, borderless - the same "small icon button" convention the
-        // header's Refresh button already uses on this page. Copies only the
-        // NAME string already shown in this row; the secret's value never
-        // touches this app (see this file's header comment). Pinned to the
-        // true trailing edge of the row (captain's explicit ask, matching
-        // this section's own "+ Add Secret" placement) rather than clustered
-        // with the pill/Run injected button, via the same `.fill` distribution
-        // + required-hugging-on-the-fixed-view pattern this file's header
-        // gotcha catalogue already documents for pinning a control to a row's
-        // trailing edge.
-        let copyButton = NSButton()
-        copyButton.title = ""
-        copyButton.isBordered = false
-        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy secret name")
-        copyButton.target = self
-        copyButton.action = #selector(copyNameTapped(_:))
-        copyButton.toolTip = "Copy secret name"
-        copyButton.identifier = NSUserInterfaceItemIdentifier("secret-copy:\(secret.name)")
-        copyButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
-        copyButton.setContentHuggingPriority(.required, for: .horizontal)
-        copyButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        row.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let outer = NSStackView(views: [row, copyButton])
-        outer.orientation = .horizontal
-        outer.alignment = .centerY
-        outer.spacing = 10
-        outer.distribution = .fill
-        outer.translatesAutoresizingMaskIntoConstraints = false
-        return outer
+        return row
     }
 
     private func toolRowView(_ tool: VaultTool) -> NSView {
@@ -657,7 +636,6 @@ final class VaultController: NSViewController {
         let muted = HelmTheme.mutedInk(theme)
         let warn = HelmTheme.nsColor(theme.ansiHex[3])
 
-        titleLabel.textColor = ink
         subtitleLabel.textColor = muted
         subtitleLabel.stringValue = installStatus == .notInstalled
             ? "Automic Vault isn't installed on this machine yet."
