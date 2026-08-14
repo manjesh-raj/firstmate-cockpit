@@ -268,6 +268,10 @@ final class AppShellController: NSViewController {
     func showLock(reason: AppLockReason) {
         lockScreen.view.isHidden = false
         onLockStateChanged?(true)
+        // fm/grandline-lock-and-rail-fixes: the rail's own sailboat mark goes
+        // back to inert/static the instant the app locks, regardless of
+        // whether it was mid-bob.
+        rail.setUnlocked(false)
         // Optimistic default so the overlay never shows a blank subtitle for
         // the fraction of a second the background `av list` check takes -
         // corrected below once that check actually resolves.
@@ -297,6 +301,10 @@ final class AppShellController: NSViewController {
     private func hideLock() {
         lockScreen.view.isHidden = true
         onLockStateChanged?(false)
+        // fm/grandline-lock-and-rail-fixes: bold + bob the rail's own
+        // sailboat mark now that the captain is actually in the app - a
+        // small "welcome back, the ship is sailing" touch.
+        rail.setUnlocked(true)
     }
 
     /// Open `command` as a new tab in the shared Firstmate console and bring
