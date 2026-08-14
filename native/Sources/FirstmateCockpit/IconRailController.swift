@@ -1,7 +1,9 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The primary nav rail (nav-redesign task, item 1): a narrow, fixed-width
-// icon-only column, mirroring the web app's icon rail
+// The primary nav rail (nav-redesign task, item 1; relabeled to a Slack-
+// inspired sectioned/labeled rail by fm/grandline-sidebar-labeled-nav - see
+// that task's header comment on `railButton(for:labeled:)` for the shape).
+// A narrow, fixed-width column, mirroring the web app's icon rail
 // (`backend/static/index.html`, `.rail`/`.nav` - roughly line 706 onward).
 // Never resizes and is always visible; the active destination gets a tinted
 // background exactly like the web rail's `.nav.on`.
@@ -13,7 +15,7 @@
 
 import AppKit
 
-/// The rail's six destinations. Switching order (captain correction,
+/// The rail's eleven destinations. Switching order (captain correction,
 /// theme-audit task): Overview, Console, Hosts, then Review, then Settings -
 /// overriding fixes4 Fix 2's Console/Hosts-first ordering. Note that this is
 /// the *switching* order only - Settings' *visual* position in the rail is
@@ -42,6 +44,16 @@ import AppKit
 /// reads Overview, Console, Hosts, Shift, Review - `loadView`'s `navStack`
 /// loop gets this for free just from case order (case order drives
 /// `navStack`'s iteration order, same as every other `navStack` member).
+///
+/// `isDailyUse` (fm/grandline-sidebar-labeled-nav) marks exactly the 5
+/// `navStack` members (Overview, Console, Hosts, Shift, Review) as the set
+/// that renders as a labeled icon+text row - captain-approved design plan,
+/// not derived from `navStack` membership itself (`navStack`'s loop below
+/// filters on the bottom-anchored utility cases directly, same as before;
+/// this property exists purely so `railButton(for:)` knows which visual
+/// shape to build). Every other case renders compact/icon-only, unlabeled -
+/// a deliberate choice, not a scope gap: 11 fully-labeled items would make
+/// the rail too tall.
 enum RailDestination: CaseIterable {
     case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, settings
 
@@ -76,13 +88,23 @@ enum RailDestination: CaseIterable {
         case .settings: return "Settings"
         }
     }
+
+    var isDailyUse: Bool {
+        switch self {
+        case .overview, .console, .hosts, .shift, .review: return true
+        case .tools, .vault, .docs, .updates, .bootstrap, .settings: return false
+        }
+    }
 }
 
 final class IconRailController: NSViewController {
 
-    /// Fixed rail width - the web rail is 66px; this app's rail runs 60pt,
-    /// within the 56-64pt range asked for.
-    static let width: CGFloat = 60
+    /// Rail width (fm/grandline-sidebar-labeled-nav): widened from the prior
+    /// icon-only 60pt to fit an icon + a text label stacked vertically for
+    /// the daily-use rows without wrapping the longest label ("Overview") -
+    /// a normal macOS sidebar width, comparable to Mail.app/Xcode, not a
+    /// drastic change.
+    static let width: CGFloat = 84
 
     var onSelect: ((RailDestination) -> Void)?
 
@@ -101,14 +123,25 @@ final class IconRailController: NSViewController {
     private let avatar = NSButton()
 
     /// The saved hosts currently pinned to the rail, and the vertical stack
-    /// they render into - below the fixed destinations, above the avatar.
-    /// Rebuilt wholesale on every `setHosts` call (via `HostStore.observe`),
-    /// which keeps this trivially correct on add/rename/delete at the cost
-    /// of a full rebuild - fine for the handful of hosts a rail like this is
-    /// meant to hold.
+    /// they render into - below the fixed destinations, above the utility
+    /// group. Rebuilt wholesale on every `setHosts` call (via
+    /// `HostStore.observe`), which keeps this trivially correct on
+    /// add/rename/delete at the cost of a full rebuild - fine for the
+    /// handful of hosts a rail like this is meant to hold.
     private var hosts: [Host] = []
     private let hostsStack = NSStackView()
     private var hostButtons: [UUID: NSButton] = [:]
+
+    /// fm/grandline-sidebar-labeled-nav: a small muted "HOSTS" section label
+    /// above the per-host icon block, and hairline dividers bracketing it -
+    /// makes the per-host section read as visually distinct from both the
+    /// daily-use group above and the utility group below, without inventing
+    /// new visual language (a plain `NSBox` separator, per the captain's own
+    /// "simple --- line" ask).
+    private let hostsSectionLabel = NSTextField(labelWithString: "HOSTS")
+    private let hostsSectionLabelWrapper = NSView()
+    private let dividerAboveHosts = NSBox()
+    private let dividerBelowHosts = NSBox()
 
     /// Theme-audit task: this used to be `NSVisualEffectView(.sidebar,
     /// .behindWindow)` - the exact material/blending pair `HostsSidebarController`
@@ -122,7 +155,7 @@ final class IconRailController: NSViewController {
     private let edgeLine = NSView()
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 660))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 760))
         root.wantsLayer = true
         view = root
         edgeLine.wantsLayer = true
@@ -134,10 +167,32 @@ final class IconRailController: NSViewController {
             edgeLine.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             edgeLine.widthAnchor.constraint(equalToConstant: 1),
         ])
+
+        dividerAboveHosts.boxType = .separator
+        dividerAboveHosts.translatesAutoresizingMaskIntoConstraints = false
+        dividerBelowHosts.boxType = .separator
+        dividerBelowHosts.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(dividerAboveHosts)
+        root.addSubview(dividerBelowHosts)
+
+        hostsSectionLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        hostsSectionLabel.alignment = .center
+        hostsSectionLabel.translatesAutoresizingMaskIntoConstraints = false
+        hostsSectionLabelWrapper.translatesAutoresizingMaskIntoConstraints = false
+        hostsSectionLabelWrapper.addSubview(hostsSectionLabel)
+        root.addSubview(hostsSectionLabelWrapper)
+        NSLayoutConstraint.activate([
+            hostsSectionLabel.leadingAnchor.constraint(equalTo: hostsSectionLabelWrapper.leadingAnchor),
+            hostsSectionLabel.trailingAnchor.constraint(equalTo: hostsSectionLabelWrapper.trailingAnchor),
+            hostsSectionLabel.topAnchor.constraint(equalTo: hostsSectionLabelWrapper.topAnchor),
+            hostsSectionLabel.bottomAnchor.constraint(equalTo: hostsSectionLabelWrapper.bottomAnchor),
+        ])
+
         ThemeManager.shared.observe { [weak self, weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
             self?.edgeLine.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
+            self?.hostsSectionLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.45)
             self?.restyle(theme)
         }
 
@@ -153,7 +208,7 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs && dest != .tools && dest != .vault {
+        for dest in RailDestination.allCases where dest.isDailyUse {
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -165,12 +220,14 @@ final class IconRailController: NSViewController {
         root.addSubview(hostsStack)
 
         // Tools (cockpit-tools-page-core) sits below the dynamic per-host
-        // icon block, directly above Docs, which sits directly above
-        // Updates, which sits directly above Bootstrap, which sits directly
-        // above Settings - which in turn sits directly above the avatar, per
-        // the captain's ask. All five are still real `RailDestination` cases
-        // for switching purposes; only their vertical position moves out of
-        // `navStack`.
+        // icon block, directly above Vault, which sits directly above Docs,
+        // which sits directly above Updates, which sits directly above
+        // Bootstrap, which sits directly above Settings - which in turn sits
+        // directly above the avatar, per the captain's ask. All six are
+        // still real `RailDestination` cases for switching purposes; only
+        // their vertical position moves out of `navStack`. This whole group
+        // stays compact/icon-only, unlabeled (fm/grandline-sidebar-labeled-nav)
+        // - a deliberate decision, not a scope gap.
         let toolsButton = railButton(for: .tools)
         buttons[.tools] = toolsButton
         toolsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -224,27 +281,44 @@ final class IconRailController: NSViewController {
             mark.heightAnchor.constraint(equalToConstant: 34),
 
             navStack.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 14),
-            navStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            navStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            navStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
 
-            hostsStack.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 10),
+            // Divider + "HOSTS" label + divider bracket the per-host icon
+            // block, reading as a visually distinct section between
+            // daily-use (above) and utility (below) - captain ask: simple
+            // hairline dividers, no new visual language.
+            dividerAboveHosts.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 12),
+            dividerAboveHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            dividerAboveHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+
+            hostsSectionLabelWrapper.topAnchor.constraint(equalTo: dividerAboveHosts.bottomAnchor, constant: 8),
+            hostsSectionLabelWrapper.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            hostsSectionLabelWrapper.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+
+            hostsStack.topAnchor.constraint(equalTo: hostsSectionLabelWrapper.bottomAnchor, constant: 6),
             hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            dividerBelowHosts.topAnchor.constraint(equalTo: hostsStack.bottomAnchor, constant: 10),
+            dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+
+            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            docsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            docsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            updatesButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            updatesButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             updatesButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            bootstrapButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            bootstrapButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             bootstrapButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
             settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
             avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
@@ -263,7 +337,15 @@ final class IconRailController: NSViewController {
         setActive(active)
     }
 
+    /// Builds a rail row for `dest`. Daily-use destinations
+    /// (`RailDestination.isDailyUse`) get the new Slack-inspired
+    /// icon-over-label vertical layout (fm/grandline-sidebar-labeled-nav);
+    /// every utility destination keeps the original compact icon-only
+    /// button, unlabeled, exactly as before this task.
     private func railButton(for dest: RailDestination) -> NSButton {
+        if dest.isDailyUse {
+            return labeledRailButton(for: dest)
+        }
         let button = NSButton(title: "", target: self, action: #selector(navClicked(_:)))
         button.isBordered = false
         button.wantsLayer = true
@@ -281,6 +363,36 @@ final class IconRailController: NSViewController {
         return button
     }
 
+    /// A labeled row for a daily-use destination: icon above a small text
+    /// label, both centered, inside one clickable `NSButton` sized to the
+    /// full rail content width so the tinted active-state background reads
+    /// as a full-width row rather than a small icon-sized square. Built as
+    /// an `NSButton` with `imagePosition = .imageAbove` (not a separate
+    /// icon+label stack overlaid on a button) so the existing single-view
+    /// `contentTintColor`/`layer?.backgroundColor` restyle path in
+    /// `restyle(_:)` keeps working unchanged for both button shapes - no
+    /// second highlight mechanism to keep in sync.
+    private func labeledRailButton(for dest: RailDestination) -> NSButton {
+        let button = NSButton(title: dest.title, target: self, action: #selector(navClicked(_:)))
+        button.isBordered = false
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 10
+        button.imagePosition = .imageAbove
+        button.imageScaling = .scaleProportionallyDown
+        button.font = .systemFont(ofSize: 10, weight: .medium)
+        button.lineBreakMode = .byTruncatingTail
+        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        button.image = NSImage(systemSymbolName: dest.symbol, accessibilityDescription: dest.title)?
+            .withSymbolConfiguration(config)
+        button.toolTip = dest.title
+        button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: Self.width - 12),
+            button.heightAnchor.constraint(equalToConstant: 52),
+        ])
+        return button
+    }
+
     @objc private func navClicked(_ sender: NSButton) {
         let dest = RailDestination.allCases[sender.tag]
         setActive(dest)
@@ -289,7 +401,11 @@ final class IconRailController: NSViewController {
 
     /// Fix 3 (fixes4): rebuild the per-host icon list. Called once at
     /// startup and on every `HostStore.observe` firing (add/rename/delete),
-    /// so the rail never drifts from the Hosts list.
+    /// so the rail never drifts from the Hosts list. The "HOSTS" section
+    /// label and its bracketing dividers stay visible even when there are
+    /// no saved hosts (fm/grandline-sidebar-labeled-nav) - an empty section
+    /// still reads as "here's where hosts go" rather than disappearing and
+    /// shifting the utility group up.
     func setHosts(_ hosts: [Host]) {
         self.hosts = hosts
         for v in hostsStack.arrangedSubviews {
@@ -357,6 +473,20 @@ final class IconRailController: NSViewController {
         for (dest, button) in buttons {
             let isActive = activeHostID == nil && dest == active
             button.contentTintColor = isActive ? accent : ink.withAlphaComponent(0.65)
+            if dest.isDailyUse {
+                // Labeled buttons render their title via `NSButton`'s own
+                // attributed-title machinery, which resets on every
+                // `contentTintColor` set - restate the tinted title here so
+                // the label always matches the icon's active/inactive color.
+                let color = isActive ? accent : ink.withAlphaComponent(0.65)
+                button.attributedTitle = NSAttributedString(
+                    string: dest.title,
+                    attributes: [
+                        .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                        .foregroundColor: color,
+                    ]
+                )
+            }
             button.layer?.backgroundColor = (isActive ? accentTint : .clear).cgColor
         }
         for host in hosts {
