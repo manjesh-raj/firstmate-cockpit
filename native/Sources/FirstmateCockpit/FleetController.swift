@@ -45,6 +45,13 @@ final class FleetController: NSViewController {
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var isLoading = false
 
+    /// fm/grandline-sidebar-badges: fires every time `render` recomputes the
+    /// banner's "needs your call" set (`needs_decision`/`blocked` tasks) -
+    /// the exact same signal the banner text above already surfaces, not a
+    /// new count invented for the rail. `AppShellController` forwards this
+    /// straight to `IconRailController.setBadgeCount(_:for: .overview)`.
+    var onNeedsDecisionCountChanged: ((Int) -> Void)?
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 940, height: 720))
         root.wantsLayer = true
@@ -337,6 +344,14 @@ final class FleetController: NSViewController {
 
     @objc private func refreshTapped() { refresh() }
 
+    /// fm/grandline-sidebar-badges: lets `AppShellController` trigger this
+    /// page's own existing refresh at app launch, so the rail's Overview
+    /// badge has a real count before the captain ever visits this
+    /// destination - not a new poll loop, just an earlier call to the one
+    /// that already exists (also fired again by every `viewWillAppear` visit
+    /// and the manual refresh button, unchanged).
+    func refreshIfNeeded() { refresh() }
+
     private func refresh() {
         guard !isLoading else { return }
         isLoading = true
@@ -386,6 +401,7 @@ final class FleetController: NSViewController {
 
         let working = snapshot.tasks.filter { $0.status == "working" }
         let needs = snapshot.tasks.filter { $0.status == "needs_decision" || $0.status == "blocked" }
+        onNeedsDecisionCountChanged?(needs.count)
 
         let hour = Calendar.current.component(.hour, from: Date())
         let part = hour < 5 ? "Still up" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"
