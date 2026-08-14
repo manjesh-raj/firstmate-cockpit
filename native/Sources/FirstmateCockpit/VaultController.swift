@@ -34,8 +34,12 @@
 // Install/update reuses `UpdatesSource.check`/`.update` on the existing
 // `DependencyCatalog` "automic-vault" entry (`VaultSource.checkInstall`/
 // `.updateInstall`) - the same brew-cask mechanic the Updates and Bootstrap
-// pages already run for this tool, never a second implementation, per the
-// task's explicit instruction to reuse it.
+// pages already run for this tool, never a second implementation. This page
+// only calls `VaultSource.checkInstall()` headlessly (to decide whether the
+// Secrets/Verified Launchers sections have anything to show) and does NOT
+// render its own install-status row - that would duplicate the real one on
+// the Updates/Bootstrap pages (captain-flagged, fm/grandline-vault-header-
+// and-avatar-divider); go there to check/install/update `av` itself.
 //
 // Per PRODUCT.md: quiet until it matters - no polling, no fake liveness.
 // Refresh happens on `viewWillAppear` and the header's manual Refresh
@@ -65,22 +69,15 @@ final class VaultController: NSViewController {
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let refreshButton = NSButton()
 
-    // Install status (always visible - reuses the same DependencyCatalog item
-    // the Updates/Bootstrap pages already check/update).
-    private let installViews = ToolRowLayout.Views(
-        iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
-        detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
-        pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
-        detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
-        logContainer: NSView(), rowContainer: HoverHighlightView()
-    )
-    private let installCheckButton = NSButton()
-    private let installUpdateButton = NSButton()
-    private let installSpinner = NSProgressIndicator()
+    // Whether `av` itself is installed - checked in the background (reusing
+    // the same `UpdatesSource`/`DependencyCatalog` "automic-vault" entry the
+    // Updates and Bootstrap pages already check/update) purely to decide
+    // whether the Secrets/Verified Launchers sections have anything to show.
+    // This page deliberately does NOT render its own install-status row
+    // (name/version/Check/Install buttons) - that already exists on the
+    // Updates and Bootstrap pages and duplicating it here was captain-flagged
+    // as redundant (fm/grandline-vault-header-and-avatar-divider).
     private var installStatus: DependencyStatus = .unknown
-    private var installDetail = "Not checked yet."
-    private var installLog = ""
-    private var isInstallLogExpanded = false
     private var isInstallBusy = false
 
     // Quiet-until-it-matters attention banner - hidden unless a real tool has
@@ -125,7 +122,6 @@ final class VaultController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
-        let installSection = buildInstallSection()
         _ = buildSecretsSection()
         _ = buildToolsSection()
         _ = buildRecipeSection()
@@ -135,7 +131,6 @@ final class VaultController: NSViewController {
         contentStack.spacing = 20
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
-        contentStack.addArrangedSubview(installSection)
         contentStack.addArrangedSubview(attentionBanner)
         contentStack.addArrangedSubview(secretsPanel)
         contentStack.addArrangedSubview(toolsPanel)
@@ -148,7 +143,6 @@ final class VaultController: NSViewController {
             contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
-            installSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             attentionBanner.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             secretsPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             toolsPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -211,39 +205,6 @@ final class VaultController: NSViewController {
         row.alignment = .centerY
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
-        return row
-    }
-
-    private func buildInstallSection() -> NSView {
-        installCheckButton.title = "Check"
-        installCheckButton.bezelStyle = .rounded
-        installCheckButton.controlSize = .small
-        installCheckButton.target = self
-        installCheckButton.action = #selector(checkInstallTapped)
-
-        installUpdateButton.title = "Install / Update"
-        installUpdateButton.bezelStyle = .rounded
-        installUpdateButton.controlSize = .small
-        installUpdateButton.target = self
-        installUpdateButton.action = #selector(updateInstallTapped)
-        installUpdateButton.isHidden = true
-
-        installSpinner.style = .spinning
-        installSpinner.controlSize = .small
-        installSpinner.isIndeterminate = true
-        installSpinner.translatesAutoresizingMaskIntoConstraints = false
-        installSpinner.isHidden = true
-
-        let row = ToolRowLayout.build(
-            installViews,
-            iconSymbol: "lock.shield",
-            tint: .violet,
-            name: VaultSource.dependencyItem.name,
-            trailingViews: [installViews.pill, installCheckButton, installUpdateButton, installSpinner],
-            detailsTarget: self,
-            detailsAction: #selector(installDetailsTapped),
-            identifier: "vault-install"
-        )
         return row
     }
 
@@ -395,7 +356,7 @@ final class VaultController: NSViewController {
     @objc private func refreshTapped() { refresh() }
 
     private func refresh() {
-        checkInstall { [weak self] in
+        checkAvInstalled { [weak self] in
             guard let self else { return }
             if self.installStatus == .notInstalled {
                 self.secrets = []
@@ -407,74 +368,21 @@ final class VaultController: NSViewController {
         }
     }
 
-    // MARK: Install check / update
+    // MARK: Install check (headless - no UI here; see Updates/Bootstrap for
+    // the real install-status row and Check/Install actions)
 
-    @objc private func checkInstallTapped() { checkInstall() }
-
-    private func checkInstall(completion: (() -> Void)? = nil) {
-        guard !isInstallBusy else { completion?(); return }
+    private func checkAvInstalled(completion: @escaping () -> Void) {
+        guard !isInstallBusy else { completion(); return }
         isInstallBusy = true
-        installStatus = .checking
-        installDetail = "Checking\u{2026}"
-        installCheckButton.isEnabled = false
-        installUpdateButton.isEnabled = false
-        installSpinner.isHidden = false
-        installSpinner.startAnimation(nil)
-        renderInstall()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = VaultSource.checkInstall()
             DispatchQueue.main.async {
-                guard let self else { completion?(); return }
+                guard let self else { completion(); return }
                 self.isInstallBusy = false
                 self.installStatus = outcome.status
-                self.installDetail = outcome.detail
-                self.installLog = outcome.log
-                self.installCheckButton.isEnabled = true
-                self.installUpdateButton.isEnabled = true
-                self.installSpinner.stopAnimation(nil)
-                self.installSpinner.isHidden = true
-                self.renderInstall()
-                completion?()
+                completion()
             }
         }
-    }
-
-    @objc private func updateInstallTapped() {
-        guard !isInstallBusy else { return }
-        isInstallBusy = true
-        installDetail = "Installing / updating\u{2026}"
-        installCheckButton.isEnabled = false
-        installUpdateButton.isEnabled = false
-        installSpinner.isHidden = false
-        installSpinner.startAnimation(nil)
-        renderInstall()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome = VaultSource.updateInstall()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.isInstallBusy = false
-                self.installLog = outcome.log
-                self.installCheckButton.isEnabled = true
-                self.installUpdateButton.isEnabled = true
-                self.installSpinner.stopAnimation(nil)
-                self.installSpinner.isHidden = true
-                if outcome.ok {
-                    self.checkInstall { [weak self] in
-                        guard let self else { return }
-                        if self.installStatus != .notInstalled { self.loadSnapshot() }
-                    }
-                } else {
-                    self.installDetail = outcome.detail
-                    self.installStatus = .updateFailed
-                    self.renderInstall()
-                }
-            }
-        }
-    }
-
-    @objc private func installDetailsTapped() {
-        isInstallLogExpanded.toggle()
-        ToolRowLayout.setLogExpanded(installViews, expanded: isInstallLogExpanded, log: installLog)
     }
 
     // MARK: Snapshot (secrets + tools)
@@ -496,31 +404,8 @@ final class VaultController: NSViewController {
 
     // MARK: Rendering
 
-    private func renderInstall() {
-        let (pillText, pillColor) = installPillVisuals(installStatus)
-        ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: installViews.pill, label: installViews.pillLabel)
-        installViews.detailLabel.stringValue = installDetail
-        installUpdateButton.isHidden = !installStatus.showsUpdateButton
-        let failed = installStatus == .checkFailed || installStatus == .updateFailed
-        ToolRowLayout.applyTheme(installViews, theme: theme, detailFailed: failed)
-        ToolRowLayout.setLogExpanded(installViews, expanded: isInstallLogExpanded, log: installLog)
-    }
-
-    private func installPillVisuals(_ status: DependencyStatus) -> (String, String) {
-        switch status {
-        case .unknown: return ("Not Checked", theme.chromeInkHex)
-        case .checking, .updating: return ("", theme.chromeInkHex)
-        case .upToDate: return ("Installed", theme.ansiHex[2])
-        case .updateAvailable: return ("Update Available", theme.ansiHex[3])
-        case .notInstalled: return ("Not Installed", theme.ansiHex[3])
-        case .checkFailed: return ("Check Failed", theme.ansiHex[1])
-        case .updateFailed: return ("Update Failed", theme.ansiHex[1])
-        }
-    }
-
     private func renderAll() {
         hasLoadedOnce = true
-        renderInstall()
 
         let notInstalled = installStatus == .notInstalled
         secretsPanel.isHidden = notInstalled
@@ -643,10 +528,9 @@ final class VaultController: NSViewController {
         case .needsAttention: isHardened = false
         }
         // "Needs attention" (real `av doctor` issues) reads as amber, not
-        // red - red is reserved elsewhere on this page for a genuine
-        // check/update failure (`installPillVisuals`); a tool with issues to
-        // review isn't broken the same way, matching the mockup's calm/
-        // informational/needs-attention pill semantics.
+        // red - a tool with issues to review isn't broken the same way,
+        // matching the mockup's calm/informational/needs-attention pill
+        // semantics.
         ToolRowLayout.pill(
             text: tool.status.label,
             colorHex: isHardened ? theme.ansiHex[2] : theme.ansiHex[3],
