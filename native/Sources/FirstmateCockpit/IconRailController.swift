@@ -144,52 +144,55 @@ final class IconRailController: NSViewController {
     private static let rowSpacing: CGFloat = 3
     private static let sectionGap: CGFloat = 14
 
-    /// `fm/grandline-rail-overflow-and-spacing`: the boundary between the
-    /// HOSTS section and the utility group (Tools/Vault/Docs/Setup/Settings)
-    /// used to be the one boundary in the rail with only a floor
-    /// (`greaterThanOrEqualTo: ..., constant: sectionGap`) and no ceiling -
-    /// the daily-use group and the utility+avatar block were each
-    /// independently anchored (top block from the window's top edge, bottom
-    /// block from the window's bottom edge via `avatar`'s fixed offset), so
-    /// any window taller than the bare minimum let that one boundary's gap
-    /// grow without limit while every other boundary in the rail stayed a
-    /// fixed `sectionGap`. A captain screenshot on a taller/maximized window
-    /// showed this as a large, visually dead void in the middle of the rail
-    /// - live-measured (a temporary debug probe, reverted before commit) at
-    /// +259pt of extra gap for +280pt of extra window height, confirming the
-    /// growth was literally unbounded, one-to-one with window height.
+    /// `fm/grandline-rail-overflow-and-spacing` tried to cap the HOSTS-to-
+    /// utility gap with a `[sectionGap, sectionGapMax]` *range* on
+    /// `toolsButton`'s top, paired with a soft (priority 800) pin holding
+    /// `avatar` near the window's bottom edge. That did not actually fix the
+    /// bug (`fm/grandline-rail-spacing-fullheight`, this task): a captain
+    /// screenshot on a maximized window still showed a large dead gap - not
+    /// between the divider and Tools (that boundary genuinely did stay
+    /// capped), but *inside* the HOSTS section itself, below the pinned host
+    /// icons. Root cause, confirmed live with a temporary debug probe
+    /// (reverted before commit) that laid the real `IconRailController` out
+    /// at several window heights with a fresh instance per height: `hostsStack`
+    /// has no height constraint of its own, so it isn't actually fixed-size -
+    /// its *top* is pinned via a required chain all the way from the
+    /// window's top edge (mark -> nav -> hosts label), which necessarily
+    /// moves up in absolute terms as the window grows taller, while its
+    /// *bottom* (via `dividerBelowHosts`) sits inside the old range
+    /// constraint tying it close to `toolsButton`, whose position was
+    /// anchored from the *bottom* via the soft avatar pin and therefore
+    /// stayed near-fixed regardless of window height. With required
+    /// equalities pulling its top up and its bottom staying put, `hostsStack`
+    /// itself became the de facto flexible spacer the task brief predicted -
+    /// just realized as an unconstrained stack view's own frame stretching,
+    /// not a dedicated spacer subview. Measured with 2 pinned hosts (2 fixed-
+    /// height buttons, ~103pt of real content): `hostsStack.frame.height` was
+    /// 133pt at a 900pt window, 433pt at 1200pt, 833pt at 1600pt, 1433pt at
+    /// 2200pt - growing 1:1 with window height, all of it dead space below
+    /// the actual host icons.
     ///
-    /// `sectionGapMax` caps that boundary's gap the same way every other
-    /// boundary already reads as a fixed, deliberate distance - paired with
-    /// `avatarBottomPinPriority` below (see `loadView`'s constraint block for
-    /// the full mechanism): the avatar's own fixed distance from the
-    /// window's bottom edge, previously a hard requirement, becomes a
-    /// preference instead, so Auto Layout is free to slide the whole utility
-    /// group + avatar (still one rigid unit, offsets between its own rows
-    /// unchanged) up within `[sectionGap, sectionGapMax]` of the HOSTS
-    /// section rather than leaving it pinned to the window's bottom edge
-    /// unconditionally. This was NOT simplified into one fully top-anchored
-    /// chain (mark -> nav -> hosts -> utility -> avatar, no bottom pin at
-    /// all) even though that also removes the unbounded-gap bug: live-
-    /// measured (same probe) that the rail's total required content height
-    /// at this row/spacing budget is close to 730pt - taller than this app's
-    /// own default 720pt-tall launch window - so a purely top-anchored chain
-    /// with no bottom safety net clips the avatar off the bottom of the
-    /// window entirely at the app's own default size. The floor+cap range
-    /// plus a soft (not required) bottom pin keeps that same graceful
-    /// degradation the old bottom-anchored design already had at a short
-    /// window (the gap shrinks below `sectionGap` rather than clipping
-    /// anything) while still capping the opposite failure mode (an
-    /// unbounded gap on a tall window).
-    private static let sectionGapMax: CGFloat = 40
-
-    /// See `sectionGapMax`'s doc comment - keeps the avatar hugging the
-    /// window's bottom edge whenever there's slack to do so without
-    /// conflicting with the required `[sectionGap, sectionGapMax]` range
-    /// above, but yields (rather than clipping or throwing an unsatisfiable-
-    /// constraint conflict) the moment honoring both would require less than
-    /// `sectionGap` of separation from the HOSTS section.
-    private static let avatarBottomPinPriority = NSLayoutConstraint.Priority(800)
+    /// The fix removes the range/soft-pin mechanism entirely and makes the
+    /// *whole* rail (mark -> nav -> HOSTS -> utility group -> avatar) one
+    /// single chain of required, fixed `sectionGap`/`rowSpacing` equalities
+    /// anchored only from the window's top edge - exactly like the daily-use
+    /// section and the per-host block already were, and like every other
+    /// boundary in the rail already reads. With no free segment anywhere in
+    /// that chain, nothing can stretch: `avatar`'s position (the chain's last
+    /// link) is fully determined top-down, and any slack in a tall window
+    /// necessarily appears below it, between `avatar` and the window's
+    /// bottom edge - never inside a section. Verified live (same probe,
+    /// swept 720/900/1200/1600/2200pt) that `hostsStack`'s height now stays
+    /// exactly its natural content size at every height tested, and that the
+    /// gap below `avatar` grows 1:1 with window height instead. This also
+    /// simplifies away the graceful-degradation tradeoff the old range/soft-
+    /// pin design was built around: a too-short window (below the rail's own
+    /// required content height, itself a separate, already-documented, still-
+    /// open issue - see this file's own header) behaved identically before
+    /// and after this change, confirmed by the same probe - the required
+    /// top-down chain already overflowed the window in both designs whenever
+    /// content didn't fit, so switching to a purely top-anchored chain does
+    /// not regress that pre-existing case.
 
     var onSelect: ((RailDestination) -> Void)?
 
@@ -508,38 +511,25 @@ final class IconRailController: NSViewController {
             dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
-            // `fm/grandline-rail-overflow-and-spacing`: floor unchanged from
-            // before; the added ceiling is what stops this boundary's gap
-            // from growing without bound on a tall window - see
-            // `sectionGapMax`'s doc comment above for the full mechanism
-            // (paired with the now-soft `avatar` bottom pin below).
-            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
-            toolsButton.topAnchor.constraint(lessThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGapMax),
+            // `fm/grandline-rail-spacing-fullheight`: a single required, fixed
+            // equality - not a range - so nothing between `dividerBelowHosts`
+            // and `toolsButton` can stretch. `vaultButton`/`docsButton`/
+            // `setupGroup`/`settingsButton`/`avatar` no longer need their own
+            // anchor to `dividerBelowHosts` at all: the required bottom-up
+            // equalities further down (unchanged) already chain each of them
+            // to `toolsButton` with a fixed offset, so fixing `toolsButton`'s
+            // own position fixes every row below it too - the whole utility
+            // group + avatar is one rigid block hanging directly below HOSTS
+            // with no free segment anywhere in between. See this file's
+            // `sectionGap`/`rowSpacing` doc comment above for the full
+            // root-cause writeup (a previous range + soft-bottom-pin design
+            // let `hostsStack` itself stretch to fill a tall window).
+            toolsButton.topAnchor.constraint(equalTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            docsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            setupGroup.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-
-            {
-                // Soft, not required (see `avatarBottomPinPriority`'s doc
-                // comment) - keeps the avatar hugging the window's bottom
-                // edge when there's slack to do so, but yields to the
-                // required `[sectionGap, sectionGapMax]` range on
-                // `toolsButton` above rather than clipping anything off a
-                // short window.
-                let pin = avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14)
-                pin.priority = Self.avatarBottomPinPriority
-                return pin
-            }(),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
