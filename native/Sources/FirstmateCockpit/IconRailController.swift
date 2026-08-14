@@ -30,6 +30,10 @@ import AppKit
 /// `.tools` (cockpit-tools-page-core) follows the identical convention too,
 /// pinned directly *above* `.docs` - so the bottom-anchored group reads
 /// Tools, Docs, Updates, Bootstrap, Settings, avatar.
+/// `.vault` (fm/grandline-vault-tab) follows the identical convention too,
+/// pinned directly *above* `.docs` and below `.tools` - so the bottom-
+/// anchored group reads Tools, Vault, Docs, Updates, Bootstrap, Settings,
+/// avatar.
 /// `.shift` (cockpit-shift-foundation) is different from all of the above:
 /// it's a daily-use destination, not a utility, so it is NOT part of the
 /// bottom-anchored group - it lives in `navStack` alongside the other fixed
@@ -39,7 +43,7 @@ import AppKit
 /// loop gets this for free just from case order (case order drives
 /// `navStack`'s iteration order, same as every other `navStack` member).
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, shift, review, tools, docs, updates, bootstrap, settings
+    case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, settings
 
     var symbol: String {
         switch self {
@@ -49,6 +53,7 @@ enum RailDestination: CaseIterable {
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
         case .tools: return "wrench.and.screwdriver"
+        case .vault: return "lock.shield"
         case .docs: return "book.closed"
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
@@ -64,6 +69,7 @@ enum RailDestination: CaseIterable {
         case .console: return "Console"
         case .review: return "Review"
         case .tools: return "Tools"
+        case .vault: return "Vault"
         case .docs: return "Docs"
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
@@ -147,7 +153,7 @@ final class IconRailController: NSViewController {
         navStack.orientation = .vertical
         navStack.spacing = 4
         navStack.translatesAutoresizingMaskIntoConstraints = false
-        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs && dest != .tools {
+        for dest in RailDestination.allCases where dest != .settings && dest != .updates && dest != .bootstrap && dest != .docs && dest != .tools && dest != .vault {
             let button = railButton(for: dest)
             buttons[dest] = button
             navStack.addArrangedSubview(button)
@@ -169,6 +175,11 @@ final class IconRailController: NSViewController {
         buttons[.tools] = toolsButton
         toolsButton.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(toolsButton)
+
+        let vaultButton = railButton(for: .vault)
+        buttons[.vault] = vaultButton
+        vaultButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(vaultButton)
 
         let docsButton = railButton(for: .docs)
         buttons[.docs] = docsButton
@@ -221,6 +232,9 @@ final class IconRailController: NSViewController {
             toolsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
+            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
+            vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+
             docsButton.topAnchor.constraint(greaterThanOrEqualTo: hostsStack.bottomAnchor, constant: 10),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
@@ -241,7 +255,8 @@ final class IconRailController: NSViewController {
             bootstrapButton.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
             updatesButton.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
             docsButton.bottomAnchor.constraint(equalTo: updatesButton.topAnchor, constant: -4),
-            toolsButton.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
+            vaultButton.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
+            toolsButton.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -4),
         ])
 
         restyle(ThemeManager.shared.theme)
