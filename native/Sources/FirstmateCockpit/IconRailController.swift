@@ -332,6 +332,11 @@ final class IconRailController: NSViewController {
         let dividerDocsUpdates = utilityDivider()
         let dividerUpdatesBootstrap = utilityDivider()
         let dividerBootstrapSettings = utilityDivider()
+        // fm/grandline-vault-header-and-avatar-divider: same treatment,
+        // between the last utility row (Settings) and the avatar pinned at
+        // the very bottom - the one boundary in this bottom-up chain that
+        // didn't have one yet.
+        let dividerSettingsAvatar = utilityDivider()
 
         avatar.title = "M"
         avatar.isBordered = false
@@ -404,7 +409,8 @@ final class IconRailController: NSViewController {
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
-            settingsButton.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -14),
+            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -10),
+            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -10),
             dividerBootstrapSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
             bootstrapButton.bottomAnchor.constraint(equalTo: dividerBootstrapSettings.topAnchor, constant: -4),
             dividerUpdatesBootstrap.bottomAnchor.constraint(equalTo: bootstrapButton.topAnchor, constant: -4),
