@@ -85,6 +85,29 @@ enum AppLockControllerSelfTest {
             check(lockedReason == .sessionExpired, "both thresholds crossed at once should report .sessionExpired, not .idle", &ok)
         }
 
+        // 5. `fm/grandline-lock-and-rail-fixes`: recent local in-app activity
+        //    (a real click/keypress this app itself saw) must suppress an
+        //    idle lock even if the system-wide idle signal reports a huge,
+        //    stuck value - this is the false-positive regression fix. Real
+        //    inactivity (no local activity call, system idle crosses the
+        //    threshold) must still lock correctly - the fix must not trade
+        //    one failure mode for the other.
+        do {
+            var fakeNow = Date(timeIntervalSince1970: 1_000_000)
+            let lock = AppLockController(
+                idleThreshold: 3600, sessionThreshold: 12 * 3600, pollInterval: 30,
+                now: { fakeNow }, systemIdleSeconds: { 9999 } // stuck/bogus system-wide reading
+            )
+            lock.recordUnlock()
+            lock.recordLocalActivity() // captain just clicked/typed inside the app
+            lock.tick()
+            check(!lock.isLocked, "recent local activity should suppress a lock despite a stuck system-idle reading", &ok)
+
+            fakeNow = fakeNow.addingTimeInterval(3601)
+            lock.tick()
+            check(lock.isLocked, "idle lock should still fire once local activity itself goes stale", &ok)
+        }
+
         return ok
     }
 

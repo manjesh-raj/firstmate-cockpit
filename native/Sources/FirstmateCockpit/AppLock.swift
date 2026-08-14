@@ -16,6 +16,31 @@
 //    own window was idle": the whole point of an idle re-lock is "no one has
 //    touched this Mac in an hour," which holds regardless of which app was
 //    frontmost.
+//
+//    `fm/grandline-lock-and-rail-fixes` fixed a severe live regression here:
+//    the captain reported the app re-locking every 10-30s (this class's own
+//    `pollInterval`) even during continuous active use. The threshold/poll
+//    constants were already correct (3600/30, confirmed by the self-test
+//    below, which passes both before and after this fix) - the bug was in
+//    trusting `CGEventSource` as the *only* idle signal. Two changes: (1)
+//    the state ID moved from `.combinedSessionState` to `.hidSystemState` -
+//    the latter is the documented, canonical idiom for "seconds since any
+//    real hardware input" (what every other idle-time recipe for this exact
+//    API uses); `.combinedSessionState` additionally folds in "events posted
+//    by the current process via a private event source," which is the wrong
+//    signal for a system-wide idle check and, on this unsigned/ad-hoc-signed
+//    dev build (see this file's own "Local signing setup" notes elsewhere in
+//    this repo), was the more plausible one to behave inconsistently. (2) a
+//    local `NSEvent` monitor (`localActivityMonitor`, needs no Accessibility
+//    permission since it only observes events already targeted at this
+//    app's own windows) independently stamps `lastLocalActivityAt` on every
+//    mouse/keyboard/scroll event this app receives - `tick()` now uses
+//    `min(systemIdleSeconds(), secondsSinceLocalActivity())` as the idle
+//    reading, so a captain who is demonstrably, continuously interacting
+//    with this app's own UI can never be misread as idle no matter what a
+//    single system-wide counter reports on a given machine. Genuine
+//    inactivity (the captain away from the Mac entirely) still locks
+//    correctly, since both signals then grow stale together.
 //  - hard logout at 12 hours since the *last successful unlock* (not since
 //    launch - re-derived from the brief's own example: unlocking at hour 11
 //    resets the clock from there, it doesn't still hit a wall at hour 12
@@ -37,6 +62,9 @@
 import Foundation
 #if canImport(CoreGraphics)
 import CoreGraphics
+#endif
+#if canImport(AppKit)
+import AppKit
 #endif
 
 enum AppLockReason: Equatable {
@@ -60,6 +88,17 @@ final class AppLockController {
     private(set) var isLocked = true
     private var lastUnlockAt: Date?
     private var timer: Timer?
+    /// Stamped by `localActivityMonitor` on every mouse/keyboard/scroll event
+    /// this app's own windows receive - the safety net described in this
+    /// file's header. Not `private`: the self-test stamps it directly via
+    /// `recordLocalActivity()` rather than needing a real event loop.
+    private var lastLocalActivityAt: Date?
+    /// A **local** `NSEvent` monitor (fires only for events sent to this
+    /// app's own windows - unlike a *global* monitor, this needs no
+    /// Accessibility/Input Monitoring permission at all). Purely a
+    /// `lastLocalActivityAt` timestamp updater; never consumes/alters the
+    /// event, so nothing about normal event delivery changes.
+    private var localActivityMonitor: Any?
     /// Held for the controller's whole lifetime once `start()` runs - macOS
     /// App Nap throttles (and can silently stop firing) a background app's
     /// timers, which is exactly the case this feature most needs to work in:
@@ -96,7 +135,7 @@ final class AppLockController {
 
     #if canImport(CoreGraphics)
     static func realSystemIdleSeconds() -> TimeInterval {
-        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .null)
     }
     #else
     static func realSystemIdleSeconds() -> TimeInterval { 0 }
@@ -120,11 +159,38 @@ final class AppLockController {
         newTimer.tolerance = pollInterval * 0.1
         RunLoop.main.add(newTimer, forMode: .common)
         timer = newTimer
+
+        #if canImport(AppKit)
+        if localActivityMonitor == nil {
+            localActivityMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+                           .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                           .scrollWheel, .keyDown, .flagsChanged]
+            ) { [weak self] event in
+                self?.recordLocalActivity()
+                return event
+            }
+        }
+        #endif
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        #if canImport(AppKit)
+        if let localActivityMonitor {
+            NSEvent.removeMonitor(localActivityMonitor)
+        }
+        localActivityMonitor = nil
+        #endif
+    }
+
+    /// Stamps "the captain just did something inside this app" - called by
+    /// the local `NSEvent` monitor installed in `start()`. Not `private`: the
+    /// self-test calls this directly to simulate real in-app interaction
+    /// without a real event loop.
+    func recordLocalActivity() {
+        lastLocalActivityAt = now()
     }
 
     /// Not `private`: exercised directly by the self-test with a fake clock/
@@ -135,9 +201,22 @@ final class AppLockController {
             lock(reason: .sessionExpired)
             return
         }
-        if systemIdleSeconds() >= idleThreshold {
+        if effectiveIdleSeconds() >= idleThreshold {
             lock(reason: .idle)
         }
+    }
+
+    /// The smaller (fresher) of the system-wide idle counter and "seconds
+    /// since this app last saw a real local event" - see this file's header
+    /// for why relying on the system-wide signal alone caused the false-
+    /// positive re-lock regression. `lastLocalActivityAt` being `nil` (no
+    /// local event observed yet, e.g. right after launch) falls back to pure
+    /// `systemIdleSeconds()` rather than artificially suppressing a lock.
+    private func effectiveIdleSeconds() -> TimeInterval {
+        let system = systemIdleSeconds()
+        guard let lastLocalActivityAt else { return system }
+        let local = now().timeIntervalSince(lastLocalActivityAt)
+        return min(system, local)
     }
 
     func lock(reason: AppLockReason) {
