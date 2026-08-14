@@ -124,6 +124,26 @@ final class IconRailController: NSViewController {
     /// drastic change.
     static let width: CGFloat = 84
 
+    /// `fm/grandline-lock-and-rail-fixes`: a rework of the rail's spacing
+    /// rhythm after live captain feedback that the rail reads crowded/uneven
+    /// at real-world density (all 11 destinations + a HOSTS section + badges,
+    /// in both themes) - the density this rail was never actually tuned
+    /// against before (earlier tuning passes, e.g. fm/grandline-rail-followup-fixes'
+    /// centering/badge/divider work, all happened against a much shorter
+    /// rail). Three named constants replace what used to be a scatter of
+    /// inconsistent magic numbers (52/4/10/12/14 all doing similar jobs):
+    /// `rowHeight` (was a hardcoded 52 on every button type - a touch
+    /// generous now that there are this many rows to fit), `rowSpacing`
+    /// (the gap between two rows *within* the same group, was an
+    /// inconsistent 4 in some places), and `sectionGap` (the gap *between*
+    /// groups - mark/nav/hosts/utility/avatar - was inconsistently 10, 12,
+    /// or 14 depending on which boundary). Reads as tighter within a group
+    /// and more deliberately spaced between groups, rather than the old
+    /// near-uniform tightness that made every boundary look the same.
+    private static let rowHeight: CGFloat = 46
+    private static let rowSpacing: CGFloat = 3
+    private static let sectionGap: CGFloat = 14
+
     var onSelect: ((RailDestination) -> Void)?
 
     /// Fix 3 (fixes4): clicking a saved host's pinned rail icon connects to
@@ -170,6 +190,13 @@ final class IconRailController: NSViewController {
     private var hosts: [Host] = []
     private let hostsStack = NSStackView()
     private var hostButtons: [UUID: NSButton] = [:]
+
+    /// The "more hosts" row (`fm/grandline-lock-and-rail-fixes`) shown in
+    /// place of the 2nd+ pinned host - see `setHosts(_:)`'s doc comment.
+    /// Same hover-flyout mechanism as `setupButton`/`setupPopover` below.
+    private let hostsOverflowButton = HoverTrackingButton()
+    private var hostsOverflowPopover: NSPopover?
+    private var hostsOverflowCloseWorkItem: DispatchWorkItem?
 
     /// fm/grandline-sidebar-labeled-nav: a small muted "HOSTS" section label
     /// above the per-host icon block, and hairline dividers bracketing it -
@@ -228,6 +255,20 @@ final class IconRailController: NSViewController {
     /// destination in this app already uses - is the fix.
     private let edgeLine = NSView()
 
+    /// The rail's own sailboat mark, above `navStack` - stored (rather than a
+    /// `loadView`-local `let`) so `setUnlocked(_:)` can restyle/animate it
+    /// after the fact. `fm/grandline-lock-and-rail-fixes`: bold + a subtle
+    /// continuous bob once the captain is past the lock screen, static/inert
+    /// while locked - a small "welcome back, the ship is sailing" touch,
+    /// captain-requested after the app lock (PR #129) shipped. Reuses
+    /// `LockScreenController.startAnimationsIfNeeded`'s own bob recipe (a
+    /// `CAKeyframeAnimation` on `transform`, sine-based offset + a touch of
+    /// rotation) rather than inventing a second one - same "gentle bob" the
+    /// lock screen's own boat already uses, just smaller-amplitude since this
+    /// mark is a fixed 34x34pt rail icon, not a 72pt centerpiece.
+    private let mark = NSImageView()
+    private var isUnlockedForMark = false
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 760))
         root.wantsLayer = true
@@ -273,7 +314,6 @@ final class IconRailController: NSViewController {
             self?.restyle(theme)
         }
 
-        let mark = NSImageView()
         mark.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Manjesh Grand Line")
         mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .medium)
         mark.wantsLayer = true
@@ -283,7 +323,7 @@ final class IconRailController: NSViewController {
 
         let navStack = NSStackView()
         navStack.orientation = .vertical
-        navStack.spacing = 4
+        navStack.spacing = Self.rowSpacing
         navStack.translatesAutoresizingMaskIntoConstraints = false
         let dailyUseDestinations = RailDestination.allCases.filter { $0.isDailyUse }
         for (index, dest) in dailyUseDestinations.enumerated() {
@@ -306,7 +346,7 @@ final class IconRailController: NSViewController {
         }
 
         hostsStack.orientation = .vertical
-        hostsStack.spacing = 4
+        hostsStack.spacing = Self.rowSpacing
         hostsStack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(hostsStack)
 
@@ -394,11 +434,11 @@ final class IconRailController: NSViewController {
             mark.widthAnchor.constraint(equalToConstant: 34),
             mark.heightAnchor.constraint(equalToConstant: 34),
 
-            dividerAboveNav.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: 10),
+            dividerAboveNav.topAnchor.constraint(equalTo: mark.bottomAnchor, constant: Self.sectionGap),
             dividerAboveNav.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerAboveNav.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
-            navStack.topAnchor.constraint(equalTo: dividerAboveNav.bottomAnchor, constant: 10),
+            navStack.topAnchor.constraint(equalTo: dividerAboveNav.bottomAnchor, constant: Self.sectionGap),
             navStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
             navStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
 
@@ -406,7 +446,7 @@ final class IconRailController: NSViewController {
             // block, reading as a visually distinct section between
             // daily-use (above) and utility (below) - captain ask: simple
             // hairline dividers, no new visual language.
-            dividerAboveHosts.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: 12),
+            dividerAboveHosts.topAnchor.constraint(equalTo: navStack.bottomAnchor, constant: Self.sectionGap),
             dividerAboveHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerAboveHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
@@ -417,53 +457,44 @@ final class IconRailController: NSViewController {
             hostsStack.topAnchor.constraint(equalTo: hostsSectionLabelWrapper.bottomAnchor, constant: 6),
             hostsStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            dividerBelowHosts.topAnchor.constraint(equalTo: hostsStack.bottomAnchor, constant: 10),
+            dividerBelowHosts.topAnchor.constraint(equalTo: hostsStack.bottomAnchor, constant: Self.sectionGap),
             dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
-            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            toolsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            vaultButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            docsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            docsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            setupGroup.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            setupGroup.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: 10),
+            settingsButton.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
             settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
             avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
-            // fm/grandline-app-lock: both gaps around this divider are now
-            // the same 12pt constant (matching the HOSTS section's own
-            // 10-12pt bracket, not the tight 4pt rhythm between ordinary
-            // utility rows) - PR #127 left the settingsButton-side gap at
-            // 10pt and the avatar-side gap also at 10pt, which is
-            // numerically even but read as uneven live: the button's own
-            // centered label leaves visible breathing room above its true
-            // frame edge (see `CenteredImageAboveButtonCell`), while the
-            // avatar's 36pt circle fills its frame edge-to-edge with no such
-            // margin, so the identical 10pt constant rendered as more space
-            // above the divider than below it once the avatar sat directly
-            // underneath. 12pt above and 12pt below reads even in a real
-            // rendered probe (see this task's verification notes) and gives
-            // the avatar a touch more genuine breathing room than before.
-            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -12),
-            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -12),
-            dividerSetupSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
-            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupSettings.topAnchor, constant: -4),
-            dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -4),
-            docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -4),
-            dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -4),
-            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDocs.topAnchor, constant: -4),
-            dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -4),
-            toolsButton.bottomAnchor.constraint(equalTo: dividerToolsVault.topAnchor, constant: -4),
+            // Both gaps around this divider use `sectionGap` - a real
+            // section boundary (utility group -> avatar), not an ordinary
+            // row-to-row gap - matching every other section boundary in the
+            // rail now that `sectionGap` is one consistent constant instead
+            // of this boundary's own one-off 12pt.
+            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
+            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -Self.sectionGap),
+            dividerSetupSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -Self.rowSpacing),
+            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupSettings.topAnchor, constant: -Self.rowSpacing),
+            dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -Self.rowSpacing),
+            docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -Self.rowSpacing),
+            dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -Self.rowSpacing),
+            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDocs.topAnchor, constant: -Self.rowSpacing),
+            dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -Self.rowSpacing),
+            toolsButton.bottomAnchor.constraint(equalTo: dividerToolsVault.topAnchor, constant: -Self.rowSpacing),
         ])
 
         restyle(ThemeManager.shared.theme)
@@ -510,7 +541,7 @@ final class IconRailController: NSViewController {
         button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            button.heightAnchor.constraint(equalToConstant: 52),
+            button.heightAnchor.constraint(equalToConstant: Self.rowHeight),
         ])
         attachBadge(to: button, dest: dest)
         return button
@@ -545,7 +576,7 @@ final class IconRailController: NSViewController {
         setupButton.toolTip = "Setup (Bootstrap, Updates)"
         NSLayoutConstraint.activate([
             setupButton.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            setupButton.heightAnchor.constraint(equalToConstant: 52),
+            setupButton.heightAnchor.constraint(equalToConstant: Self.rowHeight),
         ])
         setupButton.onHoverChange = { [weak self] isHovering in
             isHovering ? self?.scheduleShowSetupFlyout() : self?.scheduleCloseSetupFlyout()
@@ -694,6 +725,19 @@ final class IconRailController: NSViewController {
     /// no saved hosts (fm/grandline-sidebar-labeled-nav) - an empty section
     /// still reads as "here's where hosts go" rather than disappearing and
     /// shifting the utility group up.
+    ///
+    /// `fm/grandline-lock-and-rail-fixes`: with 2+ pinned hosts, only the
+    /// first host gets its own row - every host after it collapses into one
+    /// "more hosts" entry in that same slot (the captain's explicit ask,
+    /// scoped to "more than 1 host", so a single pinned host is byte-for-byte
+    /// unaffected). This reuses the exact hover-flyout mechanism the "Setup"
+    /// group already established (`HoverTrackingButton` + an `NSPopover`
+    /// shown on hover, closed on a short hover-out delay) rather than a
+    /// second interaction pattern - see `scheduleShowHostsOverflowFlyout()`.
+    /// Without this, the HOSTS section's height (and therefore the whole
+    /// rail's) grows without bound as hosts are pinned, which is the biggest
+    /// single contributor to the "crowded at real density" complaint this
+    /// task's rail-spacing rework otherwise addresses.
     func setHosts(_ hosts: [Host]) {
         self.hosts = hosts
         for v in hostsStack.arrangedSubviews {
@@ -701,12 +745,86 @@ final class IconRailController: NSViewController {
             v.removeFromSuperview()
         }
         hostButtons.removeAll()
-        for host in hosts {
+        hostsOverflowButton.removeFromSuperview()
+        let visibleHosts = hosts.count > 1 ? [hosts[0]] : hosts
+        for host in visibleHosts {
             let button = hostRailButton(for: host)
             hostButtons[host.id] = button
             hostsStack.addArrangedSubview(button)
         }
+        if hosts.count > 1 {
+            hostsStack.addArrangedSubview(buildHostsOverflowButton(remainingCount: hosts.count - 1))
+        }
         restyle(ThemeManager.shared.theme)
+    }
+
+    /// Builds the "more hosts" row shown in place of the 2nd+ pinned host -
+    /// same labeled icon-over-text shape as every other rail row, a stacked-
+    /// rectangles glyph (distinct from any single host's own icon) and an
+    /// "+N" label instead of a host name. Hover-driven, like "Setup" - see
+    /// `buildSetupButton()`'s own doc comment for why hover (not click) and a
+    /// side flyout (not an in-rail expanding drawer) were the captain's
+    /// explicit choices there; this reuses the identical mechanism.
+    private func buildHostsOverflowButton(remainingCount: Int) -> NSButton {
+        hostsOverflowButton.cell = CenteredImageAboveButtonCell()
+        hostsOverflowButton.title = "+\(remainingCount)"
+        hostsOverflowButton.isBordered = false
+        hostsOverflowButton.wantsLayer = true
+        hostsOverflowButton.layer?.cornerRadius = 10
+        hostsOverflowButton.imagePosition = .imageAbove
+        hostsOverflowButton.imageScaling = .scaleProportionallyDown
+        hostsOverflowButton.alignment = .center
+        hostsOverflowButton.font = .systemFont(ofSize: 10, weight: .medium)
+        hostsOverflowButton.lineBreakMode = .byTruncatingTail
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        hostsOverflowButton.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: "More hosts")?
+            .withSymbolConfiguration(config)
+        hostsOverflowButton.toolTip = "\(remainingCount) more host\(remainingCount == 1 ? "" : "s")"
+        NSLayoutConstraint.activate([
+            hostsOverflowButton.widthAnchor.constraint(equalToConstant: Self.width - 12),
+            hostsOverflowButton.heightAnchor.constraint(equalToConstant: Self.rowHeight),
+        ])
+        hostsOverflowButton.onHoverChange = { [weak self] isHovering in
+            isHovering ? self?.scheduleShowHostsOverflowFlyout() : self?.scheduleCloseHostsOverflowFlyout()
+        }
+        return hostsOverflowButton
+    }
+
+    /// Same show/hide timing as `scheduleShowSetupFlyout()`/`scheduleCloseSetupFlyout()`
+    /// - see those for why the close is delayed rather than immediate.
+    private func scheduleShowHostsOverflowFlyout() {
+        hostsOverflowCloseWorkItem?.cancel()
+        hostsOverflowCloseWorkItem = nil
+        guard hostsOverflowPopover?.isShown != true else { return }
+        showHostsOverflowFlyout()
+    }
+
+    private func scheduleCloseHostsOverflowFlyout() {
+        hostsOverflowCloseWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in self?.hostsOverflowPopover?.performClose(nil) }
+        hostsOverflowCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.setupCloseDelay, execute: workItem)
+    }
+
+    private func showHostsOverflowFlyout() {
+        let overflowHosts = Array(hosts.dropFirst())
+        guard !overflowHosts.isEmpty else { return }
+        let popover = NSPopover()
+        popover.behavior = .applicationDefined
+        popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
+        popover.contentViewController = HostsOverflowFlyoutViewController(
+            hosts: overflowHosts,
+            onHoverChange: { [weak self] isHovering in
+                isHovering ? self?.scheduleShowHostsOverflowFlyout() : self?.scheduleCloseHostsOverflowFlyout()
+            },
+            onSelect: { [weak self] host in
+                self?.hostsOverflowCloseWorkItem?.cancel()
+                self?.hostsOverflowPopover?.performClose(nil)
+                self?.onConnectHost?(host)
+            }
+        )
+        popover.show(relativeTo: hostsOverflowButton.bounds, of: hostsOverflowButton, preferredEdge: .maxX)
+        hostsOverflowPopover = popover
     }
 
     /// Labeled the same way as `railButton(for:)` (fm/grandline-sidebar-nav-polish
@@ -737,7 +855,7 @@ final class IconRailController: NSViewController {
         button.identifier = NSUserInterfaceItemIdentifier(host.id.uuidString)
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            button.heightAnchor.constraint(equalToConstant: 52),
+            button.heightAnchor.constraint(equalToConstant: Self.rowHeight),
         ])
         return button
     }
@@ -817,6 +935,37 @@ final class IconRailController: NSViewController {
         restyle(ThemeManager.shared.theme)
     }
 
+    /// `fm/grandline-lock-and-rail-fixes`: called by `AppShellController`
+    /// whenever the lock overlay's visibility changes - bold + a gentle,
+    /// continuous bob once unlocked; back to the plain, static mark the
+    /// instant it locks again (a captain stepping away mid-animation
+    /// shouldn't see the boat still "sailing" behind the lock screen).
+    func setUnlocked(_ unlocked: Bool) {
+        guard unlocked != isUnlockedForMark else { return }
+        isUnlockedForMark = unlocked
+        mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: unlocked ? .heavy : .medium)
+        if unlocked {
+            let bob = CAKeyframeAnimation(keyPath: "transform")
+            var transforms: [CATransform3D] = []
+            for step in 0...8 {
+                let t = CGFloat(step) / 8
+                let offset = sin(t * .pi * 2) * 1.6
+                let rotation = sin(t * .pi * 2) * 0.05
+                var transform = CATransform3DMakeTranslation(0, offset, 0)
+                transform = CATransform3DRotate(transform, rotation, 0, 0, 1)
+                transforms.append(transform)
+            }
+            bob.values = transforms
+            bob.duration = 3.2
+            bob.repeatCount = .infinity
+            bob.calculationMode = .cubic
+            mark.layer?.add(bob, forKey: "bob")
+        } else {
+            mark.layer?.removeAnimation(forKey: "bob")
+            mark.layer?.transform = CATransform3DIdentity
+        }
+    }
+
     /// Centered paragraph style shared by every labeled row's `attributedTitle`
     /// (fm/grandline-sidebar-nav-polish). This fixed the *horizontal*
     /// centering: `NSButton.attributedTitle` lays out its text using the
@@ -890,6 +1039,16 @@ final class IconRailController: NSViewController {
             button.contentTintColor = hostAccent
             button.attributedTitle = attributedRowTitle(host.label, color: hostAccent)
             button.layer?.backgroundColor = (isActive ? hostAccent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14) : .clear).cgColor
+        }
+
+        // "more hosts" never highlights as "active" (no single fixed
+        // destination or host id it corresponds to) - always the plain
+        // inactive ink color, like an inert utility row.
+        if hostsOverflowButton.superview != nil {
+            let overflowColor = ink.withAlphaComponent(0.65)
+            hostsOverflowButton.contentTintColor = overflowColor
+            hostsOverflowButton.attributedTitle = attributedRowTitle(hostsOverflowButton.title, color: overflowColor)
+            hostsOverflowButton.layer?.backgroundColor = NSColor.clear.cgColor
         }
 
         // "Setup" itself highlights whenever one of its sub-items
@@ -1013,6 +1172,134 @@ private final class SetupFlyoutViewController: NSViewController {
         onSelect(RailDestination.allCases[index])
     }
 
+}
+
+/// The "more hosts" flyout's content (`fm/grandline-lock-and-rail-fixes`) -
+/// the same hover-popover shape as `SetupFlyoutViewController` above (icon +
+/// label rows in a themed vertical list), listing the pinned hosts beyond
+/// the first one. Kept as its own type rather than generalizing
+/// `SetupFlyoutViewController` to something generic over "either a
+/// `RailDestination` or a `Host`": a host's icon is tinted with its own
+/// per-host accent color (`host.accentHex`, matching `hostRailButton`'s own
+/// per-host tinting), not one of the fixed `HelmTint` cases every
+/// `RailDestination` row uses - the two content types don't actually share a
+/// tinting story, so forcing one shared implementation would need a case
+/// split anyway.
+private final class HostsOverflowFlyoutViewController: NSViewController {
+    private let hosts: [Host]
+    private let onHoverChange: (Bool) -> Void
+    private let onSelect: (Host) -> Void
+    private var themeObservation: ThemeObservation?
+
+    init(hosts: [Host], onHoverChange: @escaping (Bool) -> Void, onSelect: @escaping (Host) -> Void) {
+        self.hosts = hosts
+        self.onHoverChange = onHoverChange
+        self.onSelect = onSelect
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    deinit {
+        if let themeObservation { ThemeManager.shared.unobserve(themeObservation) }
+    }
+
+    override func loadView() {
+        let root = HoverTrackingView()
+        root.wantsLayer = true
+        root.onHoverChange = { [weak self] isHovering in self?.onHoverChange(isHovering) }
+        view = root
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+        ])
+
+        var rowIcons: [(NSImageView, Host)] = []
+        for host in hosts {
+            let row = HoverHighlightView()
+            row.cornerRadius = 8
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let iconTile = NSView()
+            iconTile.wantsLayer = true
+            iconTile.layer?.cornerRadius = 7
+            iconTile.translatesAutoresizingMaskIntoConstraints = false
+            let icon = NSImageView()
+            icon.image = (NSImage(systemSymbolName: host.iconSymbol, accessibilityDescription: host.label)
+                ?? NSImage(systemSymbolName: HostCatalog.defaultIcon, accessibilityDescription: host.label))?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            iconTile.addSubview(icon)
+            NSLayoutConstraint.activate([
+                icon.centerXAnchor.constraint(equalTo: iconTile.centerXAnchor),
+                icon.centerYAnchor.constraint(equalTo: iconTile.centerYAnchor),
+                iconTile.widthAnchor.constraint(equalToConstant: 26),
+                iconTile.heightAnchor.constraint(equalToConstant: 26),
+            ])
+            rowIcons.append((icon, host))
+
+            let label = NSTextField(labelWithString: host.label)
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+
+            let rowStack = NSStackView(views: [iconTile, label])
+            rowStack.orientation = .horizontal
+            rowStack.spacing = 8
+            rowStack.alignment = .centerY
+            rowStack.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(rowStack)
+            NSLayoutConstraint.activate([
+                rowStack.topAnchor.constraint(equalTo: row.topAnchor, constant: 6),
+                rowStack.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -6),
+                rowStack.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
+                rowStack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+                row.widthAnchor.constraint(equalToConstant: 168),
+            ])
+
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(rowClicked(_:)))
+            row.addGestureRecognizer(recognizer)
+            row.identifier = NSUserInterfaceItemIdentifier(host.id.uuidString)
+
+            stack.addArrangedSubview(row)
+        }
+
+        themeObservation = ThemeManager.shared.observe { [weak root] theme in
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+            let ink = HelmTheme.nsColor(theme.chromeInkHex)
+            let hoverTint = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(theme.mode == .dark ? 0.25 : 0.5)
+            for (icon, host) in rowIcons {
+                let hostAccent = HelmTheme.nsColor(host.accentHex)
+                icon.contentTintColor = hostAccent
+                icon.superview?.layer?.backgroundColor = hostAccent.withAlphaComponent(0.16).cgColor
+            }
+            for case let row as HoverHighlightView in stack.arrangedSubviews {
+                row.normalColor = .clear
+                row.hoverColor = hoverTint
+                for case let rowStack as NSStackView in row.subviews {
+                    for case let label as NSTextField in rowStack.arrangedSubviews {
+                        label.textColor = ink
+                    }
+                }
+            }
+        }
+    }
+
+    @objc private func rowClicked(_ sender: NSClickGestureRecognizer) {
+        guard let view = sender.view,
+              let idString = view.identifier?.rawValue,
+              let id = UUID(uuidString: idString),
+              let host = hosts.first(where: { $0.id == id }) else { return }
+        onSelect(host)
+    }
 }
 
 /// A plain `NSButton` that reports mouse-enter/exit via a closure instead of
