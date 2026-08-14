@@ -269,7 +269,21 @@ final class DocsController: NSViewController {
         }
         emptyStateContainer.isHidden = true
         webView.isHidden = false
-        webView.loadFileURL(DocsStore.indexURL, allowingReadAccessTo: DocsStore.folderURL)
+        // WKWebView caches subresources (e.g. script.js) in memory once a
+        // file:// URL has been loaded once - re-calling loadFileURL on the
+        // same URL against the same long-lived WKWebView instance does NOT
+        // refetch those subresources, even though the main document reloads.
+        // Confirmed live (grandline-docs-refresh-scout): only reload()/
+        // reloadFromOrigin() force a fresh fetch; cache-busting the URL,
+        // URLRequest cache-policy overrides, and non-persistent
+        // WKWebsiteDataStore all failed to fix this. So: loadFileURL only on
+        // the very first load, reload() on every subsequent call (explicit
+        // Reload button or a DocsSyncCenter-triggered refresh).
+        if webView.url == nil {
+            webView.loadFileURL(DocsStore.indexURL, allowingReadAccessTo: DocsStore.folderURL)
+        } else {
+            webView.reload()
+        }
     }
 
     // MARK: Theme (chrome only - the embedded site keeps its own light-only styling)
