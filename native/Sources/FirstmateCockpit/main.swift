@@ -437,7 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // itself before presenting the sheet.
         let shiftMenuItem = NSMenuItem()
         mainMenu.addItem(shiftMenuItem)
-        let shiftMenu = NSMenu(title: "Shift")
+        let shiftMenu = NSMenu(title: "Tasks")
         shiftMenuItem.submenu = shiftMenu
         let newTaskItem = NSMenuItem(title: "New Task…", action: #selector(AppShellController.newShiftTaskFromMenu), keyEquivalent: "n")
         newTaskItem.target = appShell
@@ -457,7 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Phase 5 (cockpit-shift-power-features): ⌘⇧P rather than the
         // reviewed mockup's own ⌘K, which this app already bound to "Find in
         // Terminal" above, well before this phase existed.
-        let searchShiftItem = NSMenuItem(title: "Search Shift…", action: #selector(AppDelegate.showShiftSearch), keyEquivalent: "p")
+        let searchShiftItem = NSMenuItem(title: "Search Tasks…", action: #selector(AppDelegate.showShiftSearch), keyEquivalent: "p")
         searchShiftItem.keyEquivalentModifierMask = [.command, .shift]
         searchShiftItem.target = self
         shiftMenu.addItem(searchShiftItem)

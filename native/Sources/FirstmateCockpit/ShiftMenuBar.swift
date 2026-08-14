@@ -24,9 +24,17 @@ final class ShiftMenuBarController: NSObject, NSPopoverDelegate {
         super.init()
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Shift")?
+            // fm/grandline-rail-followup-fixes: this used to be
+            // "arrow.triangle.2.circlepath" (a refresh/sync glyph, unrelated
+            // to what this status item actually does) - a captain screenshot
+            // asked for the app's own "sailboat" mark instead (the same
+            // symbol as the rail's logo, `IconRailController.loadView`'s
+            // `mark.image`), since a standalone menu bar item has no nearby
+            // app branding of its own to tie it back to Manjesh Grand Line.
+            button.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Tasks")?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
             button.imagePosition = .imageLeading
+            button.toolTip = "Tasks"
             button.target = self
             button.action = #selector(iconClicked)
         }
@@ -99,7 +107,7 @@ final class ShiftMenuBarController: NSObject, NSPopoverDelegate {
 /// `NSVisualEffectView` tricks (a popover already gets its own vibrant
 /// background from AppKit for free).
 private final class ShiftMenuBarPopoverController: NSViewController {
-    private let headerLabel = NSTextField(labelWithString: "Shift")
+    private let headerLabel = NSTextField(labelWithString: "Tasks")
     private let tasksRow = ShiftMenuBarStatRow(label: "Tasks today")
     private let followUpRow = ShiftMenuBarStatRow(label: "Next follow-up")
     private let nextFollowUpTitle = NSTextField(labelWithString: "")
