@@ -186,6 +186,24 @@ final class AppShellController: NSViewController {
             self?.runInConsole(label: label, command: command, completion: completion)
         }
 
+        // fm/grandline-sidebar-badges: forward each page's own already-
+        // computed "needs you" count straight to its rail icon - no new
+        // signal invented here, just the counts these two pages already
+        // render every time they refresh.
+        overview.onNeedsDecisionCountChanged = { [weak self] count in
+            self?.rail.setBadgeCount(count, for: .overview)
+        }
+        review.onOpenPRCountChanged = { [weak self] count in
+            self?.rail.setBadgeCount(count, for: .review)
+        }
+        // Trigger both pages' own refresh once at launch so the badges have
+        // a real count before the captain ever visits Overview or Review -
+        // every later update comes from those pages' existing refresh
+        // triggers (page visit, manual refresh, a merge action), not a new
+        // poll loop.
+        overview.refreshIfNeeded()
+        review.refreshIfNeeded()
+
         show(.console)
     }
 

@@ -122,6 +122,16 @@ final class IconRailController: NSViewController {
     private var buttons: [RailDestination: NSButton] = [:]
     private let avatar = NSButton()
 
+    /// "Needs you" count badges (fm/grandline-sidebar-badges) - a small red/
+    /// white pill overlaid on a rail button's top-trailing corner, matching
+    /// macOS's own fixed-red badge convention (Dock icon badges, Mail's
+    /// unread count) rather than a theme-tinted pill, so it reads as an
+    /// alert regardless of the active Helm theme. Keyed by destination;
+    /// `setBadgeCount` is the only mutator and hides the badge whenever the
+    /// count is zero, per PRODUCT.md's "quiet until it matters."
+    private var badgeContainers: [RailDestination: NSView] = [:]
+    private var badgeLabels: [RailDestination: NSTextField] = [:]
+
     /// The saved hosts currently pinned to the rail, and the vertical stack
     /// they render into - below the fixed destinations, above the utility
     /// group. Rebuilt wholesale on every `setHosts` call (via
@@ -341,11 +351,18 @@ final class IconRailController: NSViewController {
     /// (`RailDestination.isDailyUse`) get the new Slack-inspired
     /// icon-over-label vertical layout (fm/grandline-sidebar-labeled-nav);
     /// every utility destination keeps the original compact icon-only
-    /// button, unlabeled, exactly as before this task.
+    /// button, unlabeled, exactly as before this task. Every row also gets a
+    /// "needs you" count badge overlay (fm/grandline-sidebar-badges) - cheap
+    /// to attach on all of them (hidden by default) rather than threading a
+    /// second "does this destination want a badge" flag through here; only
+    /// `setBadgeCount` ever makes one visible.
     private func railButton(for dest: RailDestination) -> NSButton {
-        if dest.isDailyUse {
-            return labeledRailButton(for: dest)
-        }
+        let button = dest.isDailyUse ? labeledRailButton(for: dest) : compactRailButton(for: dest)
+        attachBadge(to: button, dest: dest)
+        return button
+    }
+
+    private func compactRailButton(for dest: RailDestination) -> NSButton {
         let button = NSButton(title: "", target: self, action: #selector(navClicked(_:)))
         button.isBordered = false
         button.wantsLayer = true
@@ -391,6 +408,56 @@ final class IconRailController: NSViewController {
             button.heightAnchor.constraint(equalToConstant: 52),
         ])
         return button
+    }
+
+    /// Pins a small count-badge overlay to `button`'s top-trailing corner.
+    /// Hidden by default; only `setBadgeCount` ever shows one. Deliberately a
+    /// fixed white-on-systemRed pill rather than a theme-derived `HelmTint` -
+    /// unlike a status pill elsewhere in this app, an unread/needs-attention
+    /// badge is meant to stand out the same way regardless of which of the
+    /// 12 Helm themes is active, matching how macOS itself never re-tints a
+    /// Dock badge or Mail's unread count to match the current appearance.
+    private func attachBadge(to button: NSButton, dest: RailDestination) {
+        let label = NSTextField(labelWithString: "")
+        label.font = .monospacedDigitSystemFont(ofSize: 9, weight: .bold)
+        label.textColor = .white
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = NSColor.systemRed.cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.isHidden = true
+        container.addSubview(label)
+        button.addSubview(container)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1),
+            container.heightAnchor.constraint(equalToConstant: 16),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
+            container.topAnchor.constraint(equalTo: button.topAnchor, constant: -4),
+            container.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: 4),
+        ])
+        badgeContainers[dest] = container
+        badgeLabels[dest] = label
+    }
+
+    /// Sets the "needs you" count badge for `dest`. `count <= 0` hides the
+    /// badge entirely - no badge is ever shown for a zero/no-signal count,
+    /// per PRODUCT.md's "quiet until it matters." Callers own deciding what
+    /// "needs you" means for their destination (e.g. open PRs on `.review`,
+    /// tasks needing a decision on `.overview`) - this view only renders
+    /// whatever number it's given.
+    func setBadgeCount(_ count: Int, for dest: RailDestination) {
+        guard let container = badgeContainers[dest], let label = badgeLabels[dest] else { return }
+        container.isHidden = count <= 0
+        guard count > 0 else { return }
+        label.stringValue = count > 99 ? "99+" : "\(count)"
     }
 
     @objc private func navClicked(_ sender: NSButton) {

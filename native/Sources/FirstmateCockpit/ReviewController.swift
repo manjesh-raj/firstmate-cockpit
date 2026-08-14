@@ -48,6 +48,12 @@ final class ReviewController: NSViewController {
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var isLoading = false
 
+    /// fm/grandline-sidebar-badges: fires every time `render` recomputes the
+    /// full open-PR list - the same `mergedPRs` this page already shows, not
+    /// a narrower or invented filter. `AppShellController` forwards this
+    /// straight to `IconRailController.setBadgeCount(_:for: .review)`.
+    var onOpenPRCountChanged: ((Int) -> Void)?
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 940, height: 720))
         root.wantsLayer = true
@@ -242,6 +248,14 @@ final class ReviewController: NSViewController {
 
     @objc private func refreshTapped() { refresh() }
 
+    /// fm/grandline-sidebar-badges: lets `AppShellController` trigger this
+    /// page's own existing refresh at app launch, so the rail's Review badge
+    /// has a real count before the captain ever visits this destination -
+    /// not a new poll loop, just an earlier call to the one that already
+    /// exists (also fired again by every `viewWillAppear` visit and the
+    /// manual refresh button, unchanged).
+    func refreshIfNeeded() { refresh() }
+
     private func refresh() {
         guard !isLoading else { return }
         isLoading = true
@@ -272,6 +286,8 @@ final class ReviewController: NSViewController {
 
         rowContainers.removeAll()
         emptyStateParts.removeAll()
+
+        onOpenPRCountChanged?(prs.count)
 
         let sorted = prs.sorted { ($0.repo, $0.number ?? 0) < ($1.repo, $1.number ?? 0) }
         let github = sorted.filter { $0.forge == "github" }
