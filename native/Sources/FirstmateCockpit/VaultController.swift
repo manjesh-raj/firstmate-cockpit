@@ -98,6 +98,15 @@ final class VaultController: NSViewController {
     private let toolsStack = NSStackView()
     private let toolsCountBadge = NSTextField(labelWithString: "0")
 
+    // "Backup the recipe, not the values" (fm/grandline-vault-recipe-backup) -
+    // see VaultRecipe.swift/VaultRecipeGit.swift for what's recorded and why.
+    private let recipePanel = ShiftPanelView()
+    private let recipeDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private let exportRecipeButton = NSButton()
+    private let checkBackupButton = NSButton()
+    private let recipeSpinner = NSProgressIndicator()
+    private var isRecipeBusy = false
+
     private var secrets: [VaultSecret] = []
     private var tools: [VaultTool] = []
     private var isLoadingSnapshot = false
@@ -119,6 +128,7 @@ final class VaultController: NSViewController {
         let installSection = buildInstallSection()
         _ = buildSecretsSection()
         _ = buildToolsSection()
+        _ = buildRecipeSection()
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
@@ -129,6 +139,7 @@ final class VaultController: NSViewController {
         contentStack.addArrangedSubview(attentionBanner)
         contentStack.addArrangedSubview(secretsPanel)
         contentStack.addArrangedSubview(toolsPanel)
+        contentStack.addArrangedSubview(recipePanel)
         attentionBanner.isHidden = true
 
         content.addSubview(contentStack)
@@ -141,6 +152,7 @@ final class VaultController: NSViewController {
             attentionBanner.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             secretsPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             toolsPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            recipePanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
 
         scroll.documentView = content
@@ -296,6 +308,51 @@ final class VaultController: NSViewController {
         toolsPanel.setHeader(header)
         toolsPanel.setBody(toolsStack)
         return toolsPanel
+    }
+
+    private func buildRecipeSection() -> NSView {
+        exportRecipeButton.title = "Export Recipe"
+        exportRecipeButton.bezelStyle = .rounded
+        exportRecipeButton.controlSize = .small
+        exportRecipeButton.target = self
+        exportRecipeButton.action = #selector(exportRecipeTapped)
+
+        checkBackupButton.title = "Check Against Backup"
+        checkBackupButton.bezelStyle = .rounded
+        checkBackupButton.controlSize = .small
+        checkBackupButton.target = self
+        checkBackupButton.action = #selector(checkBackupTapped)
+
+        recipeSpinner.style = .spinning
+        recipeSpinner.controlSize = .small
+        recipeSpinner.isIndeterminate = true
+        recipeSpinner.translatesAutoresizingMaskIntoConstraints = false
+        recipeSpinner.isHidden = true
+
+        let buttonsRow = NSStackView(views: [checkBackupButton, exportRecipeButton, recipeSpinner])
+        buttonsRow.orientation = .horizontal
+        buttonsRow.spacing = 8
+        buttonsRow.alignment = .centerY
+
+        let titleLabel = NSTextField(labelWithString: "Recipe Backup")
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [titleLabel, spacer, buttonsRow])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 8
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        recipeDetailLabel.font = .systemFont(ofSize: 11.5)
+        recipeDetailLabel.preferredMaxLayoutWidth = 700
+        recipeDetailLabel.stringValue = "Records which secrets and tools are hardened right now - names and launcher metadata only, never a secret value - so the same setup can be replayed as a checklist after a fresh machine or wipe."
+        recipeDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        recipeDetailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        recipePanel.setHeader(header)
+        recipePanel.setBody(recipeDetailLabel)
+        return recipePanel
     }
 
     private func sectionHeaderRow(title: String, badge: NSTextField, trailing: NSView?) -> NSView {
@@ -619,6 +676,67 @@ final class VaultController: NSViewController {
         Toast.show(in: view, message: "Copied \u{201c}\(name)\u{201d} to clipboard")
     }
 
+    // MARK: Recipe backup (fm/grandline-vault-recipe-backup)
+
+    @objc private func exportRecipeTapped() {
+        guard !isRecipeBusy else { return }
+        guard let repoPath = VaultRecipeGit.resolveRepoPath() else {
+            recipeDetailLabel.stringValue = "No local manjesh-config clone found yet - set it up from Bootstrap's \u{201c}Dotfiles & machine config\u{201d} card first."
+            recipeDetailLabel.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+            return
+        }
+        setRecipeBusy(true, status: "Exporting recipe\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let snapshot = VaultSource.loadSnapshot()
+            let recipe = VaultRecipe.build(from: snapshot, generatedAt: ISO8601DateFormatter().string(from: Date()))
+            let result = VaultRecipeGit.export(recipe: recipe, repoPath: repoPath)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setRecipeBusy(false, status: result.message)
+                self.recipeDetailLabel.textColor = result.ok ? HelmTheme.mutedInk(self.theme) : HelmTheme.nsColor(self.theme.ansiHex[1])
+                if result.ok {
+                    Toast.show(in: self.view, message: "Vault recipe exported")
+                }
+            }
+        }
+    }
+
+    @objc private func checkBackupTapped() {
+        guard !isRecipeBusy else { return }
+        guard let repoPath = VaultRecipeGit.resolveRepoPath() else {
+            recipeDetailLabel.stringValue = "No local manjesh-config clone found yet - set it up from Bootstrap's \u{201c}Dotfiles & machine config\u{201d} card first."
+            recipeDetailLabel.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+            return
+        }
+        setRecipeBusy(true, status: "Checking against backup\u{2026}")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let recipe = VaultRecipeGit.loadExistingRecipe(repoPath: repoPath) else {
+                DispatchQueue.main.async {
+                    self?.setRecipeBusy(false, status: "No recipe backup found yet - use \u{201c}Export Recipe\u{201d} first.")
+                }
+                return
+            }
+            let snapshot = VaultSource.loadSnapshot()
+            let items = VaultRecipeChecklist.build(recipe: recipe, currentSnapshot: snapshot)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setRecipeBusy(false, status: "Compared against the backup from \(recipe.generatedAt).")
+                let sheet = VaultRecipeChecklistSheetController(items: items, generatedAt: recipe.generatedAt)
+                self.presentAsSheet(sheet)
+            }
+        }
+    }
+
+    private func setRecipeBusy(_ busy: Bool, status: String) {
+        isRecipeBusy = busy
+        exportRecipeButton.isEnabled = !busy
+        checkBackupButton.isEnabled = !busy
+        recipeSpinner.isHidden = !busy
+        if busy { recipeSpinner.startAnimation(nil) } else { recipeSpinner.stopAnimation(nil) }
+        recipeDetailLabel.stringValue = status
+        recipeDetailLabel.textColor = HelmTheme.mutedInk(theme)
+    }
+
     private func presentInjectSheet(preselected: String?) {
         let sheet = VaultInjectSheetController(secretNames: secrets.map(\.name), preselected: preselected)
         sheet.onRun = { [weak self] secretName, command in
@@ -648,6 +766,7 @@ final class VaultController: NSViewController {
 
         secretsPanel.applyTheme(theme)
         toolsPanel.applyTheme(theme)
+        recipePanel.applyTheme(theme)
     }
 }
 
@@ -727,6 +846,150 @@ final class VaultSaveSecretSheetController: NSViewController {
     @objc private func cancel() {
         dismiss(self)
     }
+}
+
+// MARK: - Recipe replay checklist sheet
+
+/// Shows how a previously-exported recipe compares to live `av` state right
+/// now - the "replay as a checklist" half of fm/grandline-vault-recipe-
+/// backup. Never re-saves or re-hardens anything itself: the captain
+/// re-enters each real value from its real source, matching the task
+/// brief's explicit "this app never invents or stores a value it doesn't
+/// get from `av` itself."
+final class VaultRecipeChecklistSheetController: NSViewController {
+
+    private let items: [VaultRecipeChecklistItem]
+    private let generatedAt: String
+    private var theme: HelmTheme = ThemeManager.shared.theme
+
+    init(items: [VaultRecipeChecklistItem], generatedAt: String) {
+        self.items = items
+        self.generatedAt = generatedAt
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 540))
+        view = root
+        ThemeManager.shared.observe { [weak self, weak root] theme in
+            self?.theme = theme
+            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+        }
+
+        let title = NSTextField(labelWithString: "Replay Checklist")
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+
+        let help = NSTextField(wrappingLabelWithString: "Compared against the recipe backup from \(generatedAt). \u{201c}Missing\u{201d} items were recorded before but aren\u{2019}t true right now - re-save the secret or re-harden the tool from its real source; this app never invents a value.")
+        help.font = .systemFont(ofSize: 11)
+        help.textColor = .secondaryLabelColor
+        help.preferredMaxLayoutWidth = 440
+
+        let listStack = NSStackView()
+        listStack.orientation = .vertical
+        listStack.alignment = .leading
+        listStack.spacing = 6
+        listStack.translatesAutoresizingMaskIntoConstraints = false
+
+        if items.isEmpty {
+            let empty = NSTextField(labelWithString: "No secrets or hardened tools recorded in the backup or right now.")
+            empty.font = .systemFont(ofSize: 11.5)
+            empty.textColor = .secondaryLabelColor
+            listStack.addArrangedSubview(empty)
+        } else {
+            for item in items {
+                listStack.addArrangedSubview(checklistRow(item))
+            }
+        }
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.documentView = listStack
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let close = NSButton(title: "Close", target: self, action: #selector(closeTapped))
+        close.bezelStyle = .rounded
+        close.keyEquivalent = "\r"
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let bottom = NSStackView(views: [spacer, close])
+        bottom.orientation = .horizontal
+        bottom.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [title, help, scroll, bottom])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
+            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            listStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+    }
+
+    private func checklistRow(_ item: VaultRecipeChecklistItem) -> NSView {
+        let kindLabel = NSTextField(labelWithString: item.kind == .secret ? "Secret" : "Tool")
+        kindLabel.font = .systemFont(ofSize: 9.5, weight: .medium)
+        kindLabel.textColor = HelmTheme.mutedInk(theme)
+
+        let nameLabel = NSTextField(labelWithString: item.name)
+        nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
+
+        let (statusText, statusColorHex) = statusVisuals(item.status)
+        let statusLabel = NSTextField(labelWithString: statusText)
+        statusLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        statusLabel.textColor = HelmTheme.nsColor(statusColorHex)
+
+        let topRow = NSStackView(views: [kindLabel, nameLabel])
+        topRow.orientation = .horizontal
+        topRow.spacing = 6
+        topRow.alignment = .firstBaseline
+
+        var rowViews: [NSView] = [topRow]
+        if let detail = item.detail {
+            let detailLabel = NSTextField(labelWithString: "Launchers: \(detail)")
+            detailLabel.font = .systemFont(ofSize: 10.5)
+            detailLabel.textColor = HelmTheme.mutedInk(theme)
+            rowViews.append(detailLabel)
+        }
+
+        let textStack = NSStackView(views: rowViews)
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [textStack, spacer, statusLabel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.distribution = .fill
+        row.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
+        return row
+    }
+
+    private func statusVisuals(_ status: VaultRecipeItemStatus) -> (String, String) {
+        switch status {
+        case .matches: return ("Matches backup", theme.ansiHex[2])
+        case .missingLocally: return ("Missing - needs redo", theme.ansiHex[1])
+        case .newSinceBackup: return ("New since backup", theme.ansiHex[3])
+        }
+    }
+
+    @objc private func closeTapped() { dismiss(self) }
 }
 
 // MARK: - Run injected sheet
