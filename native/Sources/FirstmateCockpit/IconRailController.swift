@@ -130,6 +130,11 @@ final class IconRailController: NSViewController {
     /// it directly, same as the Hosts list's own Connect action.
     var onConnectHost: ((Host) -> Void)?
 
+    /// fm/grandline-app-lock: fired only after both logout confirmations
+    /// (see `avatarClicked`/`confirmLogout`) - the app delegate's
+    /// `AppLockController` is what actually locks the app.
+    var onLogoutRequested: (() -> Void)?
+
     private(set) var active: RailDestination = .console
 
     /// Fix 1 (dedicated host pages): set instead of `active` while a host's
@@ -435,8 +440,22 @@ final class IconRailController: NSViewController {
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
-            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -10),
-            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -10),
+            // fm/grandline-app-lock: both gaps around this divider are now
+            // the same 12pt constant (matching the HOSTS section's own
+            // 10-12pt bracket, not the tight 4pt rhythm between ordinary
+            // utility rows) - PR #127 left the settingsButton-side gap at
+            // 10pt and the avatar-side gap also at 10pt, which is
+            // numerically even but read as uneven live: the button's own
+            // centered label leaves visible breathing room above its true
+            // frame edge (see `CenteredImageAboveButtonCell`), while the
+            // avatar's 36pt circle fills its frame edge-to-edge with no such
+            // margin, so the identical 10pt constant rendered as more space
+            // above the divider than below it once the avatar sat directly
+            // underneath. 12pt above and 12pt below reads even in a real
+            // rendered probe (see this task's verification notes) and gives
+            // the avatar a touch more genuine breathing room than before.
+            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -12),
+            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -12),
             dividerSetupSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -4),
             setupGroup.bottomAnchor.constraint(equalTo: dividerSetupSettings.topAnchor, constant: -4),
             dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -4),
@@ -730,8 +749,57 @@ final class IconRailController: NSViewController {
         onConnectHost?(host)
     }
 
+    private lazy var avatarPopover: NSPopover = {
+        let popover = NSPopover()
+        let content = AvatarLogoutPopoverController()
+        content.onLogout = { [weak self] in
+            self?.avatarPopover.performClose(nil)
+            self?.logoutClicked()
+        }
+        popover.contentViewController = content
+        popover.behavior = .transient
+        return popover
+    }()
+
+    /// fm/grandline-app-lock: replaces the old "About This App" panel with a
+    /// small themed popover - a bare `NSMenu` here (this task's first draft)
+    /// read as unstyled system chrome next to the rest of this app's
+    /// deliberately-themed surfaces, per live captain feedback. Follows
+    /// `ShiftMenuBarController`'s own `NSPopover` convention (a small
+    /// standalone popup off a status-bar-style button) rather than
+    /// `ThemeMenu`'s `NSMenu` convention, since this needs the app's own
+    /// `HelmTheme` colors, not the system menu chrome `ThemeMenu` already
+    /// relies on for its swatch/checkmark rows.
     @objc private func avatarClicked() {
-        NSApp.orderFrontStandardAboutPanel(nil)
+        if avatarPopover.isShown {
+            avatarPopover.performClose(nil)
+        } else {
+            (avatarPopover.contentViewController as? AvatarLogoutPopoverController)?.applyTheme(ThemeManager.shared.theme)
+            avatarPopover.show(relativeTo: avatar.bounds, of: avatar, preferredEdge: .maxX)
+        }
+    }
+
+    /// Double-confirmed, per the captain's explicit ask - logging out drops
+    /// straight into the password lock screen, so an accidental single click
+    /// shouldn't be able to trigger it.
+    @objc private func logoutClicked() {
+        let first = NSAlert()
+        first.messageText = "Log out of Manjesh Grand Line?"
+        first.informativeText = "This locks the app immediately. Your terminal sessions keep running in the background."
+        first.addButton(withTitle: "Log Out")
+        first.addButton(withTitle: "Cancel")
+        first.alertStyle = .warning
+        guard first.runModal() == .alertFirstButtonReturn else { return }
+
+        let second = NSAlert()
+        second.messageText = "Are you sure?"
+        second.informativeText = "You'll need your Grand Line password to get back in."
+        second.addButton(withTitle: "Log Out")
+        second.addButton(withTitle: "Cancel")
+        second.alertStyle = .warning
+        guard second.runModal() == .alertFirstButtonReturn else { return }
+
+        onLogoutRequested?()
     }
 
     /// Called by `AppShellController` both on a rail click and when it wants
@@ -1030,5 +1098,65 @@ private final class CenteredImageAboveButtonCell: NSButtonCell {
         let titleHeight = measuredTitleHeight()
         let low = contentLow(in: theRect) + iconSize + contentSpacing
         return NSRect(x: theRect.minX, y: low, width: theRect.width, height: titleHeight)
+    }
+}
+
+/// fm/grandline-app-lock: the avatar's popover content - a single themed,
+/// hover-highlighted "Logout" row. A plain `NSViewController` (not a
+/// `RailDestination`-style shared page), mirroring
+/// `ShiftMenuBarPopoverController`'s own small-popover convention.
+private final class AvatarLogoutPopoverController: NSViewController {
+    private let row = HoverHighlightView()
+    private let icon = NSImageView()
+    private let label = NSTextField(labelWithString: "Logout")
+
+    var onLogout: (() -> Void)?
+
+    override func loadView() {
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 44))
+        view = root
+
+        icon.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right", accessibilityDescription: "Logout")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(icon)
+        row.addSubview(label)
+        root.addSubview(row)
+
+        let click = NSClickGestureRecognizer(target: self, action: #selector(rowClicked))
+        row.addGestureRecognizer(click)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+
+            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
+            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -10),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+
+        row.cornerRadius = 8
+    }
+
+    @objc private func rowClicked() { onLogout?() }
+
+    func applyTheme(_ theme: HelmTheme) {
+        view.wantsLayer = true
+        view.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        icon.contentTintColor = HelmTheme.nsColor(theme.ansiHex[1]) // red - a destructive-ish action
+        label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        row.normalColor = .clear
+        row.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
     }
 }

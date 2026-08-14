@@ -76,6 +76,29 @@ final class AppShellController: NSViewController {
     /// arranges views and knows nothing about persistence.
     var onPresentHostEditor: ((Host?) -> Void)?
 
+    // MARK: App-level password lock (fm/grandline-app-lock)
+
+    private let lockScreen = LockScreenController()
+
+    /// Fired once a correct password is entered - the app delegate's
+    /// `AppLockController` owns turning this into "unlocked" state (and
+    /// starting its own idle/hard-logout timers from this moment); this
+    /// controller only knows "the form was accepted."
+    var onUnlocked: (() -> Void)?
+
+    /// Fired whenever the lock overlay's visibility changes, `true` while
+    /// locked - the app delegate uses this to disable the main menu's
+    /// content-bearing items (see `AppDelegate.setContentMenusEnabled`) so a
+    /// keyboard shortcut like ⌘N can't reach a hidden destination's action
+    /// while the overlay is covering it.
+    var onLockStateChanged: ((Bool) -> Void)?
+
+    /// The avatar's Logout action (double-confirmed inside `IconRailController`
+    /// itself) - forwarded to the app delegate's `AppLockController`, which
+    /// is what actually flips the lock state, matching how host-editor
+    /// presentation is forwarded rather than owned here.
+    var onLogoutRequested: (() -> Void)?
+
     init(
         hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
         hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
@@ -106,6 +129,7 @@ final class AppShellController: NSViewController {
         root.addSubview(rail.view)
         rail.view.translatesAutoresizingMaskIntoConstraints = false
         rail.onSelect = { [weak self] dest in self?.show(dest) }
+        rail.onLogoutRequested = { [weak self] in self?.onLogoutRequested?() }
 
         bodyContainer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(bodyContainer)
@@ -205,6 +229,74 @@ final class AppShellController: NSViewController {
         review.refreshIfNeeded()
 
         show(.console)
+
+        // Added last (and therefore topmost in z-order) so it covers the
+        // rail as well as the body area - no fleet/secrets/hosts content, or
+        // the rail itself, should be visible or reachable while locked.
+        addChild(lockScreen)
+        root.addSubview(lockScreen.view)
+        lockScreen.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            lockScreen.view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            lockScreen.view.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            lockScreen.view.topAnchor.constraint(equalTo: root.topAnchor),
+            lockScreen.view.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        lockScreen.view.isHidden = true
+        lockScreen.onAttempt = { typed, completion in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ok = VaultSource.verifyAppPassword(typed)
+                DispatchQueue.main.async { completion(ok) }
+            }
+        }
+        // Fires only once the success animation has actually played out
+        // (see `LockScreenController.playUnlockSuccessAnimation`) - hiding
+        // the overlay from `onAttempt`'s own completion instead would cut
+        // that animation off before it's visible at all.
+        lockScreen.onUnlockAnimationFinished = { [weak self] in
+            self?.hideLock()
+            self?.onUnlocked?()
+        }
+    }
+
+    // MARK: App-level password lock (fm/grandline-app-lock)
+
+    /// Shows the lock overlay for `reason`, re-checking whether
+    /// `GRANDLINE_APP_PASSWORD` is actually configured in Automic Vault
+    /// (never cached - the captain could set it between one lock and the
+    /// next) before deciding which of the lock screen's two states to show.
+    func showLock(reason: AppLockReason) {
+        lockScreen.view.isHidden = false
+        onLockStateChanged?(true)
+        // Optimistic default so the overlay never shows a blank subtitle for
+        // the fraction of a second the background `av list` check takes -
+        // corrected below once that check actually resolves.
+        let optimisticSubtitle = reason == .sessionExpired
+            ? "Your session expired - please log in again."
+            : "Manjesh Grand Line is locked."
+        lockScreen.apply(.locked(subtitle: optimisticSubtitle))
+        lockScreen.focusPasswordField()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let availability = VaultSource.checkAppPasswordConfigured()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch availability {
+                case .configured:
+                    let subtitle = reason == .sessionExpired
+                        ? "Your session expired - please log in again."
+                        : "Manjesh Grand Line is locked."
+                    self.lockScreen.apply(.locked(subtitle: subtitle))
+                case .notConfigured, .avUnavailable:
+                    self.lockScreen.apply(.noPasswordConfigured)
+                }
+                self.lockScreen.focusPasswordField()
+            }
+        }
+    }
+
+    private func hideLock() {
+        lockScreen.view.isHidden = true
+        onLockStateChanged?(false)
     }
 
     /// Open `command` as a new tab in the shared Firstmate console and bring

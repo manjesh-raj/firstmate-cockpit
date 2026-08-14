@@ -39,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var shiftQuickCapture = ShiftQuickCaptureController(store: shiftStore)
     lazy var shiftNotifications = ShiftNotificationScheduler(store: shiftStore)
     lazy var shiftHotkey = ShiftGlobalHotkey { [weak self] in self?.shiftQuickCapture.present() }
+    // fm/grandline-app-lock: the app-level password lock's timing state
+    // machine - see AppLock.swift's header for the idle/hard-logout math.
+    let appLock = AppLockController()
     // Fix 1: `makeHostConsole` builds a fresh, host-scoped console (no
     // Mirror/Shell tabs) for `AppShellController.connectHost` - captured as
     // local constants (not `self`) so this closure, which `appShell` holds
@@ -159,6 +162,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildMenu()
 
+        // fm/grandline-app-lock: wire the lock state machine to the shell's
+        // overlay and to the menu-disable safety net below. The actual
+        // `.launch` lock happens further down, *after* `window.contentViewController
+        // = appShell` below has forced `AppShellController.loadView()` to run
+        // at least once - `showLock` sets `lockScreen.view.isHidden = false`,
+        // but `loadView()` itself unconditionally sets that same property to
+        // `true` right after embedding the view (its default hidden state);
+        // locking before `loadView()` has ever run meant that default-hidden
+        // assignment executed *after* `showLock`'s and silently re-hid the
+        // overlay - confirmed live (a real launch dump showed
+        // `overlayHidden=true` immediately after `showLock` had already run
+        // and correctly disabled the menu). Locking after the window/
+        // contentViewController assignment below closes that race.
+        appLock.onLock = { [weak self] reason in self?.appShell.showLock(reason: reason) }
+        appShell.onUnlocked = { [weak self] in self?.appLock.recordUnlock() }
+        appShell.onLogoutRequested = { [weak self] in self?.appLock.lock(reason: .manualLogout) }
+        appShell.onLockStateChanged = { [weak self] locked in self?.setContentMenusEnabled(!locked) }
+        appLock.start()
+
         let frame = NSRect(x: 0, y: 0, width: 1220, height: 720)
         window = NSWindow(
             contentRect: frame,
@@ -176,6 +198,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // `loadView()` has now run at least once (triggered by the
+        // `contentViewController` assignment above) - lock now so the very
+        // first frame the captain sees is the lock screen, not the console.
+        appLock.lock(reason: .launch)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -190,6 +217,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.shutdownAllHostConsoles()
         shiftHotkey.stop()
         shiftNotifications.stop()
+        appLock.stop()
+    }
+
+    // MARK: App-level password lock (fm/grandline-app-lock)
+
+    /// The lock overlay is opaque and topmost, so mouse clicks on rail/body
+    /// content underneath it are already blocked by ordinary AppKit hit-
+    /// testing - but most of this app's menu items have a concrete `target`
+    /// (not `nil`, routed through the first-responder chain), so a keyboard
+    /// shortcut like ⌘N or ⌘T would otherwise still reach its destination's
+    /// action even while that destination is hidden behind the overlay. This
+    /// is the one choke point that closes that gap: every submenu except
+    /// Edit (Cut/Copy/Paste/Select All/Find are all `nil`-target, responder-
+    /// chain-routed items - while locked, the only thing that can ever be
+    /// first responder is the lock screen's own password field, so leaving
+    /// these enabled is what lets a captain paste a password from a manager
+    /// via ⌘V rather than breaking that) gets disabled while locked, minus
+    /// the App menu's Hide/Quit (still allowed, same as any other macOS app).
+    private func setContentMenusEnabled(_ enabled: Bool) {
+        guard let mainMenu = NSApp.mainMenu else { return }
+        let appName = ProcessInfo.processInfo.processName
+        for topLevelItem in mainMenu.items {
+            guard let submenu = topLevelItem.submenu, submenu.title != "Edit" else { continue }
+            for item in submenu.items {
+                if item.title == "Hide \(appName)" || item.title == "Quit \(appName)" { continue }
+                item.isEnabled = enabled
+            }
+        }
     }
 
     // MARK: Host connect (Fix 1: dedicated per-host pages)
@@ -661,6 +716,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_HOST_STORE_TESTS"] == "1" {
 // parsing) - see VaultDataSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_VAULT_DATA_TESTS"] == "1" {
     exit(VaultDataSelfTest.run() ? 0 : 1)
+}
+
+// fm/grandline-app-lock: same convention, for `AppLockController`'s idle/
+// hard-logout timing math against a fake clock/idle-time provider - see
+// AppLockSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_APP_LOCK_TESTS"] == "1" {
+    exit(AppLockControllerSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared

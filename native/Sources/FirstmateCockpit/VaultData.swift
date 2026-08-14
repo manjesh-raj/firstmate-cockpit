@@ -154,6 +154,73 @@ enum VaultSource {
         !s.isEmpty && s.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
     }
 
+    // MARK: App-level password lock (fm/grandline-app-lock)
+
+    /// The one fixed secret name the app-level lock screen checks/verifies
+    /// against - the captain sets its value themselves via `av save` or the
+    /// Vault tab's own save flow; this app never writes it and never builds
+    /// a first-run setup screen for it.
+    static let appPasswordSecretName = "GRANDLINE_APP_PASSWORD"
+
+    enum AppPasswordAvailability {
+        case configured
+        case notConfigured
+        /// `av` itself isn't on PATH or `av list` failed - treated the same
+        /// as `notConfigured` by every caller (never "let anyone in"), kept
+        /// as a distinct case only so the lock screen can say why.
+        case avUnavailable
+    }
+
+    /// Read-only - reuses the exact `av list` call `loadSnapshot()` already
+    /// makes, just without the heavier `--version`/`doctor --json` calls the
+    /// full Vault-page snapshot also needs.
+    static func checkAppPasswordConfigured() -> AppPasswordAvailability {
+        guard let av = resolveExecutable("av") else { return .avUnavailable }
+        let result = run(av, ["list"])
+        guard result.status == 0 else { return .avUnavailable }
+        let names = result.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        return names.contains(appPasswordSecretName) ? .configured : .notConfigured
+    }
+
+    /// Verifies `typed` against the real secret value without ever letting
+    /// the value - or the typed guess - pass through this app's own memory
+    /// beyond one environment variable handed to the comparison shell.
+    /// Mirrors `injectCommand`'s "av inject +NAME -- command" mechanism used
+    /// by the Vault page's "Run injected..." action, but run directly as a
+    /// background `Process` (like `av list`/`av doctor` above) rather than
+    /// through a visible Console tab: a password check has no output worth
+    /// showing the captain and must not depend on a terminal tab being open.
+    /// The typed guess travels via `GRANDLINE_LOCK_CANDIDATE` in the child's
+    /// environment, never spliced into the shell command text or argv, so it
+    /// never appears in a process listing's command column.
+    static func verifyAppPassword(_ typed: String) -> Bool {
+        guard let av = resolveExecutable("av") else { return false }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: av)
+        proc.arguments = [
+            "inject", "+\(appPasswordSecretName)", "--",
+            "/bin/sh", "-c", "[ \"$\(appPasswordSecretName)\" = \"$GRANDLINE_LOCK_CANDIDATE\" ]",
+        ]
+        var env = childEnvironmentDict()
+        env["GRANDLINE_LOCK_CANDIDATE"] = typed
+        proc.environment = env
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+            try proc.run()
+        } catch {
+            return false
+        }
+        // Drain both pipes before waiting - `av inject` can print an
+        // approval-flow line ("human approval required"/"approved") to
+        // stdout, and an unread full pipe would deadlock `waitUntilExit()`.
+        _ = out.fileHandleForReading.readDataToEndOfFile()
+        _ = err.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return proc.terminationStatus == 0
+    }
+
     // MARK: Process plumbing (mirrors UpdatesData.swift's private helpers)
 
     private static func resolveExecutable(_ name: String) -> String? {
