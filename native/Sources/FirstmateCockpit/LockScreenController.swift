@@ -28,11 +28,32 @@ final class LockScreenController: NSViewController {
     enum ContentState {
         case locked(subtitle: String)
         case noPasswordConfigured
+        /// `av` itself isn't installed on this Mac at all - distinct from
+        /// `.noPasswordConfigured` (av installed, no secret saved yet): the
+        /// "run av save..." instruction is actively wrong here since there's
+        /// no `av` to run. Shows a real "Install Automic Vault" action
+        /// instead (`onInstallAutomicVault`).
+        case avUnavailable
+        /// `av` is on PATH but its background approval service (the
+        /// "Automic Vault" menu-bar app) isn't reachable yet - the password
+        /// secret may already exist, `av` just can't confirm it right now.
+        /// `AppShellController` retries the underlying check on a timer
+        /// while this state is showing; this screen just displays it.
+        case serviceNotRunning
     }
 
     /// `(typed password, completion(success))` - the caller verifies on a
     /// background queue and calls `completion` back on the main thread.
     var onAttempt: ((String, @escaping (Bool) -> Void) -> Void)?
+
+    /// Fired when the captain clicks "Install Automic Vault" on the
+    /// `.avUnavailable` state - the caller runs the real Homebrew-cask
+    /// install (`VaultSource.updateInstall()`, the same mechanism the
+    /// Updates/Vault pages already use for this catalog entry) on a
+    /// background queue and calls back with the outcome; this controller
+    /// only shows install progress/result text, it knows nothing about
+    /// `UpdatesSource`/`DependencyCatalog`.
+    var onInstallAutomicVault: ((@escaping (Bool, String) -> Void) -> Void)?
 
     /// Fired once the success animation (below) has actually finished
     /// playing - `AppShellController` hides the overlay and records the
@@ -53,6 +74,13 @@ final class LockScreenController: NSViewController {
     private let unlockButton = NSButton(title: "Unlock", target: nil, action: nil)
     private let formStack = NSStackView()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
+
+    // `.avUnavailable`-only UI: a distinct message plus a real install
+    // action - see `onInstallAutomicVault` above.
+    private let avMessageLabel = NSTextField(wrappingLabelWithString: "")
+    private let installButton = NSButton(title: "Install Automic Vault", target: nil, action: nil)
+    private let installStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let avUnavailableStack = NSStackView()
 
     // Theme-following scene elements. `skyLayer` is `root.layer` itself;
     // `starLayers` (night) and `sunLayer` (day) are both built once up front
@@ -230,11 +258,51 @@ final class LockScreenController: NSViewController {
 
         messageLabel.font = .systemFont(ofSize: 13.5)
         messageLabel.alignment = .center
-        messageLabel.maximumNumberOfLines = 3
+        messageLabel.maximumNumberOfLines = 4
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
         messageLabel.isHidden = true
 
-        let contentStack = NSStackView(views: [boatImageView, titleLabel, subtitleLabel, formStack, messageLabel])
+        avMessageLabel.font = .systemFont(ofSize: 13.5)
+        avMessageLabel.alignment = .center
+        avMessageLabel.maximumNumberOfLines = 5
+        avMessageLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Styled like `unlockButton` above (a filled pill, not the stock
+        // bezel) so it reads as a real primary action on this screen rather
+        // than an afterthought.
+        installButton.isBordered = false
+        installButton.wantsLayer = true
+        installButton.layer?.cornerRadius = 10
+        installButton.layer?.backgroundColor = NSColor(calibratedRed: 0.20, green: 0.48, blue: 0.92, alpha: 1).cgColor
+        installButton.attributedTitle = NSAttributedString(
+            string: "Install Automic Vault",
+            attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 13.5, weight: .semibold),
+            ]
+        )
+        installButton.target = self
+        installButton.action = #selector(installTapped)
+        installButton.translatesAutoresizingMaskIntoConstraints = false
+        installButton.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        installButton.heightAnchor.constraint(equalToConstant: 40).isActive = true
+
+        installStatusLabel.font = .systemFont(ofSize: 12.5)
+        installStatusLabel.alignment = .center
+        installStatusLabel.maximumNumberOfLines = 4
+        installStatusLabel.lineBreakMode = .byWordWrapping
+        installStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        avUnavailableStack.orientation = .vertical
+        avUnavailableStack.alignment = .centerX
+        avUnavailableStack.spacing = 12
+        avUnavailableStack.translatesAutoresizingMaskIntoConstraints = false
+        avUnavailableStack.addArrangedSubview(avMessageLabel)
+        avUnavailableStack.addArrangedSubview(installButton)
+        avUnavailableStack.addArrangedSubview(installStatusLabel)
+        avUnavailableStack.isHidden = true
+
+        let contentStack = NSStackView(views: [boatImageView, titleLabel, subtitleLabel, formStack, messageLabel, avUnavailableStack])
         contentStack.orientation = .vertical
         contentStack.alignment = .centerX
         contentStack.spacing = 18
@@ -247,6 +315,8 @@ final class LockScreenController: NSViewController {
             contentStack.centerYAnchor.constraint(equalTo: root.centerYAnchor, constant: 40),
             contentStack.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             messageLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            avMessageLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            installStatusLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
 
         // Follow the app's active Helm theme's light/dark mode, live - see
@@ -328,6 +398,8 @@ final class LockScreenController: NSViewController {
         titleLabel.textColor = inkPrimary
         subtitleLabel.textColor = inkSecondary
         messageLabel.textColor = inkTertiary
+        avMessageLabel.textColor = inkTertiary
+        installStatusLabel.textColor = inkSecondary
 
         fieldContainer.layer?.backgroundColor = fieldFill.cgColor
         fieldContainer.layer?.borderColor = fieldBorder.cgColor
@@ -420,6 +492,7 @@ final class LockScreenController: NSViewController {
             subtitleLabel.stringValue = subtitle
             formStack.isHidden = false
             messageLabel.isHidden = true
+            avUnavailableStack.isHidden = true
             passwordField.stringValue = ""
             passwordField.isEnabled = true
             unlockButton.isEnabled = true
@@ -433,8 +506,27 @@ final class LockScreenController: NSViewController {
         case .noPasswordConfigured:
             subtitleLabel.stringValue = "No password is set yet"
             formStack.isHidden = true
+            avUnavailableStack.isHidden = true
             messageLabel.isHidden = false
-            messageLabel.stringValue = "Run \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d} in a terminal (or use the Vault tab), then relaunch Manjesh Grand Line."
+            // Vault-tab wording deliberately doesn't offer it as a first-setup
+            // option here either - the Vault tab lives behind this same lock
+            // screen, so it's only ever reachable to rotate an already-set
+            // password, never to set the first one. See `setup-guide.md`.
+            messageLabel.stringValue = "Run \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d} in a terminal, or set it from Automic Vault's own app, then relaunch Manjesh Grand Line."
+        case .avUnavailable:
+            subtitleLabel.stringValue = "Automic Vault isn't installed"
+            formStack.isHidden = true
+            messageLabel.isHidden = true
+            avUnavailableStack.isHidden = false
+            avMessageLabel.stringValue = "Automic Vault isn't installed on this Mac. Install it below, then set a password with \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d} (or Automic Vault's own app) and relaunch."
+            installButton.isEnabled = true
+            installStatusLabel.stringValue = ""
+        case .serviceNotRunning:
+            subtitleLabel.stringValue = "Starting Automic Vault"
+            formStack.isHidden = true
+            avUnavailableStack.isHidden = true
+            messageLabel.isHidden = false
+            messageLabel.stringValue = "Automic Vault's background service isn't running yet - starting it now. This should only take a moment."
         }
     }
 
@@ -467,6 +559,21 @@ final class LockScreenController: NSViewController {
                 self.playUnlockFailureAnimation()
                 self.view.window?.makeFirstResponder(self.passwordField)
             }
+        }
+    }
+
+    @objc private func installTapped() {
+        guard let onInstallAutomicVault else { return }
+        installButton.isEnabled = false
+        installStatusLabel.stringValue = "Installing Automic Vault\u{2026}"
+        onInstallAutomicVault { [weak self] success, message in
+            guard let self else { return }
+            self.installStatusLabel.stringValue = message
+            // Leave the button disabled on success (the state itself will
+            // move on to `.noPasswordConfigured`/`.serviceNotRunning` once
+            // `AppShellController` re-checks); re-enable on failure so the
+            // captain can retry without relaunching.
+            self.installButton.isEnabled = !success
         }
     }
 

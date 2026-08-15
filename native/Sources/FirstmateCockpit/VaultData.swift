@@ -165,10 +165,42 @@ enum VaultSource {
     enum AppPasswordAvailability {
         case configured
         case notConfigured
-        /// `av` itself isn't on PATH or `av list` failed - treated the same
-        /// as `notConfigured` by every caller (never "let anyone in"), kept
-        /// as a distinct case only so the lock screen can say why.
+        /// `av` itself isn't on PATH at all - genuinely not installed on
+        /// this Mac. Distinct from `.serviceNotRunning` below: there is no
+        /// service to start here, `av` has to be installed first.
         case avUnavailable
+        /// `av` is on PATH but `av list` failed specifically because its
+        /// background approval service (the "Automic Vault" menu-bar app)
+        /// isn't running - e.g. right after a reboot, before the app has
+        /// been launched, or if it was quit. The password secret may well
+        /// already exist; `av` just can't reach the service to say so, so
+        /// this must never be reported/treated as `.notConfigured`.
+        case serviceNotRunning
+    }
+
+    /// Substring `av list` prints (to stdout or stderr - `combinedLog`
+    /// covers both) when its background approval service isn't reachable,
+    /// confirmed live against a real `av list` call with the "Automic Vault"
+    /// menu-bar app quit. Matched case-insensitively since av's exact
+    /// capitalization isn't a documented contract.
+    private static let serviceNotRunningMarker = "approval service is not running"
+
+    /// Fire-and-forget attempt to start Automic Vault's background approval
+    /// service (its menu-bar app) - `open -a` launches it, or silently
+    /// no-ops if it's already running, and does not steal focus since a
+    /// menu-bar app runs with an accessory activation policy and no regular
+    /// window. Safe to call before the captain has unlocked anything - this
+    /// only starts Automic Vault's own helper, never touches this app's lock
+    /// state - and never blocks: `open` returns almost immediately
+    /// regardless of whether the launched app has finished starting.
+    static func ensureServiceRunning() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-a", "Automic Vault"]
+        proc.environment = childEnvironmentDict()
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try? proc.run()
     }
 
     /// Read-only - reuses the exact `av list` call `loadSnapshot()` already
@@ -177,7 +209,12 @@ enum VaultSource {
     static func checkAppPasswordConfigured() -> AppPasswordAvailability {
         guard let av = resolveExecutable("av") else { return .avUnavailable }
         let result = run(av, ["list"])
-        guard result.status == 0 else { return .avUnavailable }
+        guard result.status == 0 else {
+            if result.combinedLog.lowercased().contains(serviceNotRunningMarker) {
+                return .serviceNotRunning
+            }
+            return .avUnavailable
+        }
         let names = result.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         return names.contains(appPasswordSecretName) ? .configured : .notConfigured
     }

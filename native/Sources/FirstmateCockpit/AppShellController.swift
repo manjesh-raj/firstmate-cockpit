@@ -257,6 +257,22 @@ final class AppShellController: NSViewController {
             self?.hideLock()
             self?.onUnlocked?()
         }
+        // fm/grandline-vault-bootstrap-fix: "Install Automic Vault" on the
+        // `.avUnavailable` state - a plain Homebrew-cask install
+        // (`VaultSource.updateInstall()`, the same mechanism the
+        // Updates/Vault pages already use for this catalog entry), so it
+        // needs no prior unlock and is safe to trigger straight from here.
+        lockScreen.onInstallAutomicVault = { completion in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let outcome = VaultSource.updateInstall()
+                DispatchQueue.main.async {
+                    let message = outcome.ok
+                        ? "Installed. Set a password with \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d}, then relaunch Manjesh Grand Line."
+                        : "Install failed: \(outcome.detail)"
+                    completion(outcome.ok, message)
+                }
+            }
+        }
     }
 
     // MARK: App-level password lock (fm/grandline-app-lock)
@@ -280,20 +296,55 @@ final class AppShellController: NSViewController {
             : "Manjesh Grand Line is locked."
         lockScreen.apply(.locked(subtitle: optimisticSubtitle))
         lockScreen.focusPasswordField()
+        // fm/grandline-vault-bootstrap-fix: proactively try to start Automic
+        // Vault's own background approval service before the very first
+        // check - avoids ever hitting the "service not running" state below
+        // on an ordinary launch where the captain just hasn't opened the
+        // menu-bar app yet (e.g. right after a reboot). Fire-and-forget on
+        // the same background queue as the check that follows.
+        DispatchQueue.global(qos: .userInitiated).async {
+            VaultSource.ensureServiceRunning()
+        }
+        checkAppPasswordAvailability(reason: reason)
+    }
+
+    /// Re-checks `VaultSource.checkAppPasswordConfigured()` and updates the
+    /// lock screen's content state. When the service genuinely isn't running
+    /// yet (`.serviceNotRunning`), retries on a short timer rather than
+    /// immediately settling on a message - `ensureServiceRunning()` above
+    /// usually resolves this before the first attempt even lands; this is
+    /// the fallback for a slower start (e.g. right after a reboot).
+    private func checkAppPasswordAvailability(reason: AppLockReason) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let availability = VaultSource.checkAppPasswordConfigured()
             DispatchQueue.main.async {
                 guard let self else { return }
-                switch availability {
-                case .configured:
-                    let subtitle = reason == .sessionExpired
-                        ? "Your session expired - please log in again."
-                        : "Manjesh Grand Line is locked."
-                    self.lockScreen.apply(.locked(subtitle: subtitle))
-                case .notConfigured, .avUnavailable:
-                    self.lockScreen.apply(.noPasswordConfigured)
-                }
-                self.lockScreen.focusPasswordField()
+                self.applyPasswordAvailability(availability, reason: reason)
+            }
+        }
+    }
+
+    private func applyPasswordAvailability(_ availability: VaultSource.AppPasswordAvailability, reason: AppLockReason) {
+        switch availability {
+        case .configured:
+            let subtitle = reason == .sessionExpired
+                ? "Your session expired - please log in again."
+                : "Manjesh Grand Line is locked."
+            lockScreen.apply(.locked(subtitle: subtitle))
+            lockScreen.focusPasswordField()
+        case .notConfigured:
+            lockScreen.apply(.noPasswordConfigured)
+            lockScreen.focusPasswordField()
+        case .avUnavailable:
+            lockScreen.apply(.avUnavailable)
+        case .serviceNotRunning:
+            lockScreen.apply(.serviceNotRunning)
+            // Retry every 1.5s indefinitely while this screen is up - there's
+            // nothing else useful to show, and the retry itself is a cheap
+            // subprocess call, not a real cost.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, !self.lockScreen.view.isHidden else { return }
+                self.checkAppPasswordAvailability(reason: reason)
             }
         }
     }
