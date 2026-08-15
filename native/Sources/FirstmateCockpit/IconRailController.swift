@@ -40,10 +40,17 @@ import AppKit
 /// standalone rail rows into one "Setup" entry, directly above `.docs`, that
 /// opens a small flyout `NSPopover` listing Updates and Bootstrap - so the
 /// bottom-anchored group visually reads Tools, Vault, Docs, Setup
-/// (-> Updates, Bootstrap flyout), Settings, avatar. Both cases remain real
+/// (-> Updates, Bootstrap flyout), avatar. Both cases remain real
 /// `RailDestination`s for switching purposes - only their rail position/
 /// visibility changed; see `IconRailController.buildSetupButton()`/
 /// `showSetupFlyout()`.
+/// `fm/grandline-avatar-menu-and-setup-guide` removed `.settings`'s own
+/// standalone rail row entirely - it is still a real `RailDestination` for
+/// switching purposes (`AppShellController.show(.settings)` is unchanged),
+/// but its only entry point now is a "Settings" row inside the avatar
+/// popover, alongside "Logout" (see `AvatarLogoutPopoverController`). This
+/// continues the same crowding-reduction direction as the Setup group
+/// consolidation above - one less item in the bottom-anchored utility group.
 /// `.shift` (cockpit-shift-foundation) is different from all of the above:
 /// it's a daily-use destination, not a utility, so it is NOT part of the
 /// bottom-anchored group - it lives in `navStack` alongside the other fixed
@@ -404,11 +411,13 @@ final class IconRailController: NSViewController {
         // icon block, directly above Vault, which sits directly above Docs,
         // which sits directly above the "Setup" group (fm/grandline-rail-setup-group
         // - Bootstrap and Updates, collapsed into one entry, see
-        // `buildSetupButton()`), which sits directly above Settings - which in
-        // turn sits directly above the avatar, per the captain's ask. All of
-        // these are still real `RailDestination` cases for switching
-        // purposes (Bootstrap/Updates included); only their vertical
-        // position moves out of `navStack`.
+        // `buildSetupButton()`), which in turn sits directly above the
+        // avatar - Settings no longer has its own row here at all
+        // (fm/grandline-avatar-menu-and-setup-guide moved it into the avatar
+        // popover, see `AvatarLogoutPopoverController`). All of these are
+        // still real `RailDestination` cases for switching purposes
+        // (Bootstrap/Updates/Settings included); only their vertical
+        // position (or, for Settings, entry point) moves out of `navStack`.
         let toolsButton = railButton(for: .tools)
         buttons[.tools] = toolsButton
         toolsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -428,16 +437,11 @@ final class IconRailController: NSViewController {
         setupGroup.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(setupGroup)
 
-        let settingsButton = railButton(for: .settings)
-        buttons[.settings] = settingsButton
-        settingsButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(settingsButton)
-
         // fm/grandline-rail-utility-separators: a hairline separator between
-        // each utility row (Tools | Vault | Docs | Updates | Bootstrap |
-        // Settings), matching the daily-use group's own `NSBox(.separator)`
-        // treatment (fm/grandline-rail-followup-fixes) - captain ask, scoped
-        // to this group only. These buttons aren't in a stack view (they're
+        // each utility row (Tools | Vault | Docs | Updates/Bootstrap "Setup"),
+        // matching the daily-use group's own `NSBox(.separator)` treatment
+        // (fm/grandline-rail-followup-fixes) - captain ask, scoped to this
+        // group only. These buttons aren't in a stack view (they're
         // individually positioned so the per-host block above them can grow),
         // so each divider is a plain sibling view sized/centered the same way
         // the daily-use dividers are (`navStack.widthAnchor - 16`, i.e.
@@ -455,12 +459,12 @@ final class IconRailController: NSViewController {
         let dividerToolsVault = utilityDivider()
         let dividerVaultDocs = utilityDivider()
         let dividerDocsSetup = utilityDivider()
-        let dividerSetupSettings = utilityDivider()
         // fm/grandline-vault-header-and-avatar-divider: same treatment,
-        // between the last utility row (Settings) and the avatar pinned at
-        // the very bottom - the one boundary in this bottom-up chain that
-        // didn't have one yet.
-        let dividerSettingsAvatar = utilityDivider()
+        // between the last utility row ("Setup", since
+        // fm/grandline-avatar-menu-and-setup-guide moved Settings off this
+        // chain) and the avatar pinned at the very bottom - the one boundary
+        // in this bottom-up chain that didn't have one yet.
+        let dividerSetupAvatar = utilityDivider()
 
         avatar.title = "M"
         avatar.isBordered = false
@@ -514,7 +518,7 @@ final class IconRailController: NSViewController {
             // `fm/grandline-rail-spacing-fullheight`: a single required, fixed
             // equality - not a range - so nothing between `dividerBelowHosts`
             // and `toolsButton` can stretch. `vaultButton`/`docsButton`/
-            // `setupGroup`/`settingsButton`/`avatar` no longer need their own
+            // `setupGroup`/`avatar` no longer need their own
             // anchor to `dividerBelowHosts` at all: the required bottom-up
             // equalities further down (unchanged) already chain each of them
             // to `toolsButton` with a fixed offset, so fixing `toolsButton`'s
@@ -529,7 +533,6 @@ final class IconRailController: NSViewController {
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            settingsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
@@ -538,10 +541,8 @@ final class IconRailController: NSViewController {
             // row-to-row gap - matching every other section boundary in the
             // rail now that `sectionGap` is one consistent constant instead
             // of this boundary's own one-off 12pt.
-            dividerSettingsAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
-            settingsButton.bottomAnchor.constraint(equalTo: dividerSettingsAvatar.topAnchor, constant: -Self.sectionGap),
-            dividerSetupSettings.bottomAnchor.constraint(equalTo: settingsButton.topAnchor, constant: -Self.rowSpacing),
-            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupSettings.topAnchor, constant: -Self.rowSpacing),
+            dividerSetupAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
+            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupAvatar.topAnchor, constant: -Self.sectionGap),
             dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -Self.rowSpacing),
             docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -Self.rowSpacing),
             dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -Self.rowSpacing),
@@ -925,6 +926,10 @@ final class IconRailController: NSViewController {
     private lazy var avatarPopover: NSPopover = {
         let popover = NSPopover()
         let content = AvatarLogoutPopoverController()
+        content.onSettings = { [weak self] in
+            self?.avatarPopover.performClose(nil)
+            self?.onSelect?(.settings)
+        }
         content.onLogout = { [weak self] in
             self?.avatarPopover.performClose(nil)
             self?.logoutClicked()
@@ -943,6 +948,11 @@ final class IconRailController: NSViewController {
     /// `ThemeMenu`'s `NSMenu` convention, since this needs the app's own
     /// `HelmTheme` colors, not the system menu chrome `ThemeMenu` already
     /// relies on for its swatch/checkmark rows.
+    /// `fm/grandline-avatar-menu-and-setup-guide` added a "Settings" row
+    /// above "Logout" (captain-approved: Settings is routine, Logout is
+    /// consequential, so routine goes first) - this popover is deliberately
+    /// scoped to just these two items, an identity/account-style menu, not a
+    /// general dumping ground for other rail destinations.
     @objc private func avatarClicked() {
         if avatarPopover.isShown {
             avatarPopover.performClose(nil)
@@ -952,25 +962,19 @@ final class IconRailController: NSViewController {
         }
     }
 
-    /// Double-confirmed, per the captain's explicit ask - logging out drops
-    /// straight into the password lock screen, so an accidental single click
-    /// shouldn't be able to trigger it.
+    /// `fm/grandline-avatar-menu-and-setup-guide`: collapsed from two
+    /// sequential confirmations down to one, per live captain feedback after
+    /// using the app-lock feature - too much friction for routine use. Keeps
+    /// the second alert's copy, since it states the real stakes (losing
+    /// access until the password is re-entered) most clearly.
     @objc private func logoutClicked() {
-        let first = NSAlert()
-        first.messageText = "Log out of Manjesh Grand Line?"
-        first.informativeText = "This locks the app immediately. Your terminal sessions keep running in the background."
-        first.addButton(withTitle: "Log Out")
-        first.addButton(withTitle: "Cancel")
-        first.alertStyle = .warning
-        guard first.runModal() == .alertFirstButtonReturn else { return }
-
-        let second = NSAlert()
-        second.messageText = "Are you sure?"
-        second.informativeText = "You'll need your Grand Line password to get back in."
-        second.addButton(withTitle: "Log Out")
-        second.addButton(withTitle: "Cancel")
-        second.alertStyle = .warning
-        guard second.runModal() == .alertFirstButtonReturn else { return }
+        let alert = NSAlert()
+        alert.messageText = "Log out of Manjesh Grand Line?"
+        alert.informativeText = "This locks the app immediately. You'll need your Grand Line password to get back in. Your terminal sessions keep running in the background."
+        alert.addButton(withTitle: "Log Out")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         onLogoutRequested?()
     }
@@ -1447,58 +1451,105 @@ private final class CenteredImageAboveButtonCell: NSButtonCell {
 /// hover-highlighted "Logout" row. A plain `NSViewController` (not a
 /// `RailDestination`-style shared page), mirroring
 /// `ShiftMenuBarPopoverController`'s own small-popover convention.
+/// `fm/grandline-avatar-menu-and-setup-guide`: gained a "Settings" row above
+/// "Logout" (Settings' own standalone rail row is gone - see
+/// `RailDestination`'s doc comment), separated by a thin divider since one
+/// is routine and the other is consequential. Deliberately kept to just
+/// these two rows - an identity/account-style menu, not a general dumping
+/// ground for other rail items.
 private final class AvatarLogoutPopoverController: NSViewController {
-    private let row = HoverHighlightView()
-    private let icon = NSImageView()
-    private let label = NSTextField(labelWithString: "Logout")
+    private let settingsRow = HoverHighlightView()
+    private let settingsIcon = NSImageView()
+    private let settingsLabel = NSTextField(labelWithString: "Settings")
+    private let divider = NSBox()
+    private let logoutRow = HoverHighlightView()
+    private let logoutIcon = NSImageView()
+    private let logoutLabel = NSTextField(labelWithString: "Logout")
 
+    var onSettings: (() -> Void)?
     var onLogout: (() -> Void)?
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 44))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 89))
         view = root
 
-        icon.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right", accessibilityDescription: "Logout")?
+        settingsIcon.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
-        icon.translatesAutoresizingMaskIntoConstraints = false
+        settingsIcon.translatesAutoresizingMaskIntoConstraints = false
+        settingsLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        settingsLabel.translatesAutoresizingMaskIntoConstraints = false
+        settingsRow.translatesAutoresizingMaskIntoConstraints = false
+        settingsRow.addSubview(settingsIcon)
+        settingsRow.addSubview(settingsLabel)
+        root.addSubview(settingsRow)
+        settingsRow.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(settingsRowClicked)))
 
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.translatesAutoresizingMaskIntoConstraints = false
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(divider)
 
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.addSubview(icon)
-        row.addSubview(label)
-        root.addSubview(row)
-
-        let click = NSClickGestureRecognizer(target: self, action: #selector(rowClicked))
-        row.addGestureRecognizer(click)
+        logoutIcon.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right", accessibilityDescription: "Logout")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+        logoutIcon.translatesAutoresizingMaskIntoConstraints = false
+        logoutLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        logoutLabel.translatesAutoresizingMaskIntoConstraints = false
+        logoutRow.translatesAutoresizingMaskIntoConstraints = false
+        logoutRow.addSubview(logoutIcon)
+        logoutRow.addSubview(logoutLabel)
+        root.addSubview(logoutRow)
+        logoutRow.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(logoutRowClicked)))
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
-            row.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
-            row.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            settingsRow.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            settingsRow.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+            settingsRow.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            settingsRow.heightAnchor.constraint(equalToConstant: 32),
 
-            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
-            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 16),
+            settingsIcon.leadingAnchor.constraint(equalTo: settingsRow.leadingAnchor, constant: 10),
+            settingsIcon.centerYAnchor.constraint(equalTo: settingsRow.centerYAnchor),
+            settingsIcon.widthAnchor.constraint(equalToConstant: 16),
 
-            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: row.trailingAnchor, constant: -10),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            settingsLabel.leadingAnchor.constraint(equalTo: settingsIcon.trailingAnchor, constant: 8),
+            settingsLabel.trailingAnchor.constraint(lessThanOrEqualTo: settingsRow.trailingAnchor, constant: -10),
+            settingsLabel.centerYAnchor.constraint(equalTo: settingsRow.centerYAnchor),
+
+            divider.topAnchor.constraint(equalTo: settingsRow.bottomAnchor, constant: 4),
+            divider.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            divider.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+
+            logoutRow.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 4),
+            logoutRow.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            logoutRow.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+            logoutRow.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            logoutRow.heightAnchor.constraint(equalToConstant: 32),
+
+            logoutIcon.leadingAnchor.constraint(equalTo: logoutRow.leadingAnchor, constant: 10),
+            logoutIcon.centerYAnchor.constraint(equalTo: logoutRow.centerYAnchor),
+            logoutIcon.widthAnchor.constraint(equalToConstant: 16),
+
+            logoutLabel.leadingAnchor.constraint(equalTo: logoutIcon.trailingAnchor, constant: 8),
+            logoutLabel.trailingAnchor.constraint(lessThanOrEqualTo: logoutRow.trailingAnchor, constant: -10),
+            logoutLabel.centerYAnchor.constraint(equalTo: logoutRow.centerYAnchor),
         ])
 
-        row.cornerRadius = 8
+        settingsRow.cornerRadius = 8
+        logoutRow.cornerRadius = 8
     }
 
-    @objc private func rowClicked() { onLogout?() }
+    @objc private func settingsRowClicked() { onSettings?() }
+    @objc private func logoutRowClicked() { onLogout?() }
 
     func applyTheme(_ theme: HelmTheme) {
         view.wantsLayer = true
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-        icon.contentTintColor = HelmTheme.nsColor(theme.ansiHex[1]) // red - a destructive-ish action
-        label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        row.normalColor = .clear
-        row.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
+        divider.fillColor = HelmTheme.nsColor(theme.chromeLineHex)
+        settingsIcon.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+        settingsLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        settingsRow.normalColor = .clear
+        settingsRow.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
+        logoutIcon.contentTintColor = HelmTheme.nsColor(theme.ansiHex[1]) // red - a destructive-ish action
+        logoutLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        logoutRow.normalColor = .clear
+        logoutRow.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
     }
 }
