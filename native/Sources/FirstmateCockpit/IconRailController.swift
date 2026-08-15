@@ -147,9 +147,49 @@ final class IconRailController: NSViewController {
     /// or 14 depending on which boundary). Reads as tighter within a group
     /// and more deliberately spaced between groups, rather than the old
     /// near-uniform tightness that made every boundary look the same.
-    private static let rowHeight: CGFloat = 46
-    private static let rowSpacing: CGFloat = 3
-    private static let sectionGap: CGFloat = 14
+    fileprivate static let rowHeight: CGFloat = 46
+    fileprivate static let rowSpacing: CGFloat = 3
+    fileprivate static let sectionGap: CGFloat = 14
+
+    /// `fm/grandline-rail-unified-rework`: the icon block's own geometry,
+    /// pulled out to `fileprivate` (rather than left as private stored
+    /// properties duplicated on `CenteredImageAboveButtonCell`, or a fixed
+    /// offset independently guessed for the badge overlay) so the cell that
+    /// actually draws the icon and the badge overlay that has to anchor to
+    /// it read the exact same numbers. Before this task, three separate row
+    /// builders (`railButton(for:)`, `buildSetupButton()`,
+    /// `hostRailButton(for:)`) each hand-built an `NSButton` with the same
+    /// intent but no shared function enforcing it, which is how Setup's
+    /// centering and the badge's anchor point drifted out of sync with the
+    /// rest of the rail - see `buildRailRowButton(...)` and `attachBadge(...)`
+    /// below.
+    fileprivate static let iconSize: CGFloat = 20
+    fileprivate static let contentSpacing: CGFloat = 4
+    fileprivate static let titleFontSize: CGFloat = 10
+
+    fileprivate static var titleFont: NSFont { .systemFont(ofSize: titleFontSize, weight: .medium) }
+
+    /// Same formula `CenteredImageAboveButtonCell.measuredTitleHeight()` uses
+    /// - kept here so both that cell and the badge anchor read one number.
+    fileprivate static var titleHeight: CGFloat { ceil(titleFont.ascender - titleFont.descender) }
+
+    fileprivate static var contentHeight: CGFloat { iconSize + contentSpacing + titleHeight }
+
+    /// The icon's own vertical center, expressed as an offset from the row's
+    /// vertical center (negative = above center, matching how a positive
+    /// `constant` on a `centerYAnchor` equality moves a view *down* in every
+    /// other constraint in this file). `attachBadge` anchors its badge to an
+    /// invisible guide placed at exactly this offset - the icon's own real
+    /// position - rather than a fixed inset off the button's outer bounds
+    /// (which are taller than the visible content thanks to the
+    /// `NSButtonCell` `.imageAbove` quirk documented on
+    /// `CenteredImageAboveButtonCell` below, and were never reliably the same
+    /// distance from the icon itself).
+    fileprivate static var iconCenterYOffsetFromRowCenter: CGFloat {
+        let topGap = (rowHeight - contentHeight) / 2
+        let iconCenterFromTop = topGap + iconSize / 2
+        return iconCenterFromTop - rowHeight / 2
+    }
 
     /// `fm/grandline-rail-overflow-and-spacing` tried to cap the HOSTS-to-
     /// utility gap with a `[sectionGap, sectionGapMax]` *range* on
@@ -220,7 +260,23 @@ final class IconRailController: NSViewController {
     /// fixed `RailDestination` is current.
     private(set) var activeHostID: UUID?
     private var buttons: [RailDestination: NSButton] = [:]
-    private let avatar = NSButton()
+    /// `fm/grandline-rail-unified-rework`: a `HoverTrackingButton` (the same
+    /// hover-feedback mechanism `setupButton`/`hostsOverflowButton` already
+    /// use) rather than a plain `NSButton`, so the avatar's accent ring can
+    /// brighten on hover - see `avatarGradientLayer`/`avatarRingLayer` below
+    /// and `restyle(_:)`'s avatar section. Click behavior (opening
+    /// `avatarPopover`) is unchanged; `HoverTrackingButton` only adds hover
+    /// tracking on top of ordinary `NSButton` target/action.
+    private let avatar = HoverTrackingButton()
+
+    /// A subtle gradient (flat avatar color -> the active theme's accent),
+    /// replacing the old flat-fill circle - and a soft accent ring
+    /// (`avatar.layer?.borderColor`/`borderWidth`, brightening on hover) per
+    /// the captain-approved visual-polish pass. Both are sized once (the
+    /// avatar's own width/height are fixed 36pt constraints, so its `bounds`
+    /// never change) rather than re-laid-out on every resize.
+    private let avatarGradientLayer = CAGradientLayer()
+    private var avatarIsHovering = false
 
     /// "Needs you" count badges (fm/grandline-sidebar-badges) - a small red/
     /// white pill overlaid on a rail button's top-trailing corner, matching
@@ -236,7 +292,6 @@ final class IconRailController: NSViewController {
     /// (or "99+") count - see that method's doc comment for why a fixed
     /// single-digit sizing overflows once the count grows a second digit.
     private var badgeLabelInsets: [RailDestination: (leading: NSLayoutConstraint, trailing: NSLayoutConstraint)] = [:]
-    private var badgeOffsets: [RailDestination: (top: NSLayoutConstraint, trailing: NSLayoutConstraint)] = [:]
 
     /// The saved hosts currently pinned to the rail, and the vertical stack
     /// they render into - below the fixed destinations, above the utility
@@ -279,26 +334,25 @@ final class IconRailController: NSViewController {
     /// from Settings' app preferences, which stays its own separate top-level
     /// icon, untouched). `.updates`/`.bootstrap` remain real
     /// `RailDestination` cases with unchanged pages - only their rail
-    /// position/visibility changed. Hovering "Setup" reveals them as a small
-    /// flyout `NSPopover` anchored to the button's trailing edge (two captain
-    /// corrections from the first pass: an in-rail expanding drawer pushed
-    /// every row below it up and down as it opened/closed, disrupting the
-    /// rail's fixed divider rhythm - a flyout to the side leaves the rail's
-    /// own layout untouched; and the flyout should open on hover, Dock/menu-
-    /// bar-submenu style, not a click, so the disclosure chevron affordance
-    /// a click-to-open control would need is gone too). See
-    /// `HoverTrackingButton`, `buildSetupButton()`, `scheduleShowSetupFlyout()`/
-    /// `scheduleCloseSetupFlyout()`. "Setup" itself is a pure UI toggle, not a
-    /// `RailDestination` - it never calls `onSelect`.
+    /// position/visibility changed. Clicking "Setup" reveals them as a small
+    /// flyout `NSPopover` anchored to the button's trailing edge - the same
+    /// click-to-toggle pattern `avatarClicked`/`avatarPopover` use
+    /// (`fm/grandline-rail-unified-rework`, live captain feedback superseding
+    /// this button's original hover-to-open design). An in-rail expanding
+    /// drawer was rejected even earlier (first pass of this button): it
+    /// pushed every row below it up and down as it opened/closed, disrupting
+    /// the rail's fixed divider rhythm - a flyout to the side leaves the
+    /// rail's own layout untouched, which is still true of the click-driven
+    /// version. See `buildSetupButton()`/`setupClicked()`/`showSetupFlyout()`.
+    /// "Setup" itself is a pure UI toggle, not a `RailDestination` - it never
+    /// calls `onSelect`. `setupButton`'s type (`HoverTrackingButton`) is a
+    /// holdover from the earlier hover-driven design - harmless to keep since
+    /// it's just an `NSButton` subclass, but its hover callback is unused now.
     private let setupButton = HoverTrackingButton()
     private var setupPopover: NSPopover?
 
-    /// Closing the flyout on mouse-exit is delayed slightly (`closeDelay`) so
-    /// moving the cursor from the Setup button to the flyout's own content -
-    /// two disconnected views with a small gap between them - doesn't close
-    /// it out from under the captain; `scheduleShowSetupFlyout` cancels this
-    /// timer the moment either view reports the mouse back over it.
-    private var setupCloseWorkItem: DispatchWorkItem?
+    /// Still used by the "more hosts" overflow flyout below (`hostsOverflowButton`),
+    /// which remains hover-driven - only "Setup" moved to click.
     private static let setupCloseDelay: TimeInterval = 0.2
 
     /// Theme-audit task: this used to be `NSVisualEffectView(.sidebar,
@@ -326,6 +380,40 @@ final class IconRailController: NSViewController {
     private let mark = NSImageView()
     private var isUnlockedForMark = false
 
+    /// Margin the top group (logo mark) keeps from the window's top edge,
+    /// and the bottom group (avatar) keeps from the window's bottom edge -
+    /// see the two-anchor-groups layout doc comment on `loadView` below.
+    private static let railEdgeMargin: CGFloat = 14
+
+    /// `fm/grandline-rail-unified-rework`: **captain override, live review**
+    /// - superseding this task's own original requirement 3 (vertically
+    /// centering the whole rail as one block). The captain watched the
+    /// centered version running and asked for a different, two-anchor-groups
+    /// layout instead: the top group (logo mark, daily-use rows, HOSTS
+    /// section) pins to the window's *top* edge exactly as it always has;
+    /// the bottom group (utility rows + avatar) pins to the window's
+    /// *bottom* edge; any leftover vertical space in a tall window lives
+    /// entirely in the one gap *between* those two groups (between the end
+    /// of the HOSTS section and the start of the utility group), not
+    /// distributed as symmetric centering and not collecting below the
+    /// avatar (PR #132's bug, which prompted requirement 3 in the first
+    /// place). Each group is its own single rigid chain of required, fixed
+    /// equalities - unchanged from the fullheight fix's own reasoning for why
+    /// no individual section within a group can stretch (see `sectionGap`'s
+    /// doc comment) - anchored independently from the top and the bottom of
+    /// `root`. The *only* new piece is the connector between the two groups:
+    /// a required `>=` inequality (`toolsButton.topAnchor >= dividerBelowHosts.bottomAnchor
+    /// + sectionGap`), not an equality and not a soft/range constraint. Since
+    /// both endpoints of that inequality are already fully, independently
+    /// determined by their own group's rigid chain, the "flex" is not a
+    /// stretchy spacer view competing with anything else for slack - it's
+    /// simply whatever room is left between two fixed points, which is what
+    /// keeps this from regressing into PR #131/#132's specific bug (where a
+    /// range constraint *and* a soft bottom-pin together let `hostsStack`
+    /// itself, which has no explicit height, become the thing that absorbed
+    /// slack). Here `hostsStack`'s height is never in question - it's fully
+    /// pinned within the top group's own rigid chain, independent of window
+    /// height.
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 760))
         root.wantsLayer = true
@@ -445,8 +533,8 @@ final class IconRailController: NSViewController {
         // individually positioned so the per-host block above them can grow),
         // so each divider is a plain sibling view sized/centered the same way
         // the daily-use dividers are (`navStack.widthAnchor - 16`, i.e.
-        // `Self.width - 28` here since these buttons live directly in `root`
-        // rather than an inset stack).
+        // `Self.width - 28` here since these buttons live directly in
+        // `root` rather than an inset stack).
         func utilityDivider() -> NSBox {
             let divider = NSBox()
             divider.boxType = .separator
@@ -456,6 +544,13 @@ final class IconRailController: NSViewController {
             divider.centerXAnchor.constraint(equalTo: root.centerXAnchor).isActive = true
             return divider
         }
+        // `fm/grandline-rail-unified-rework`: marks the utility group's own
+        // top edge, mirroring `dividerAboveNav`'s role for the daily-use
+        // group below the logo mark - without it, the (now potentially
+        // large, per the two-anchor-groups layout above) gap between the
+        // HOSTS section and Tools had no visual edge at all, reading as a
+        // missing divider rather than an intentional flexible gap.
+        let dividerAboveTools = utilityDivider()
         let dividerToolsVault = utilityDivider()
         let dividerVaultDocs = utilityDivider()
         let dividerDocsSetup = utilityDivider()
@@ -469,12 +564,29 @@ final class IconRailController: NSViewController {
         avatar.title = "M"
         avatar.isBordered = false
         avatar.wantsLayer = true
+        avatar.layer?.masksToBounds = true
         avatar.layer?.cornerRadius = 18
         avatar.font = .systemFont(ofSize: 13, weight: .semibold)
         avatar.target = self
         avatar.action = #selector(avatarClicked)
         avatar.toolTip = "Manjesh Grand Line"
         avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatar.onHoverChange = { [weak self] isHovering in
+            self?.avatarIsHovering = isHovering
+            self?.restyleAvatar(ThemeManager.shared.theme)
+        }
+        // `fm/grandline-rail-unified-rework`: the gradient background
+        // (flat avatar color -> the active theme's accent) replaces the old
+        // flat `layer?.backgroundColor` fill - inserted once here since the
+        // avatar's size is fixed (36x36 via the constraints below, so its
+        // bounds never change and the gradient layer's frame never needs
+        // re-laying-out). `restyleAvatar` re-tunes its colors on every theme
+        // change and hover transition; it never re-adds the layer.
+        avatarGradientLayer.frame = CGRect(x: 0, y: 0, width: 36, height: 36)
+        avatarGradientLayer.cornerRadius = 18
+        avatarGradientLayer.startPoint = CGPoint(x: 0.2, y: 0.9)
+        avatarGradientLayer.endPoint = CGPoint(x: 0.9, y: 0.1)
+        avatar.layer?.insertSublayer(avatarGradientLayer, at: 0)
 
         root.addSubview(mark)
         root.addSubview(navStack)
@@ -483,7 +595,9 @@ final class IconRailController: NSViewController {
         NSLayoutConstraint.activate([
             view.widthAnchor.constraint(equalToConstant: Self.width),
 
-            mark.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            // Top group: pinned to the window's top edge exactly as it
+            // always has been - unchanged from before this task.
+            mark.topAnchor.constraint(equalTo: root.topAnchor, constant: Self.railEdgeMargin),
             mark.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             mark.widthAnchor.constraint(equalToConstant: 34),
             mark.heightAnchor.constraint(equalToConstant: 34),
@@ -515,20 +629,18 @@ final class IconRailController: NSViewController {
             dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
-            // `fm/grandline-rail-spacing-fullheight`: a single required, fixed
-            // equality - not a range - so nothing between `dividerBelowHosts`
-            // and `toolsButton` can stretch. `vaultButton`/`docsButton`/
-            // `setupGroup`/`avatar` no longer need their own
-            // anchor to `dividerBelowHosts` at all: the required bottom-up
-            // equalities further down (unchanged) already chain each of them
-            // to `toolsButton` with a fixed offset, so fixing `toolsButton`'s
-            // own position fixes every row below it too - the whole utility
-            // group + avatar is one rigid block hanging directly below HOSTS
-            // with no free segment anywhere in between. See this file's
-            // `sectionGap`/`rowSpacing` doc comment above for the full
-            // root-cause writeup (a previous range + soft-bottom-pin design
-            // let `hostsStack` itself stretch to fill a tall window).
-            toolsButton.topAnchor.constraint(equalTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
+            // The one connector between the two groups (captain override,
+            // see this method's own doc comment above): a required minimum
+            // gap, not an equality - both `dividerBelowHosts.bottomAnchor`
+            // (top group, anchored from `root.topAnchor`) and
+            // `toolsButton.topAnchor` (bottom group, anchored from
+            // `root.bottomAnchor` via `avatar` below) are each already fully
+            // determined by their own group's rigid chain, so this
+            // inequality never has to resolve any actual stretch - any
+            // leftover window height just becomes extra room here.
+            dividerAboveTools.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
+            toolsButton.topAnchor.constraint(equalTo: dividerAboveTools.bottomAnchor, constant: Self.sectionGap),
+
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -536,11 +648,15 @@ final class IconRailController: NSViewController {
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
-            // Both gaps around this divider use `sectionGap` - a real
-            // section boundary (utility group -> avatar), not an ordinary
-            // row-to-row gap - matching every other section boundary in the
-            // rail now that `sectionGap` is one consistent constant instead
-            // of this boundary's own one-off 12pt.
+
+            // Bottom group: pinned to the window's bottom edge via `avatar`
+            // - the one new anchor point this override adds. Everything
+            // above it (`setupGroup`, `docsButton`, `vaultButton`,
+            // `toolsButton`, and their dividers) is positioned by the same
+            // required, fixed bottom-up chain this rail already had, just
+            // now anchored from `root.bottomAnchor` instead of transitively
+            // from `dividerBelowHosts`.
+            avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.railEdgeMargin),
             dividerSetupAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
             setupGroup.bottomAnchor.constraint(equalTo: dividerSetupAvatar.topAnchor, constant: -Self.sectionGap),
             dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -Self.rowSpacing),
@@ -555,132 +671,119 @@ final class IconRailController: NSViewController {
         setActive(active)
     }
 
-    /// Builds a rail row for `dest`: icon above a small text label, both
-    /// centered, inside one clickable `NSButton` sized to the full rail
-    /// content width so the tinted active-state background reads as a
-    /// full-width row rather than a small icon-sized square. Built as an
-    /// `NSButton` with `imagePosition = .imageAbove` (not a separate
-    /// icon+label stack overlaid on a button) so the existing single-view
-    /// `contentTintColor`/`layer?.backgroundColor` restyle path in
-    /// `restyle(_:)` covers every row with one mechanism. Every
-    /// `RailDestination` uses this same builder (fm/grandline-sidebar-nav-polish)
-    /// - the earlier compact icon-only style for utility destinations is
-    /// gone; see `isDailyUse`'s doc comment. Every row also gets a "needs
-    /// you" count badge overlay (fm/grandline-sidebar-badges) - cheap to
-    /// attach on all of them (hidden by default) rather than threading a
-    /// second "does this destination want a badge" flag through here; only
-    /// `setBadgeCount` ever makes one visible. `attachBadge` positions the
-    /// badge relative to `button`'s own top-trailing corner, so it still
-    /// lands correctly now that every row shares this one taller, wider
-    /// labeled shape instead of the two different button sizes it originally
-    /// had to handle.
-    private func railButton(for dest: RailDestination) -> NSButton {
-        let button = NSButton()
+    /// Builds a rail row's `NSButton`: icon above a small text label, both
+    /// centered, sized to the full rail content width so the tinted
+    /// active-state background reads as a full-width row rather than a small
+    /// icon-sized square. Built with `imagePosition = .imageAbove` (not a
+    /// separate icon+label stack overlaid on a button) so the existing
+    /// single-view `contentTintColor`/`layer?.backgroundColor` restyle path
+    /// in `restyle(_:)` covers every row with one mechanism.
+    ///
+    /// The one function every rail row - daily-use, utility, and per-host
+    /// alike - builds through (`fm/grandline-rail-unified-rework`). Before
+    /// this task, `railButton(for:)`, `buildSetupButton()`, and
+    /// `hostRailButton(for:)` each hand-rolled the same `NSButton` shape
+    /// independently; nothing enforced they stayed identical, which is why
+    /// Setup's centering could drift from the rest of the rail's rows even
+    /// though every row was *meant* to look the same. Callers supply only
+    /// what genuinely differs between row kinds (title, symbol, point size,
+    /// tooltip, and - for a row with a pre-existing persistent identity like
+    /// `setupButton`/`hostsOverflowButton`, which need to keep their own
+    /// `HoverTrackingButton` instance across rebuilds - `existingButton`) and
+    /// wire up their own target/action/tag/identifier afterward.
+    private func buildRailRowButton(
+        title: String,
+        symbol: String,
+        pointSize: CGFloat = 17,
+        tooltip: String,
+        existingButton: NSButton? = nil
+    ) -> NSButton {
+        let button = existingButton ?? NSButton()
         button.cell = CenteredImageAboveButtonCell()
-        button.title = dest.title
-        button.target = self
-        button.action = #selector(navClicked(_:))
+        button.title = title
         button.isBordered = false
         button.wantsLayer = true
         button.layer?.cornerRadius = 10
         button.imagePosition = .imageAbove
         button.imageScaling = .scaleProportionallyDown
         button.alignment = .center
-        button.font = .systemFont(ofSize: 10, weight: .medium)
+        button.font = Self.titleFont
         button.lineBreakMode = .byTruncatingTail
-        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-        button.image = NSImage(systemSymbolName: dest.symbol, accessibilityDescription: dest.title)?
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
             .withSymbolConfiguration(config)
-        button.toolTip = dest.title
-        button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
+        button.toolTip = tooltip
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: Self.width - 12),
             button.heightAnchor.constraint(equalToConstant: Self.rowHeight),
         ])
+        return button
+    }
+
+    /// Every row also gets a "needs you" count badge overlay
+    /// (fm/grandline-sidebar-badges) - cheap to attach on all of them (hidden
+    /// by default) rather than threading a second "does this destination
+    /// want a badge" flag through here; only `setBadgeCount` ever makes one
+    /// visible.
+    private func railButton(for dest: RailDestination) -> NSButton {
+        let button = buildRailRowButton(title: dest.title, symbol: dest.symbol, tooltip: dest.title)
+        button.target = self
+        button.action = #selector(navClicked(_:))
+        button.tag = RailDestination.allCases.firstIndex(of: dest) ?? 0
         attachBadge(to: button, dest: dest)
         return button
     }
 
-    /// Builds the "Setup" rail button (fm/grandline-rail-setup-group): one
-    /// entry that reveals a small flyout `NSPopover` on hover (see
-    /// `scheduleShowSetupFlyout()`/`scheduleCloseSetupFlyout()`) listing
-    /// Updates and Bootstrap. "Setup" has no destination of its own and never
-    /// calls `onSelect` directly - it's a plain UI toggle occupying the rail
-    /// slot the two standalone icons used to. Otherwise built exactly like
-    /// `railButton(for:)`, minus the tag (there's no `RailDestination` case
-    /// to dispatch through) and minus a click target/action (hover-driven,
-    /// not click-driven - see `HoverTrackingButton`).
+    /// Builds the "Setup" rail button (fm/grandline-rail-setup-group,
+    /// switched from hover- to click-driven by `fm/grandline-rail-unified-rework`
+    /// per live captain feedback - "similar to profile icon", i.e. the same
+    /// click-to-toggle pattern `avatarClicked` already uses, superseding the
+    /// original hover-to-open design this button shipped with). "Setup" has
+    /// no destination of its own and never calls `onSelect` directly - it's a
+    /// plain UI toggle occupying the rail slot the two standalone icons used
+    /// to. Otherwise built exactly like `railButton(for:)`, minus the tag
+    /// (there's no `RailDestination` case to dispatch through).
     private func buildSetupButton() -> NSButton {
-        setupButton.cell = CenteredImageAboveButtonCell()
-        setupButton.title = "Setup"
-        setupButton.isBordered = false
-        setupButton.wantsLayer = true
-        setupButton.layer?.cornerRadius = 10
-        setupButton.imagePosition = .imageAbove
-        setupButton.imageScaling = .scaleProportionallyDown
-        setupButton.alignment = .center
-        setupButton.font = .systemFont(ofSize: 10, weight: .medium)
-        setupButton.lineBreakMode = .byTruncatingTail
-        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         // "wrench.adjustable" - wrench-family like Tools' own icon, but a
         // visually distinct glyph so the two never look like duplicates in
         // the rail; also doesn't collide with Settings' `gearshape`.
-        setupButton.image = NSImage(systemSymbolName: "wrench.adjustable", accessibilityDescription: "Setup")?
-            .withSymbolConfiguration(config)
-        setupButton.toolTip = "Setup (Bootstrap, Updates)"
-        NSLayoutConstraint.activate([
-            setupButton.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            setupButton.heightAnchor.constraint(equalToConstant: Self.rowHeight),
-        ])
-        setupButton.onHoverChange = { [weak self] isHovering in
-            isHovering ? self?.scheduleShowSetupFlyout() : self?.scheduleCloseSetupFlyout()
+        let button = buildRailRowButton(
+            title: "Setup",
+            symbol: "wrench.adjustable",
+            tooltip: "Setup (Bootstrap, Updates)",
+            existingButton: setupButton
+        )
+        button.target = self
+        button.action = #selector(setupClicked)
+        return button
+    }
+
+    /// Toggles the Updates/Bootstrap flyout - the same open-if-closed/
+    /// close-if-open click pattern `avatarClicked` uses.
+    @objc private func setupClicked() {
+        if setupPopover?.isShown == true {
+            setupPopover?.performClose(nil)
+        } else {
+            showSetupFlyout()
         }
-        return setupButton
-    }
-
-    /// Cancels any pending close and shows the flyout immediately if it
-    /// isn't already showing - called both when the cursor enters the Setup
-    /// button and when it enters the flyout's own content (so moving between
-    /// the two never triggers a flicker-close in between).
-    private func scheduleShowSetupFlyout() {
-        setupCloseWorkItem?.cancel()
-        setupCloseWorkItem = nil
-        guard setupPopover?.isShown != true else { return }
-        showSetupFlyout()
-    }
-
-    /// Closes the flyout after a short delay (`setupCloseDelay`) rather than
-    /// immediately, so leaving the Setup button to cross the small gap into
-    /// the flyout's own content doesn't dismiss it before the cursor arrives.
-    /// `scheduleShowSetupFlyout` cancels this the moment either view reports
-    /// the mouse back over it.
-    private func scheduleCloseSetupFlyout() {
-        setupCloseWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in self?.setupPopover?.performClose(nil) }
-        setupCloseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.setupCloseDelay, execute: workItem)
     }
 
     /// Shows the Updates/Bootstrap flyout, anchored to the Setup button's
     /// trailing edge (captain correction from an earlier in-rail expanding
-    /// drawer - see the property's doc comment above). `.applicationDefined`
-    /// behavior since show/hide is fully hover-driven here, not click-driven
-    /// - `NSPopover`'s own `.transient` click-outside dismissal would fight
-    /// with that. Selecting a row dispatches through `onSelect`/`setActive`
-    /// exactly like clicking either destination's old standalone icon did,
-    /// then closes the flyout immediately (no hover-out delay needed once a
-    /// choice has actually been made).
+    /// drawer - see the property's doc comment above). `.transient` (an
+    /// ordinary click-outside-to-dismiss popover, matching `avatarPopover`'s
+    /// own behavior) now that opening is click-driven, not hover-driven.
+    /// Selecting a row dispatches through `onSelect`/`setActive` exactly like
+    /// clicking either destination's old standalone icon did, then closes
+    /// the flyout.
     private func showSetupFlyout() {
         let popover = NSPopover()
-        popover.behavior = .applicationDefined
+        popover.behavior = .transient
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = SetupFlyoutViewController(
             destinations: [.updates, .bootstrap],
-            onHoverChange: { [weak self] isHovering in
-                isHovering ? self?.scheduleShowSetupFlyout() : self?.scheduleCloseSetupFlyout()
-            },
+            onHoverChange: { _ in },
             onSelect: { [weak self] dest in
-                self?.setupCloseWorkItem?.cancel()
                 self?.setupPopover?.performClose(nil)
                 self?.setActive(dest)
                 self?.onSelect?(dest)
@@ -690,7 +793,8 @@ final class IconRailController: NSViewController {
         setupPopover = popover
     }
 
-    /// Pins a small count-badge overlay to `button`'s top-trailing corner.
+    /// Pins a small count-badge overlay near the icon's top-trailing corner
+    /// (see the anchor's own doc comment below for exactly where and why).
     /// Hidden by default; only `setBadgeCount` ever shows one. Deliberately a
     /// fixed white-on-systemRed pill rather than a theme-derived `HelmTint` -
     /// unlike a status pill elsewhere in this app, an unread/needs-attention
@@ -698,6 +802,27 @@ final class IconRailController: NSViewController {
     /// 12 Helm themes is active, matching how macOS itself never re-tints a
     /// Dock badge or Mail's unread count to match the current appearance.
     private func attachBadge(to button: NSButton, dest: RailDestination) {
+        // `fm/grandline-rail-unified-rework`: an invisible guide sized and
+        // positioned exactly where `CenteredImageAboveButtonCell` draws the
+        // icon (`Self.iconCenterYOffsetFromRowCenter`/`Self.iconSize` - the
+        // same numbers the cell itself uses, not a second copy). The badge
+        // used to anchor off `button`'s own top-trailing corner with a fixed
+        // guessed inset - since the button's own bounds are taller than the
+        // visible content (the `.imageAbove` quirk documented on
+        // `CenteredImageAboveButtonCell`), that corner didn't reliably line
+        // up with the icon it was meant to badge, which is what let the
+        // Review badge clip the highlight's rounded corner. Anchoring to the
+        // icon's own real corner fixes that for every row, not just Review.
+        let iconAnchor = NSView()
+        iconAnchor.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(iconAnchor)
+        NSLayoutConstraint.activate([
+            iconAnchor.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            iconAnchor.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: Self.iconCenterYOffsetFromRowCenter),
+            iconAnchor.widthAnchor.constraint(equalToConstant: Self.iconSize),
+            iconAnchor.heightAnchor.constraint(equalToConstant: Self.iconSize),
+        ])
+
         let label = NSTextField(labelWithString: "")
         label.font = .monospacedDigitSystemFont(ofSize: 9, weight: .bold)
         label.textColor = .white
@@ -715,8 +840,27 @@ final class IconRailController: NSViewController {
 
         let leadingInset = label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4)
         let trailingInset = label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4)
-        let topOffset = container.topAnchor.constraint(equalTo: button.topAnchor, constant: -4)
-        let trailingOffset = container.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: 4)
+        // Two live-rendered attempts before this one both anchored the
+        // badge by *overlapping* the icon's top-trailing corner by some
+        // fixed amount (first `-6`/`6`, matched the button's own guessed
+        // corner; then `-12`/`12`; then `-20`/`20`) - all still overlapped
+        // `.review`'s `arrow.triangle.branch` glyph, whose ink (confirmed by
+        // rendering the symbol standalone and inspecting the bitmap) fills
+        // *both* top corners of its 20x20 box almost edge-to-edge (it's a
+        // literal upward-pointing fork/branch shape) - there is no
+        // corner-overlap amount that clears it, and `-20` also overshot the
+        // row's own ~6-7pt of headroom above the icon, clipping the badge
+        // against the divider above. The fix: don't overlap the icon box at
+        // all. `container.leadingAnchor == iconAnchor.trailingAnchor + gap`
+        // places the badge entirely to the *right* of the icon's box -
+        // since an SF Symbol always draws within the rect it's given, this
+        // can never overlap any icon's ink regardless of that icon's shape.
+        // `centerYAnchor` near the icon's own top edge keeps it looking like
+        // a corner badge without needing any headroom above the row itself
+        // (there's no row-clipping risk left, since the badge no longer
+        // extends above the icon's own top edge).
+        let leadingOffset = container.leadingAnchor.constraint(equalTo: iconAnchor.trailingAnchor, constant: 3)
+        let centerYOffset = container.centerYAnchor.constraint(equalTo: iconAnchor.topAnchor, constant: 2)
         NSLayoutConstraint.activate([
             leadingInset,
             trailingInset,
@@ -724,13 +868,12 @@ final class IconRailController: NSViewController {
             label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1),
             container.heightAnchor.constraint(equalToConstant: 16),
             container.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
-            topOffset,
-            trailingOffset,
+            leadingOffset,
+            centerYOffset,
         ])
         badgeContainers[dest] = container
         badgeLabels[dest] = label
         badgeLabelInsets[dest] = (leadingInset, trailingInset)
-        badgeOffsets[dest] = (topOffset, trailingOffset)
     }
 
     /// Sets the "needs you" count badge for `dest`. `count <= 0` hides the
@@ -740,14 +883,11 @@ final class IconRailController: NSViewController {
     /// tasks needing a decision on `.overview`) - this view only renders
     /// whatever number it's given.
     ///
-    /// A double-digit (or "99+") count needs its own, tighter sizing - a
-    /// captain screenshot showed the badge's fixed single-digit padding/
-    /// offset (4pt label insets, pinned 4pt past the button's top-trailing
-    /// corner) growing the whole pill wide enough, and far enough outside
-    /// the button, to visibly overflow past its icon. `label.font`/the
-    /// insets/the offsets all shrink specifically once the string is 2+
-    /// characters, pulling the badge back in against the icon; a
-    /// single-digit count keeps the original sizing untouched.
+    /// A double-digit (or "99+") count gets slightly tighter label padding
+    /// and a smaller font - the anchor point itself (`attachBadge`'s
+    /// leading-from-icon/centerY-on-icon-top scheme) doesn't need to change
+    /// with digit count, since a wider badge just extends further into the
+    /// row's own open margin to the icon's right, never back toward the icon.
     func setBadgeCount(_ count: Int, for dest: RailDestination) {
         guard let container = badgeContainers[dest], let label = badgeLabels[dest] else { return }
         container.isHidden = count <= 0
@@ -759,10 +899,6 @@ final class IconRailController: NSViewController {
         if let insets = badgeLabelInsets[dest] {
             insets.leading.constant = isMultiDigit ? 3 : 4
             insets.trailing.constant = isMultiDigit ? -3 : -4
-        }
-        if let offsets = badgeOffsets[dest] {
-            offsets.top.constant = isMultiDigit ? -2 : -4
-            offsets.trailing.constant = isMultiDigit ? 2 : 4
         }
     }
 
@@ -822,24 +958,13 @@ final class IconRailController: NSViewController {
     /// side flyout (not an in-rail expanding drawer) were the captain's
     /// explicit choices there; this reuses the identical mechanism.
     private func buildHostsOverflowButton(remainingCount: Int) -> NSButton {
-        hostsOverflowButton.cell = CenteredImageAboveButtonCell()
-        hostsOverflowButton.title = "+\(remainingCount)"
-        hostsOverflowButton.isBordered = false
-        hostsOverflowButton.wantsLayer = true
-        hostsOverflowButton.layer?.cornerRadius = 10
-        hostsOverflowButton.imagePosition = .imageAbove
-        hostsOverflowButton.imageScaling = .scaleProportionallyDown
-        hostsOverflowButton.alignment = .center
-        hostsOverflowButton.font = .systemFont(ofSize: 10, weight: .medium)
-        hostsOverflowButton.lineBreakMode = .byTruncatingTail
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        hostsOverflowButton.image = NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: "More hosts")?
-            .withSymbolConfiguration(config)
-        hostsOverflowButton.toolTip = "\(remainingCount) more host\(remainingCount == 1 ? "" : "s")"
-        NSLayoutConstraint.activate([
-            hostsOverflowButton.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            hostsOverflowButton.heightAnchor.constraint(equalToConstant: Self.rowHeight),
-        ])
+        _ = buildRailRowButton(
+            title: "+\(remainingCount)",
+            symbol: "square.stack.3d.up",
+            pointSize: 16,
+            tooltip: "\(remainingCount) more host\(remainingCount == 1 ? "" : "s")",
+            existingButton: hostsOverflowButton
+        )
         hostsOverflowButton.onHoverChange = { [weak self] isHovering in
             isHovering ? self?.scheduleShowHostsOverflowFlyout() : self?.scheduleCloseHostsOverflowFlyout()
         }
@@ -890,29 +1015,16 @@ final class IconRailController: NSViewController {
     /// since a host has no `RailDestination` case/tag - it dispatches
     /// through `hostClicked(_:)` via its `identifier`, not `navClicked(_:)`.
     private func hostRailButton(for host: Host) -> NSButton {
-        let button = NSButton()
-        button.cell = CenteredImageAboveButtonCell()
-        button.title = host.label
+        // `NSImage(systemSymbolName:)` returning `nil` for an unrecognized
+        // saved symbol name is resolved before handing the symbol string to
+        // the shared builder, which otherwise has no fallback of its own.
+        let resolvedSymbol = NSImage(systemSymbolName: host.iconSymbol, accessibilityDescription: nil) != nil
+            ? host.iconSymbol
+            : HostCatalog.defaultIcon
+        let button = buildRailRowButton(title: host.label, symbol: resolvedSymbol, pointSize: 16, tooltip: host.label)
         button.target = self
         button.action = #selector(hostClicked(_:))
-        button.isBordered = false
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 10
-        button.imagePosition = .imageAbove
-        button.imageScaling = .scaleProportionallyDown
-        button.alignment = .center
-        button.font = .systemFont(ofSize: 10, weight: .medium)
-        button.lineBreakMode = .byTruncatingTail
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        button.image = (NSImage(systemSymbolName: host.iconSymbol, accessibilityDescription: host.label)
-            ?? NSImage(systemSymbolName: HostCatalog.defaultIcon, accessibilityDescription: host.label))?
-            .withSymbolConfiguration(config)
-        button.toolTip = host.label
         button.identifier = NSUserInterfaceItemIdentifier(host.id.uuidString)
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: Self.width - 12),
-            button.heightAnchor.constraint(equalToConstant: Self.rowHeight),
-        ])
         return button
     }
 
@@ -1119,8 +1231,26 @@ final class IconRailController: NSViewController {
         setupButton.contentTintColor = setupColor
         setupButton.attributedTitle = attributedRowTitle("Setup", color: setupColor)
         setupButton.layer?.backgroundColor = (setupIsActive ? accentTint : .clear).cgColor
+        restyleAvatar(theme)
+    }
+
+    /// `fm/grandline-rail-unified-rework`: the avatar's gradient fill + ring
+    /// border, split out of `restyle(_:)` since it also needs to re-run on a
+    /// hover change (not just a theme change) - see `avatarGradientLayer`'s
+    /// doc comment and `avatar.onHoverChange` in `loadView`. The gradient
+    /// blends the old flat avatar color into the active theme's accent
+    /// (rather than a flat fill); the ring is a soft accent-colored border,
+    /// subtle at rest and brightening (higher alpha, slightly thicker) on
+    /// hover, using the same `HoverTrackingButton` mechanism `setupButton`/
+    /// `hostsOverflowButton` already use rather than a new hover mechanism.
+    private func restyleAvatar(_ theme: HelmTheme) {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        let flat = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4)
         avatar.contentTintColor = ink
-        avatar.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4).cgColor
+        avatarGradientLayer.colors = [flat.cgColor, accent.withAlphaComponent(0.55).cgColor]
+        avatar.layer?.borderWidth = avatarIsHovering ? 2 : 1.25
+        avatar.layer?.borderColor = accent.withAlphaComponent(avatarIsHovering ? 0.85 : 0.4).cgColor
     }
 }
 
@@ -1415,11 +1545,18 @@ private final class HoverTrackingView: NSView {
 /// centers it directly, both horizontally and vertically, in whatever
 /// bounds the button actually has.
 private final class CenteredImageAboveButtonCell: NSButtonCell {
-    var iconSize: CGFloat = 20
-    var contentSpacing: CGFloat = 4
+    /// `fm/grandline-rail-unified-rework`: reads `IconRailController`'s own
+    /// `iconSize`/`contentSpacing`/`titleHeight` instead of keeping a second,
+    /// independently-defaulted copy of the same numbers - this cell and
+    /// `IconRailController.attachBadge`'s icon-anchor guide now derive from
+    /// exactly one set of constants, which is what makes the badge's anchor
+    /// (see that method) actually line up with where this cell draws the
+    /// icon, for every row, including Setup.
+    private var iconSize: CGFloat { IconRailController.iconSize }
+    private var contentSpacing: CGFloat { IconRailController.contentSpacing }
 
     private func measuredTitleHeight() -> CGFloat {
-        let titleFont = font ?? .systemFont(ofSize: 10, weight: .medium)
+        let titleFont = font ?? IconRailController.titleFont
         return ceil(titleFont.ascender - titleFont.descender)
     }
 
