@@ -1,11 +1,16 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The app-level lock screen (fm/grandline-app-lock): a night-sailing scene
-// per the captain-approved design - dark gradient sky, a few static stars, a
-// bobbing sailboat, a drifting wave, and a password form. Deliberately a
-// fixed, non-Helm-themed palette: this is meant to read as a distinct gate
-// sitting in front of the app, not another themed page, so it does not
-// register with `ThemeManager` the way every other view in this app does.
+// The app-level lock screen (fm/grandline-app-lock): a sailing scene per the
+// captain-approved design - gradient sky, a bobbing sailboat, a drifting
+// wave, and a password form. Originally a fixed, non-Helm-themed dark night
+// scene by deliberate choice ("a distinct gate, not another themed page");
+// `fm/grandline-lockscreen-theme` reversed that per later captain ask - it
+// now follows the app's active Helm theme's light/dark `mode` like every
+// other view (see `ThemeManager.swift`'s header checklist), with a genuine
+// second "daytime sailing" palette (sun instead of stars, a lighter sky/wave,
+// dark ink/boat tint for contrast) rather than a dimmed copy of the dark one.
+// Only the palette follows the theme - the password-check logic, timers, and
+// avatar/logout flow this screen sits in front of are unaffected.
 //
 // Ordinary AppKit + Core Animation only (`CAGradientLayer`/`CAShapeLayer`/
 // `CABasicAnimation`) - the first use of any of these three in this codebase,
@@ -44,29 +49,34 @@ final class LockScreenController: NSViewController {
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let passwordField = NSSecureTextField()
     private let fieldContainer = NSView()
+    private let lockIcon = NSImageView()
     private let unlockButton = NSButton(title: "Unlock", target: nil, action: nil)
     private let formStack = NSStackView()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
+
+    // Theme-following scene elements. `skyLayer` is `root.layer` itself;
+    // `starLayers` (night) and `sunLayer` (day) are both built once up front
+    // and toggled via `isHidden` in `applyTheme` rather than swapped in/out,
+    // so there is never a moment with neither (or both) attached.
+    private let skyLayer = CAGradientLayer()
+    private var starLayers: [CALayer] = []
+    private let sunLayer = CALayer()
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1220, height: 720))
         root.wantsLayer = true
         view = root
 
-        let sky = CAGradientLayer()
-        sky.colors = [
-            NSColor(calibratedRed: 0.02, green: 0.04, blue: 0.11, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.06, green: 0.10, blue: 0.22, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.10, green: 0.16, blue: 0.32, alpha: 1).cgColor,
-        ]
-        sky.locations = [0, 0.55, 1]
-        sky.startPoint = CGPoint(x: 0.5, y: 1)
-        sky.endPoint = CGPoint(x: 0.5, y: 0)
-        root.layer = sky
+        skyLayer.locations = [0, 0.55, 1]
+        skyLayer.startPoint = CGPoint(x: 0.5, y: 1)
+        skyLayer.endPoint = CGPoint(x: 0.5, y: 0)
+        root.layer = skyLayer
 
-        // A handful of small, fixed-position stars - deterministic rather
-        // than randomized so this view renders identically on every launch
-        // and every live-verification probe.
+        // A handful of small, fixed-position stars (night) - deterministic
+        // rather than randomized so this view renders identically on every
+        // launch and every live-verification probe. Always built, hidden in
+        // day mode via `applyTheme` rather than added/removed, so there's
+        // never a frame where the sky has neither stars nor a sun.
         let starPositions: [(CGFloat, CGFloat, CGFloat)] = [
             (0.08, 0.85, 1.4), (0.15, 0.72, 1.0), (0.22, 0.90, 1.6), (0.30, 0.65, 1.1),
             (0.38, 0.88, 1.3), (0.46, 0.70, 1.0), (0.55, 0.92, 1.5), (0.63, 0.78, 1.1),
@@ -81,11 +91,26 @@ final class LockScreenController: NSViewController {
             star.setValue(xFrac, forKey: "xFrac")
             star.setValue(yFrac, forKey: "yFrac")
             root.layer?.addSublayer(star)
+            starLayers.append(star)
         }
+
+        // Sun (day) - same xFrac/yFrac positioning convention as the stars
+        // above (`layoutSceneLayers` repositions any sublayer carrying those
+        // keys, star or sun alike), a warm glowing disc via a soft shadow
+        // rather than a plain flat circle.
+        sunLayer.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.45, alpha: 1).cgColor
+        sunLayer.cornerRadius = 44
+        sunLayer.frame = NSRect(x: 0, y: 0, width: 88, height: 88)
+        sunLayer.shadowColor = NSColor(calibratedRed: 1.0, green: 0.75, blue: 0.35, alpha: 1).cgColor
+        sunLayer.shadowOpacity = 0.75
+        sunLayer.shadowRadius = 28
+        sunLayer.shadowOffset = .zero
+        sunLayer.setValue(CGFloat(0.78), forKey: "xFrac")
+        sunLayer.setValue(CGFloat(0.82), forKey: "yFrac")
+        root.layer?.addSublayer(sunLayer)
 
         // Wave: a simple sine-ish shape near the bottom, drawn twice as wide
         // as the view and drifted horizontally in a seamless loop.
-        waveLayer.fillColor = NSColor(calibratedRed: 0.09, green: 0.22, blue: 0.38, alpha: 0.9).cgColor
         root.layer?.addSublayer(waveLayer)
 
         // Sailboat mark - the same "sailboat" SF Symbol used for the rail's
@@ -104,40 +129,32 @@ final class LockScreenController: NSViewController {
         let config = NSImage.SymbolConfiguration(pointSize: 56, weight: .regular)
         boatImageView.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Manjesh Grand Line")?
             .withSymbolConfiguration(config)
-        boatImageView.contentTintColor = .white
         boatImageView.wantsLayer = true
         boatImageView.translatesAutoresizingMaskIntoConstraints = false
         boatImageView.widthAnchor.constraint(equalToConstant: 72).isActive = true
         boatImageView.heightAnchor.constraint(equalToConstant: 72).isActive = true
 
         titleLabel.font = .systemFont(ofSize: 26, weight: .semibold)
-        titleLabel.textColor = .white
         titleLabel.alignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         subtitleLabel.font = .systemFont(ofSize: 14, weight: .regular)
-        subtitleLabel.textColor = NSColor.white.withAlphaComponent(0.75)
         subtitleLabel.alignment = .center
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // A glassy, translucent field matching the night scene, not the
+        // A glassy, translucent field matching the scene rather than the
         // stock white/square-cornered/blue-focus-ring system text field -
         // per live captain feedback that the first draft's plain form
         // clashed with the rest of the scene. `focusRingType = .none` +
         // `isBordered = false` hand all the drawing to this field's own
-        // layer (rounded corners, a soft white border, translucent fill);
+        // layer (rounded corners, a soft border, translucent fill);
         // `placeholderAttributedString` is needed because the plain
         // `placeholderString` setter always renders in the system's default
-        // placeholder gray, invisible against a dark fill.
-        passwordField.placeholderAttributedString = NSAttributedString(
-            string: "Password",
-            attributes: [
-                .foregroundColor: NSColor.white.withAlphaComponent(0.45),
-                .font: NSFont.systemFont(ofSize: 17),
-            ]
-        )
+        // placeholder gray, which doesn't track this view's own palette.
+        // Actual colors (both here and below) are set by `applyTheme`, which
+        // `loadView` calls via `ThemeManager.shared.observe` at the end of
+        // this method - this is just static/structural setup.
         passwordField.font = .systemFont(ofSize: 17)
-        passwordField.textColor = .white
         passwordField.isBordered = false
         passwordField.drawsBackground = false
         passwordField.focusRingType = .none
@@ -151,17 +168,13 @@ final class LockScreenController: NSViewController {
 
         // A small lock glyph inside the field, left of the text - the kind
         // of detail that made the first plain-fill draft read as unfinished.
-        let lockIcon = NSImageView()
         lockIcon.image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
-        lockIcon.contentTintColor = NSColor.white.withAlphaComponent(0.55)
         lockIcon.translatesAutoresizingMaskIntoConstraints = false
 
         fieldContainer.wantsLayer = true
         fieldContainer.layer?.cornerRadius = 10
-        fieldContainer.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
         fieldContainer.layer?.borderWidth = 1
-        fieldContainer.layer?.borderColor = NSColor.white.withAlphaComponent(0.30).cgColor
         fieldContainer.translatesAutoresizingMaskIntoConstraints = false
         fieldContainer.heightAnchor.constraint(equalToConstant: 44).isActive = true
         fieldContainer.addSubview(lockIcon)
@@ -216,7 +229,6 @@ final class LockScreenController: NSViewController {
         formStack.addArrangedSubview(unlockButton)
 
         messageLabel.font = .systemFont(ofSize: 13.5)
-        messageLabel.textColor = NSColor.white.withAlphaComponent(0.85)
         messageLabel.alignment = .center
         messageLabel.maximumNumberOfLines = 3
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -236,6 +248,98 @@ final class LockScreenController: NSViewController {
             contentStack.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
             messageLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
+
+        // Follow the app's active Helm theme's light/dark mode, live - see
+        // `ThemeManager.swift`'s header checklist. `applyTheme` is called
+        // immediately here (current theme) and again on every later change,
+        // including while this screen is on screen and locked; this
+        // controller is a permanent, app-lifetime singleton owned by
+        // `AppShellController`, so the returned token can be discarded per
+        // that file's own convention for such observers.
+        ThemeManager.shared.observe { [weak self] theme in
+            self?.applyTheme(theme)
+        }
+    }
+
+    /// Repaints every themed element of the scene for `theme.mode` - a
+    /// genuine second "daytime sailing" palette (sun, lighter sky/wave, dark
+    /// ink/boat tint for contrast), not a dimmed copy of the night one. Does
+    /// not force `view.appearance`: every color here is drawn explicitly
+    /// (layer fills, `NSAttributedString` foregrounds) rather than via a
+    /// system-semantic color, so there's nothing here that would resolve
+    /// against the OS's own light/dark setting regardless.
+    private func applyTheme(_ theme: HelmTheme) {
+        let isDark = theme.mode == .dark
+
+        let skyColors: [NSColor]
+        let waveColor: NSColor
+        let boatTint: NSColor
+        let inkPrimary: NSColor
+        let inkSecondary: NSColor
+        let inkTertiary: NSColor
+        let fieldFill: NSColor
+        let fieldBorder: NSColor
+        let placeholderColor: NSColor
+        let lockTint: NSColor
+
+        if isDark {
+            skyColors = [
+                NSColor(calibratedRed: 0.02, green: 0.04, blue: 0.11, alpha: 1),
+                NSColor(calibratedRed: 0.06, green: 0.10, blue: 0.22, alpha: 1),
+                NSColor(calibratedRed: 0.10, green: 0.16, blue: 0.32, alpha: 1),
+            ]
+            waveColor = NSColor(calibratedRed: 0.09, green: 0.22, blue: 0.38, alpha: 0.9)
+            boatTint = .white
+            inkPrimary = .white
+            inkSecondary = NSColor.white.withAlphaComponent(0.75)
+            inkTertiary = NSColor.white.withAlphaComponent(0.85)
+            fieldFill = NSColor.white.withAlphaComponent(0.10)
+            fieldBorder = NSColor.white.withAlphaComponent(0.30)
+            placeholderColor = NSColor.white.withAlphaComponent(0.45)
+            lockTint = NSColor.white.withAlphaComponent(0.55)
+        } else {
+            // A daytime sailing scene, not a dimmed night one: a brighter
+            // sky blue at the zenith fading to a pale, warm horizon; a
+            // lighter turquoise wave; dark ink/boat/field chrome, since
+            // white text and a translucent white pill both lose contrast
+            // against a pale sky.
+            skyColors = [
+                NSColor(calibratedRed: 0.32, green: 0.58, blue: 0.86, alpha: 1),
+                NSColor(calibratedRed: 0.58, green: 0.78, blue: 0.93, alpha: 1),
+                NSColor(calibratedRed: 0.90, green: 0.93, blue: 0.90, alpha: 1),
+            ]
+            waveColor = NSColor(calibratedRed: 0.16, green: 0.52, blue: 0.62, alpha: 0.85)
+            boatTint = NSColor(calibratedRed: 0.10, green: 0.20, blue: 0.32, alpha: 1)
+            inkPrimary = NSColor(calibratedRed: 0.08, green: 0.12, blue: 0.20, alpha: 1)
+            inkSecondary = inkPrimary.withAlphaComponent(0.68)
+            inkTertiary = inkPrimary.withAlphaComponent(0.80)
+            fieldFill = NSColor.black.withAlphaComponent(0.06)
+            fieldBorder = NSColor.black.withAlphaComponent(0.18)
+            placeholderColor = inkPrimary.withAlphaComponent(0.40)
+            lockTint = inkPrimary.withAlphaComponent(0.55)
+        }
+
+        skyLayer.colors = skyColors.map(\.cgColor)
+        waveLayer.fillColor = waveColor.cgColor
+        boatImageView.contentTintColor = boatTint
+        starLayers.forEach { $0.isHidden = !isDark }
+        sunLayer.isHidden = isDark
+
+        titleLabel.textColor = inkPrimary
+        subtitleLabel.textColor = inkSecondary
+        messageLabel.textColor = inkTertiary
+
+        fieldContainer.layer?.backgroundColor = fieldFill.cgColor
+        fieldContainer.layer?.borderColor = fieldBorder.cgColor
+        passwordField.textColor = inkPrimary
+        passwordField.placeholderAttributedString = NSAttributedString(
+            string: "Password",
+            attributes: [
+                .foregroundColor: placeholderColor,
+                .font: NSFont.systemFont(ofSize: 17),
+            ]
+        )
+        lockIcon.contentTintColor = lockTint
     }
 
     override func viewDidLayout() {
