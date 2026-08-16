@@ -40,6 +40,15 @@ final class LockScreenController: NSViewController {
         /// `AppShellController` retries the underlying check on a timer
         /// while this state is showing; this screen just displays it.
         case serviceNotRunning
+        /// `av list` failed (or timed out) for a reason that isn't the
+        /// specific `.serviceNotRunning` marker text - e.g. the approval
+        /// helper being transiently unresponsive right after a long
+        /// sleep/wake (`fm/grandline-vault-wake-recheck-fix`, live-
+        /// confirmed: a suspended helper process makes `av list` hang
+        /// indefinitely). The password secret may well already exist here
+        /// too; `AppShellController` retries on the same cadence as
+        /// `.serviceNotRunning` - this screen just displays it.
+        case transientFailure
     }
 
     /// `(typed password, completion(success))` - the caller verifies on a
@@ -527,6 +536,12 @@ final class LockScreenController: NSViewController {
             avUnavailableStack.isHidden = true
             messageLabel.isHidden = false
             messageLabel.stringValue = "Automic Vault's background service isn't running yet - starting it now. This should only take a moment."
+        case .transientFailure:
+            subtitleLabel.stringValue = "Checking Automic Vault"
+            formStack.isHidden = true
+            avUnavailableStack.isHidden = true
+            messageLabel.isHidden = false
+            messageLabel.stringValue = "Automic Vault didn't respond in time - retrying automatically. This should only take a moment."
         }
     }
 
