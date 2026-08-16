@@ -52,6 +52,15 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let cleanupTitleLabel = NSTextField(labelWithString: "")
     private let cleanupDetailLabel = NSTextField(wrappingLabelWithString: "")
 
+    private let localWhisperPanel = ShiftPanelView()
+    private let localWhisperSwitch = NSSwitch()
+    private let localWhisperTitleLabel = NSTextField(labelWithString: "")
+    private let localWhisperDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private let modelStatusLabel = NSTextField(labelWithString: "")
+    private let modelActionButton = NSButton()
+    private let modelProgressBar = NSProgressIndicator()
+    private var modelState: WhisperModelState = .notDownloaded
+
     private let vocabularyPanel = ShiftPanelView()
     private let vocabularyCountLabel = NSTextField(labelWithString: "")
     private let vocabularyChipFlow = ChipFlowView()
@@ -99,6 +108,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         _ = buildStatusSection()
         _ = buildShortcutSection()
         _ = buildCleanupSection()
+        _ = buildLocalWhisperSection()
         _ = buildVocabularySection()
         _ = buildHistorySection()
         buildFootnote()
@@ -111,6 +121,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         contentStack.addArrangedSubview(statusPanel)
         contentStack.addArrangedSubview(shortcutPanel)
         contentStack.addArrangedSubview(cleanupPanel)
+        contentStack.addArrangedSubview(localWhisperPanel)
         contentStack.addArrangedSubview(vocabularyPanel)
         contentStack.addArrangedSubview(historyPanel)
         contentStack.addArrangedSubview(footnoteLabel)
@@ -124,6 +135,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             statusPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             shortcutPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             cleanupPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            localWhisperPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             vocabularyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             historyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             footnoteLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -157,6 +169,17 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             self.renderHistory()
             self.renderVocabulary()
         }
+
+        // fm/grandline-dictation-whisper-engine: live download progress -
+        // `WhisperModelManager.observe` fires immediately with the current
+        // state (matching `DictationStore.observe`'s convention) and again
+        // on every state change, so the progress bar/status text update in
+        // real time while a download is in flight and this page is visible.
+        WhisperModelManager.shared.observe { [weak self] state in
+            guard let self, self.isViewLoaded else { return }
+            self.modelState = state
+            self.renderLocalWhisperSection()
+        }
     }
 
     override func viewWillAppear() {
@@ -178,6 +201,8 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     /// OS-level checks), and after `setEngineStatus` reports a change.
     func refresh() {
         cleanupSwitch.state = AppSettings.shared.dictationCleanupEnabled ? .on : .off
+        localWhisperSwitch.state = AppSettings.shared.dictationLocalWhisperEnabled ? .on : .off
+        WhisperModelManager.shared.refreshState()
         setStatus(DictationPermissions.currentStatus())
     }
 
@@ -347,6 +372,89 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         return cleanupPanel
     }
 
+    /// fm/grandline-dictation-whisper-engine: an optional local Whisper
+    /// engine (vendored whisper.cpp, `large-v3-turbo` quantized model) as an
+    /// alternative to the Apple Speech framework path above - same
+    /// visual/interaction style as the Cleanup card immediately above it
+    /// (icon tile + title/detail text + a switch), plus a model-status row
+    /// (download progress/action) since this toggle has a real one-time
+    /// setup step the Cleanup toggle doesn't.
+    private func buildLocalWhisperSection() -> NSView {
+        let sectionLabel = NSTextField(labelWithString: "Local Whisper Engine")
+        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.translatesAutoresizingMaskIntoConstraints = false
+        localWhisperPanel.setHeader(sectionLabel)
+
+        let waveTile = IconTileView(size: 40, cornerRadius: 10)
+        waveTile.configure(symbol: "cpu", tint: .info)
+
+        localWhisperTitleLabel.stringValue = "Use local Whisper engine"
+        localWhisperTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        localWhisperTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        localWhisperDetailLabel.stringValue = "Transcribe on-device with whisper.cpp (large-v3-turbo) instead of Apple's Speech framework - generally more accurate, and still fully offline once the model is downloaded. If the model isn't downloaded yet, or ever fails to load, dictation automatically falls back to Apple Speech."
+        localWhisperDetailLabel.font = .systemFont(ofSize: 11)
+        localWhisperDetailLabel.preferredMaxLayoutWidth = 460
+        localWhisperDetailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [localWhisperTitleLabel, localWhisperDetailLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        localWhisperSwitch.target = self
+        localWhisperSwitch.action = #selector(localWhisperToggled)
+        localWhisperSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        localWhisperSwitch.translatesAutoresizingMaskIntoConstraints = false
+
+        let toggleRow = NSStackView(views: [waveTile, textStack, localWhisperSwitch])
+        toggleRow.orientation = .horizontal
+        toggleRow.alignment = .top
+        toggleRow.spacing = 14
+        toggleRow.translatesAutoresizingMaskIntoConstraints = false
+
+        modelStatusLabel.font = .systemFont(ofSize: 11.5)
+        modelStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        modelStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        modelProgressBar.style = .bar
+        modelProgressBar.isIndeterminate = false
+        modelProgressBar.minValue = 0
+        modelProgressBar.maxValue = 1
+        modelProgressBar.controlSize = .small
+        modelProgressBar.isHidden = true
+        modelProgressBar.translatesAutoresizingMaskIntoConstraints = false
+        modelProgressBar.widthAnchor.constraint(equalToConstant: 160).isActive = true
+
+        modelActionButton.bezelStyle = .rounded
+        modelActionButton.controlSize = .small
+        modelActionButton.target = self
+        modelActionButton.action = #selector(modelActionTapped)
+        modelActionButton.setContentHuggingPriority(.required, for: .horizontal)
+        modelActionButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let modelRow = NSStackView(views: [modelStatusLabel, modelProgressBar, modelActionButton])
+        modelRow.orientation = .horizontal
+        modelRow.alignment = .centerY
+        modelRow.spacing = 10
+        modelRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let column = NSStackView(views: [toggleRow, modelRow])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 12
+        column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            toggleRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            modelRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+        ])
+
+        localWhisperPanel.setBody(paddedBody(column))
+        return localWhisperPanel
+    }
+
     private func buildVocabularySection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Words I use often")
         sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -490,10 +598,44 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         cleanupPanel.applyTheme(theme)
         cleanupTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         cleanupDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        localWhisperPanel.applyTheme(theme)
+        localWhisperTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        localWhisperDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        modelStatusLabel.textColor = HelmTheme.mutedInk(theme)
         vocabularyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyListView.applyTheme(theme)
         footnoteLabel.textColor = HelmTheme.mutedInk(theme)
+    }
+
+    /// Renders the model download/status row from `modelState` - called
+    /// immediately on `WhisperModelManager.observe` registration and on
+    /// every subsequent state change while this page is visible.
+    private func renderLocalWhisperSection() {
+        switch modelState {
+        case .notDownloaded:
+            modelStatusLabel.stringValue = "Model not downloaded (~547MB)"
+            modelProgressBar.isHidden = true
+            modelActionButton.title = "Download Model"
+            modelActionButton.isEnabled = true
+        case .downloading(let progress):
+            modelStatusLabel.stringValue = "Downloading… \(Int(progress * 100))%"
+            modelProgressBar.isHidden = false
+            modelProgressBar.doubleValue = progress
+            modelActionButton.title = "Cancel"
+            modelActionButton.isEnabled = true
+        case .ready:
+            modelStatusLabel.stringValue = "Model ready"
+            modelProgressBar.isHidden = true
+            modelActionButton.title = "Re-download"
+            modelActionButton.isEnabled = true
+        case .failed(let message):
+            modelStatusLabel.stringValue = "Download failed: \(message)"
+            modelProgressBar.isHidden = true
+            modelActionButton.title = "Retry Download"
+            modelActionButton.isEnabled = true
+        }
+        applyTheme()
     }
 
     /// Re-reads `store.vocabulary` and rebuilds every chip - called on every
@@ -539,6 +681,24 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
 
     @objc private func cleanupToggled() {
         AppSettings.shared.dictationCleanupEnabled = cleanupSwitch.state == .on
+    }
+
+    @objc private func localWhisperToggled() {
+        AppSettings.shared.dictationLocalWhisperEnabled = localWhisperSwitch.state == .on
+    }
+
+    /// The one download/cancel/retry button for the model row - its exact
+    /// action depends on `modelState`, matching `statusActionTapped`'s own
+    /// "one button, state decides what it does" shape above.
+    @objc private func modelActionTapped() {
+        switch modelState {
+        case .notDownloaded, .failed:
+            WhisperModelManager.shared.startDownload()
+        case .downloading:
+            WhisperModelManager.shared.cancelDownload()
+        case .ready:
+            WhisperModelManager.shared.startDownload()
+        }
     }
 
     @objc private func addVocabularyWordTapped() {

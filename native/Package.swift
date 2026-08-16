@@ -44,9 +44,42 @@ let package = Package(
             name: "Yaml",
             path: "Vendor/YamlSwift/Sources/Yaml"
         ),
+        // Vendored whisper.cpp (ggml-org/whisper.cpp, MIT, pinned to upstream
+        // tag v1.9.2 / commit 306c88f), not a remote SPM dependency or CMake
+        // build - same zero-remote-dependencies, plain-`swift build`-only
+        // convention SwiftTerm/YamlSwift's vendoring already established.
+        // Backs Dictation's optional local Whisper engine
+        // (fm/grandline-dictation-whisper-engine); see
+        // Vendor/whisper.cpp/README.md for what was trimmed from upstream and
+        // why (CPU-only with the baseline ARM NEON kernels, no Metal/
+        // Accelerate/CUDA/AMX/llamafile/dynamic-backend-loading/etc).
+        .target(
+            name: "CWhisper",
+            path: "Vendor/whisper.cpp/Sources/CWhisper",
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("GGML_USE_CPU"),
+                .define("GGML_VERSION", to: "\"0.18.1-grandline\""),
+                .define("GGML_COMMIT", to: "\"306c88f4d1286aec1bf96e544632897886af5501\""),
+                .define("WHISPER_VERSION", to: "\"1.9.2\""),
+                .headerSearchPath("ggml-src"),
+                .headerSearchPath("ggml-src/ggml-cpu"),
+                .headerSearchPath("whisper-src"),
+            ],
+            cxxSettings: [
+                .define("GGML_USE_CPU"),
+                .define("GGML_VERSION", to: "\"0.18.1-grandline\""),
+                .define("GGML_COMMIT", to: "\"306c88f4d1286aec1bf96e544632897886af5501\""),
+                .define("WHISPER_VERSION", to: "\"1.9.2\""),
+                .headerSearchPath("ggml-src"),
+                .headerSearchPath("ggml-src/ggml-cpu"),
+                .headerSearchPath("whisper-src"),
+            ]
+        ),
         .executableTarget(
             name: "FirstmateCockpit",
-            dependencies: ["SwiftTerm", "Yaml"]
+            dependencies: ["SwiftTerm", "Yaml", "CWhisper"]
         )
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

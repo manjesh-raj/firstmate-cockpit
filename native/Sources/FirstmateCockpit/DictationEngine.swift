@@ -324,6 +324,35 @@ final class DictationEngine {
     /// provider closure's own "absent means off/empty" convention above.
     var cleanupEnabledProvider: (() -> Bool)?
 
+    /// Reports whether the "Use local Whisper engine" toggle is on
+    /// (fm/grandline-dictation-whisper-engine) - read fresh at the start of
+    /// every recording, matching every other provider closure's convention.
+    var localWhisperEnabledProvider: (() -> Bool)?
+
+    /// Resamples the live tap audio to 16kHz mono Float32 for the local
+    /// Whisper engine, accumulating across the whole recording - only ever
+    /// actually used when `localWhisperEnabledProvider` is true, so the
+    /// default (toggle off) path pays no extra CPU for this at all beyond
+    /// the one `providerProviders?() ?? false` check.
+    private let whisperResampler = DictationAudioResampler()
+
+    /// Lazily loaded and cached for the app's whole lifetime once a load
+    /// succeeds - `WhisperCppEngine.init?` re-reading and re-parsing a
+    /// ~547MB model file on every single recording would be a real,
+    /// noticeable delay before the local engine could ever start
+    /// transcribing. `nil` after a failed load attempt means "don't retry
+    /// every load automatically" as of a recording; whether the model exists
+    /// at all is still re-checked from `beginCapture` since a captain could
+    /// delete/redownload it between recordings.
+    private var cachedWhisperEngine: WhisperCppEngine?
+    private var cachedWhisperEngineModelPath: String?
+
+    /// Whether *this specific recording* is using the local Whisper engine -
+    /// decided once at `beginCapture` time (toggle + model ready + engine
+    /// loads), not re-checked mid-recording, so a toggle flip while already
+    /// recording can't switch engines mid-flight.
+    private var usingLocalWhisperThisRecording = false
+
     /// Wall-clock time the current capture actually started (audio engine
     /// running) - `finish(text:)` uses this to compute the real duration
     /// recorded into history. `nil` outside of an active capture.
@@ -397,11 +426,29 @@ final class DictationEngine {
         finishTimeoutWorkItem?.cancel()
         finishTimeoutWorkItem = nil
 
+        // Decided once, here, not re-checked mid-recording - see
+        // `usingLocalWhisperThisRecording`'s doc comment. Still runs the
+        // Apple Speech pipeline below unconditionally either way: this is
+        // deliberate, not wasted work. Running both in parallel means a
+        // local-Whisper transcription failure (model fails to load, produces
+        // no usable text) has an already-computed Apple transcript to fall
+        // back to immediately in `finish(text:)`, with no extra latency and
+        // no separate "try Apple after Whisper already failed" code path
+        // that would itself need its own timeout/fallback handling.
+        usingLocalWhisperThisRecording = localWhisperEnabledProvider?() ?? false
+        if usingLocalWhisperThisRecording {
+            whisperResampler.reset()
+        }
+
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
+            guard let self else { return }
+            self.recognitionRequest?.append(buffer)
+            if self.usingLocalWhisperThisRecording {
+                self.whisperResampler.append(buffer)
+            }
         }
 
         audioEngine.prepare()
@@ -522,10 +569,68 @@ final class DictationEngine {
         }
 
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let finalText = !trimmed.isEmpty ? text! : (bestTranscriptSeen.isEmpty ? nil : bestTranscriptSeen)
+        let appleText = !trimmed.isEmpty ? text! : (bestTranscriptSeen.isEmpty ? nil : bestTranscriptSeen)
         let duration = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         recordingStartedAt = nil
 
+        // The local Whisper engine (fm/grandline-dictation-whisper-engine) is
+        // attempted only when this specific recording opted into it (decided
+        // once at `beginCapture`, see `usingLocalWhisperThisRecording`'s doc
+        // comment) - the default (toggle off) path skips this block
+        // entirely and goes straight to the Apple-computed `appleText`,
+        // exactly matching this method's pre-existing behavior byte for
+        // byte. `whisper_full` runs on a background queue since it can take
+        // a real, noticeable amount of time on CPU; the already-computed
+        // `appleText` is what a failed/empty local transcription falls back
+        // to, with no extra latency for that fallback path.
+        guard usingLocalWhisperThisRecording else {
+            finishWithFinalText(appleText, duration: duration)
+            return
+        }
+
+        let samples = whisperResampler.samples
+        let vocabulary = vocabularyProvider?() ?? []
+        let initialPrompt = vocabulary.isEmpty ? nil : vocabulary.joined(separator: ", ")
+        let modelReady = WhisperModelManager.shared.isReady
+        let modelPath = WhisperModelManager.shared.modelPathOnDisk
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var whisperText: String?
+            if modelReady {
+                whisperText = self?.loadWhisperEngine(modelPath: modelPath)?.transcribe(samples: samples, initialPrompt: initialPrompt)
+            }
+            DispatchQueue.main.async {
+                // A missing model, a load failure, or an empty/failed
+                // transcription all fall back to the Apple Speech result
+                // computed in parallel above - a broken local engine must
+                // never mean dictation stops working entirely.
+                self?.finishWithFinalText(whisperText ?? appleText, duration: duration)
+            }
+        }
+    }
+
+    /// Loads (or reuses the cached) local Whisper engine for `modelPath` -
+    /// called only from the background queue in `finish(text:)` above, never
+    /// concurrently with itself (a second recording can't begin until this
+    /// one has fully finished, since `isRecording`/`isFinishing` gate that).
+    /// Caching across recordings avoids re-parsing the ~547MB model file on
+    /// every single dictation, which would otherwise be a real, noticeable
+    /// delay before the local engine could start transcribing at all.
+    private func loadWhisperEngine(modelPath: String) -> WhisperCppEngine? {
+        if let cachedWhisperEngine, cachedWhisperEngineModelPath == modelPath {
+            return cachedWhisperEngine
+        }
+        guard let engine = WhisperCppEngine(modelPath: modelPath) else { return nil }
+        cachedWhisperEngine = engine
+        cachedWhisperEngineModelPath = modelPath
+        return engine
+    }
+
+    /// The one place both the Apple-only path and the local-Whisper path
+    /// converge once a final transcript (or `nil`) has been decided - runs
+    /// the optional "Clean up my sentences" rewrite and pastes/records the
+    /// result, exactly like this method did before the local-engine option
+    /// existed.
+    private func finishWithFinalText(_ finalText: String?, duration: TimeInterval) {
         guard let finalText else {
             report(.didNotCatchThat)
             return
