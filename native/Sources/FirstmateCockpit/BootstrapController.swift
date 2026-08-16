@@ -172,6 +172,19 @@ private final class StepDotView: NSView {
     }
 }
 
+/// Whether "Run full setup" (Part D) should sequence this step. This one is
+/// deliberately excluded: unlike the other four, restoring a config requires
+/// the captain to pick a real file via `NSOpenPanel` - there's nothing to
+/// automate, and forcing an import prompt into an unattended sequence would
+/// violate "never force an import when there's nothing to restore from." It
+/// still appears as the fifth step in the main vertical stepper below, just
+/// outside the automated chain. Bootstrap-specific and unchanged by
+/// fm/grandline-automation-pipeline - `AutomationController`'s own sequencer
+/// always runs all five steps, including restore config.
+extension SetupStepKind {
+    var isPartOfFullSetupSequence: Bool { self != .restoreConfig }
+}
+
 final class BootstrapController: NSViewController {
 
     /// The three stores the "Restore Grand Line config" step reads/writes
@@ -292,44 +305,13 @@ final class BootstrapController: NSViewController {
 
     // MARK: "Run full setup" sequencer state (Part D)
 
-    private enum SetupStepKind: CaseIterable, Hashable {
-        case firstmateHome, dotfiles, agentInstructions, software, restoreConfig
-
-        var title: String {
-            switch self {
-            case .firstmateHome: return "Firstmate home"
-            case .dotfiles: return "Dotfiles & machine config"
-            case .agentInstructions: return "Global agent instructions"
-            case .software: return "Software checklist"
-            case .restoreConfig: return "Restore Grand Line config"
-            }
-        }
-
-        /// Mirrors the concept each step's own content already represents
-        /// elsewhere on this page (the home path field, the dotfiles repo
-        /// state, the AGENTS.md/CLAUDE.md symlinks, the software catalog) -
-        /// the stepper's own dot shows a number/checkmark, not an icon, so
-        /// there's no existing per-step icon to reuse verbatim.
-        var symbol: String {
-            switch self {
-            case .firstmateHome: return "house"
-            case .dotfiles: return "gearshape"
-            case .agentInstructions: return "doc.text"
-            case .software: return "checklist"
-            case .restoreConfig: return "tray.and.arrow.down"
-            }
-        }
-
-        /// Whether "Run full setup" (Part D) should sequence this step. This
-        /// one is deliberately excluded: unlike the other four, restoring a
-        /// config requires the captain to pick a real file via `NSOpenPanel`
-        /// - there's nothing to automate, and forcing an import prompt into
-        /// an unattended sequence would violate "never force an import when
-        /// there's nothing to restore from." It still appears as the fifth
-        /// step in the main vertical stepper below, just outside the
-        /// automated chain.
-        var isPartOfFullSetupSequence: Bool { self != .restoreConfig }
-    }
+    // `SetupStepKind` itself (title/symbol) now lives in `SetupStepChecks.swift`
+    // - shared with `AutomationController` (fm/grandline-automation-pipeline)
+    // so both pages iterate the identical five steps. `isPartOfFullSetupSequence`
+    // (below, at file scope since Swift extensions can't nest inside a class
+    // body) stays Bootstrap-specific and unchanged - it has no meaning for
+    // Automation's own sequencer, which always runs all five steps, including
+    // restore config, with its own file-picker pause.
 
     private enum SetupStepStatus: Equatable {
         case pending, checking, running, done, skipped, failed(String)
@@ -904,18 +886,10 @@ final class BootstrapController: NSViewController {
                 self.finishFullSetup()
                 return
             }
-            let label: String
-            let command: String
-            if let repoPath = self.dotfilesRepoPath {
-                label = "rebuild.sh"
-                command = Self.rebuildCommand(repoPath: repoPath)
-            } else {
-                let raw = self.clonePathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let destination = raw.isEmpty ? DotfilesSource.defaultClonePath : raw
-                let expanded = (destination as NSString).expandingTildeInPath
-                label = "Bootstrap"
-                command = "git clone \(DotfilesSource.cloneURL) \"\(expanded)\" && cd \"\(expanded)\" && ./bootstrap.sh"
-            }
+            let (label, command) = DotfilesRunCommand.runOrCloneCommand(
+                repoPath: self.dotfilesRepoPath,
+                clonePathFieldValue: self.clonePathField.stringValue
+            )
             onRunCommandTracked(label, command) { [weak self] ok in
                 guard let self else { return }
                 if ok {
@@ -962,31 +936,22 @@ final class BootstrapController: NSViewController {
     /// Whether a step is currently configured/satisfied, read live from the
     /// same state every other part of this page already reads - never a
     /// hardcoded flag. `nil` means "still checking" (the background refresh
-    /// for that step hasn't returned yet).
-    private func stepIsDone(_ kind: SetupStepKind) -> Bool? {
+    /// for that step hasn't returned yet). Delegates to `SetupStepChecks`
+    /// (fm/grandline-automation-pipeline) so the `.automation` destination's
+    /// own sequencer can never disagree with this page about whether a step
+    /// is done - not `private` for that reason.
+    func stepIsDone(_ kind: SetupStepKind) -> Bool? {
         switch kind {
         case .firstmateHome:
-            return FirstmateHome.homeOk(at: FirstmateHome.root)
+            return SetupStepChecks.firstmateHomeDone()
         case .dotfiles:
-            guard !isLoadingDotfiles else { return nil }
-            guard dotfilesRepoPath != nil else { return false }
-            guard let state = repoState else { return false }
-            guard state.dirtyFiles.isEmpty else { return false }
-            if let behind = state.commitsBehindOrigin, behind > 0 { return false }
-            return true
+            return SetupStepChecks.dotfilesDone(isLoading: isLoadingDotfiles, repoPath: dotfilesRepoPath, state: repoState)
         case .agentInstructions:
-            guard !isLoadingDotfiles else { return nil }
-            return !agentItems.isEmpty && agentItems.allSatisfy { $0.status == .linked }
+            return SetupStepChecks.agentInstructionsDone(isLoading: isLoadingDotfiles, items: agentItems)
         case .software:
-            guard !isLoadingSoftware else { return nil }
-            return !softwareRows.contains { $0.status == .notInstalled }
+            return SetupStepChecks.softwareDone(isLoading: isLoadingSoftware, statuses: softwareRows.map { $0.status })
         case .restoreConfig:
-            // "Done" once there's something local to show for it - either a
-            // real import already happened, or the captain built up hosts/
-            // snippets by hand. Never depends on a bundle file existing, so
-            // it's never stuck "pending" on a machine that doesn't use this
-            // feature at all.
-            return !hostStore.hosts.isEmpty || !snippetStore.snippets.isEmpty
+            return SetupStepChecks.restoreConfigDone(hostCount: hostStore.hosts.count, snippetCount: snippetStore.snippets.count)
         }
     }
 
@@ -2390,7 +2355,7 @@ final class BootstrapController: NSViewController {
     /// (uncommitted changes or a genuine merge conflict) - `rebuild.sh` never
     /// runs against a repo state that didn't cleanly update from GitHub.
     private static func rebuildCommand(repoPath: String) -> String {
-        "cd \"\(repoPath)\" && git pull --ff-only && ./rebuild.sh"
+        DotfilesRunCommand.rebuildCommand(repoPath: repoPath)
     }
 
     @objc private func createLinkClicked() {
