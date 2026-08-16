@@ -23,6 +23,14 @@ import CWhisper
 import Foundation
 
 enum WhisperEngineSelfTest {
+    /// Runs only the real-model load/transcribe check - the child-process
+    /// entry point `testMetalFallbackDoesNotCrash()` spawns to force a
+    /// Metal-library-load failure in isolation, without re-running every
+    /// other case the parent process already covers.
+    static func runRealModelOnly() -> Bool {
+        testRealModelIfAvailable()
+    }
+
     static func run() -> Bool {
         var ok = true
         ok = testValidationRejectsTooSmallFile() && ok
@@ -31,7 +39,72 @@ enum WhisperEngineSelfTest {
         ok = testResamplerProducesNonEmptySamples() && ok
         ok = testVocabularyBecomesInitialPrompt() && ok
         ok = testRealModelIfAvailable() && ok
+        ok = testMetalFallbackDoesNotCrash() && ok
         return ok
+    }
+
+    /// Regression coverage for fm/grandline-dictation-whisper-metal-accel's
+    /// own real finding: a real crash was found one layer inside
+    /// whisper.cpp when `use_gpu = true` but the Metal shader library fails
+    /// to load (see `WhisperMetalRuntime.swift`'s header comment for the
+    /// full mechanism) - fixed by a Swift-side pre-flight
+    /// (`WhisperMetalRuntime.metalCanCompileShader()`) that only ever lets
+    /// `use_gpu` be `true` once Metal is already confirmed to work. Because
+    /// the underlying bug was a real process abort (not a throwable Swift
+    /// error), the only way to prove the fix holds is to force the failure
+    /// in a genuinely separate process and check *that process's* exit
+    /// status - a crash here would kill this whole self-test binary instead
+    /// of just failing an assertion, which is exactly the regression this
+    /// guards against. Skipped (not failed) without a real model, same as
+    /// `testRealModelIfAvailable()` above.
+    private static func testMetalFallbackDoesNotCrash() -> Bool {
+        guard let modelPath = ProcessInfo.processInfo.environment["FM_WHISPER_TEST_MODEL_PATH"], !modelPath.isEmpty else {
+            print("[WhisperEngineSelfTest] SKIPPED: FM_WHISPER_TEST_MODEL_PATH not set - Metal-failure/no-crash fallback not verified by this run")
+            return true
+        }
+        guard let audioPath = ProcessInfo.processInfo.environment["FM_WHISPER_TEST_AUDIO_PATH"], !audioPath.isEmpty else {
+            print("[WhisperEngineSelfTest] SKIPPED: FM_WHISPER_TEST_AUDIO_PATH not set - Metal-failure/no-crash fallback needs real audio to exercise transcribe(), not just model load")
+            return true
+        }
+        let exePath = CommandLine.arguments[0]
+        let forcedBadResourcesDir = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-metal-force-fail-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: forcedBadResourcesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: forcedBadResourcesDir) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: exePath)
+        var env = ProcessInfo.processInfo.environment
+        env["FM_WHISPER_METAL_RESOURCES_OVERRIDE"] = forcedBadResourcesDir.path
+        // Only re-run the real-model check in the child - the parent
+        // process already ran (or is about to run) every other case.
+        env["FM_RUN_WHISPER_ENGINE_TESTS"] = nil
+        env["FM_RUN_WHISPER_METAL_FALLBACK_ONLY_TEST"] = "1"
+        process.environment = env
+        let stdoutPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stdoutPipe
+
+        do {
+            try process.run()
+        } catch {
+            print("[WhisperEngineSelfTest] FAIL: could not spawn child process to test Metal-failure fallback: \(error)")
+            return false
+        }
+        process.waitUntilExit()
+
+        let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: outputData, encoding: .utf8) ?? ""
+
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+            print("[WhisperEngineSelfTest] FAIL: child process forcing a Metal library load failure crashed instead of falling back (reason: \(process.terminationReason), status: \(process.terminationStatus)) - output:\n\(output)")
+            return false
+        }
+        guard output.contains("ask what you can do for your country") else {
+            print("[WhisperEngineSelfTest] FAIL: child process exited cleanly but did not produce the expected transcript - output:\n\(output)")
+            return false
+        }
+        print("[WhisperEngineSelfTest] Metal-failure fallback verified: forced library load failure, child process exited cleanly and still transcribed via CPU")
+        return true
     }
 
     /// "Personal vocabulary still biases recognition when the local engine

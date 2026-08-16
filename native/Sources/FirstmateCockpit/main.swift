@@ -824,6 +824,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_ENGINE_TESTS"] == "1" {
     exit(WhisperEngineSelfTest.run() ? 0 : 1)
 }
 
+// Child-process-only entry point `testMetalFallbackDoesNotCrash()` spawns
+// with `FM_WHISPER_METAL_RESOURCES_OVERRIDE` pointed at an empty directory -
+// see that test's own doc comment for why this needs a genuinely separate
+// process rather than an in-process assertion.
+if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_METAL_FALLBACK_ONLY_TEST"] == "1" {
+    exit(WhisperEngineSelfTest.runRealModelOnly() ? 0 : 1)
+}
+
 
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
