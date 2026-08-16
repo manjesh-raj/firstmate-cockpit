@@ -189,6 +189,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // and record every successful (real, pasted) transcript into
         // history - both read/write the one shared `dictationStore` above.
         dictationEngine.vocabularyProvider = { [weak self] in self?.dictationStore.vocabulary ?? [] }
+        // Phase 3: read the "Clean up my sentences" toggle fresh at the
+        // moment each dictation finishes - see `AppSettings.dictationCleanupEnabled`'s
+        // own doc comment for why this defaults to off.
+        dictationEngine.cleanupEnabledProvider = { AppSettings.shared.dictationCleanupEnabled }
         dictationEngine.onTranscript = { [weak self] text, duration in
             self?.dictationStore.recordHistory(text: text, durationSeconds: duration, date: Date())
         }
@@ -793,6 +797,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_HOTKEY_TESTS"] == "1" {
 if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_DATA_TESTS"] == "1" {
     exit(DictationDataSelfTest.run() ? 0 : 1)
 }
+
+// `fm/grandline-dictation-phase3`: same convention, for `DictationCleanup`'s
+// `claude -p` invocation/parsing/fallback logic - see
+// DictationCleanupSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_CLEANUP_TESTS"] == "1" {
+    exit(DictationCleanupSelfTest.run() ? 0 : 1)
+}
+
 
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
