@@ -451,8 +451,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 execName: nil,
                 currentDirectory: cwd
             )
-        case .mirror(let target):
-            connectMirror(tab, target: target)
+        case .mirror(let kind, let target):
+            connectMirror(tab, kind: kind, target: target)
         case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
@@ -553,7 +553,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // The mirror/herdr tab first, Shell second (fixes3) - both the tab
         // bar order and the ⌘1…⌘9 shortcut numbering follow `tabs`' append
         // order, so this tab must be created before the shell tab.
-        let mirror = TabLaunch.mirror(target: mirrorTarget())
+        //
+        // `fm/grandline-mirror-resolve-race-fix`: kind and target come from
+        // one atomic call, never a separate `mirrorTarget()`/`resolve()`
+        // pair - see `FirstmateBackend.resolveMirrorTarget()`'s doc comment.
+        let resolution = FirstmateBackend.resolveMirrorTarget()
+        let mirror = TabLaunch.mirror(kind: resolution.kind, target: resolution.target)
         addTab(launch: mirror, name: numberedName(for: mirror), select: false)
         let s = shellArgv()
         let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
@@ -716,14 +721,19 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     /// Set up a live session for `target` and attach `tab`'s terminal to it,
-    /// on whichever backend firstmate itself resolves to right now
-    /// (`FirstmateBackend.resolve()`, cockpit-mirror-herdr-aware) - tmux's
-    /// read-only `TmuxMirror` (unchanged, tab named "Mirror") or herdr's
-    /// real-attach `HerdrMirror` (fm/cockpit-mirror-herdr-real-attach, tab
-    /// named "Herdr" - see `TabLaunch.defaultName`). On failure the error is
-    /// written into the terminal so it is visible rather than silent.
-    private func connectMirror(_ tab: TabModel, target: String) {
-        switch FirstmateBackend.resolve() {
+    /// on `kind` - tmux's read-only `TmuxMirror` (unchanged, tab named
+    /// "Mirror") or herdr's real-attach `HerdrMirror`
+    /// (fm/cockpit-mirror-herdr-real-attach, tab named "Herdr" - see
+    /// `TabLaunch.defaultName`). On failure the error is written into the
+    /// terminal so it is visible rather than silent.
+    ///
+    /// `kind` and `target` are always the pair frozen into `tab.launch` by
+    /// `FirstmateBackend.resolveMirrorTarget()` at tab-creation time - this
+    /// method deliberately does NOT call `FirstmateBackend.resolve()` again
+    /// itself (`fm/grandline-mirror-resolve-race-fix`; see that function's
+    /// doc comment for the two-independent-calls race this replaces).
+    private func connectMirror(_ tab: TabModel, kind: FirstmateBackendKind, target: String) {
+        switch kind {
         case .tmux:
             switch TmuxMirror.setUp(target: target) {
             case .success(let m):
@@ -1269,7 +1279,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     @objc func reconnectActive() {
         guard let tab = currentTab else { return }
         switch tab.launch {
-        case .mirror(let target):
+        case .mirror(let kind, let target):
             tab.mirror?.tearDown()
             tab.mirror = nil
             // Finding 9 (cockpit-audit-core): `tearDown()` kills the tmux/
@@ -1281,8 +1291,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             // old process to actually finish (bounded, so a truly stuck
             // process still surfaces a message instead of hanging forever)
             // before starting the new one.
+            //
+            // `kind`/`target` are the pair already frozen into `tab.launch`
+            // at tab-creation time - reused verbatim, not re-resolved, so a
+            // manual reconnect can never introduce a fresh kind/target
+            // disagreement either (`fm/grandline-mirror-resolve-race-fix`).
             waitForProcessExit(tab, thenRun: { [weak self] in
-                self?.connectMirror(tab, target: target)
+                self?.connectMirror(tab, kind: kind, target: target)
             })
         case .shell(let exe, let args, let cwd):
             tab.terminal.startProcess(
@@ -1485,5 +1500,32 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Drives the exact manual ⌘R path.
     func debugSimulateManualReconnectRestart() {
         reconnectActive()
+    }
+
+    // MARK: Test support (`fm/grandline-mirror-resolve-race-fix`)
+
+    /// Every open tab's id, in tab-bar order - so a test can find and select
+    /// a specific tab (e.g. `openFirstmateHost`'s Mirror/Herdr tab, created
+    /// first but not selected) without `tabs` itself needing to be internal.
+    func debugAllTabIDs() -> [UUID] { tabs.map { $0.id } }
+
+    /// Selects a tab by id, exactly like clicking its chip.
+    func debugSelectTab(_ id: UUID) { select(tabID: id, focus: false) }
+
+    /// The kind+target frozen into the current tab's `TabLaunch.mirror` (if
+    /// it is one) - lets a test confirm they were resolved atomically and
+    /// never re-derived independently, without duplicating `ConsoleController`'s
+    /// own switch-over-`tab.launch` logic.
+    func debugMirrorLaunch() -> (kind: FirstmateBackendKind, target: String)? {
+        guard case .mirror(let kind, let target) = currentTab?.launch else { return nil }
+        return (kind, target)
+    }
+
+    /// The current tab's raw terminal output so far, so a test can check for
+    /// (or the absence of) the `[mirror]`/`[herdr]` failure text
+    /// `connectMirror` feeds in on a setup error.
+    func debugCurrentTerminalOutput() -> String? {
+        guard let terminal = currentTab?.terminal.terminal else { return nil }
+        return String(data: terminal.getBufferAsData(), encoding: .utf8)
     }
 }

@@ -725,6 +725,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_APP_LOCK_TESTS"] == "1" {
     exit(AppLockControllerSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-mirror-resolve-race-fix`: same convention, for the Mirror
+// tab's backend-kind/target atomicity - see MirrorResolveRaceSelfTest.swift's
+// header.
+if ProcessInfo.processInfo.environment["FM_RUN_MIRROR_RESOLVE_RACE_TESTS"] == "1" {
+    exit(MirrorResolveRaceSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
