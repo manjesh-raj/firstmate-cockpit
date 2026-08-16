@@ -51,29 +51,68 @@ let package = Package(
         // Backs Dictation's optional local Whisper engine
         // (fm/grandline-dictation-whisper-engine); see
         // Vendor/whisper.cpp/README.md for what was trimmed from upstream and
-        // why (CPU-only with the baseline ARM NEON kernels, no Metal/
-        // Accelerate/CUDA/AMX/llamafile/dynamic-backend-loading/etc).
+        // why (baseline ARM NEON CPU kernels, no CUDA/AMX/llamafile/dynamic-
+        // backend-loading/etc). Metal acceleration (fm/grandline-dictation-
+        // whisper-metal-accel) is enabled - GGML_USE_METAL plus the vendored
+        // ggml-metal/*.{cpp,m} sources under ggml-src/ggml-metal/, auto-
+        // discovered by SwiftPM's normal recursive source globbing (no
+        // explicit `sources:` list needed). See that README section for how
+        // the Metal shader source itself is made available at runtime with
+        // no CMake/Xcode build step and no reliance on SwiftPM resource
+        // bundles.
         .target(
             name: "CWhisper",
             path: "Vendor/whisper.cpp/Sources/CWhisper",
             publicHeadersPath: "include",
             cSettings: [
                 .define("GGML_USE_CPU"),
+                .define("GGML_USE_METAL"),
                 .define("GGML_VERSION", to: "\"0.18.1-grandline\""),
                 .define("GGML_COMMIT", to: "\"306c88f4d1286aec1bf96e544632897886af5501\""),
                 .define("WHISPER_VERSION", to: "\"1.9.2\""),
+                // ggml-metal-{device,context}.m are upstream Objective-C
+                // sources written for manual reference counting (explicit
+                // `release` calls, raw `void *` <-> `id<MTLDevice>` casts
+                // with no __bridge) - SwiftPM's default clang invocation
+                // enables ARC for Objective-C sources, which upstream's own
+                // CMake build does not, so ARC has to be turned back off
+                // here to match what these files actually expect. Harmless
+                // no-op for every plain .c/.cpp file in this target.
+                .unsafeFlags(["-fno-objc-arc"]),
+                // SwiftPM defines SWIFT_PACKAGE for every target, which
+                // steers ggml-metal-device.m into a branch expecting
+                // SWIFTPM_MODULE_BUNDLE - a macro SwiftPM only generates for
+                // targets that declare `resources:`, which this target
+                // deliberately does not (see Vendor/whisper.cpp/README.md's
+                // "Metal acceleration" section for why the shader source is
+                // embedded in Swift instead of shipped as an SPM resource).
+                // Defining it as the same class-based bundle lookup
+                // upstream's own non-SWIFT_PACKAGE branch uses keeps that
+                // code path compiling and behaving the same either way - it
+                // is only ever a first, expected-to-miss probe before
+                // WhisperMetalRuntime's GGML_METAL_PATH_RESOURCES env var is
+                // checked.
+                .define("SWIFTPM_MODULE_BUNDLE", to: "[NSBundle bundleForClass:[GGMLMetalClass class]]"),
                 .headerSearchPath("ggml-src"),
                 .headerSearchPath("ggml-src/ggml-cpu"),
+                .headerSearchPath("ggml-src/ggml-metal"),
                 .headerSearchPath("whisper-src"),
             ],
             cxxSettings: [
                 .define("GGML_USE_CPU"),
+                .define("GGML_USE_METAL"),
                 .define("GGML_VERSION", to: "\"0.18.1-grandline\""),
                 .define("GGML_COMMIT", to: "\"306c88f4d1286aec1bf96e544632897886af5501\""),
                 .define("WHISPER_VERSION", to: "\"1.9.2\""),
                 .headerSearchPath("ggml-src"),
                 .headerSearchPath("ggml-src/ggml-cpu"),
+                .headerSearchPath("ggml-src/ggml-metal"),
                 .headerSearchPath("whisper-src"),
+            ],
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
             ]
         ),
         .executableTarget(

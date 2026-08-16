@@ -33,13 +33,25 @@ final class WhisperCppEngine {
     /// must never mean dictation stops working entirely (task requirement).
     init?(modelPath: String) {
         guard FileManager.default.fileExists(atPath: modelPath) else { return nil }
+        // Makes the embedded Metal shader source findable via
+        // GGML_METAL_PATH_RESOURCES before whisper.cpp's Metal backend ever
+        // tries to load it - see WhisperMetalRuntime.swift's header for the
+        // full mechanism. Idempotent, cheap to call every time.
+        WhisperMetalRuntime.prepareIfNeeded()
         var cparams = whisper_context_default_params()
-        // No Metal/CUDA/etc backend is compiled into the vendored CWhisper
-        // target (CPU-only, see Vendor/whisper.cpp/README.md) - `use_gpu`
-        // would be a no-op either way, but setting it `false` explicitly
-        // documents that this is a deliberate CPU-only build, not a GPU path
-        // that silently isn't wired up.
-        cparams.use_gpu = false
+        // The vendored CWhisper target now compiles in the Metal backend
+        // (fm/grandline-dictation-whisper-metal-accel, see
+        // Vendor/whisper.cpp/README.md's "Metal acceleration" section).
+        // `use_gpu` is only ever set `true` once `metalCanCompileShader()`
+        // has already confirmed Metal actually works on this machine -
+        // never unconditionally. See WhisperMetalRuntime.swift's header
+        // comment for why: a real crash was found one layer inside
+        // whisper.cpp itself when `use_gpu = true` but the Metal library
+        // fails to load (a partially-initialized GPU backend still gets
+        // tensors scheduled onto it), so the safe fallback has to happen
+        // here, before whisper_init is ever called with use_gpu = true, not
+        // by relying on whisper.cpp to degrade gracefully on its own.
+        cparams.use_gpu = WhisperMetalRuntime.metalCanCompileShader()
         guard let ctx = whisper_init_from_file_with_params(modelPath, cparams) else {
             return nil
         }
