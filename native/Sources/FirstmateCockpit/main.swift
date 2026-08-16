@@ -48,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (vocabulary bias, history recording) - same "one store, every reader/
     // writer shares it" convention as `shiftStore`.
     let dictationStore = DictationStore()
+    // fm/grandline-dictation-visual-feedback-hud: the floating on-screen HUD
+    // - see DictationHUD.swift's header. Owned here (not by `AppShellController`)
+    // since it must appear regardless of whether Grand Line's own window is
+    // visible/frontmost.
+    let dictationHUD = DictationHUDController()
     lazy var dictationHotkey = DictationHotkey(
         shortcut: AppSettings.shared.dictationShortcut,
         onDown: { [weak self] in self?.dictationEngine.startRecording() },
@@ -184,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // grant exists yet.
         dictationEngine.onStatusChanged = { [weak self] status in
             self?.appShell.setDictationEngineStatus(status)
+            self?.dictationHUD.handle(status)
         }
         // Phase 2: bias recognition toward the captain's personal vocabulary,
         // and record every successful (real, pasted) transcript into
