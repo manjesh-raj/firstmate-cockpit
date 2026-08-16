@@ -16,8 +16,9 @@ import AppKit
 /// Which live mirror a `.mirror` tab is holding - `TmuxMirror` for a
 /// tmux-resolved fleet, `HerdrMirror` for a herdr-resolved one
 /// (cockpit-mirror-herdr-aware). `ConsoleController.connectMirror` picks the
-/// case by calling `FirstmateBackend.resolve()` once, at connect/reconnect
-/// time; nothing else in the console needs to know which backend is active,
+/// case from the `kind` already frozen into the tab's `TabLaunch.mirror`
+/// (see that case's doc comment for why it is never re-resolved here);
+/// nothing else in the console needs to know which backend is active,
 /// since both cases expose `tearDown()`.
 enum MirrorSession {
     case tmux(TmuxMirror)
@@ -37,15 +38,24 @@ enum TabLaunch {
     /// A login shell (`$SHELL -l`), the Phase 1 terminal.
     case shell(executable: String, args: [String], cwd: String)
     /// A live attach to the first mate's own session, on whichever backend
-    /// firstmate itself resolves to (`FirstmateBackend.resolve()`) - a
-    /// read-only tmux mirror (`TmuxMirror`, still named "Mirror" in the tab
-    /// bar) or, since fm/cockpit-mirror-herdr-real-attach, a real interactive
-    /// `herdr session attach` client (`HerdrMirror`, named "Herdr" in the tab
-    /// bar - it isn't a mirror of anything, it's the genuine herdr TUI), see
+    /// firstmate itself resolves to - a read-only tmux mirror (`TmuxMirror`,
+    /// still named "Mirror" in the tab bar) or, since
+    /// fm/cockpit-mirror-herdr-real-attach, a real interactive `herdr
+    /// session attach` client (`HerdrMirror`, named "Herdr" in the tab bar -
+    /// it isn't a mirror of anything, it's the genuine herdr TUI), see
     /// `TabModel.mirror`/`TabLaunch.defaultName`. Each sets up its own
     /// backend-appropriate session/process on launch, so duplicating this
     /// tab is safe either way.
-    case mirror(target: String)
+    ///
+    /// `kind` and `target` are always resolved together, by one call to
+    /// `FirstmateBackend.resolveMirrorTarget()`, and then frozen here for
+    /// this launch spec's whole lifetime (`fm/grandline-mirror-resolve-race-
+    /// fix` - see that function's doc comment for the race this fixes).
+    /// Every restart of this tab (first start, `⌘R`, auto-reconnect) reuses
+    /// this same stored pair rather than re-resolving - so the backend-kind
+    /// decision and the target name it uses can never disagree with each
+    /// other, by construction.
+    case mirror(kind: FirstmateBackendKind, target: String)
     /// An SSH session to a saved (or ad-hoc) host - Phase 1 of the connection
     /// manager. `ssh` is just another interactive PTY child (design report C1),
     /// so this reuses the same `startProcess` path as `shell`. `hostArgs` is
@@ -61,18 +71,18 @@ enum TabLaunch {
     case ssh(label: String, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID?)
 
     /// The default display name for a freshly created tab of this kind. For
-    /// `.mirror`, this depends on which backend is actually live right now
-    /// (`FirstmateBackend.resolve()`): a tmux fleet still gets "Mirror" -
+    /// `.mirror`, this reads the `kind` already frozen into this launch spec
+    /// (see `TabLaunch.mirror`'s doc comment) rather than calling
+    /// `FirstmateBackend.resolve()` again: a tmux fleet still gets "Mirror" -
     /// untouched by fm/cockpit-mirror-herdr-real-attach, since that's still
     /// genuinely a read-only mirror of the captain's tmux session - but a
     /// herdr fleet's tab is a real `herdr session attach` client, not a
     /// mirror of anything, so it's named "Herdr" instead (per the captain's
-    /// explicit call in that task). Resolved fresh each time rather than
-    /// cached, matching `connectMirror`'s own fresh `resolve()` call.
+    /// explicit call in that task).
     var defaultName: String {
         switch self {
         case .shell: return "Shell"
-        case .mirror: return FirstmateBackend.resolve() == .herdr ? "Herdr" : "Mirror"
+        case .mirror(let kind, _): return kind == .herdr ? "Herdr" : "Mirror"
         case .ssh(let label, _, _, _, _): return label
         }
     }

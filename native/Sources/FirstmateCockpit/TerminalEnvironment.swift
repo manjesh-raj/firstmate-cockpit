@@ -111,16 +111,14 @@ func childEnvironmentDict() -> [String: String] {
 /// `<session>:<window>` (see `TmuxMirror.splitTarget`) - unchanged. There is
 /// no equivalent pin syntax for herdr anymore, since attaching the whole
 /// session already shows everything.
+///
+/// `fm/grandline-mirror-resolve-race-fix`: this only returns the target
+/// half of the answer. A caller that also needs to know which backend is
+/// live (to decide `TmuxMirror` vs. `HerdrMirror`) must NOT pair this with
+/// a separate `FirstmateBackend.resolve()` call - that reintroduces the
+/// exact two-independent-calls race `FirstmateBackend.resolveMirrorTarget()`'s
+/// doc comment describes. Call that function directly instead, and use its
+/// `.target` in place of this one.
 func mirrorTarget() -> String {
-    let env = ProcessInfo.processInfo.environment
-    if let t = env["FM_MIRROR_TARGET"], !t.trimmingCharacters(in: .whitespaces).isEmpty {
-        return t.trimmingCharacters(in: .whitespaces)
-    }
-    if let saved = AppSettings.shared.mirrorTarget, !saved.trimmingCharacters(in: .whitespaces).isEmpty {
-        return saved.trimmingCharacters(in: .whitespaces)
-    }
-    if FirstmateBackend.resolve() == .herdr {
-        return FirstmateBackend.herdrSessionName()
-    }
-    return "firstmate"
+    FirstmateBackend.resolveMirrorTarget().target
 }

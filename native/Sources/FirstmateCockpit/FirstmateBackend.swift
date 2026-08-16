@@ -69,6 +69,58 @@ enum FirstmateBackend {
         return hasLiveHerdrSession() ? .herdr : .tmux
     }
 
+    /// Atomically resolves both which backend a Mirror tab should use AND
+    /// the target name it should attach to, from a single live-evidence
+    /// check - the two must never be decided by separate calls to
+    /// `resolve()`/`hasLiveHerdrSession()`.
+    ///
+    /// `fm/grandline-mirror-resolve-race-fix`: right after a machine
+    /// restart, herdr's own background server can take a few seconds to
+    /// come up. The previous code called `resolve()` twice for one Mirror
+    /// tab - once at tab-creation time (`mirrorTarget()`, to pick the
+    /// launch spec's target string) and again, moments later, at actual
+    /// connect time (`ConsoleController.connectMirror`, to pick
+    /// `TmuxMirror` vs. `HerdrMirror`). If herdr flipped from down to up in
+    /// that window, the first call fell back to `.tmux` (baking in the
+    /// tmux-era literal target `"firstmate"`) while the second call
+    /// resolved `.herdr` - so the tab ran the herdr connection path against
+    /// a stale, wrong target name, producing exactly the captain-reported
+    /// `[herdr] Cannot mirror 'firstmate': no running herdr session named
+    /// 'firstmate'` error even though herdr's real session (`default`) was
+    /// genuinely live. Every caller that needs both pieces together
+    /// (`TabLaunch.defaultName`, `ConsoleController.openFirstmateHost`) must
+    /// get them from this one function - never pair a separate `resolve()`
+    /// call with a separately-derived target. `TabModel.launch` then keeps
+    /// this result frozen for the tab's whole lifetime (per `TabLaunch`'s
+    /// own "reusable recipe" contract - see its header comment): `⌘R`/
+    /// auto-reconnect replay the same resolved kind+target rather than
+    /// resolving again, so a reconnect can never introduce a fresh
+    /// disagreement either. This preserves the existing override contract
+    /// unchanged (`FM_MIRROR_TARGET`/Settings' "Mirror target" still wins,
+    /// verbatim, regardless of which backend is live).
+    static func resolveMirrorTarget() -> (kind: FirstmateBackendKind, target: String) {
+        let kind = resolve()
+        if let override = explicitMirrorTargetOverride() {
+            return (kind, override)
+        }
+        return (kind, kind == .herdr ? herdrSessionName() : "firstmate")
+    }
+
+    /// `FM_MIRROR_TARGET`, then Settings > General's "Mirror target" - see
+    /// `TerminalEnvironment.swift`'s `mirrorTarget()` header for the full
+    /// override contract. Factored out so `resolveMirrorTarget()` can apply
+    /// it without a second, independent resolve.
+    private static func explicitMirrorTargetOverride() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        if let t = env["FM_MIRROR_TARGET"], !t.trimmingCharacters(in: .whitespaces).isEmpty {
+            return t.trimmingCharacters(in: .whitespaces)
+        }
+        if let saved = AppSettings.shared.mirrorTarget, !saved.trimmingCharacters(in: .whitespaces).isEmpty {
+            return saved.trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
     /// The explicit `FM_BACKEND`/`config/backend` override, if any, resolved
     /// by sourcing `bin/fm-backend.sh` and calling its own `fm_backend_name` -
     /// but with `fm_backend_detect` stubbed out first so a missing override
