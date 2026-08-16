@@ -1,14 +1,17 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The "Dictation" rail destination (fm/grandline-dictation-mvp, phase 1): a
-// deliberately minimal page for this phase - real permission status, the
-// fixed phase-1 shortcut, and nothing else. No history list, no personal-
-// vocabulary editor, no shortcut recorder, no "polish"/cleanup toggle - all
-// explicitly phase 2/3, out of scope here (see `CLAUDE.md`'s "Dictation"
-// section). Follows the same "hide, don't rebuild" body-child convention
-// every other destination uses (`AppShellController`), and the same
-// Settings-styled card layout `VaultController`/`ShiftPanelView` already
-// established rather than inventing new visual language.
+// The "Dictation" rail destination. Phase 1 (fm/grandline-dictation-mvp)
+// shipped a deliberately minimal page - real permission status and the fixed
+// Right ⌥ Option shortcut, nothing else. Phase 2
+// (fm/grandline-dictation-phase2) adds the three things phase 1 explicitly
+// deferred: a transcription history list, a personal vocabulary editor, and
+// a real shortcut recorder replacing the fixed combo - see `CLAUDE.md`'s
+// "Dictation" section for the full phase split. The "clean up my sentences"
+// polish pass is still out of scope (a separate, later phase 3 task).
+// Follows the same "hide, don't rebuild" body-child convention every other
+// destination uses (`AppShellController`), and the same Settings-styled card
+// layout `VaultController`/`ShiftPanelView` already established rather than
+// inventing new visual language.
 //
 // Status is read fresh from `DictationPermissions` on every `viewWillAppear`
 // (matching `VaultController`/`ReviewController`'s own "refresh on appear,
@@ -16,10 +19,15 @@
 // live whenever the shared `DictationEngine` reports a state change while
 // this page happens to be visible, so a captain watching this page while
 // dictating sees "Recording…"/"Transcribing…" for real, not a static label.
+// History/vocabulary are similarly re-read from `DictationStore` on every
+// appear and on every `DictationStore.observe` notification (a dictation
+// completed while this page happens to be open updates the list live).
 
 import AppKit
 
-final class DictationController: NSViewController {
+final class DictationController: NSViewController, NSTextFieldDelegate {
+
+    private let store: DictationStore
 
     private let scroll = NSScrollView()
     private let contentStack = NSStackView()
@@ -34,14 +42,41 @@ final class DictationController: NSViewController {
     private let statusActionButton = NSButton()
 
     private let shortcutPanel = ShiftPanelView()
-    private let shortcutKeyLabel = NSTextField(labelWithString: "Right ⌥ Option")
+    private let shortcutRecorder: DictationShortcutRecorderView
+    private let shortcutResetButton = NSButton()
     private let shortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
+
+    private let vocabularyPanel = ShiftPanelView()
+    private let vocabularyCountLabel = NSTextField(labelWithString: "")
+    private let vocabularyChipFlow = ChipFlowView()
+    private let vocabularyInputField = NSTextField()
+    private let vocabularyAddButton = NSButton()
+
+    private let historyPanel = ShiftPanelView()
+    private let historyCountLabel = NSTextField(labelWithString: "")
+    private let historyListView = DictationHistoryListView()
+    private let historyListScroll = NSScrollView()
 
     private let footnoteLabel = NSTextField(wrappingLabelWithString: "")
 
     private var status: DictationStatus = DictationPermissions.currentStatus()
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var hasLoadedOnce = false
+
+    /// Forwarded to `AppShellController` -> the app delegate, which is what
+    /// actually owns the live `DictationHotkey` instance - this controller
+    /// only edits the persisted preference and reports the change, matching
+    /// how `SettingsController.onFontSizeStep` forwards rather than owning
+    /// the live console it affects.
+    var onShortcutChanged: ((DictationShortcut) -> Void)?
+
+    init(store: DictationStore) {
+        self.store = store
+        self.shortcutRecorder = DictationShortcutRecorderView(shortcut: AppSettings.shared.dictationShortcut)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 560))
@@ -57,6 +92,8 @@ final class DictationController: NSViewController {
         let header = buildHeader()
         _ = buildStatusSection()
         _ = buildShortcutSection()
+        _ = buildVocabularySection()
+        _ = buildHistorySection()
         buildFootnote()
 
         contentStack.orientation = .vertical
@@ -66,6 +103,8 @@ final class DictationController: NSViewController {
         contentStack.addArrangedSubview(header)
         contentStack.addArrangedSubview(statusPanel)
         contentStack.addArrangedSubview(shortcutPanel)
+        contentStack.addArrangedSubview(vocabularyPanel)
+        contentStack.addArrangedSubview(historyPanel)
         contentStack.addArrangedSubview(footnoteLabel)
 
         content.addSubview(contentStack)
@@ -76,6 +115,8 @@ final class DictationController: NSViewController {
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             statusPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             shortcutPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            vocabularyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            historyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             footnoteLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
 
@@ -97,6 +138,16 @@ final class DictationController: NSViewController {
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             self?.applyTheme()
         }
+
+        // A dictation completed (or a vocabulary edit made) while this page
+        // happens to be visible should show up immediately, not only on the
+        // next `viewWillAppear` - matches `HostStore.observe`'s "list of
+        // closures" convention for the same reason.
+        store.observe { [weak self] in
+            guard let self, self.isViewLoaded else { return }
+            self.renderHistory()
+            self.renderVocabulary()
+        }
     }
 
     override func viewWillAppear() {
@@ -106,6 +157,8 @@ final class DictationController: NSViewController {
         scroll.contentView.scroll(to: .zero)
         scroll.reflectScrolledClipView(scroll.contentView)
         refresh()
+        renderHistory()
+        renderVocabulary()
     }
 
     /// Re-reads real permission state and re-renders. Called on every page
@@ -206,28 +259,112 @@ final class DictationController: NSViewController {
         let keyTile = IconTileView(size: 40, cornerRadius: 10)
         keyTile.configure(symbol: "waveform", tint: .accent)
 
-        shortcutKeyLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        shortcutKeyLabel.translatesAutoresizingMaskIntoConstraints = false
+        shortcutRecorder.onChange = { [weak self] newShortcut in
+            self?.shortcutChanged(newShortcut)
+        }
+
+        shortcutResetButton.title = "Reset to Right ⌥ Option"
+        shortcutResetButton.bezelStyle = .rounded
+        shortcutResetButton.controlSize = .small
+        shortcutResetButton.target = self
+        shortcutResetButton.action = #selector(resetShortcutTapped)
+        shortcutResetButton.translatesAutoresizingMaskIntoConstraints = false
 
         shortcutDetailLabel.font = .systemFont(ofSize: 11.5)
-        shortcutDetailLabel.stringValue = "Hold to start recording anywhere on the Mac. Release to stop and paste the transcribed text at your cursor. This shortcut isn't configurable yet - a shortcut recorder is planned for a later phase."
-        shortcutDetailLabel.preferredMaxLayoutWidth = 520
+        shortcutDetailLabel.stringValue = "Click the field, then press the key or combo you want to hold. Release to stop recording and paste the transcribed text at your cursor."
+        shortcutDetailLabel.preferredMaxLayoutWidth = 460
         shortcutDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [shortcutKeyLabel, shortcutDetailLabel])
+        let recorderRow = NSStackView(views: [shortcutRecorder, shortcutResetButton])
+        recorderRow.orientation = .horizontal
+        recorderRow.alignment = .centerY
+        recorderRow.spacing = 8
+        recorderRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [recorderRow, shortcutDetailLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 3
+        textStack.spacing = 6
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let row = NSStackView(views: [keyTile, textStack])
         row.orientation = .horizontal
-        row.alignment = .centerY
+        row.alignment = .top
         row.spacing = 14
         row.translatesAutoresizingMaskIntoConstraints = false
 
         shortcutPanel.setBody(paddedBody(row))
         return shortcutPanel
+    }
+
+    private func buildVocabularySection() -> NSView {
+        let sectionLabel = NSTextField(labelWithString: "Words I use often")
+        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        vocabularyCountLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .medium)
+        let headerRow = NSStackView(views: [sectionLabel, vocabularyCountLabel])
+        headerRow.orientation = .horizontal
+        headerRow.spacing = 6
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        vocabularyPanel.setHeader(headerRow)
+
+        let explainerLabel = NSTextField(wrappingLabelWithString: "Bias speech recognition toward names, acronyms, or phrases you say often - added here, they're passed to the recognizer on your next recording.")
+        explainerLabel.font = .systemFont(ofSize: 11)
+        explainerLabel.preferredMaxLayoutWidth = 520
+        explainerLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        vocabularyChipFlow.translatesAutoresizingMaskIntoConstraints = false
+
+        vocabularyInputField.placeholderString = "Add a word or phrase…"
+        vocabularyInputField.delegate = self
+        vocabularyInputField.translatesAutoresizingMaskIntoConstraints = false
+
+        vocabularyAddButton.title = "Add"
+        vocabularyAddButton.bezelStyle = .rounded
+        vocabularyAddButton.controlSize = .small
+        vocabularyAddButton.target = self
+        vocabularyAddButton.action = #selector(addVocabularyWordTapped)
+        vocabularyAddButton.setContentHuggingPriority(.required, for: .horizontal)
+        vocabularyAddButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let addRow = NSStackView(views: [vocabularyInputField, vocabularyAddButton])
+        addRow.orientation = .horizontal
+        addRow.spacing = 8
+        addRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let column = NSStackView(views: [explainerLabel, vocabularyChipFlow, addRow])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 10
+        column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            vocabularyChipFlow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            addRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+        ])
+
+        vocabularyPanel.setBody(paddedBody(column))
+        return vocabularyPanel
+    }
+
+    private func buildHistorySection() -> NSView {
+        let sectionLabel = NSTextField(labelWithString: "Recent Dictations")
+        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        historyCountLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .medium)
+        let headerRow = NSStackView(views: [sectionLabel, historyCountLabel])
+        headerRow.orientation = .horizontal
+        headerRow.spacing = 6
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        historyPanel.setHeader(headerRow)
+
+        historyListScroll.documentView = historyListView.tableView
+        historyListScroll.hasVerticalScroller = true
+        historyListScroll.hasHorizontalScroller = false
+        historyListScroll.borderType = .noBorder
+        historyListScroll.drawsBackground = false
+        historyListScroll.translatesAutoresizingMaskIntoConstraints = false
+        historyListScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
+
+        historyPanel.setBody(historyListScroll)
+        return historyPanel
     }
 
     /// `ShiftPanelView.setBody` (unlike `setHeader`) has no `insets` param -
@@ -248,7 +385,7 @@ final class DictationController: NSViewController {
     }
 
     private func buildFootnote() {
-        footnoteLabel.stringValue = "More settings - personal vocabulary, a configurable shortcut, and a sentence-cleanup pass - are coming soon."
+        footnoteLabel.stringValue = "A sentence-cleanup pass is coming in a later phase."
         footnoteLabel.font = .systemFont(ofSize: 11)
         footnoteLabel.preferredMaxLayoutWidth = 620
         footnoteLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -259,7 +396,7 @@ final class DictationController: NSViewController {
     private func render() {
         statusIconTile.configure(symbol: status.symbol, tint: status.tint)
         statusTitleLabel.stringValue = status.title
-        statusDetailLabel.stringValue = status.detail
+        statusDetailLabel.stringValue = status.detail(shortcutDisplay: shortcutRecorder.shortcut.displayString)
 
         switch status {
         case .needsMicrophone:
@@ -280,20 +417,79 @@ final class DictationController: NSViewController {
     private func applyTheme() {
         statusPanel.applyTheme(theme)
         shortcutPanel.applyTheme(theme)
+        vocabularyPanel.applyTheme(theme)
+        historyPanel.applyTheme(theme)
         statusIconTile.applyTheme(theme)
         statusTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         statusDetailLabel.textColor = HelmTheme.mutedInk(theme)
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
         refreshButton.contentTintColor = HelmTheme.mutedInk(theme)
-        shortcutKeyLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        shortcutRecorder.applyTheme(theme)
         shortcutDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        vocabularyCountLabel.textColor = HelmTheme.mutedInk(theme)
+        historyCountLabel.textColor = HelmTheme.mutedInk(theme)
+        historyListView.applyTheme(theme)
         footnoteLabel.textColor = HelmTheme.mutedInk(theme)
+    }
+
+    /// Re-reads `store.vocabulary` and rebuilds every chip - called on every
+    /// appear and on every `DictationStore.observe` notification, matching
+    /// the file header's "no stale list" guarantee.
+    private func renderVocabulary() {
+        let words = store.vocabulary
+        vocabularyCountLabel.stringValue = "\(words.count)"
+        let chips = words.map { word -> NSView in
+            let chip = VocabularyChipView(word: word)
+            chip.applyTheme(theme)
+            chip.onRemove = { [weak self] in
+                self?.store.removeVocabularyWord(word)
+            }
+            return chip
+        }
+        vocabularyChipFlow.setChips(chips)
+    }
+
+    /// Re-reads `store.history` (already newest-first from `DictationStore`)
+    /// and reloads the table - see `renderVocabulary` for when this runs.
+    private func renderHistory() {
+        historyCountLabel.stringValue = "\(store.history.count)"
+        historyListView.setEntries(store.history)
     }
 
     // MARK: Actions
 
     @objc private func refreshTapped() {
         refresh()
+    }
+
+    private func shortcutChanged(_ newShortcut: DictationShortcut) {
+        AppSettings.shared.dictationShortcut = newShortcut
+        onShortcutChanged?(newShortcut)
+        render()
+    }
+
+    @objc private func resetShortcutTapped() {
+        shortcutRecorder.shortcut = .defaultShortcut
+        shortcutChanged(.defaultShortcut)
+    }
+
+    @objc private func addVocabularyWordTapped() {
+        addVocabularyWordFromField()
+    }
+
+    private func addVocabularyWordFromField() {
+        let text = vocabularyInputField.stringValue
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        store.addVocabularyWord(text)
+        vocabularyInputField.stringValue = ""
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === vocabularyInputField, commandSelector == #selector(NSResponder.insertNewline(_:)) else {
+            return false
+        }
+        addVocabularyWordFromField()
+        return true
     }
 
     /// Requests each permission directly via `DictationPermissions`' static

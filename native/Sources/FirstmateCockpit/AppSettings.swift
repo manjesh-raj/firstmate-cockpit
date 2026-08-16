@@ -23,6 +23,7 @@ final class AppSettings {
         static let autoReconnect = "fm.autoReconnect"
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
         static let fmHome = "fm.fmHome"
+        static let dictationShortcut = "fm.dictationShortcut"
     }
 
     private init() {}
@@ -86,5 +87,27 @@ final class AppSettings {
     var fmHome: String? {
         get { defaults.string(forKey: Keys.fmHome) }
         set { defaults.set(newValue, forKey: Keys.fmHome) }
+    }
+
+    /// Dictation's configurable shortcut (phase 2, fm/grandline-dictation-
+    /// phase2) - replaces the phase-1 fixed Right ⌥ Option combo. Stored as
+    /// JSON `Data` (via `Codable`) rather than a fourth/fifth/sixth flat key,
+    /// since `DictationShortcut` is a small, cohesive value that's always
+    /// read/written as one unit - there's no scenario where only its keyCode
+    /// or only its modifier flags would be read independently. Falls back to
+    /// `.defaultShortcut` (Right ⌥ Option) whenever nothing's been saved yet
+    /// or the stored value fails to decode.
+    var dictationShortcut: DictationShortcut {
+        get {
+            guard let data = defaults.data(forKey: Keys.dictationShortcut),
+                  let decoded = try? JSONDecoder().decode(DictationShortcut.self, from: data) else {
+                return .defaultShortcut
+            }
+            return decoded
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            defaults.set(data, forKey: Keys.dictationShortcut)
+        }
     }
 }

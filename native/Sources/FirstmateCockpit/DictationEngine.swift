@@ -72,15 +72,19 @@ enum DictationStatus: Equatable {
         }
     }
 
-    var detail: String {
+    /// `shortcutDisplay` is the captain's *current* shortcut's display string
+    /// (phase 2, fm/grandline-dictation-phase2 - the combo is no longer
+    /// fixed at "Right ⌥ Option", so this text can no longer be a static
+    /// per-case literal).
+    func detail(shortcutDisplay: String) -> String {
         switch self {
-        case .ready: return "Hold Right ⌥ Option anywhere to dictate."
+        case .ready: return "Hold \(shortcutDisplay) anywhere to dictate."
         case .needsMicrophone: return "Grand Line needs permission to use your microphone before it can dictate."
         case .needsSpeechRecognition: return "Grand Line needs permission to use on-device Speech Recognition before it can dictate."
-        case .needsAccessibility: return "Grand Line needs Accessibility access so the Right ⌥ Option shortcut works from any app, and so it can paste the result at your cursor."
-        case .recording: return "Listening - release Right ⌥ Option to transcribe."
+        case .needsAccessibility: return "Grand Line needs Accessibility access so the \(shortcutDisplay) shortcut works from any app, and so it can paste the result at your cursor."
+        case .recording: return "Listening - release \(shortcutDisplay) to transcribe."
         case .transcribing: return "Turning your speech into text…"
-        case .didNotCatchThat: return "No speech was recognized that time - hold Right ⌥ Option and try again."
+        case .didNotCatchThat: return "No speech was recognized that time - hold \(shortcutDisplay) and try again."
         }
     }
 
@@ -217,10 +221,25 @@ final class DictationEngine {
     /// subscribes while visible so the page never shows a stale status.
     var onStatusChanged: ((DictationStatus) -> Void)?
 
-    /// Fired with the final recognized text right before it's pasted -
-    /// mostly useful for tests/manual verification; the paste itself doesn't
-    /// depend on anyone observing this.
-    var onTranscript: ((String) -> Void)?
+    /// Fired with the final recognized text and real recording duration right
+    /// after a successful paste (phase 2, fm/grandline-dictation-phase2) -
+    /// this is exactly the "real, pasted text" moment the task brief's
+    /// history acceptance criteria describes, so `AppDelegate` wires this
+    /// straight into `DictationStore.recordHistory`. Never fired for an
+    /// empty/"didn't catch that" result.
+    var onTranscript: ((String, TimeInterval) -> Void)?
+
+    /// Supplies the captain's personal vocabulary (phase 2) at the moment a
+    /// new recording begins - read fresh every time rather than cached, so
+    /// an edit made on the Dictation page takes effect on the very next
+    /// recording with no restart needed. `nil`/empty is a normal, harmless
+    /// state (no bias applied).
+    var vocabularyProvider: (() -> [String])?
+
+    /// Wall-clock time the current capture actually started (audio engine
+    /// running) - `finish(text:)` uses this to compute the real duration
+    /// recorded into history. `nil` outside of an active capture.
+    private var recordingStartedAt: Date?
 
     init(locale: Locale = Locale(identifier: "en-US")) {
         recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer()
@@ -276,6 +295,14 @@ final class DictationEngine {
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
+        // Phase 2: bias recognition toward the captain's own personal
+        // vocabulary - a real, documented API for exactly this purpose
+        // (`SFSpeechRecognitionRequest.contextualStrings`), not a cosmetic
+        // list. Read fresh on every recording, never cached.
+        let vocabulary = vocabularyProvider?() ?? []
+        if !vocabulary.isEmpty {
+            request.contextualStrings = vocabulary
+        }
         recognitionRequest = request
         isFinishing = false
         bestTranscriptSeen = ""
@@ -300,6 +327,7 @@ final class DictationEngine {
         }
 
         isRecording = true
+        recordingStartedAt = Date()
         onStatusChanged?(.recording)
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -355,10 +383,12 @@ final class DictationEngine {
 
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let finalText = !trimmed.isEmpty ? text! : (bestTranscriptSeen.isEmpty ? nil : bestTranscriptSeen)
+        let duration = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        recordingStartedAt = nil
 
         if let finalText {
             Self.pasteAtCursor(finalText)
-            onTranscript?(finalText)
+            onTranscript?(finalText, duration)
             onStatusChanged?(DictationPermissions.currentStatus())
         } else {
             onStatusChanged?(.didNotCatchThat)
