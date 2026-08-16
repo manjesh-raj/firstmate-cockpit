@@ -202,18 +202,66 @@ enum VaultSource {
     /// capitalization isn't a documented contract.
     private static let serviceNotRunningMarker = "approval service is not running"
 
+    /// The real executable behind "Automic Vault.app" - confirmed live via
+    /// `launchctl print gui/<uid>/com.automicvault.menubar-helper` that the
+    /// app bundle, its `LSUIElement: true` menu-bar helper role, and its full
+    /// "Detectors/Hardened Tools/Secrets" window UI are all ONE process, not
+    /// two - `pgrep -x` against this name is what `isServiceRunning()` below
+    /// checks.
+    private static let menubarHelperProcessName = "AutomicVaultMenubar"
+
+    /// Whether Automic Vault's helper process is already running, via a
+    /// plain `pgrep -x` (confirmed live: exits 0 with the real PID when
+    /// running, 1 with no output when not) - checked so
+    /// `ensureServiceRunning()` below can skip calling `open` entirely on the
+    /// (near-universal, since the helper is kept alive by its own
+    /// `RunAtLoad: true` LaunchAgent independent of this app) already-running
+    /// case. Not `private` - exercised directly by `VaultDataSelfTest`.
+    static func isServiceRunning() -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        proc.arguments = ["-x", menubarHelperProcessName]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+        } catch {
+            return false
+        }
+        proc.waitUntilExit()
+        return proc.terminationStatus == 0
+    }
+
     /// Fire-and-forget attempt to start Automic Vault's background approval
-    /// service (its menu-bar app) - `open -a` launches it, or silently
-    /// no-ops if it's already running. Passes `-g` (do not bring the app to
-    /// the foreground) - confirmed live that plain `open -a` activates
-    /// whatever it targets regardless of that app's own `LSUIElement`
-    /// setting, which is only about Dock/menu-bar presence, not activation -
-    /// without `-g` this visibly steals focus to Automic Vault on every
-    /// launch/relock. Safe to call before the captain has unlocked anything -
-    /// this only starts Automic Vault's own helper, never touches this app's
-    /// lock state - and never blocks: `open` returns almost immediately
+    /// service (its menu-bar app) if - and only if - it isn't already
+    /// running.
+    ///
+    /// Real, live-root-caused bug this guards against
+    /// (fm/grandline-vault-no-unnecessary-relaunch): Automic Vault's real
+    /// main window (its "Detectors/Hardened Tools/Secrets" browser, not just
+    /// a menu-bar icon) was still visibly popping up on every Grand Line
+    /// launch/relock, despite the `-g` flag below. `-g` only stops *this*
+    /// `open` call from bringing Automic Vault to the foreground/giving it
+    /// keyboard focus - it does not stop the app's own code from
+    /// creating/showing a window on reactivation, which is exactly what
+    /// macOS's `open -a`/"reopen" handling triggers when told to open an
+    /// app that is already running. Since the helper is kept alive
+    /// independently by its own `RunAtLoad: true` LaunchAgent
+    /// (`~/Library/LaunchAgents/com.automicvault.menubar-helper.plist`), it
+    /// is almost always already running by the time this is called - so the
+    /// old unconditional `open -g -a` fired the reopen/window-restore path
+    /// on nearly every single launch. The actual fix is to never call `open`
+    /// at all when the service is already alive - `isServiceRunning()`
+    /// above is the check - not to look for a stronger "stay hidden" flag,
+    /// since `open` has none for an already-running app's own reactivation
+    /// behavior.
+    ///
+    /// Safe to call before the captain has unlocked anything - this only
+    /// starts Automic Vault's own helper, never touches this app's lock
+    /// state - and never blocks: `open` returns almost immediately
     /// regardless of whether the launched app has finished starting.
     static func ensureServiceRunning() {
+        guard !isServiceRunning() else { return }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         proc.arguments = ["-g", "-a", "Automic Vault"]

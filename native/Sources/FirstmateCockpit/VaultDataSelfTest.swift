@@ -125,6 +125,21 @@ enum VaultDataSelfTest {
         let itemsUnchanged = VaultRecipeChecklist.build(recipe: recipeA, currentSnapshot: snapshotA)
         check("no drift yields all-matches", itemsUnchanged.allSatisfy { $0.status == .matches })
 
+        // MARK: isServiceRunning (fm/grandline-vault-no-unnecessary-relaunch)
+        //
+        // Real-machine check, not a mock: this development machine keeps
+        // Automic Vault's helper alive via its own `RunAtLoad: true`
+        // LaunchAgent, independent of this app - so `pgrep -x
+        // AutomicVaultMenubar` should report it running here. This can't be
+        // asserted unconditionally on every machine (the helper might
+        // genuinely be absent), so it's a soft/logged check rather than a
+        // hard failure either way - the real regression this task fixes
+        // (`ensureServiceRunning()` calling `open` even when already
+        // running, which reopens Automic Vault's real window) was verified
+        // live separately, outside this pure self-test, per this file's own
+        // header convention.
+        print("VaultDataSelfTest: isServiceRunning() reports \(VaultSource.isServiceRunning()) on this machine")
+
         if failures.isEmpty {
             print("VaultDataSelfTest: all checks passed")
             return true
