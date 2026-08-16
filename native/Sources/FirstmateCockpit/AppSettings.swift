@@ -24,6 +24,7 @@ final class AppSettings {
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
         static let fmHome = "fm.fmHome"
         static let dictationShortcut = "fm.dictationShortcut"
+        static let dictationCleanupEnabled = "fm.dictationCleanupEnabled"
     }
 
     private init() {}
@@ -109,5 +110,18 @@ final class AppSettings {
             guard let data = try? JSONEncoder().encode(newValue) else { return }
             defaults.set(data, forKey: Keys.dictationShortcut)
         }
+    }
+
+    /// Dictation's "Clean up my sentences" toggle (phase 3,
+    /// fm/grandline-dictation-phase3) - when on, `DictationEngine.finish`
+    /// rewrites the raw transcript via a one-shot `claude -p` call
+    /// (`DictationCleanup.rewrite`) before pasting/recording it. Off by
+    /// default: this step needs network access and the captain's own
+    /// `claude` authentication, unlike the rest of the fully on-device
+    /// pipeline, so a fresh install shouldn't silently start making network
+    /// calls on every dictation.
+    var dictationCleanupEnabled: Bool {
+        get { defaults.bool(forKey: Keys.dictationCleanupEnabled) }
+        set { defaults.set(newValue, forKey: Keys.dictationCleanupEnabled) }
     }
 }

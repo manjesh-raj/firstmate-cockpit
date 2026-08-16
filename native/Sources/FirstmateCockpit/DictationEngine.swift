@@ -58,6 +58,7 @@ enum DictationStatus: Equatable {
     case needsAccessibility
     case recording
     case transcribing
+    case cleaningUp
     case didNotCatchThat
 
     var title: String {
@@ -68,6 +69,7 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "Needs Accessibility access"
         case .recording: return "Recording…"
         case .transcribing: return "Transcribing…"
+        case .cleaningUp: return "Cleaning up…"
         case .didNotCatchThat: return "Didn't catch that"
         }
     }
@@ -84,6 +86,7 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "Grand Line needs Accessibility access so the \(shortcutDisplay) shortcut works from any app, and so it can paste the result at your cursor."
         case .recording: return "Listening - release \(shortcutDisplay) to transcribe."
         case .transcribing: return "Turning your speech into text…"
+        case .cleaningUp: return "Rewriting your transcript into a clean sentence…"
         case .didNotCatchThat: return "No speech was recognized that time - hold \(shortcutDisplay) and try again."
         }
     }
@@ -96,6 +99,7 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "hand.raised.slash.fill"
         case .recording: return "waveform"
         case .transcribing: return "ellipsis.circle.fill"
+        case .cleaningUp: return "sparkles"
         case .didNotCatchThat: return "questionmark.circle.fill"
         }
     }
@@ -104,7 +108,7 @@ enum DictationStatus: Equatable {
         switch self {
         case .ready: return .good
         case .needsMicrophone, .needsSpeechRecognition, .needsAccessibility, .didNotCatchThat: return .warn
-        case .recording, .transcribing: return .accent
+        case .recording, .transcribing, .cleaningUp: return .accent
         }
     }
 }
@@ -235,6 +239,13 @@ final class DictationEngine {
     /// recording with no restart needed. `nil`/empty is a normal, harmless
     /// state (no bias applied).
     var vocabularyProvider: (() -> [String])?
+
+    /// Reports whether the "Clean up my sentences" toggle (phase 3) is on -
+    /// read fresh at the moment a dictation finishes, not cached, so a toggle
+    /// flipped mid-recording takes effect on that very dictation's result.
+    /// `nil`/`false` means "paste the raw transcript," matching every other
+    /// provider closure's own "absent means off/empty" convention above.
+    var cleanupEnabledProvider: (() -> Bool)?
 
     /// Wall-clock time the current capture actually started (audio engine
     /// running) - `finish(text:)` uses this to compute the real duration
@@ -386,13 +397,41 @@ final class DictationEngine {
         let duration = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         recordingStartedAt = nil
 
-        if let finalText {
-            Self.pasteAtCursor(finalText)
-            onTranscript?(finalText, duration)
-            onStatusChanged?(DictationPermissions.currentStatus())
-        } else {
+        guard let finalText else {
             onStatusChanged?(.didNotCatchThat)
+            return
         }
+
+        guard cleanupEnabledProvider?() == true else {
+            deliver(finalText, duration: duration)
+            return
+        }
+
+        onStatusChanged?(.cleaningUp)
+        DictationCleanup.rewrite(finalText) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let cleaned):
+                self.deliver(cleaned, duration: duration)
+            case .failure:
+                // A cleanup failure (no network, not authenticated, claude
+                // missing, a timeout, a garbled response) must never lose or
+                // block the dictation - fall back to the raw transcript
+                // rather than silently dropping the paste. See this file's
+                // header for the full pipeline contract.
+                self.deliver(finalText, duration: duration)
+            }
+        }
+    }
+
+    /// Pastes and records the final text (raw or, when the "Clean up my
+    /// sentences" toggle is on and the rewrite succeeded, cleaned) - the one
+    /// place both paths above converge, so paste and history always agree on
+    /// which text was actually used.
+    private func deliver(_ text: String, duration: TimeInterval) {
+        Self.pasteAtCursor(text)
+        onTranscript?(text, duration)
+        onStatusChanged?(DictationPermissions.currentStatus())
     }
 
     /// Pastes `text` at the current cursor position in whichever app

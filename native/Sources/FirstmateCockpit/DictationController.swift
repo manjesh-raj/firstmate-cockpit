@@ -5,9 +5,10 @@
 // Right ⌥ Option shortcut, nothing else. Phase 2
 // (fm/grandline-dictation-phase2) adds the three things phase 1 explicitly
 // deferred: a transcription history list, a personal vocabulary editor, and
-// a real shortcut recorder replacing the fixed combo - see `CLAUDE.md`'s
-// "Dictation" section for the full phase split. The "clean up my sentences"
-// polish pass is still out of scope (a separate, later phase 3 task).
+// a real shortcut recorder replacing the fixed combo. Phase 3
+// (fm/grandline-dictation-phase3) adds the "Clean up my sentences" toggle -
+// see `CLAUDE.md`'s "Dictation" section for the full phase split (all three
+// originally-planned phases are now complete).
 // Follows the same "hide, don't rebuild" body-child convention every other
 // destination uses (`AppShellController`), and the same Settings-styled card
 // layout `VaultController`/`ShiftPanelView` already established rather than
@@ -45,6 +46,11 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let shortcutRecorder: DictationShortcutRecorderView
     private let shortcutResetButton = NSButton()
     private let shortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
+
+    private let cleanupPanel = ShiftPanelView()
+    private let cleanupSwitch = NSSwitch()
+    private let cleanupTitleLabel = NSTextField(labelWithString: "")
+    private let cleanupDetailLabel = NSTextField(wrappingLabelWithString: "")
 
     private let vocabularyPanel = ShiftPanelView()
     private let vocabularyCountLabel = NSTextField(labelWithString: "")
@@ -92,6 +98,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         let header = buildHeader()
         _ = buildStatusSection()
         _ = buildShortcutSection()
+        _ = buildCleanupSection()
         _ = buildVocabularySection()
         _ = buildHistorySection()
         buildFootnote()
@@ -103,6 +110,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         contentStack.addArrangedSubview(header)
         contentStack.addArrangedSubview(statusPanel)
         contentStack.addArrangedSubview(shortcutPanel)
+        contentStack.addArrangedSubview(cleanupPanel)
         contentStack.addArrangedSubview(vocabularyPanel)
         contentStack.addArrangedSubview(historyPanel)
         contentStack.addArrangedSubview(footnoteLabel)
@@ -115,6 +123,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             statusPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             shortcutPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            cleanupPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             vocabularyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             historyPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             footnoteLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -168,6 +177,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     /// `SudoTouchIDController`/`VaultController` already use for their own
     /// OS-level checks), and after `setEngineStatus` reports a change.
     func refresh() {
+        cleanupSwitch.state = AppSettings.shared.dictationCleanupEnabled ? .on : .off
         setStatus(DictationPermissions.currentStatus())
     }
 
@@ -297,6 +307,46 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         return shortcutPanel
     }
 
+    private func buildCleanupSection() -> NSView {
+        let sectionLabel = NSTextField(labelWithString: "Cleanup")
+        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.translatesAutoresizingMaskIntoConstraints = false
+        cleanupPanel.setHeader(sectionLabel)
+
+        let sparkleTile = IconTileView(size: 40, cornerRadius: 10)
+        sparkleTile.configure(symbol: "sparkles", tint: .violet)
+
+        cleanupTitleLabel.stringValue = "Clean up my sentences"
+        cleanupTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        cleanupTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        cleanupDetailLabel.stringValue = "Rewrite each dictation into a well-formed sentence before pasting - fixes filler words and rough phrasing, not just typos. Needs network access and your own signed-in claude CLI, unlike the rest of Dictation, which works fully offline. If the rewrite fails for any reason (no network, not signed in), the raw transcript is pasted instead."
+        cleanupDetailLabel.font = .systemFont(ofSize: 11)
+        cleanupDetailLabel.preferredMaxLayoutWidth = 460
+        cleanupDetailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [cleanupTitleLabel, cleanupDetailLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        cleanupSwitch.target = self
+        cleanupSwitch.action = #selector(cleanupToggled)
+        cleanupSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        cleanupSwitch.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSStackView(views: [sparkleTile, textStack, cleanupSwitch])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 14
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        cleanupPanel.setBody(paddedBody(row))
+        return cleanupPanel
+    }
+
     private func buildVocabularySection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Words I use often")
         sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -385,7 +435,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     }
 
     private func buildFootnote() {
-        footnoteLabel.stringValue = "A sentence-cleanup pass is coming in a later phase."
+        footnoteLabel.stringValue = "Recording, transcription, and pasting all happen on-device - only the optional \"Clean up my sentences\" rewrite above needs network access."
         footnoteLabel.font = .systemFont(ofSize: 11)
         footnoteLabel.preferredMaxLayoutWidth = 620
         footnoteLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -408,7 +458,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         case .needsAccessibility:
             statusActionButton.title = "Request Accessibility Access"
             statusActionButton.isHidden = false
-        case .ready, .recording, .transcribing, .didNotCatchThat:
+        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat:
             statusActionButton.isHidden = true
         }
         applyTheme()
@@ -426,6 +476,9 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         refreshButton.contentTintColor = HelmTheme.mutedInk(theme)
         shortcutRecorder.applyTheme(theme)
         shortcutDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        cleanupPanel.applyTheme(theme)
+        cleanupTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        cleanupDetailLabel.textColor = HelmTheme.mutedInk(theme)
         vocabularyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyListView.applyTheme(theme)
@@ -473,6 +526,10 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         shortcutChanged(.defaultShortcut)
     }
 
+    @objc private func cleanupToggled() {
+        AppSettings.shared.dictationCleanupEnabled = cleanupSwitch.state == .on
+    }
+
     @objc private func addVocabularyWordTapped() {
         addVocabularyWordFromField()
     }
@@ -512,7 +569,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             // a grant made while this page wasn't frontmost. Re-check now
             // too, in case it was already granted (a no-op prompt).
             refresh()
-        case .ready, .recording, .transcribing, .didNotCatchThat:
+        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat:
             break
         }
     }
