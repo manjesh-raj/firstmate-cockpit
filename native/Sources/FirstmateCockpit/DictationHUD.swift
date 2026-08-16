@@ -140,6 +140,10 @@ final class DictationHUDController {
             guard wasActive else { return }
             wasActive = false
             present(.failure("Didn't catch that"))
+        case .systemDictationDisabled:
+            guard wasActive else { return }
+            wasActive = false
+            present(.failure("System Dictation is off"))
         case .ready, .needsMicrophone, .needsSpeechRecognition, .needsAccessibility:
             guard wasActive else { return }
             wasActive = false

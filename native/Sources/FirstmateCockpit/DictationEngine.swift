@@ -60,6 +60,15 @@ enum DictationStatus: Equatable {
     case transcribing
     case cleaningUp
     case didNotCatchThat
+    /// macOS's own system-level Dictation setting (System Settings ->
+    /// Keyboard -> Dictation) is off - a real, captain-hit gap where every
+    /// dictation attempt used to surface as the exact same generic
+    /// "Didn't catch that" message a genuine no-speech miss shows, giving no
+    /// clue that a system setting, not a real speech problem, was the cause.
+    /// Distinguished by its own real, different `recognitionTask` error - see
+    /// `DictationEngine`'s `systemDictationDisabledErrorDomain`/`Code` for the
+    /// exact live-confirmed shape - never inferred from silence/timing.
+    case systemDictationDisabled
 
     var title: String {
         switch self {
@@ -71,6 +80,7 @@ enum DictationStatus: Equatable {
         case .transcribing: return "Transcribing…"
         case .cleaningUp: return "Cleaning up…"
         case .didNotCatchThat: return "Didn't catch that"
+        case .systemDictationDisabled: return "System Dictation is disabled"
         }
     }
 
@@ -88,6 +98,7 @@ enum DictationStatus: Equatable {
         case .transcribing: return "Turning your speech into text…"
         case .cleaningUp: return "Rewriting your transcript into a clean sentence…"
         case .didNotCatchThat: return "No speech was recognized that time - hold \(shortcutDisplay) and try again."
+        case .systemDictationDisabled: return "macOS's own Dictation setting is off, so Grand Line can't transcribe speech. Turn it on in System Settings > Keyboard > Dictation, then try again."
         }
     }
 
@@ -101,13 +112,14 @@ enum DictationStatus: Equatable {
         case .transcribing: return "ellipsis.circle.fill"
         case .cleaningUp: return "sparkles"
         case .didNotCatchThat: return "questionmark.circle.fill"
+        case .systemDictationDisabled: return "gear.badge.xmark"
         }
     }
 
     var tint: HelmTint {
         switch self {
         case .ready: return .good
-        case .needsMicrophone, .needsSpeechRecognition, .needsAccessibility, .didNotCatchThat: return .warn
+        case .needsMicrophone, .needsSpeechRecognition, .needsAccessibility, .didNotCatchThat, .systemDictationDisabled: return .warn
         case .recording, .transcribing, .cleaningUp: return .accent
         }
     }
@@ -225,6 +237,21 @@ final class DictationEngine {
     /// this engine's own internal state, so it stays a real safety net even
     /// against a class of bug this task's own fix didn't anticipate.
     private static let hardTranscribingCeiling: TimeInterval = finishTimeout + 5
+
+    /// The exact `NSError` shape `SFSpeechRecognizer`'s `recognitionTask(with:)`
+    /// completion reports when macOS's own system-level Dictation setting
+    /// (System Settings > Keyboard > Dictation) is off - confirmed live on a
+    /// real Mac (fm/grandline-dictation-system-disabled-message) by toggling
+    /// that setting off and running this exact completion closure:
+    /// `domain == "kLSRErrorDomain"`, `code == 201`,
+    /// `localizedDescription == "Siri and Dictation are disabled"`. This is a
+    /// distinct, identifiable failure - live-confirmed separately (same real
+    /// Mac, setting back on) that a genuine no-speech miss instead reports
+    /// `domain == "kAFAssistantErrorDomain"`, `code == 1110`,
+    /// `"No speech detected"`, which must keep resolving to
+    /// `.didNotCatchThat` completely unchanged.
+    private static let systemDictationDisabledErrorDomain = "kLSRErrorDomain"
+    private static let systemDictationDisabledErrorCode = 201
 
     /// The most recent status this engine actually told `onStatusChanged`
     /// about - tracked purely so `hardCeilingWorkItem` can check "are we
@@ -401,7 +428,20 @@ final class DictationEngine {
                 if result.isFinal {
                     self.finish(text: text)
                 }
-            } else if error != nil {
+            } else if let error {
+                let nsError = error as NSError
+                if nsError.domain == Self.systemDictationDisabledErrorDomain,
+                   nsError.code == Self.systemDictationDisabledErrorCode {
+                    // Live-confirmed on a real Mac (System Settings > Keyboard
+                    // > Dictation toggled off, a real recognitionTask run):
+                    // this exact domain/code, with no usable transcript ever
+                    // possible in this state - report the specific,
+                    // actionable status directly rather than falling into the
+                    // generic "Didn't catch that" bucket below. See
+                    // `DictationStatus.systemDictationDisabled`'s doc comment.
+                    self.finish(text: nil, systemDictationDisabled: true)
+                    return
+                }
                 // A real error still might trail a good partial result (e.g.
                 // a transient no-speech-detected error after real words were
                 // already recognized) - `finish` falls back to
@@ -442,7 +482,7 @@ final class DictationEngine {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.finishTimeout, execute: workItem)
     }
 
-    private func finish(text: String?) {
+    private func finish(text: String?, systemDictationDisabled: Bool = false) {
         guard !isFinishing else { return }
         isFinishing = true
         finishTimeoutWorkItem?.cancel()
@@ -470,6 +510,15 @@ final class DictationEngine {
             isRecording = false
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
+        }
+
+        // No usable transcript is ever possible in this state (recognition
+        // never really ran) - report the specific status directly rather
+        // than falling through the generic empty-text handling below, which
+        // would otherwise indistinguishably report `.didNotCatchThat`.
+        if systemDictationDisabled {
+            report(.systemDictationDisabled)
+            return
         }
 
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
