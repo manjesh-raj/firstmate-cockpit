@@ -349,13 +349,30 @@ final class AppShellController: NSViewController {
             lockScreen.apply(.avUnavailable)
         case .serviceNotRunning:
             lockScreen.apply(.serviceNotRunning)
-            // Retry every 1.5s indefinitely while this screen is up - there's
-            // nothing else useful to show, and the retry itself is a cheap
-            // subprocess call, not a real cost.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                guard let self, !self.lockScreen.view.isHidden else { return }
-                self.checkAppPasswordAvailability(reason: reason)
-            }
+            scheduleAppPasswordAvailabilityRetry(reason: reason)
+        case .transientFailure:
+            // Any `av list` failure/timeout that isn't the specific
+            // `.serviceNotRunning` marker text (fm/grandline-vault-wake-
+            // recheck-fix) - live-confirmed that a suspended/unresponsive
+            // approval helper (e.g. right after a long sleep/wake) can make
+            // `av list` fail or hang in a way that previously fell through
+            // to a hard, misleading `.avUnavailable` state with no retry at
+            // all, even though `av` is genuinely installed and the
+            // password secret genuinely exists. Retried on the same cadence
+            // as `.serviceNotRunning` below.
+            lockScreen.apply(.transientFailure)
+            scheduleAppPasswordAvailabilityRetry(reason: reason)
+        }
+    }
+
+    /// Retry every 1.5s indefinitely while the lock screen is up - there's
+    /// nothing else useful to show, and the retry itself is a cheap
+    /// subprocess call, not a real cost. Shared by `.serviceNotRunning` and
+    /// `.transientFailure` above.
+    private func scheduleAppPasswordAvailabilityRetry(reason: AppLockReason) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, !self.lockScreen.view.isHidden else { return }
+            self.checkAppPasswordAvailability(reason: reason)
         }
     }
 

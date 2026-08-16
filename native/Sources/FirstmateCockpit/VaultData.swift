@@ -176,6 +176,23 @@ enum VaultSource {
         /// already exist; `av` just can't reach the service to say so, so
         /// this must never be reported/treated as `.notConfigured`.
         case serviceNotRunning
+        /// `av list` failed (or never returned at all) for a reason that is
+        /// neither a clean success, a clean "genuinely no secret" result,
+        /// nor the specific `serviceNotRunningMarker` text - e.g. the
+        /// approval helper being transiently unresponsive right after a
+        /// long sleep/wake. Confirmed live (fm/grandline-vault-wake-recheck-
+        /// fix): suspending the "Automic Vault" menu-bar helper process
+        /// makes a plain `av list` hang indefinitely with no output at all
+        /// (still blocked after 90+s, no internal timeout of its own) - the
+        /// exact captain-reported symptom this case exists to fix, since
+        /// the previous code had no third bucket and silently reclassified
+        /// *any* non-marker failure as `.avUnavailable` ("isn't installed"),
+        /// which is false whenever av is genuinely installed and the
+        /// service is merely slow to respond. The password secret may well
+        /// already exist here too; never report/treat this as
+        /// `.notConfigured`/`.avUnavailable`. `AppShellController` retries
+        /// on the same cadence as `.serviceNotRunning`.
+        case transientFailure
     }
 
     /// Substring `av list` prints (to stdout or stderr - `combinedLog`
@@ -203,17 +220,33 @@ enum VaultSource {
         try? proc.run()
     }
 
+    /// Bounds how long the app-lock recheck waits for `av list` before
+    /// treating it as a transient failure rather than blocking forever -
+    /// see `AppPasswordAvailability.transientFailure`'s doc comment for the
+    /// live-confirmed hang this guards against. `loadSnapshot()`'s own
+    /// (unbounded) `run` calls are unaffected - this timeout is scoped to
+    /// the app-lock check only.
+    private static let appPasswordCheckTimeout: TimeInterval = 5
+
     /// Read-only - reuses the exact `av list` call `loadSnapshot()` already
     /// makes, just without the heavier `--version`/`doctor --json` calls the
     /// full Vault-page snapshot also needs.
     static func checkAppPasswordConfigured() -> AppPasswordAvailability {
         guard let av = resolveExecutable("av") else { return .avUnavailable }
-        let result = run(av, ["list"])
+        guard let result = runWithTimeout(av, ["list"], timeout: appPasswordCheckTimeout) else {
+            // Didn't return at all within the timeout - see
+            // `transientFailure`'s doc comment for the live-reproduced hang.
+            return .transientFailure
+        }
         guard result.status == 0 else {
             if result.combinedLog.lowercased().contains(serviceNotRunningMarker) {
                 return .serviceNotRunning
             }
-            return .avUnavailable
+            // Any other non-zero exit is an unrecognized/ambiguous failure
+            // (e.g. a real approval-XPC error distinct from the "not
+            // running" marker) - not a clean "no av"/"no secret" result, so
+            // it must not be silently reclassified as either hard state.
+            return .transientFailure
         }
         let names = result.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
         return names.contains(appPasswordSecretName) ? .configured : .notConfigured
@@ -279,6 +312,40 @@ enum VaultSource {
         let stdout: String
         let stderr: String
         var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
+    }
+
+    /// `run()` above, but bounded by `timeout` (mirroring `FleetData.swift`'s
+    /// `crewState`'s `terminationHandler` + `DispatchSemaphore` watchdog
+    /// pattern) - returns `nil`, without reading either pipe, if the process
+    /// hasn't exited by then, killing it rather than leaving a background
+    /// thread blocked on `waitUntilExit()` forever.
+    private static func runWithTimeout(_ executable: String, _ args: [String], timeout: TimeInterval) -> RunResult? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.arguments = args
+        proc.environment = childEnvironmentDict()
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+            try proc.run()
+        } catch {
+            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
+        }
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
+        guard exited.wait(timeout: .now() + timeout) == .success else {
+            proc.terminationHandler = nil
+            if proc.isRunning { proc.terminate() }
+            return nil
+        }
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        return RunResult(
+            status: proc.terminationStatus,
+            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
     }
 
     private static func run(_ executable: String, _ args: [String]) -> RunResult {
