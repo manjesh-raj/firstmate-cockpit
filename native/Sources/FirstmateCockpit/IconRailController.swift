@@ -36,6 +36,10 @@ import AppKit
 /// pinned directly *above* `.docs` and below `.tools` - so the bottom-
 /// anchored group reads Tools, Vault, Docs, Updates, Bootstrap, Settings,
 /// avatar.
+/// `.dictation` (fm/grandline-dictation-mvp, phase 1) follows the identical
+/// convention too, pinned directly *above* `.docs` and below `.vault` - so
+/// the bottom-anchored group reads Tools, Vault, Dictation, Docs, Setup
+/// (-> Updates, Bootstrap, Automation flyout), avatar.
 /// `fm/grandline-rail-setup-group` merged `.updates`/`.bootstrap`'s two
 /// standalone rail rows into one "Setup" entry, directly above `.docs`, that
 /// opens a small flyout `NSPopover` listing Updates and Bootstrap - so the
@@ -73,7 +77,7 @@ import AppKit
 /// live captain feedback that icon-only utility rows looked inconsistent
 /// once the rest of the rail had labels - see `labeledRailButton(for:)`.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, automation, settings
+    case overview, console, hosts, shift, review, tools, vault, dictation, docs, updates, bootstrap, automation, settings
 
     var symbol: String {
         switch self {
@@ -94,6 +98,7 @@ enum RailDestination: CaseIterable {
         case .review: return "arrow.triangle.branch"
         case .tools: return "wrench.and.screwdriver"
         case .vault: return "lock.shield"
+        case .dictation: return "waveform"
         case .docs: return "book.closed"
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
@@ -111,6 +116,7 @@ enum RailDestination: CaseIterable {
         case .review: return "Review"
         case .tools: return "Tools"
         case .vault: return "Vault"
+        case .dictation: return "Dictation"
         case .docs: return "Docs"
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
@@ -122,7 +128,7 @@ enum RailDestination: CaseIterable {
     var isDailyUse: Bool {
         switch self {
         case .overview, .console, .hosts, .shift, .review: return true
-        case .tools, .vault, .docs, .updates, .bootstrap, .automation, .settings: return false
+        case .tools, .vault, .dictation, .docs, .updates, .bootstrap, .automation, .settings: return false
         }
     }
 }
@@ -521,6 +527,13 @@ final class IconRailController: NSViewController {
         vaultButton.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(vaultButton)
 
+        // Dictation (fm/grandline-dictation-mvp) sits directly below Vault
+        // and above Docs - see `RailDestination`'s doc comment above.
+        let dictationButton = railButton(for: .dictation)
+        buttons[.dictation] = dictationButton
+        dictationButton.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(dictationButton)
+
         let docsButton = railButton(for: .docs)
         buttons[.docs] = docsButton
         docsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -557,7 +570,8 @@ final class IconRailController: NSViewController {
         // missing divider rather than an intentional flexible gap.
         let dividerAboveTools = utilityDivider()
         let dividerToolsVault = utilityDivider()
-        let dividerVaultDocs = utilityDivider()
+        let dividerVaultDictation = utilityDivider()
+        let dividerDictationDocs = utilityDivider()
         let dividerDocsSetup = utilityDivider()
         // fm/grandline-vault-header-and-avatar-divider: same treatment,
         // between the last utility row ("Setup", since
@@ -648,6 +662,7 @@ final class IconRailController: NSViewController {
 
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            dictationButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -666,8 +681,10 @@ final class IconRailController: NSViewController {
             setupGroup.bottomAnchor.constraint(equalTo: dividerSetupAvatar.topAnchor, constant: -Self.sectionGap),
             dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -Self.rowSpacing),
             docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -Self.rowSpacing),
-            dividerVaultDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -Self.rowSpacing),
-            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDocs.topAnchor, constant: -Self.rowSpacing),
+            dividerDictationDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -Self.rowSpacing),
+            dictationButton.bottomAnchor.constraint(equalTo: dividerDictationDocs.topAnchor, constant: -Self.rowSpacing),
+            dividerVaultDictation.bottomAnchor.constraint(equalTo: dictationButton.topAnchor, constant: -Self.rowSpacing),
+            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDictation.topAnchor, constant: -Self.rowSpacing),
             dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -Self.rowSpacing),
             toolsButton.bottomAnchor.constraint(equalTo: dividerToolsVault.topAnchor, constant: -Self.rowSpacing),
         ])
