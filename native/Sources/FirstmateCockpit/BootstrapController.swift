@@ -194,11 +194,13 @@ final class BootstrapController: NSViewController {
     private let hostStore: HostStore
     private let keyStore: SSHKeyStore
     private let snippetStore: SnippetStore
+    private let dictationStore: DictationStore
 
-    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore) {
         self.hostStore = hostStore
         self.keyStore = keyStore
         self.snippetStore = snippetStore
+        self.dictationStore = dictationStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -1277,7 +1279,7 @@ final class BootstrapController: NSViewController {
     }
 
     @objc private func importRestoreConfigClicked() {
-        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
+        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore) { [weak self] in
             self?.rebuildDynamicSections()
         }
     }

@@ -127,8 +127,8 @@ final class AppShellController: NSViewController {
         // write the same tasks/follow-ups this page shows, not a second
         // independent store instance.
         self.shift = ShiftController(store: shiftStore)
-        self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
-        self.automation = AutomationController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+        self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
+        self.automation = AutomationController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
         self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
     }

@@ -122,11 +122,13 @@ final class AutomationController: NSViewController {
     private let hostStore: HostStore
     private let keyStore: SSHKeyStore
     private let snippetStore: SnippetStore
+    private let dictationStore: DictationStore
 
-    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore) {
         self.hostStore = hostStore
         self.keyStore = keyStore
         self.snippetStore = snippetStore
+        self.dictationStore = dictationStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -454,7 +456,7 @@ final class AutomationController: NSViewController {
 
     @objc private func restoreConfigChooseFileClicked() {
         guard steps.first(where: { $0.kind == .restoreConfig })?.status == .waitingForCaptain else { return }
-        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
+        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore) { [weak self] in
             self?.continueRestoreConfigStep(skipped: false)
         }
     }

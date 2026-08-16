@@ -15,8 +15,14 @@
 // `.unchanged`), editing one host locally and re-diffing (expect exactly that
 // one `.changed`), and grepping the actual written bundle file's bytes for
 // anything that looks like private key material - never just trusting that
-// `SSHKey` has no such field.
+// `SSHKey` has no such field. Also covers Dictation's vocabulary/shortcut
+// (`fm/grandline-dictation-vocab-backup`): a fresh word imports as `.new`, an
+// already-present one (case-insensitively) as `.unchanged`, the shortcut
+// changes when the bundle's differs from what's configured, and
+// `DictationHistoryEntry`/history is never present in the exported bytes at
+// all - it's per-machine usage data, deliberately excluded from the bundle.
 
+import AppKit
 import Foundation
 
 enum BackupSelfTest {
@@ -35,13 +41,30 @@ enum BackupSelfTest {
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
+        // `AppSettings.shared` is backed by the real `UserDefaults.standard` -
+        // there's no scratch-file override for it the way the stores have
+        // `FM_*_FILE`/`FM_*_DIR`. Save whatever the real machine's dictation
+        // shortcut is set to and restore it unconditionally, so this test
+        // never leaves the captain's actual configured shortcut altered.
+        let realShortcut = AppSettings.shared.dictationShortcut
+        defer { AppSettings.shared.dictationShortcut = realShortcut }
+
         // MARK: "Machine A" - the source of the export.
         setenv("FM_HOSTS_FILE", tmp.appendingPathComponent("a-hosts.json").path, 1)
         setenv("FM_KEYS_FILE", tmp.appendingPathComponent("a-keys.json").path, 1)
         setenv("FM_SNIPPETS_FILE", tmp.appendingPathComponent("a-snippets.json").path, 1)
+        setenv("FM_DICTATION_DIR", tmp.appendingPathComponent("a-dictation").path, 1)
         let hostStoreA = HostStore()
         let keyStoreA = SSHKeyStore()
         let snippetStoreA = SnippetStore()
+        let dictationStoreA = DictationStore()
+        dictationStoreA.addVocabularyWord("Pramata")
+        dictationStoreA.addVocabularyWord("Grand Line")
+        let shortcutA = DictationShortcut(keyCode: 2, modifierFlagsRaw: NSEvent.ModifierFlags([.command, .shift]).rawValue, isModifierOnly: false)
+        AppSettings.shared.dictationShortcut = shortcutA
+        // Real usage data - must never appear in the exported bundle, see
+        // this file's header and `BackupData.swift`'s header.
+        dictationStoreA.recordHistory(text: "THIS-IS-HISTORY-AND-MUST-NEVER-APPEAR-IN-A-BACKUP-FILE", durationSeconds: 4, date: Date(timeIntervalSince1970: 0))
 
         var key = SSHKey(label: "Bastion key", type: .ed25519, publicKey: "ssh-ed25519 AAAAC3example test@a", fingerprint: "SHA256:abcdefTestFingerprint")
         // A real Keychain write, exactly like the Keys screen/host editor's
@@ -64,10 +87,13 @@ enum BackupSelfTest {
         hostStoreA.add(Host(label: "Staging box", address: "10.0.0.5"))
         snippetStoreA.add(Snippet(label: "tail logs", command: "tail -f /var/log/app.log"))
 
-        let bundle = GrandLineBackupBuilder.build(hosts: hostStoreA.hosts, snippets: snippetStoreA.snippets, allKeys: keyStoreA.keys)
+        let bundle = GrandLineBackupBuilder.build(hosts: hostStoreA.hosts, snippets: snippetStoreA.snippets, allKeys: keyStoreA.keys, dictationStore: dictationStoreA)
         check(bundle.hosts.count == 2, "bundle carries both hosts")
         check(bundle.snippets.count == 1, "bundle carries the one snippet")
         check(bundle.keys.count == 1 && bundle.keys[0].id == key.id, "bundle carries only the referenced key's metadata")
+        check(bundle.dictation?.vocabulary?.count == 2, "bundle carries both vocabulary words")
+        check(bundle.dictation?.vocabulary?.contains("Pramata") == true && bundle.dictation?.vocabulary?.contains("Grand Line") == true, "bundle carries the exact vocabulary words")
+        check(bundle.dictation?.shortcut == shortcutA, "bundle carries the configured shortcut")
 
         let bundleURL = tmp.appendingPathComponent("export.glbackup")
         do {
@@ -86,14 +112,23 @@ enum BackupSelfTest {
         check(!rawBundleText.contains(passphrase), "exported file bytes contain no passphrase")
         check(!rawBundleText.contains("BEGIN OPENSSH PRIVATE KEY"), "exported file bytes contain no PEM/OpenSSH key header")
         check(rawBundleText.contains(key.fingerprint), "exported file bytes DO contain the key's public fingerprint (metadata is expected)")
+        check(rawBundleText.contains("Pramata") && rawBundleText.contains("Grand Line"), "exported file bytes DO contain the dictation vocabulary words (expected)")
+        check(!rawBundleText.contains("THIS-IS-HISTORY-AND-MUST-NEVER-APPEAR-IN-A-BACKUP-FILE"), "exported file bytes contain no transcription history text")
+        check(!rawBundleText.lowercased().contains("history"), "exported bundle has no \"history\" key at all - it's per-machine usage data, deliberately excluded")
 
         // MARK: "Machine B" - a different machine, starting empty.
         setenv("FM_HOSTS_FILE", tmp.appendingPathComponent("b-hosts.json").path, 1)
         setenv("FM_KEYS_FILE", tmp.appendingPathComponent("b-keys.json").path, 1)
         setenv("FM_SNIPPETS_FILE", tmp.appendingPathComponent("b-snippets.json").path, 1)
+        setenv("FM_DICTATION_DIR", tmp.appendingPathComponent("b-dictation").path, 1)
         let hostStoreB = HostStore()
         let keyStoreB = SSHKeyStore()
         let snippetStoreB = SnippetStore()
+        let dictationStoreB = DictationStore()
+        // Machine B already has one of the two words, case-differently
+        // spelled - the diff should still recognize it as already present.
+        dictationStoreB.addVocabularyWord("pramata")
+        let shortcutB = DictationShortcut.defaultShortcut
         check(hostStoreB.hosts.isEmpty && snippetStoreB.snippets.isEmpty, "machine B starts with empty stores")
 
         guard let readBackData = try? Data(contentsOf: bundleURL), let readBack = try? GrandLineBackupFile.decode(readBackData) else {
@@ -101,21 +136,36 @@ enum BackupSelfTest {
             return ok
         }
 
-        let firstDiff = BackupImport.diff(bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys)
+        let firstDiff = BackupImport.diff(
+            bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys,
+            existingVocabulary: dictationStoreB.vocabulary, existingShortcut: shortcutB
+        )
         check(firstDiff.newHostsCount == 2 && firstDiff.changedHostsCount == 0 && firstDiff.unchangedHostsCount == 0, "first import diff: both hosts are new")
         check(firstDiff.newSnippetsCount == 1, "first import diff: the snippet is new")
         check(firstDiff.keyWarnings.count == 1 && firstDiff.keyWarnings[0].contains("Prod bastion"), "first import diff: flags the bastion's missing key by name")
+        check(firstDiff.newVocabularyCount == 1 && firstDiff.unchangedVocabularyCount == 1, "first import diff: one vocabulary word new, one already present (case-insensitively)")
+        check(firstDiff.vocabularyRows.first(where: { $0.word == "Grand Line" })?.status == .new, "first import diff: \"Grand Line\" is the new word")
+        check(firstDiff.vocabularyRows.first(where: { $0.word == "Pramata" })?.status == .unchanged, "first import diff: \"Pramata\" matches machine B's \"pramata\" case-insensitively")
+        check(firstDiff.shortcutStatus == .changed, "first import diff: shortcut differs from machine B's default")
 
-        BackupImport.apply(firstDiff, bundle: readBack, hostStore: hostStoreB, snippetStore: snippetStoreB)
+        BackupImport.apply(firstDiff, bundle: readBack, hostStore: hostStoreB, snippetStore: snippetStoreB, dictationStore: dictationStoreB)
         check(hostStoreB.hosts.count == 2, "machine B now has both hosts")
         check(snippetStoreB.snippets.count == 1, "machine B now has the snippet")
         check(hostStoreB.hosts.contains { $0.label == "Prod bastion" && $0.keyID == key.id }, "machine B's bastion still references the same key id (still dangling, by design - never auto-created)")
         check(!keyStoreB.keys.contains { $0.id == key.id }, "machine B's key store was NOT modified by the import (metadata is informational only)")
+        check(dictationStoreB.vocabulary.count == 2 && dictationStoreB.vocabulary.contains("Grand Line") && dictationStoreB.vocabulary.contains("pramata"), "machine B's vocabulary gained the new word and kept its own casing of the already-present one")
+        check(AppSettings.shared.dictationShortcut == shortcutA, "machine B's shortcut now matches the imported bundle's")
+        check(dictationStoreB.history.isEmpty, "machine B's history is untouched by the import - nothing to apply, since none was ever in the bundle")
 
         // Re-importing the identical bundle should now show everything as unchanged.
-        let secondDiff = BackupImport.diff(bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys)
+        let secondDiff = BackupImport.diff(
+            bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys,
+            existingVocabulary: dictationStoreB.vocabulary, existingShortcut: AppSettings.shared.dictationShortcut
+        )
         check(secondDiff.unchangedHostsCount == 2 && secondDiff.newHostsCount == 0 && secondDiff.changedHostsCount == 0, "second import diff: both hosts now unchanged")
         check(secondDiff.unchangedSnippetsCount == 1, "second import diff: the snippet now unchanged")
+        check(secondDiff.newVocabularyCount == 0 && secondDiff.unchangedVocabularyCount == 2, "second import diff: both vocabulary words now unchanged")
+        check(secondDiff.shortcutStatus == .unchanged, "second import diff: shortcut now unchanged")
 
         // Edit one host locally on machine B, then re-diff: exactly that one
         // should show as `.changed`, matched by id, everything else untouched.
@@ -123,12 +173,15 @@ enum BackupSelfTest {
             editedStaging.port = 2200
             hostStoreB.update(editedStaging)
         }
-        let thirdDiff = BackupImport.diff(bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys)
+        let thirdDiff = BackupImport.diff(
+            bundle: readBack, existingHosts: hostStoreB.hosts, existingSnippets: snippetStoreB.snippets, existingKeys: keyStoreB.keys,
+            existingVocabulary: dictationStoreB.vocabulary, existingShortcut: AppSettings.shared.dictationShortcut
+        )
         check(thirdDiff.changedHostsCount == 1, "third import diff: exactly one host changed after a local edit")
         check(thirdDiff.hostRows.first(where: { $0.label == "Staging box" })?.status == .changed, "third import diff: the edited host is the one flagged changed")
         check(thirdDiff.hostRows.first(where: { $0.label == "Prod bastion" })?.status == .unchanged, "third import diff: the untouched host is still unchanged")
 
-        BackupImport.apply(thirdDiff, bundle: readBack, hostStore: hostStoreB, snippetStore: snippetStoreB)
+        BackupImport.apply(thirdDiff, bundle: readBack, hostStore: hostStoreB, snippetStore: snippetStoreB, dictationStore: dictationStoreB)
         check(hostStoreB.hosts.first(where: { $0.label == "Staging box" })?.port == 22, "re-applying the bundle reverts the local edit back to the exported value")
 
         // A future, unsupported format version must be rejected, not silently misread.
