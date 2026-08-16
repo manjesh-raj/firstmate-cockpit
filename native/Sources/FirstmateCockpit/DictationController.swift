@@ -465,6 +465,17 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     }
 
     private func applyTheme() {
+        // Bug fix (fm/grandline-dictation-global-hotkey-and-theme-fixes):
+        // the root view had `wantsLayer = true` (`loadView`) but this method
+        // never gave that layer an explicit background color, unlike every
+        // other full-size destination (`VaultController`/`FleetController`/
+        // etc. - see AGENTS.md's AppKit gotcha #8). With no background set,
+        // the layer stayed transparent and whatever sat behind it in the
+        // window showed through as visible seams between the panels' own
+        // explicitly-themed `chromeBackgroundHex` fills - a captain
+        // screenshot showed this as a mismatched brown/maroon color between
+        // cards. Setting it here, matching every sibling page.
+        view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         statusPanel.applyTheme(theme)
         shortcutPanel.applyTheme(theme)
         vocabularyPanel.applyTheme(theme)
