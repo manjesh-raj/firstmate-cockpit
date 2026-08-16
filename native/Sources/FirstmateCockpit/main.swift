@@ -841,6 +841,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_DOCS_RUNBOOK_TESTS"] == "1" {
     exit(DocsRunbookDataSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-sre-lead-postmortem`: same convention, for
+// `SRELeadPostmortem.generate`'s `claude -p` invocation/parsing/fallback
+// logic - see SRELeadPostmortemSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_POSTMORTEM_TESTS"] == "1" {
+    exit(SRELeadPostmortemSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

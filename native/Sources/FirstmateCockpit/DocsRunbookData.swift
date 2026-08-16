@@ -306,6 +306,28 @@ final class DocsRunbookStore {
         gitSync?.markDirty()
     }
 
+    /// Saves a postmortem under `postmortemsRoot` - the one write path into
+    /// that subfolder (phase 1 only ever listed/displayed files placed there
+    /// directly). Mirrors `createRunbook`'s slug-disambiguation and
+    /// `markDirty()` call exactly, just scoped to the postmortems subfolder
+    /// instead of `root` - both live under the same `GrandLineDocs/runbooks`
+    /// git subtree, so no change to `gitSync`'s add/commit scope was needed.
+    @discardableResult
+    func createPostmortem(title: String, content: String) -> DocsRunbook {
+        let base = Self.slugify(title)
+        var slug = base
+        var n = 2
+        while fm.fileExists(atPath: postmortemsRoot.appendingPathComponent("\(slug).md").path) {
+            slug = "\(base)-\(n)"
+            n += 1
+        }
+        try? fm.createDirectory(at: postmortemsRoot, withIntermediateDirectories: true)
+        let url = postmortemsRoot.appendingPathComponent("\(slug).md")
+        try? content.write(to: url, atomically: true, encoding: .utf8)
+        gitSync?.markDirty()
+        return DocsRunbook(id: slug, title: Self.titleFromContent(content, fallback: slug), content: content, modifiedAt: Date())
+    }
+
     func deleteRunbook(id: String) {
         let url = root.appendingPathComponent("\(id).md")
         try? fm.removeItem(at: url)

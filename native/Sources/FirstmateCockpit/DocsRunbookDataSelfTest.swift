@@ -55,14 +55,25 @@ enum DocsRunbookDataSelfTest {
             check(store.listRunbooks().count == 1, "deleteRunbook should remove exactly that file")
             check(store.listRunbooks().first?.id == r1.id, "the remaining runbook should be the one not deleted")
 
-            // Postmortems live in the same store's postmortemsRoot subfolder,
-            // list-only for this phase - write one directly (no create API
-            // needed yet, generation is a later task) and confirm it's seen.
+            // Postmortems live in the same store's postmortemsRoot subfolder -
+            // a file placed there directly (phase 1's own list-only path)...
             try? "# Incident: payments outage\n\nRoot cause text.".write(
                 to: store.postmortemsRoot.appendingPathComponent("2026-08-payments-outage.md"), atomically: true, encoding: .utf8
             )
             check(store.listPostmortems().count == 1, "listPostmortems should see a file placed directly under postmortems/")
             check(store.listRunbooks().count == 1, "listRunbooks must never include files from the postmortems/ subfolder")
+
+            // ...and `createPostmortem` (phase 2, "Generate Postmortem") is the
+            // one write path into that subfolder - same slug-disambiguation
+            // and dirty-marking as `createRunbook`, just scoped to postmortems/.
+            let p1 = store.createPostmortem(title: "Pod crash loop on payments-worker", content: "# Pod crash loop on payments-worker\n\n## Root Cause\nOOMKilled.")
+            check(p1.id == "pod-crash-loop-on-payments-worker", "createPostmortem should slug the id from the title")
+            check(store.listPostmortems().count == 2, "listPostmortems should see the newly created postmortem alongside the pre-existing one")
+            check(store.listRunbooks().count == 1, "createPostmortem must never write into the runbooks/ top level")
+
+            let p2 = store.createPostmortem(title: "Pod crash loop on payments-worker", content: "# Pod crash loop on payments-worker (again)\n\nA duplicate title.")
+            check(p2.id != p1.id, "a duplicate postmortem title should get a disambiguated slug, not overwrite the first file")
+            check(store.listPostmortems().count == 3, "both postmortems should exist as separate files")
         }
 
         // MARK: 3. Search across runbooks + postmortems, by title and by content

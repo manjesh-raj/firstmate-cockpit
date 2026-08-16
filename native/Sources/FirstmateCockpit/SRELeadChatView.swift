@@ -34,6 +34,11 @@ struct SRELeadMessage {
 final class SRELeadChatView: NSView, NSTextFieldDelegate {
     var onSubmit: ((String) -> Void)?
 
+    /// Fired whenever `messages` changes (append or clear) - "Generate
+    /// Postmortem"'s visibility (`ConsoleController.updateGeneratePostmortemButton`)
+    /// depends on `hasRealExchange`, which only this view can evaluate.
+    var onMessagesChanged: (() -> Void)?
+
     private let scroll = NSScrollView()
     private let document = FlippedView()
     private let stack = NSStackView()
@@ -135,11 +140,35 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         stack.addArrangedSubview(block)
         block.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         scrollToBottom()
+        onMessagesChanged?()
     }
 
     func clearMessages() {
         messages.removeAll()
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        onMessagesChanged?()
+    }
+
+    /// "Generate Postmortem" is only offered once an investigation has
+    /// produced real content - a bare "SRE Lead is ready" status message with
+    /// no actual question asked yet doesn't count.
+    var hasRealExchange: Bool {
+        messages.contains { $0.role == .assistant }
+    }
+
+    /// The investigation transcript so far, as plain question/answer text -
+    /// `SRELeadPostmortem.generate`'s prompt input. Only user/assistant turns
+    /// are real investigation content; `.status`/`.error` messages are this
+    /// pane's own UI chrome (readiness/error banners), not something SRE Lead
+    /// or the captain actually said as part of the investigation.
+    var transcriptForPostmortem: String {
+        messages.compactMap { message -> String? in
+            switch message.role {
+            case .user: return "Captain: \(message.text)"
+            case .assistant: return "SRE Lead: \(message.text)"
+            case .status, .error: return nil
+            }
+        }.joined(separator: "\n\n")
     }
 
     /// Disables input while a turn is in flight so the captain can't fire a
