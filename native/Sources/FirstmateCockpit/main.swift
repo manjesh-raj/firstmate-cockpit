@@ -199,6 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // moment each dictation finishes - see `AppSettings.dictationCleanupEnabled`'s
         // own doc comment for why this defaults to off.
         dictationEngine.cleanupEnabledProvider = { AppSettings.shared.dictationCleanupEnabled }
+        // fm/grandline-dictation-whisper-engine: read the "Use local Whisper
+        // engine" toggle fresh at the start of every recording - see
+        // `AppSettings.dictationLocalWhisperEnabled`'s own doc comment for
+        // why this defaults to off.
+        dictationEngine.localWhisperEnabledProvider = { AppSettings.shared.dictationLocalWhisperEnabled }
         dictationEngine.onTranscript = { [weak self] text, duration in
             self?.dictationStore.recordHistory(text: text, durationSeconds: duration, date: Date())
         }
@@ -809,6 +814,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_DATA_TESTS"] == "1" {
 // DictationCleanupSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_CLEANUP_TESTS"] == "1" {
     exit(DictationCleanupSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-dictation-whisper-engine`: same convention, for the vendored
+// whisper.cpp wrapper's model validation, audio resampling, and (when a real
+// model path is provided) real load/transcribe - see
+// WhisperEngineSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_ENGINE_TESTS"] == "1" {
+    exit(WhisperEngineSelfTest.run() ? 0 : 1)
 }
 
 

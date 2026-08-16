@@ -25,6 +25,7 @@ final class AppSettings {
         static let fmHome = "fm.fmHome"
         static let dictationShortcut = "fm.dictationShortcut"
         static let dictationCleanupEnabled = "fm.dictationCleanupEnabled"
+        static let dictationLocalWhisperEnabled = "fm.dictationLocalWhisperEnabled"
     }
 
     private init() {}
@@ -123,5 +124,17 @@ final class AppSettings {
     var dictationCleanupEnabled: Bool {
         get { defaults.bool(forKey: Keys.dictationCleanupEnabled) }
         set { defaults.set(newValue, forKey: Keys.dictationCleanupEnabled) }
+    }
+
+    /// Dictation's "Use local Whisper engine" toggle
+    /// (fm/grandline-dictation-whisper-engine) - when on AND the large-v3-
+    /// turbo model has been downloaded AND it loads successfully, dictation
+    /// runs through the vendored whisper.cpp engine instead of the Apple
+    /// Speech framework. Off by default: the model is a real ~547MB download
+    /// that has to happen explicitly, unlike the rest of Dictation, which
+    /// works immediately after a fresh install with no extra setup.
+    var dictationLocalWhisperEnabled: Bool {
+        get { defaults.bool(forKey: Keys.dictationLocalWhisperEnabled) }
+        set { defaults.set(newValue, forKey: Keys.dictationLocalWhisperEnabled) }
     }
 }
