@@ -43,7 +43,10 @@ import AppKit
 /// (-> Updates, Bootstrap flyout), avatar. Both cases remain real
 /// `RailDestination`s for switching purposes - only their rail position/
 /// visibility changed; see `IconRailController.buildSetupButton()`/
-/// `showSetupFlyout()`.
+/// `showSetupFlyout()`. `.automation` (fm/grandline-automation-pipeline)
+/// follows the identical convention: a third real `RailDestination` with no
+/// rail row of its own, reachable only as the Setup flyout's third entry,
+/// below Updates and Bootstrap.
 /// `fm/grandline-avatar-menu-and-setup-guide` removed `.settings`'s own
 /// standalone rail row entirely - it is still a real `RailDestination` for
 /// switching purposes (`AppShellController.show(.settings)` is unchanged),
@@ -70,7 +73,7 @@ import AppKit
 /// live captain feedback that icon-only utility rows looked inconsistent
 /// once the rest of the rail had labels - see `labeledRailButton(for:)`.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, settings
+    case overview, console, hosts, shift, review, tools, vault, docs, updates, bootstrap, automation, settings
 
     var symbol: String {
         switch self {
@@ -94,6 +97,7 @@ enum RailDestination: CaseIterable {
         case .docs: return "book.closed"
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
+        case .automation: return "bolt.fill"
         case .settings: return "gearshape"
         }
     }
@@ -110,6 +114,7 @@ enum RailDestination: CaseIterable {
         case .docs: return "Docs"
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
+        case .automation: return "Automation"
         case .settings: return "Settings"
         }
     }
@@ -117,7 +122,7 @@ enum RailDestination: CaseIterable {
     var isDailyUse: Bool {
         switch self {
         case .overview, .console, .hosts, .shift, .review: return true
-        case .tools, .vault, .docs, .updates, .bootstrap, .settings: return false
+        case .tools, .vault, .docs, .updates, .bootstrap, .automation, .settings: return false
         }
     }
 }
@@ -750,7 +755,7 @@ final class IconRailController: NSViewController {
         let button = buildRailRowButton(
             title: "Setup",
             symbol: "wrench.adjustable",
-            tooltip: "Setup (Bootstrap, Updates)",
+            tooltip: "Setup (Updates, Bootstrap, Automation)",
             existingButton: setupButton
         )
         button.target = self
@@ -781,7 +786,7 @@ final class IconRailController: NSViewController {
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = SetupFlyoutViewController(
-            destinations: [.updates, .bootstrap],
+            destinations: [.updates, .bootstrap, .automation],
             onHoverChange: { _ in },
             onSelect: { [weak self] dest in
                 self?.setupPopover?.performClose(nil)

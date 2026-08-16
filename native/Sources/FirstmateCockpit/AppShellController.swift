@@ -47,6 +47,7 @@ final class AppShellController: NSViewController {
     private let docs = DocsController()
     private let updates = UpdatesController()
     private let bootstrap: BootstrapController
+    private let automation: AutomationController
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
@@ -115,6 +116,7 @@ final class AppShellController: NSViewController {
         // independent store instance.
         self.shift = ShiftController(store: shiftStore)
         self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+        self.automation = AutomationController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
         self.makeHostConsole = makeHostConsole
         super.init(nibName: nil, bundle: nil)
     }
@@ -152,9 +154,10 @@ final class AppShellController: NSViewController {
         addChild(docs)
         addChild(updates)
         addChild(bootstrap)
+        addChild(automation)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, docs.view, updates.view, bootstrap.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, docs.view, updates.view, bootstrap.view, automation.view, settings.view] {
             embed(destinationView)
         }
 
@@ -185,6 +188,13 @@ final class AppShellController: NSViewController {
         // timer) before starting the next one - same tab, same command
         // string, just with a completion callback threaded through.
         bootstrap.onRunCommandTracked = { [weak self] label, command, completion in
+            self?.runInConsole(label: label, command: command, completion: completion)
+        }
+        // fm/grandline-automation-pipeline: the automation pipeline's own
+        // dotfiles step needs the exact same real Console-tab/completion
+        // wiring as Bootstrap's - it runs the identical clone/rebuild command
+        // (`DotfilesRunCommand`, shared by both pages).
+        automation.onRunCommandTracked = { [weak self] label, command, completion in
             self?.runInConsole(label: label, command: command, completion: completion)
         }
         // cockpit-bootstrap-software: a `.notInstalled` row on the Updates
@@ -420,6 +430,9 @@ final class AppShellController: NSViewController {
         case .bootstrap:
             bootstrap.view.isHidden = false
             topBar.setTitle("Bootstrap")
+        case .automation:
+            automation.view.isHidden = false
+            topBar.setTitle("Automation")
         case .settings:
             settings.view.isHidden = false
             topBar.setTitle("Settings")
@@ -486,6 +499,7 @@ final class AppShellController: NSViewController {
         docs.view.isHidden = true
         updates.view.isHidden = true
         bootstrap.view.isHidden = true
+        automation.view.isHidden = true
         settings.view.isHidden = true
         for controller in hostConsoles.values { controller.view.isHidden = true }
         activeHostID = nil
