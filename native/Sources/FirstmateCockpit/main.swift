@@ -39,6 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var shiftQuickCapture = ShiftQuickCaptureController(store: shiftStore)
     lazy var shiftNotifications = ShiftNotificationScheduler(store: shiftStore)
     lazy var shiftHotkey = ShiftGlobalHotkey { [weak self] in self?.shiftQuickCapture.present() }
+    // fm/grandline-dictation-mvp (phase 1): one `DictationEngine` for the
+    // app's whole lifetime, driven by `DictationHotkey`'s hold/release
+    // callbacks - mirrors `shiftHotkey`/`shiftQuickCapture`'s own shape.
+    let dictationEngine = DictationEngine()
+    lazy var dictationHotkey = DictationHotkey(
+        onDown: { [weak self] in self?.dictationEngine.startRecording() },
+        onUp: { [weak self] in self?.dictationEngine.stopRecording() }
+    )
     // fm/grandline-app-lock: the app-level password lock's timing state
     // machine - see AppLock.swift's header for the idle/hard-logout math.
     let appLock = AppLockController()
@@ -155,6 +163,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shiftHotkey.requestPermissionIfNeeded()
         shiftHotkey.start()
         shiftNotifications.start()
+
+        // fm/grandline-dictation-mvp: unlike `shiftHotkey` above, Dictation
+        // deliberately does NOT request Accessibility trust eagerly at
+        // launch - the task brief asks each Dictation permission to be
+        // requested "the first time it's genuinely needed," which for
+        // Accessibility is the Dictation page's own status action (or, if
+        // Shift's own eager request above already granted it, this monitor
+        // just starts working with no further prompt needed - it's the same
+        // one process-wide Accessibility trust grant). The hotkey's
+        // local+global monitors are still registered now regardless -
+        // registering them is free and has nothing to do with whether the
+        // grant exists yet.
+        dictationEngine.onStatusChanged = { [weak self] status in
+            self?.appShell.setDictationEngineStatus(status)
+        }
+        dictationHotkey.start()
         // `shiftMenuBar` is `lazy` - force it into existence now so its
         // `NSStatusItem` actually appears at launch rather than only the
         // first time something else happens to reference the property.
@@ -217,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.shutdownAllHostConsoles()
         shiftHotkey.stop()
         shiftNotifications.stop()
+        dictationHotkey.stop()
         appLock.stop()
     }
 
@@ -730,6 +755,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_APP_LOCK_TESTS"] == "1" {
 // header.
 if ProcessInfo.processInfo.environment["FM_RUN_MIRROR_RESOLVE_RACE_TESTS"] == "1" {
     exit(MirrorResolveRaceSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-dictation-mvp`: same convention, for `DictationHotkey`'s
+// hold/release detection over synthetic `.flagsChanged` events - see
+// DictationHotkeySelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_HOTKEY_TESTS"] == "1" {
+    exit(DictationHotkeySelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared

@@ -44,6 +44,7 @@ final class AppShellController: NSViewController {
     private let review = ReviewController()
     private let tools = ToolsController()
     private let vault = VaultController()
+    private let dictation = DictationController()
     private let docs = DocsController()
     private let updates = UpdatesController()
     private let bootstrap: BootstrapController
@@ -151,13 +152,14 @@ final class AppShellController: NSViewController {
         addChild(review)
         addChild(tools)
         addChild(vault)
+        addChild(dictation)
         addChild(docs)
         addChild(updates)
         addChild(bootstrap)
         addChild(automation)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, docs.view, updates.view, bootstrap.view, automation.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, updates.view, bootstrap.view, automation.view, settings.view] {
             embed(destinationView)
         }
 
@@ -438,6 +440,9 @@ final class AppShellController: NSViewController {
         case .vault:
             vault.view.isHidden = false
             topBar.setTitle("Vault")
+        case .dictation:
+            dictation.view.isHidden = false
+            topBar.setTitle("Dictation")
         case .docs:
             docs.view.isHidden = false
             topBar.setTitle("Docs")
@@ -513,6 +518,7 @@ final class AppShellController: NSViewController {
         review.view.isHidden = true
         tools.view.isHidden = true
         vault.view.isHidden = true
+        dictation.view.isHidden = true
         docs.view.isHidden = true
         updates.view.isHidden = true
         bootstrap.view.isHidden = true
@@ -622,6 +628,16 @@ final class AppShellController: NSViewController {
     /// happens to be showing.
     func showToast(_ message: String) {
         Toast.show(in: view, message: message)
+    }
+
+    /// fm/grandline-dictation-mvp: forwards the shared `DictationEngine`'s
+    /// live state (recording/transcribing/back to a real permission-derived
+    /// status) to the Dictation page, so it reflects reality in real time
+    /// while visible rather than only on each `viewWillAppear`. A no-op if
+    /// the page hasn't been visited yet - `DictationController.setEngineStatus`
+    /// itself guards on `isViewLoaded`.
+    func setDictationEngineStatus(_ status: DictationStatus) {
+        dictation.setEngineStatus(status)
     }
 
     /// Fix 1: mirrors what `AppDelegate.applicationWillTerminate` already

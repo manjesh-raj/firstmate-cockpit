@@ -64,6 +64,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <true/>
     <key>LSUIElement</key>
     <false/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Dictation uses your microphone to capture speech while you hold Right Option, so it can transcribe and paste it at your cursor.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Dictation uses Speech Recognition (on-device when available) to turn what you say into text.</string>
 </dict>
 </plist>
 PLIST
