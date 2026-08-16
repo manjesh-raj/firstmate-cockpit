@@ -458,7 +458,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         case .needsAccessibility:
             statusActionButton.title = "Request Accessibility Access"
             statusActionButton.isHidden = false
-        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat:
+        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat, .systemDictationDisabled:
             statusActionButton.isHidden = true
         }
         applyTheme()
@@ -580,7 +580,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             // a grant made while this page wasn't frontmost. Re-check now
             // too, in case it was already granted (a no-op prompt).
             refresh()
-        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat:
+        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat, .systemDictationDisabled:
             break
         }
     }
