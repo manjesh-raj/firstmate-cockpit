@@ -32,18 +32,20 @@ import AppKit
 
 final class SettingsController: NSViewController {
 
-    /// The three stores the "Backup & Restore" card exports from / imports
+    /// The four stores the "Backup & Restore" card exports from / imports
     /// into (`BackupUI.swift`) - injected so this controller doesn't need any
     /// persistence logic of its own, matching how `onPresentHostEditor`
     /// keeps `AppShellController` ignorant of `HostStore`.
     private let hostStore: HostStore
     private let keyStore: SSHKeyStore
     private let snippetStore: SnippetStore
+    private let dictationStore: DictationStore
 
-    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
+    init(hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore) {
         self.hostStore = hostStore
         self.keyStore = keyStore
         self.snippetStore = snippetStore
+        self.dictationStore = dictationStore
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -819,11 +821,11 @@ final class SettingsController: NSViewController {
     }
 
     @objc private func exportBackupClicked() {
-        BackupUI.exportFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+        BackupUI.exportFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
     }
 
     @objc private func importBackupClicked() {
-        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore) { [weak self] in
+        BackupUI.importFlow(from: self, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore) { [weak self] in
             self?.refreshFromSettings()
         }
     }

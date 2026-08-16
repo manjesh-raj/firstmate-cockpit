@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var hostsPanel = HostsSidebarController(store: hostStore)
     lazy var keysController = KeysSidebarController(store: keyStore)
     lazy var snippetsController = SnippetsController(store: snippetStore)
-    lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
+    lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
     lazy var shiftMenuBar = ShiftMenuBarController(store: shiftStore)
     lazy var shiftSearch = ShiftSearchController(store: shiftStore)
     lazy var shiftQuickCapture = ShiftQuickCaptureController(store: shiftStore)

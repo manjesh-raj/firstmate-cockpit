@@ -28,9 +28,25 @@
 //     deliberately left out - only fields that are genuinely "this
 //     captain's preferences," not machine-local state like `fmHome` (Firstmate
 //     home is already its own explicit Bootstrap step, resolved per machine).
+//   - Dictation's personal vocabulary list and configured shortcut
+//     (`DictationStore.vocabulary` / `AppSettings.dictationShortcut`, both
+//     from `fm/grandline-dictation-phase2`) - the same "genuinely this
+//     captain's own configuration, not machine-local state" bar the
+//     `AppSettings` subset above already applies. Deliberately NOT
+//     `DictationStore.history` - a transcript log is per-machine usage data
+//     (what was actually said on that Mac), the same category of thing
+//     `fmHome` already excludes, not portable configuration like a
+//     vocabulary list or a shortcut choice.
 //
 // `formatVersion` exists so a bundle from a future, incompatible version of
-// this file can be detected and refused rather than silently misdecoded.
+// this file can be detected and refused rather than silently misdecoded. Both
+// new fields above are optional on `GrandLineBackup`, so this addition needed
+// no version bump: an old-format bundle (no "dictation" key at all) still
+// decodes cleanly into `dictation == nil` via Swift's synthesized
+// `Decodable` (an `Optional`-typed stored property is decoded with
+// `decodeIfPresent`), and a new-format bundle read by an app built before
+// this change simply ignores the extra key, same as `JSONDecoder` already
+// does for any unrecognized key.
 
 import Foundation
 
@@ -45,13 +61,17 @@ struct GrandLineBackup: Codable {
     /// Metadata only for keys referenced by `hosts` - see this file's header.
     var keys: [SSHKey]
     var settings: BackupSettings
+    /// `nil` only when reading a bundle exported before this field existed -
+    /// see this file's header on why that needs no format-version bump.
+    var dictation: BackupDictation?
 
-    init(hosts: [Host], snippets: [Snippet], keys: [SSHKey], settings: BackupSettings) {
+    init(hosts: [Host], snippets: [Snippet], keys: [SSHKey], settings: BackupSettings, dictation: BackupDictation? = nil) {
         self.formatVersion = Self.currentFormatVersion
         self.hosts = hosts
         self.snippets = snippets
         self.keys = keys
         self.settings = settings
+        self.dictation = dictation
     }
 }
 
@@ -109,13 +129,49 @@ struct BackupSettings: Codable {
     }
 }
 
+/// Dictation's portable configuration - see this file's header for why this
+/// is limited to the vocabulary list and shortcut, never `DictationStore.
+/// history`. Both fields are optional so a bundle exported with an empty
+/// vocabulary and the default shortcut still round-trips meaningfully.
+struct BackupDictation: Codable {
+    var vocabulary: [String]?
+    var shortcut: DictationShortcut?
+
+    static func fromCurrent(store: DictationStore) -> BackupDictation {
+        BackupDictation(vocabulary: store.vocabulary, shortcut: AppSettings.shared.dictationShortcut)
+    }
+
+    /// Applied unconditionally on import confirm, same contract as
+    /// `BackupSettings.apply()` - the diff preview already showed the
+    /// captain what this bundle carries before they confirmed. Vocabulary
+    /// words are added one at a time through `DictationStore`'s own
+    /// case-insensitive-dedup path (`addVocabularyWord`), never a raw
+    /// overwrite, so a captain's own already-added words survive an import
+    /// untouched.
+    func apply(to store: DictationStore) {
+        for word in vocabulary ?? [] { store.addVocabularyWord(word) }
+        if let shortcut { AppSettings.shared.dictationShortcut = shortcut }
+    }
+
+    /// A one-line, non-hardcoded summary for the diff preview, matching
+    /// `BackupSettings.summary`'s own shape.
+    var summary: String {
+        var bits: [String] = []
+        if let vocabulary, !vocabulary.isEmpty {
+            bits.append("\(vocabulary.count) vocabulary word\(vocabulary.count == 1 ? "" : "s")")
+        }
+        if let shortcut { bits.append("shortcut (\(shortcut.displayString))") }
+        return bits.isEmpty ? "no dictation settings" : bits.joined(separator: ", ")
+    }
+}
+
 enum GrandLineBackupBuilder {
     /// Builds a bundle from the live stores - only the `SSHKey` metadata
     /// referenced by at least one host is included, never the whole key list.
-    static func build(hosts: [Host], snippets: [Snippet], allKeys: [SSHKey]) -> GrandLineBackup {
+    static func build(hosts: [Host], snippets: [Snippet], allKeys: [SSHKey], dictationStore: DictationStore) -> GrandLineBackup {
         let referencedKeyIDs = Set(hosts.compactMap { $0.keyID })
         let keys = allKeys.filter { referencedKeyIDs.contains($0.id) }
-        return GrandLineBackup(hosts: hosts, snippets: snippets, keys: keys, settings: .fromCurrent())
+        return GrandLineBackup(hosts: hosts, snippets: snippets, keys: keys, settings: .fromCurrent(), dictation: .fromCurrent(store: dictationStore))
     }
 }
 
@@ -176,6 +232,14 @@ struct BackupSnippetDiffRow {
     var matchedLocalID: UUID?
 }
 
+/// A single bundled vocabulary word - `.changed` is never produced here (a
+/// word has no fields of its own to differ on, unlike a host/snippet), only
+/// `.new`/`.unchanged`.
+struct BackupVocabularyDiffRow {
+    var word: String
+    var status: BackupDiffStatus
+}
+
 enum BackupImport {
     struct Preview {
         var hostRows: [BackupHostDiffRow]
@@ -185,6 +249,12 @@ enum BackupImport {
         /// metadata is never written back into `SSHKeyStore` itself.
         var keyWarnings: [String]
         var settingsSummary: String
+        var vocabularyRows: [BackupVocabularyDiffRow]
+        /// `nil` when the bundle carries no shortcut at all (an old-format
+        /// bundle, see `GrandLineBackup.dictation`'s doc comment); otherwise
+        /// whether applying it would change what's currently configured.
+        var shortcutStatus: BackupDiffStatus?
+        var shortcutDisplay: String?
 
         var newHostsCount: Int { hostRows.filter { $0.status == .new }.count }
         var changedHostsCount: Int { hostRows.filter { $0.status == .changed }.count }
@@ -192,6 +262,8 @@ enum BackupImport {
         var newSnippetsCount: Int { snippetRows.filter { $0.status == .new }.count }
         var changedSnippetsCount: Int { snippetRows.filter { $0.status == .changed }.count }
         var unchangedSnippetsCount: Int { snippetRows.filter { $0.status == .unchanged }.count }
+        var newVocabularyCount: Int { vocabularyRows.filter { $0.status == .new }.count }
+        var unchangedVocabularyCount: Int { vocabularyRows.filter { $0.status == .unchanged }.count }
     }
 
     /// A real comparison against the machine's current state - never a
@@ -200,7 +272,7 @@ enum BackupImport {
     /// same host set), then falls back to a case-insensitive label match (a
     /// host/snippet recreated with a new id since the export still counts as
     /// "the same thing, possibly changed" rather than a duplicate).
-    static func diff(bundle: GrandLineBackup, existingHosts: [Host], existingSnippets: [Snippet], existingKeys: [SSHKey]) -> Preview {
+    static func diff(bundle: GrandLineBackup, existingHosts: [Host], existingSnippets: [Snippet], existingKeys: [SSHKey], existingVocabulary: [String] = [], existingShortcut: DictationShortcut? = nil) -> Preview {
         var hostRows: [BackupHostDiffRow] = []
         for bundleHost in bundle.hosts {
             if let match = existingHosts.first(where: { $0.id == bundleHost.id })
@@ -232,7 +304,24 @@ enum BackupImport {
             keyWarnings.append("\"\(bundleHost.label)\" references \(keyDesc), which isn't on this machine - re-add it from the Keys screen before connecting.")
         }
 
-        return Preview(hostRows: hostRows, snippetRows: snippetRows, keyWarnings: keyWarnings, settingsSummary: bundle.settings.summary)
+        var vocabularyRows: [BackupVocabularyDiffRow] = []
+        let existingVocabularyLower = Set(existingVocabulary.map { $0.lowercased() })
+        for word in bundle.dictation?.vocabulary ?? [] {
+            let status: BackupDiffStatus = existingVocabularyLower.contains(word.lowercased()) ? .unchanged : .new
+            vocabularyRows.append(BackupVocabularyDiffRow(word: word, status: status))
+        }
+
+        var shortcutStatus: BackupDiffStatus?
+        var shortcutDisplay: String?
+        if let bundleShortcut = bundle.dictation?.shortcut {
+            shortcutDisplay = bundleShortcut.displayString
+            shortcutStatus = (bundleShortcut == existingShortcut) ? .unchanged : .changed
+        }
+
+        return Preview(
+            hostRows: hostRows, snippetRows: snippetRows, keyWarnings: keyWarnings, settingsSummary: bundle.settings.summary,
+            vocabularyRows: vocabularyRows, shortcutStatus: shortcutStatus, shortcutDisplay: shortcutDisplay
+        )
     }
 
     /// Field-by-field comparison, deliberately skipping `id` (a rename-in-
@@ -253,7 +342,7 @@ enum BackupImport {
     /// valid. Unchanged items are left untouched. The bundle's settings
     /// subset is always applied, since the diff preview already showed it
     /// before this was called.
-    static func apply(_ preview: Preview, bundle: GrandLineBackup, hostStore: HostStore, snippetStore: SnippetStore) {
+    static func apply(_ preview: Preview, bundle: GrandLineBackup, hostStore: HostStore, snippetStore: SnippetStore, dictationStore: DictationStore? = nil) {
         for row in preview.hostRows {
             var host = row.bundleHost
             switch row.status {
@@ -279,5 +368,8 @@ enum BackupImport {
             }
         }
         bundle.settings.apply()
+        if let dictationStore {
+            bundle.dictation?.apply(to: dictationStore)
+        }
     }
 }

@@ -29,8 +29,8 @@ enum BackupUI {
     /// Export the live stores' state, to a destination the captain picks
     /// first. Shows counts (hosts/snippets/referenced keys) before the write,
     /// and a toast confirming what was written after.
-    static func exportFlow(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore) {
-        let bundle = GrandLineBackupBuilder.build(hosts: hostStore.hosts, snippets: snippetStore.snippets, allKeys: keyStore.keys)
+    static func exportFlow(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore) {
+        let bundle = GrandLineBackupBuilder.build(hosts: hostStore.hosts, snippets: snippetStore.snippets, allKeys: keyStore.keys, dictationStore: dictationStore)
 
         guard let destination = chooseDestination(
             in: viewController, verb: "Export", title: "Export Grand Line config",
@@ -59,7 +59,7 @@ enum BackupUI {
         // a temporary probe reading `panel.url` after `makeKeyAndOrderFront`.
         panel.nameFieldStringValue = "grand-line-backup"
         panel.allowedContentTypes = [backupContentType]
-        panel.message = summaryLine(hostCount: bundle.hosts.count, snippetCount: bundle.snippets.count, keyCount: bundle.keys.count)
+        panel.message = summaryLine(hostCount: bundle.hosts.count, snippetCount: bundle.snippets.count, keyCount: bundle.keys.count, vocabularyCount: bundle.dictation?.vocabulary?.count ?? 0)
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -90,10 +90,13 @@ enum BackupUI {
         }
     }
 
-    private static func summaryLine(hostCount: Int, snippetCount: Int, keyCount: Int) -> String {
+    private static func summaryLine(hostCount: Int, snippetCount: Int, keyCount: Int, vocabularyCount: Int) -> String {
         var bits = ["\(hostCount) host\(hostCount == 1 ? "" : "s")", "\(snippetCount) snippet\(snippetCount == 1 ? "" : "s")"]
         if keyCount > 0 {
             bits.append("\(keyCount) referenced key\(keyCount == 1 ? "" : "s") (metadata only - no private key material)")
+        }
+        if vocabularyCount > 0 {
+            bits.append("\(vocabularyCount) dictation vocabulary word\(vocabularyCount == 1 ? "" : "s")")
         }
         return "About to export: " + bits.joined(separator: ", ") + "."
     }
@@ -102,7 +105,7 @@ enum BackupUI {
     /// the live stores, and show that diff for confirmation before writing
     /// anything - identical downstream of the source, whether the bytes came
     /// from a local file or GitHub.
-    static func importFlow(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, onApplied: (() -> Void)? = nil) {
+    static func importFlow(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore, onApplied: (() -> Void)? = nil) {
         guard let source = chooseDestination(
             in: viewController, verb: "Import", title: "Import Grand Line config",
             localLabel: "Upload from Local…", githubLabel: "Import from \(GitHubBackupSource.destinationLabel)"
@@ -110,13 +113,13 @@ enum BackupUI {
 
         switch source {
         case .local:
-            importFromLocal(from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, onApplied: onApplied)
+            importFromLocal(from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore, onApplied: onApplied)
         case .github:
-            importFromGitHub(from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, onApplied: onApplied)
+            importFromGitHub(from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore, onApplied: onApplied)
         }
     }
 
-    private static func importFromLocal(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, onApplied: (() -> Void)?) {
+    private static func importFromLocal(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore, onApplied: (() -> Void)?) {
         let panel = NSOpenPanel()
         panel.title = "Import Grand Line Config"
         panel.prompt = "Choose"
@@ -134,7 +137,7 @@ enum BackupUI {
             presentError(error, in: viewController)
             return
         }
-        diffAndApply(bundle, from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, onApplied: onApplied)
+        diffAndApply(bundle, from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore, onApplied: onApplied)
     }
 
     /// Fetches the one fixed bundle GitHub export writes - no listing or
@@ -142,13 +145,13 @@ enum BackupUI {
     /// header). Runs off the main thread since it's a blocking network call;
     /// the diff/confirm alert (and everything downstream of it) runs back on
     /// the main thread exactly like the local-file path.
-    private static func importFromGitHub(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, onApplied: (() -> Void)?) {
+    private static func importFromGitHub(from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore, onApplied: (() -> Void)?) {
         Toast.show(in: viewController.view, message: "Fetching from \(GitHubBackupSource.destinationLabel)…")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let bundle = try GitHubBackupSource.fetchBundle()
                 DispatchQueue.main.async {
-                    diffAndApply(bundle, from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, onApplied: onApplied)
+                    diffAndApply(bundle, from: viewController, hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore, onApplied: onApplied)
                 }
             } catch {
                 DispatchQueue.main.async { presentError(error, in: viewController) }
@@ -158,13 +161,14 @@ enum BackupUI {
 
     /// The shared tail of both import paths: diff against the live stores,
     /// confirm, apply, toast.
-    private static func diffAndApply(_ bundle: GrandLineBackup, from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, onApplied: (() -> Void)?) {
+    private static func diffAndApply(_ bundle: GrandLineBackup, from viewController: NSViewController, hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, dictationStore: DictationStore, onApplied: (() -> Void)?) {
         let preview = BackupImport.diff(
-            bundle: bundle, existingHosts: hostStore.hosts, existingSnippets: snippetStore.snippets, existingKeys: keyStore.keys
+            bundle: bundle, existingHosts: hostStore.hosts, existingSnippets: snippetStore.snippets, existingKeys: keyStore.keys,
+            existingVocabulary: dictationStore.vocabulary, existingShortcut: AppSettings.shared.dictationShortcut
         )
 
         guard confirmImport(preview, in: viewController) else { return }
-        BackupImport.apply(preview, bundle: bundle, hostStore: hostStore, snippetStore: snippetStore)
+        BackupImport.apply(preview, bundle: bundle, hostStore: hostStore, snippetStore: snippetStore, dictationStore: dictationStore)
         let appliedHosts = preview.newHostsCount + preview.changedHostsCount
         let appliedSnippets = preview.newSnippetsCount + preview.changedSnippetsCount
         Toast.show(in: viewController.view, message: "Imported \(appliedHosts) host(s), \(appliedSnippets) snippet(s)")
@@ -218,6 +222,14 @@ enum BackupUI {
             "Snippets: \(preview.newSnippetsCount) new, \(preview.changedSnippetsCount) changed, \(preview.unchangedSnippetsCount) unchanged.",
             "Settings to apply: \(preview.settingsSummary).",
         ]
+        if !preview.vocabularyRows.isEmpty {
+            lines.append("Dictation vocabulary: \(preview.newVocabularyCount) new, \(preview.unchangedVocabularyCount) already present.")
+        }
+        if let shortcutDisplay = preview.shortcutDisplay {
+            lines.append(preview.shortcutStatus == .changed
+                ? "Dictation shortcut will change to \(shortcutDisplay)."
+                : "Dictation shortcut unchanged (\(shortcutDisplay)).")
+        }
         if !preview.keyWarnings.isEmpty {
             lines.append("\(preview.keyWarnings.count) host reference(s) point at a key not on this machine - see below.")
         }
@@ -240,6 +252,16 @@ enum BackupUI {
             lines.append("  (none in this file)")
         } else {
             for row in preview.snippetRows { lines.append("  [\(row.status.rawValue.uppercased())] \(row.label)") }
+        }
+        if !preview.vocabularyRows.isEmpty {
+            lines.append("")
+            lines.append("DICTATION VOCABULARY (\(preview.vocabularyRows.count))")
+            for row in preview.vocabularyRows { lines.append("  [\(row.status.rawValue.uppercased())] \(row.word)") }
+        }
+        if let shortcutDisplay = preview.shortcutDisplay, let shortcutStatus = preview.shortcutStatus {
+            lines.append("")
+            lines.append("DICTATION SHORTCUT")
+            lines.append("  [\(shortcutStatus.rawValue.uppercased())] \(shortcutDisplay)")
         }
         if !preview.keyWarnings.isEmpty {
             lines.append("")
