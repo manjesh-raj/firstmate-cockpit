@@ -122,10 +122,26 @@ final class DictationHotkey {
     /// combo) explicitly via the shortcut recorder.
     static let rightOptionKeyCode: UInt16 = 61
 
-    private var localFlagsMonitor: Any?
-    private var globalFlagsMonitor: Any?
-    private var localKeyMonitor: Any?
-    private var globalKeyMonitor: Any?
+    // Internal (not `private`), so `DictationHotkeySelfTest` can inspect
+    // which monitor tokens are actually installed after `start()`/
+    // `updateShortcut(_:)` - a structural check that a real monitor object
+    // exists for the mechanism the current shortcut needs, and that the
+    // *other* mechanism's monitors are torn down. This is what closes the
+    // real coverage gap this class's tests had before: every prior version
+    // of this self-test only drove `handle(_:)`/`handleKeyEvent(_:)`
+    // directly, which proves the hold/release *decision logic* is correct
+    // but never proves `start()` actually registered a live
+    // `NSEvent.addGlobalMonitorForEvents` monitor at all - a future edit
+    // that silently dropped the global registration (installed only the
+    // local monitor, say) would have kept passing every test that existed
+    // before. See `DictationHotkeySelfTest.swift`'s own header for the full
+    // reasoning and for what live, real-hardware verification (HID-level
+    // synthetic `CGEventPost`, run manually during this task, not part of
+    // this permanent self-test) additionally confirmed.
+    var localFlagsMonitor: Any?
+    var globalFlagsMonitor: Any?
+    var localKeyMonitor: Any?
+    var globalKeyMonitor: Any?
     private let onDown: () -> Void
     private let onUp: () -> Void
     private var isHeld = false

@@ -14,6 +14,43 @@
 // modifier-only Right ⌥ Option) fires `.keyDown`/`.keyUp`, not
 // `.flagsChanged`, so it needed its own synthetic-event coverage rather than
 // assuming the existing `handle(_:)` tests generalized.
+//
+// `fm/grandline-dictation-global-hotkey-and-theme-fixes` closed a real
+// coverage gap this file had until now: every test above drives
+// `handle(_:)`/`handleKeyEvent(_:)` directly, which proves the hold/release
+// *decision logic* is correct but never proves `start()`/`updateShortcut(_:)`
+// actually install a real `NSEvent.addGlobalMonitorForEvents` monitor at
+// all - a future edit that silently dropped the global registration (e.g.
+// installed only the local monitor for one of the two mechanisms) would
+// have kept passing every test that existed before this. Tests 10-12 below
+// close that gap structurally, by calling the real `start()`/
+// `updateShortcut(_:)`/`stop()` and inspecting the now-internal
+// `localFlagsMonitor`/`globalFlagsMonitor`/`localKeyMonitor`/
+// `globalKeyMonitor` tokens - confirming the correct pair is non-nil for
+// whichever mechanism the current shortcut needs, and that the *other*
+// mechanism's tokens are nil, at every stage of a modifier-only ->
+// regular-key -> modifier-only round trip (the exact "switching monitor
+// mechanisms" scenario this task's own brief suspected was broken).
+//
+// This does NOT (and structurally cannot, in a plain unit test) prove a
+// *global*, other-app-frontmost monitor actually receives real system
+// events - that needs a live process, real Accessibility trust, and a real
+// event source. That live proof was done manually during this task via
+// `CGEventPost` at the HID event-tap level (the same "indistinguishable
+// from real hardware" technique this codebase already uses for `SRELead`/
+// `AppLock` verification - see the "Verifying native UI bugs" convention in
+// AGENTS.md) against the real signed app, with a genuinely different
+// frontmost app (TextEdit): the default modifier-only shortcut fired
+// correctly with TextEdit frontmost, and a full modifier-only ->
+// regular-key -> modifier-only `updateShortcut` cycle fired correctly at
+// every stage, each confirmed with the real frontmost app re-verified
+// immediately before every synthetic keypress (an early, sloppier pass
+// without that immediate re-check produced one false negative, traced to
+// focus having reverted to Grand Line between the check and the keypress -
+// not a code defect). No genuine defect in `DictationHotkey`'s monitor
+// installation/switching was found; see `AGENTS.md`'s "Dictation" section
+// for the full write-up of what was tested and why the reported symptom
+// could not be reproduced against current `main`.
 
 import AppKit
 
@@ -172,6 +209,54 @@ enum DictationHotkeySelfTest {
             check(downCount == 1, "the old modifier-only shortcut must stop firing after updateShortcut", &ok)
             hotkey.handleKeyEvent(keyEvent(type: .keyDown, keyCode: 2, modifiers: [.command]))
             check(downCount == 2, "the new regular-key combo should fire via handleKeyEvent", &ok)
+        }
+
+        // 10. `start()` with the default modifier-only shortcut must install
+        //     BOTH the local and global `.flagsChanged` monitors (not just
+        //     the local one) - and must not leave any key-event monitor
+        //     installed.
+        do {
+            let hotkey = DictationHotkey(onDown: {}, onUp: {})
+            hotkey.start()
+            check(hotkey.localFlagsMonitor != nil, "start() must install a local flagsChanged monitor for a modifier-only shortcut", &ok)
+            check(hotkey.globalFlagsMonitor != nil, "start() must install a GLOBAL flagsChanged monitor for a modifier-only shortcut - this is the actual system-wide reach", &ok)
+            check(hotkey.localKeyMonitor == nil, "a modifier-only shortcut must not install a local key monitor", &ok)
+            check(hotkey.globalKeyMonitor == nil, "a modifier-only shortcut must not install a global key monitor", &ok)
+            hotkey.stop()
+        }
+
+        // 11. `updateShortcut` to a regular-key combo must tear down the
+        //     flagsChanged monitors and install BOTH local and global
+        //     key-event monitors.
+        do {
+            let hotkey = DictationHotkey(onDown: {}, onUp: {})
+            hotkey.start()
+            let combo = DictationShortcut(keyCode: 2, modifierFlagsRaw: NSEvent.ModifierFlags.command.rawValue | NSEvent.ModifierFlags.shift.rawValue, isModifierOnly: false)
+            hotkey.updateShortcut(combo)
+            check(hotkey.localFlagsMonitor == nil, "switching to a regular-key combo must tear down the local flagsChanged monitor", &ok)
+            check(hotkey.globalFlagsMonitor == nil, "switching to a regular-key combo must tear down the GLOBAL flagsChanged monitor", &ok)
+            check(hotkey.localKeyMonitor != nil, "switching to a regular-key combo must install a local key monitor", &ok)
+            check(hotkey.globalKeyMonitor != nil, "switching to a regular-key combo must install a GLOBAL key monitor - this is the actual system-wide reach for a recorded combo", &ok)
+            hotkey.stop()
+        }
+
+        // 12. Switching back to a modifier-only shortcut must reinstall the
+        //     flagsChanged monitors and tear down the key monitors - a full
+        //     round trip, the exact "switching monitor mechanisms" scenario
+        //     this task's own brief suspected could silently drop the global
+        //     monitor.
+        do {
+            let hotkey = DictationHotkey(onDown: {}, onUp: {})
+            hotkey.start()
+            let combo = DictationShortcut(keyCode: 2, modifierFlagsRaw: NSEvent.ModifierFlags.command.rawValue, isModifierOnly: false)
+            hotkey.updateShortcut(combo)
+            hotkey.updateShortcut(.defaultShortcut)
+            check(hotkey.localFlagsMonitor != nil, "switching back to modifier-only must reinstall the local flagsChanged monitor", &ok)
+            check(hotkey.globalFlagsMonitor != nil, "switching back to modifier-only must reinstall the GLOBAL flagsChanged monitor", &ok)
+            check(hotkey.localKeyMonitor == nil, "switching back to modifier-only must tear down the local key monitor", &ok)
+            check(hotkey.globalKeyMonitor == nil, "switching back to modifier-only must tear down the GLOBAL key monitor", &ok)
+            hotkey.stop()
+            check(hotkey.localFlagsMonitor == nil && hotkey.globalFlagsMonitor == nil, "stop() must tear down every monitor", &ok)
         }
 
         return ok

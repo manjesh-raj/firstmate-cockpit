@@ -103,6 +103,22 @@ final class VaultController: NSViewController {
     private let checkBackupButton = NSButton()
     private let recipeSpinner = NSProgressIndicator()
     private var isRecipeBusy = false
+    // Bug fix (fm/grandline-dictation-global-hotkey-and-theme-fixes):
+    // `recipeDetailLabel.textColor` used to be set directly, ad hoc, at each
+    // call site (construction, busy/status updates, the two error paths) -
+    // using whatever `theme` was current AT THAT MOMENT, with nothing ever
+    // re-deriving it when the theme later changed. A captain who switched
+    // themes without touching this card again (the common case) was left
+    // with a color computed against the *previous* theme rendered on the
+    // *current* one - a captain screenshot showed this as the card's
+    // description text barely legible against a light theme. Tracking which
+    // color *category* the label is currently showing (not the literal
+    // color) lets `applyTheme()` re-derive the right one from the current
+    // theme on every change, the same way every other label on this page
+    // already does.
+    private var recipeLabelKind: RecipeLabelKind = .info
+
+    private enum RecipeLabelKind { case info, warn, error }
 
     private var secrets: [VaultSecret] = []
     private var tools: [VaultTool] = []
@@ -308,7 +324,7 @@ final class VaultController: NSViewController {
         recipeDetailLabel.font = .systemFont(ofSize: 11.5)
         recipeDetailLabel.preferredMaxLayoutWidth = 700
         recipeDetailLabel.stringValue = "Records which secrets and tools are hardened right now - names and launcher metadata only, never a secret value - so the same setup can be replayed as a checklist after a fresh machine or wipe."
-        recipeDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        setRecipeLabelColor(.info)
         recipeDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // `ShiftPanelView.setBody` pins its argument flush to the body
@@ -593,7 +609,7 @@ final class VaultController: NSViewController {
         guard !isRecipeBusy else { return }
         guard let repoPath = VaultRecipeGit.resolveRepoPath() else {
             recipeDetailLabel.stringValue = "No local manjesh-config clone found yet - set it up from Bootstrap's \u{201c}Dotfiles & machine config\u{201d} card first."
-            recipeDetailLabel.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+            setRecipeLabelColor(.warn)
             return
         }
         setRecipeBusy(true, status: "Exporting recipe\u{2026}")
@@ -604,7 +620,7 @@ final class VaultController: NSViewController {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.setRecipeBusy(false, status: result.message)
-                self.recipeDetailLabel.textColor = result.ok ? HelmTheme.mutedInk(self.theme) : HelmTheme.nsColor(self.theme.ansiHex[1])
+                self.setRecipeLabelColor(result.ok ? .info : .error)
                 if result.ok {
                     Toast.show(in: self.view, message: "Vault recipe exported")
                 }
@@ -616,7 +632,7 @@ final class VaultController: NSViewController {
         guard !isRecipeBusy else { return }
         guard let repoPath = VaultRecipeGit.resolveRepoPath() else {
             recipeDetailLabel.stringValue = "No local manjesh-config clone found yet - set it up from Bootstrap's \u{201c}Dotfiles & machine config\u{201d} card first."
-            recipeDetailLabel.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+            setRecipeLabelColor(.warn)
             return
         }
         setRecipeBusy(true, status: "Checking against backup\u{2026}")
@@ -645,7 +661,20 @@ final class VaultController: NSViewController {
         recipeSpinner.isHidden = !busy
         if busy { recipeSpinner.startAnimation(nil) } else { recipeSpinner.stopAnimation(nil) }
         recipeDetailLabel.stringValue = status
-        recipeDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        setRecipeLabelColor(.info)
+    }
+
+    private func setRecipeLabelColor(_ kind: RecipeLabelKind) {
+        recipeLabelKind = kind
+        recipeDetailLabel.textColor = recipeLabelColor(for: kind)
+    }
+
+    private func recipeLabelColor(for kind: RecipeLabelKind) -> NSColor {
+        switch kind {
+        case .info: return HelmTheme.mutedInk(theme)
+        case .warn: return HelmTheme.nsColor(theme.ansiHex[3])
+        case .error: return HelmTheme.nsColor(theme.ansiHex[1])
+        }
     }
 
     private func presentInjectSheet(preselected: String?) {
@@ -678,6 +707,10 @@ final class VaultController: NSViewController {
         secretsPanel.applyTheme(theme)
         toolsPanel.applyTheme(theme)
         recipePanel.applyTheme(theme)
+        // Re-derive from the *current* theme, not whatever theme was active
+        // when this label's color was last set - see `recipeLabelKind`'s own
+        // doc comment for the bug this closes.
+        recipeDetailLabel.textColor = recipeLabelColor(for: recipeLabelKind)
     }
 }
 
