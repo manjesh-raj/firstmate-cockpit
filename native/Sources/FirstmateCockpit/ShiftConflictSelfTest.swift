@@ -46,7 +46,7 @@ enum ShiftConflictSelfTest {
         func seedRemoteWithTask(_ remote: URL, id: String, title: String) {
             let seedDir = scratch.appendingPathComponent("seed-\(UUID().uuidString)", isDirectory: true)
             _ = shell("/usr/bin/git", ["clone", remote.path, seedDir.path])
-            let taskFile = seedDir.appendingPathComponent("personal-tasks/tasks/active.yaml")
+            let taskFile = seedDir.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml")
             try? fm.createDirectory(at: taskFile.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? writeTaskYaml([ShiftTask(
                 id: id, title: title, description: "", status: .todo, priority: .normal,
@@ -100,7 +100,7 @@ enum ShiftConflictSelfTest {
             var bTasks = readTasks(bFile)
             bTasks[0].title = "Title edited on B"
             try? writeTaskYaml(bTasks, to: bFile)
-            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "personal-tasks"])
+            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "GrandLineDocs/personal-tasks"])
             _ = shell("/usr/bin/git", ["-C", wtB.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "B's title edit"])
 
             let pullOutcome = syncB.pullNow()
@@ -142,7 +142,7 @@ enum ShiftConflictSelfTest {
             // fresh from it - a real push, not just a local commit.
             let freshCheck = scratch.appendingPathComponent("wt-conflict-freshcheck", isDirectory: true)
             _ = shell("/usr/bin/git", ["clone", remote.path, freshCheck.path])
-            let freshTasks = readTasks(freshCheck.appendingPathComponent("personal-tasks/tasks/active.yaml"))
+            let freshTasks = readTasks(freshCheck.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml"))
             check(freshTasks.first?.title == "Title edited on A", "conflict scenario: the pushed remote should reflect the resolution too")
         }
 
@@ -185,7 +185,7 @@ enum ShiftConflictSelfTest {
                 updatedAt: "2026-01-02T00:00:00Z", completedAt: nil, notes: nil, subtasks: []
             ))
             try? writeTaskYaml(bTasks, to: bFile)
-            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "personal-tasks"])
+            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "GrandLineDocs/personal-tasks"])
             _ = shell("/usr/bin/git", ["-C", wtB.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "B's addition"])
 
             let pullOutcome = syncB.pullNow()
@@ -209,7 +209,7 @@ enum ShiftConflictSelfTest {
             // Verify the merge actually reached the remote.
             let freshCheck = scratch.appendingPathComponent("wt-automerge-freshcheck", isDirectory: true)
             _ = shell("/usr/bin/git", ["clone", remote.path, freshCheck.path])
-            let freshIDs = Set(readTasks(freshCheck.appendingPathComponent("personal-tasks/tasks/active.yaml")).map(\.id))
+            let freshIDs = Set(readTasks(freshCheck.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml")).map(\.id))
             check(freshIDs.isSuperset(of: ["added-by-a", "added-by-b", "base-task"]), "auto-merge scenario: the pushed remote should contain every record from both sides")
         }
 
@@ -243,7 +243,7 @@ enum ShiftConflictSelfTest {
             bTasks[0].priority = .low
             bTasks[0].notes = "B's own note"
             try? writeTaskYaml(bTasks, to: bFile)
-            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "personal-tasks"])
+            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "GrandLineDocs/personal-tasks"])
             _ = shell("/usr/bin/git", ["-C", wtB.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "B's priority edit"])
 
             _ = syncB.pullNow()

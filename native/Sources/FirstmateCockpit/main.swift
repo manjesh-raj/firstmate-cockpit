@@ -832,6 +832,15 @@ if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_METAL_FALLBACK_ONLY_TEST"
     exit(WhisperEngineSelfTest.runRealModelOnly() ? 0 : 1)
 }
 
+// `fm/grandline-docs-knowledge-foundation`: same convention, for
+// `DocsRunbookStore`'s CRUD/title-slug logic and `DocsKnowledgeSearch`'s
+// scoped search, plus (against a real disposable local bare repo, never
+// `manjesh-config`) `ShiftGitSync`'s repo-layout migration - see
+// DocsRunbookDataSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_DOCS_RUNBOOK_TESTS"] == "1" {
+    exit(DocsRunbookDataSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

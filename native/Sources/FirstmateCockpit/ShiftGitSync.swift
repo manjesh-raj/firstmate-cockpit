@@ -3,8 +3,19 @@
 // Git-backed sync for Shift's data (cockpit-shift-git-sync, phase 4 of the
 // Shift build - see AGENTS.md's "Shift" section for phases 1-3). The
 // captain's decision, already made and not relitigated here: Shift's YAML
-// files live in a new `personal-tasks/` folder inside the existing
+// files live in a `personal-tasks/` folder inside the existing
 // `manjesh-config` GitHub repo, not a separate dedicated repo.
+//
+// `fm/grandline-docs-knowledge-foundation` moved that folder under a new
+// shared `GrandLineDocs/` parent (alongside `GrandLineDocs/runbooks/`, see
+// `DocsRunbookSync.swift`) so every piece of data this app syncs to
+// `manjesh-config` lives in one place - `Self.shiftSubpath` is the one
+// constant that changed, plus a one-time, self-healing repo-layout migration
+// (`migrateRepoLayoutIfNeeded()`) that `git mv`s an old top-level
+// `personal-tasks/` into `GrandLineDocs/personal-tasks/` the first time any
+// client with this code clones/pulls a repo still in the old layout - it
+// never re-fires once any client has pushed the move, since the new location
+// then already exists in every later clone.
 //
 // This reuses the exact shape `DotfilesData.swift` already established for a
 // local-clone-plus-shell-`git` workflow (clone / `pull --ff-only` / plain
@@ -37,10 +48,15 @@ final class ShiftGitSync {
         case conflict(fileCount: Int)
     }
 
-    /// `personal-tasks/` inside the local working tree - what `ShiftStore`
-    /// actually reads/writes.
+    /// `GrandLineDocs/personal-tasks/` inside the local working tree - what
+    /// `ShiftStore` actually reads/writes. See `Self.shiftSubpath`.
     let dataRoot: URL
     let workingTree: URL
+
+    /// The one place the repo-relative path to Shift's data lives - every
+    /// `git add`/`git status`/`git show <ref>:<path>` call below is scoped to
+    /// this, never a second hardcoded literal.
+    static let shiftSubpath = "GrandLineDocs/personal-tasks"
     private let remoteURL: String
     private let branch: String
     private let debounceInterval: TimeInterval
@@ -50,6 +66,17 @@ final class ShiftGitSync {
     /// the simplest way to make "cancel the pending debounced commit, then
     /// schedule a new one" race-free without a separate lock.
     private let queue: DispatchQueue
+
+    /// Lets `DocsRunbookGitSync` (`DocsRunbookData.swift`) serialize its own
+    /// git invocations through this SAME queue against this SAME
+    /// `workingTree` - both Shift's `personal-tasks/` and the Runbooks
+    /// store's `runbooks/` live in one shared clone of `manjesh-config`
+    /// (see this file's own header), and two independent serial queues
+    /// issuing `git` subprocesses against the same working tree at once could
+    /// race on `.git/index.lock`. Only `.shared`'s queue is meant to be reused
+    /// this way - a disposable test instance still gets its own isolated
+    /// queue/working tree.
+    var sharedQueue: DispatchQueue { queue }
 
     private(set) var status: Status = .synced
     private var statusHandlers: [(Status) -> Void] = []
@@ -84,7 +111,7 @@ final class ShiftGitSync {
         migratesLegacyData: Bool = false
     ) {
         self.workingTree = workingTree
-        self.dataRoot = workingTree.appendingPathComponent("personal-tasks", isDirectory: true)
+        self.dataRoot = workingTree.appendingPathComponent(Self.shiftSubpath, isDirectory: true)
         self.remoteURL = remoteURL
         self.branch = branch
         self.debounceInterval = debounceInterval
@@ -243,7 +270,7 @@ final class ShiftGitSync {
                 setStatus(.failed("Could not clone \(remoteURL): \(clone.stderr.isEmpty ? "unknown error" : clone.stderr). Working locally offline."))
                 return false
             }
-            salvageRacedLocalWrites(from: workingTree.appendingPathComponent("personal-tasks"), into: tempClone.appendingPathComponent("personal-tasks"))
+            salvageRacedLocalWrites(from: workingTree.appendingPathComponent(Self.shiftSubpath), into: tempClone.appendingPathComponent(Self.shiftSubpath))
             try? fm.removeItem(at: workingTree)
             do {
                 try fm.moveItem(at: tempClone, to: workingTree)
@@ -252,6 +279,7 @@ final class ShiftGitSync {
                 return false
             }
         }
+        migrateRepoLayoutIfNeeded()
         try? fm.createDirectory(at: dataRoot, withIntermediateDirectories: true)
         if migratesLegacyData { migrateLegacyDataIfNeeded() }
         let dirty = !uncommittedFiles().isEmpty
@@ -293,6 +321,72 @@ final class ShiftGitSync {
         }
     }
 
+    /// Migrates the *repo's own* layout from a top-level `personal-tasks/`
+    /// folder (every Shift git-sync task before `fm/grandline-docs-knowledge-
+    /// foundation`) to `GrandLineDocs/personal-tasks/` - a real `git mv`,
+    /// committed and pushed immediately, not just a local rename. Runs
+    /// unconditionally (not gated by `migratesLegacyData`, unlike the local-
+    /// folder migration below) since this is about the shape of whatever repo
+    /// `remoteURL` points at, not about this one machine's own app-support
+    /// folder - a disposable test repo seeded with the old layout needs this
+    /// to fire too, which is exactly how this migration's own self-test
+    /// verifies it before it ever touches the real `manjesh-config` repo.
+    /// Self-limiting: it only does anything when the OLD top-level folder
+    /// exists and the NEW location doesn't yet, so once any one client has
+    /// pushed the move, every later clone already reflects it and this
+    /// becomes a permanent no-op.
+    private func migrateRepoLayoutIfNeeded() {
+        let fm = FileManager.default
+        let oldTop = workingTree.appendingPathComponent("personal-tasks", isDirectory: true)
+        guard fm.fileExists(atPath: oldTop.appendingPathComponent("tasks/active.yaml").path) else { return }
+        guard !fm.fileExists(atPath: dataRoot.appendingPathComponent("tasks/active.yaml").path) else { return }
+        setStatus(.syncing)
+        let newParent = workingTree.appendingPathComponent("GrandLineDocs", isDirectory: true)
+        try? fm.createDirectory(at: newParent, withIntermediateDirectories: true)
+        // A plain `git mv personal-tasks GrandLineDocs/personal-tasks` is
+        // only a straight rename when the destination does NOT already exist
+        // as a directory - if it does (confirmed live: `ShiftStore.init()`'s
+        // own premature-write race, documented above in `ensureWorkingTreeNow`,
+        // can salvage a lone `settings.yaml` into this exact new dataRoot
+        // path *before* this migration ever runs), `git mv` instead nests the
+        // whole source directory one level too deep
+        // (`GrandLineDocs/personal-tasks/personal-tasks/...`), silently -
+        // reproduced and confirmed against a real disposable repo before this
+        // fix, see the PR description. Moving each child of the old
+        // directory individually side-steps that ambiguity entirely: each
+        // child's destination is a normal file-or-directory rename, never a
+        // "does the whole destination already exist" question.
+        if fm.fileExists(atPath: dataRoot.path) {
+            guard let children = try? fm.contentsOfDirectory(atPath: oldTop.path) else {
+                setStatus(.failed("Could not list \(oldTop.path) to migrate it under GrandLineDocs/"))
+                return
+            }
+            for child in children {
+                let mv = runGit(["mv", "personal-tasks/\(child)", "\(Self.shiftSubpath)/\(child)"], cwd: workingTree, authenticated: false)
+                guard mv.status == 0 else {
+                    setStatus(.failed("Could not migrate personal-tasks/\(child) under GrandLineDocs/: \(mv.stderr.isEmpty ? "unknown error" : mv.stderr)"))
+                    return
+                }
+            }
+            // `git mv` only ever touched files, so the now-empty
+            // `personal-tasks/` directory itself needs no further git
+            // action - an empty directory isn't tracked by git at all.
+            try? fm.removeItem(at: oldTop)
+        } else {
+            let mv = runGit(["mv", "personal-tasks", Self.shiftSubpath], cwd: workingTree, authenticated: false)
+            guard mv.status == 0 else {
+                setStatus(.failed("Could not migrate personal-tasks/ under GrandLineDocs/: \(mv.stderr.isEmpty ? "unknown error" : mv.stderr)"))
+                return
+            }
+        }
+        let commit = runGit(["commit", "-m", "Move personal-tasks/ under GrandLineDocs/"], cwd: workingTree, authenticated: false)
+        guard commit.status == 0 else {
+            setStatus(.failed("Could not commit the GrandLineDocs/ layout migration: \(commit.stderr.isEmpty ? "unknown error" : commit.stderr)"))
+            return
+        }
+        _ = pushOnly()
+    }
+
     /// The old, non-git `ShiftStore.resolveRoot()` default from phases 1-3.
     /// Copied here (not imported from `ShiftStore`) since that file's default
     /// changed - see `ShiftStore.resolveRoot()`'s own doc comment.
@@ -323,8 +417,8 @@ final class ShiftGitSync {
         try? fm.moveItem(at: legacy, to: migratedMarker)
     }
 
-    /// `git add -A -- personal-tasks && git commit && git push`, scoped
-    /// deliberately to just the `personal-tasks/` subtree so a commit here
+    /// `git add -A -- GrandLineDocs/personal-tasks && git commit && git push`,
+    /// scoped deliberately to just Shift's own subtree so a commit here
     /// can never pick up unrelated content that might exist elsewhere in this
     /// clone. A commit that succeeds locally but fails to push (offline, bad
     /// auth, remote has diverged) leaves `status` at `.failed` while the
@@ -344,7 +438,7 @@ final class ShiftGitSync {
             return pushOnly()
         }
         setStatus(.syncing)
-        let add = runGit(["add", "-A", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        let add = runGit(["add", "-A", "--", Self.shiftSubpath], cwd: workingTree, authenticated: false)
         guard add.status == 0 else {
             setStatus(.failed("git add failed: \(add.stderr)"))
             return false
@@ -543,7 +637,7 @@ final class ShiftGitSync {
             setStatus(.failed("Could not write resolved files: \(error)"))
             return false
         }
-        let add = runGit(["add", "-A", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        let add = runGit(["add", "-A", "--", Self.shiftSubpath], cwd: workingTree, authenticated: false)
         guard add.status == 0 else {
             _ = runGit(["merge", "--abort"], cwd: workingTree, authenticated: false)
             setStatus(.failed("git add failed: \(add.stderr)"))
@@ -562,7 +656,7 @@ final class ShiftGitSync {
     /// reflects the true current local state before a 3-way comparison.
     private func commitLocalIfDirty() {
         guard !uncommittedFiles().isEmpty else { return }
-        _ = runGit(["add", "-A", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        _ = runGit(["add", "-A", "--", Self.shiftSubpath], cwd: workingTree, authenticated: false)
         _ = runGit(["commit", "-m", "Shift: local changes before conflict resolution"], cwd: workingTree, authenticated: false)
     }
 
@@ -579,7 +673,7 @@ final class ShiftGitSync {
     private func computeConflictSet(base: String) -> ShiftConflictSet {
         var set = ShiftConflictSet()
 
-        let taskPath = "personal-tasks/tasks/active.yaml"
+        let taskPath = "\(Self.shiftSubpath)/tasks/active.yaml"
         let taskMerge = ShiftThreeWayMerge.run(
             kind: .task,
             base: loadRecords(ref: base, path: taskPath, key: "tasks", parse: ShiftYaml.task),
@@ -589,7 +683,7 @@ final class ShiftGitSync {
         set.taskConflicts = taskMerge.conflicts
         set.resolvedTasks = taskMerge.resolved
 
-        let followUpPath = "personal-tasks/follow-ups/follow-ups.yaml"
+        let followUpPath = "\(Self.shiftSubpath)/follow-ups/follow-ups.yaml"
         let followUpMerge = ShiftThreeWayMerge.run(
             kind: .followUp,
             base: loadRecords(ref: base, path: followUpPath, key: "follow_ups", parse: ShiftYaml.followUp),
@@ -599,7 +693,7 @@ final class ShiftGitSync {
         set.followUpConflicts = followUpMerge.conflicts
         set.resolvedFollowUps = followUpMerge.resolved
 
-        let projectPath = "personal-tasks/projects/projects.yaml"
+        let projectPath = "\(Self.shiftSubpath)/projects/projects.yaml"
         let projectMerge = ShiftThreeWayMerge.run(
             kind: .project,
             base: loadRecords(ref: base, path: projectPath, key: "projects", parse: ShiftYaml.project),
@@ -624,11 +718,11 @@ final class ShiftGitSync {
         return arr.compactMap(parse)
     }
 
-    /// `git status --short -- personal-tasks` lines - what decides whether
+    /// `git status --short -- GrandLineDocs/personal-tasks` lines - what decides whether
     /// there's anything worth committing, and what `.localChanges` actually
     /// means (never a timer-driven guess).
     private func uncommittedFiles() -> [String] {
-        let result = runGit(["status", "--short", "--", "personal-tasks"], cwd: workingTree, authenticated: false)
+        let result = runGit(["status", "--short", "--", Self.shiftSubpath], cwd: workingTree, authenticated: false)
         return result.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
