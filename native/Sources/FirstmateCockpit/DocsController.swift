@@ -121,6 +121,15 @@ final class DocsController: NSViewController {
 
         let tabBar = buildTabBar()
         root.addSubview(tabBar)
+        // `bar`'s anchors reference `view` (this method's `root`), so this
+        // must run only after `tabBar` is actually in `root`'s view
+        // hierarchy - see `buildTabBar()`'s own doc comment on the
+        // "no common ancestor" exception this used to throw.
+        NSLayoutConstraint.activate([
+            tabBar.topAnchor.constraint(equalTo: root.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+        ])
 
         buildPlaybookContainer()
         buildRunbooksContainer()
@@ -216,9 +225,17 @@ final class DocsController: NSViewController {
             row.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: -1),
         ])
 
-        bar.topAnchor.constraint(equalTo: view.topAnchor).isActive = true
-        bar.leadingAnchor.constraint(equalTo: view.leadingAnchor).isActive = true
-        bar.trailingAnchor.constraint(equalTo: view.trailingAnchor).isActive = true
+        // `bar`'s own top/leading/trailing anchors are constrained against
+        // `self.view` by the caller (`loadView()`), AFTER `bar` has actually
+        // been added as a subview of `view` - activating a constraint whose
+        // two anchors don't yet share a common ancestor throws a real
+        // NSGenericException ("no common ancestor"), and since this runs
+        // during the `applicationDidFinishLaunching` notification dispatch,
+        // AppKit silently swallows that exception (logs it, doesn't crash),
+        // aborting the whole method - the window is never shown, with no
+        // visible error. Confirmed live via the unified log's exception
+        // backtrace (grandline-docs-no-window-fix) - this was a real,
+        // reproduced regression, not a hypothetical one.
         return bar
     }
 
