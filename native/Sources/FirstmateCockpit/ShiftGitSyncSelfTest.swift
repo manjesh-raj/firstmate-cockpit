@@ -46,7 +46,7 @@ enum ShiftGitSyncSelfTest {
         func seedRemote(_ remote: URL) {
             let seedDir = scratch.appendingPathComponent("seed-\(UUID().uuidString)", isDirectory: true)
             _ = shell("/usr/bin/git", ["clone", remote.path, seedDir.path])
-            let personalTasks = seedDir.appendingPathComponent("personal-tasks", isDirectory: true)
+            let personalTasks = seedDir.appendingPathComponent("GrandLineDocs/personal-tasks", isDirectory: true)
             try? fm.createDirectory(at: personalTasks, withIntermediateDirectories: true)
             try? "seed".write(to: personalTasks.appendingPathComponent(".keep"), atomically: true, encoding: .utf8)
             _ = shell("/usr/bin/git", ["-C", seedDir.path, "add", "-A"])
@@ -239,7 +239,7 @@ enum ShiftGitSyncSelfTest {
             // genuine divergence from origin once B tries to sync.
             let bFile = syncB.dataRoot.appendingPathComponent("tasks/active.yaml")
             writeTaskFile("tasks:\n  - id: from-b\n", to: bFile)
-            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "personal-tasks"])
+            _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "GrandLineDocs/personal-tasks"])
             _ = shell("/usr/bin/git", ["-C", wtB.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "B's own local commit"])
 
             let bCommitsBefore = commitCount(wtB)
@@ -250,6 +250,104 @@ enum ShiftGitSyncSelfTest {
             check(bCommitsBefore == bCommitsAfter, "a diverged pull must not add, drop, or rewrite any local commit")
             let bContent = try? String(contentsOf: bFile, encoding: .utf8)
             check(bContent?.contains("from-b") == true, "B's own local edit must survive a diverged pull untouched")
+        }
+
+        // MARK: 7. Repo-layout migration (fm/grandline-docs-knowledge-
+        // foundation): a remote still on the OLD top-level `personal-tasks/`
+        // layout gets `git mv`'d to `GrandLineDocs/personal-tasks/` on first
+        // clone, with zero data loss, and never re-fires on a later clone.
+
+        do {
+            let remote = makeBareRemote(name: "remote-layout-migration")
+            // Seed with the OLD layout directly (not via seedRemote, which
+            // already seeds the NEW layout) - real task content, not just a
+            // `.keep` file, to prove zero data loss.
+            let seedDir = scratch.appendingPathComponent("seed-old-layout-\(UUID().uuidString)", isDirectory: true)
+            _ = shell("/usr/bin/git", ["clone", remote.path, seedDir.path])
+            let oldTasks = seedDir.appendingPathComponent("personal-tasks", isDirectory: true)
+            writeTaskFile("tasks:\n  - id: pre-migration-task\n    title: \"Survives the move\"\n", to: oldTasks.appendingPathComponent("tasks/active.yaml"))
+            writeTaskFile("follow_ups: []\n", to: oldTasks.appendingPathComponent("follow-ups/follow-ups.yaml"))
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "add", "-A"])
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "seed old layout"])
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "push", "origin", "main"])
+
+            let wt = scratch.appendingPathComponent("wt-layout-migration", isDirectory: true)
+            let sync = ShiftGitSync(workingTree: wt, remoteURL: remote.path, debounceInterval: 0.2, periodicPullInterval: 999_999)
+            check(sync.ensureWorkingTreeNow(), "layout migration: clone of an old-layout remote should still succeed")
+            waitForSynced(sync)
+            check(fm.fileExists(atPath: wt.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml").path),
+                  "layout migration: data should now live at GrandLineDocs/personal-tasks/ locally")
+            check(!fm.fileExists(atPath: wt.appendingPathComponent("personal-tasks").path),
+                  "layout migration: the old top-level personal-tasks/ should be gone after git mv")
+            let movedContent = try? String(contentsOf: sync.dataRoot.appendingPathComponent("tasks/active.yaml"), encoding: .utf8)
+            check(movedContent?.contains("pre-migration-task") == true, "layout migration: the real task content must survive the move with zero loss")
+
+            // Confirm the move landed on the remote too (re-clone fresh).
+            let freshClone = scratch.appendingPathComponent("fresh-after-layout-migration", isDirectory: true)
+            _ = shell("/usr/bin/git", ["clone", remote.path, freshClone.path])
+            check(fm.fileExists(atPath: freshClone.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml").path),
+                  "layout migration: the move must have been pushed to the remote, not just applied locally")
+            check(!fm.fileExists(atPath: freshClone.appendingPathComponent("personal-tasks").path),
+                  "layout migration: a fresh clone from the remote should never see the old top-level folder again")
+
+            // A second client cloning after the migration must NOT re-migrate
+            // or duplicate anything - it should just see the new layout.
+            let wt2 = scratch.appendingPathComponent("wt-layout-migration-second-client", isDirectory: true)
+            let sync2 = ShiftGitSync(workingTree: wt2, remoteURL: remote.path, debounceInterval: 0.2, periodicPullInterval: 999_999)
+            check(sync2.ensureWorkingTreeNow(), "layout migration: a second client cloning post-migration should succeed normally")
+            waitForSynced(sync2)
+            check(sync2.status == .synced, "layout migration: a second client's clone should settle to .synced with no further migration commit, got \(sync2.status)")
+            let secondClientContent = try? String(contentsOf: sync2.dataRoot.appendingPathComponent("tasks/active.yaml"), encoding: .utf8)
+            check(secondClientContent?.contains("pre-migration-task") == true, "layout migration: a second client should see the already-migrated data intact")
+        }
+
+        // MARK: 8. Repo-layout migration must not nest when the NEW dataRoot
+        // path already exists (e.g. a lone file salvaged there by
+        // `ShiftStore.init()`'s own premature-write race, documented in
+        // `ensureWorkingTreeNow`, landing before this migration runs) - a
+        // real bug this migration's own live verification against a
+        // disposable repo caught: a naive `git mv personal-tasks
+        // GrandLineDocs/personal-tasks` nests the whole old folder one level
+        // too deep (`GrandLineDocs/personal-tasks/personal-tasks/...`)
+        // whenever the destination directory already exists.
+
+        do {
+            let remote = makeBareRemote(name: "remote-layout-migration-race")
+            let seedDir = scratch.appendingPathComponent("seed-old-layout-race-\(UUID().uuidString)", isDirectory: true)
+            _ = shell("/usr/bin/git", ["clone", remote.path, seedDir.path])
+            let oldTasks = seedDir.appendingPathComponent("personal-tasks", isDirectory: true)
+            writeTaskFile("tasks:\n  - id: race-task\n    title: \"Survives a raced destination\"\n", to: oldTasks.appendingPathComponent("tasks/active.yaml"))
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "add", "-A"])
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "seed old layout"])
+            _ = shell("/usr/bin/git", ["-C", seedDir.path, "push", "origin", "main"])
+
+            let wt = scratch.appendingPathComponent("wt-layout-migration-race", isDirectory: true)
+            let sync = ShiftGitSync(workingTree: wt, remoteURL: remote.path, debounceInterval: 0.2, periodicPullInterval: 999_999)
+            // Simulate the exact race: a lone `settings.yaml` already sitting
+            // at the NEW dataRoot path, on disk, before `ensureWorkingTreeNow()`
+            // (and therefore the migration inside it) ever runs - exactly
+            // what `ShiftStore.init()`'s premature write can produce.
+            writeTaskFile("captain: \"test\"\n", to: sync.dataRoot.appendingPathComponent("settings.yaml"))
+
+            check(sync.ensureWorkingTreeNow(), "raced-destination migration: clone should still succeed")
+            waitForSynced(sync)
+            check(fm.fileExists(atPath: sync.dataRoot.appendingPathComponent("tasks/active.yaml").path),
+                  "raced-destination migration: the real task data should land directly at GrandLineDocs/personal-tasks/, not nested")
+            check(!fm.fileExists(atPath: wt.appendingPathComponent("GrandLineDocs/personal-tasks/personal-tasks").path),
+                  "raced-destination migration: must never produce a nested GrandLineDocs/personal-tasks/personal-tasks/ folder")
+            check(!fm.fileExists(atPath: wt.appendingPathComponent("personal-tasks").path),
+                  "raced-destination migration: the old top-level personal-tasks/ should be gone")
+            let content = try? String(contentsOf: sync.dataRoot.appendingPathComponent("tasks/active.yaml"), encoding: .utf8)
+            check(content?.contains("race-task") == true, "raced-destination migration: the real task content must survive with zero loss")
+            let settingsContent = try? String(contentsOf: sync.dataRoot.appendingPathComponent("settings.yaml"), encoding: .utf8)
+            check(settingsContent?.contains("captain") == true, "raced-destination migration: the pre-existing salvaged file at the new path must also survive, untouched")
+
+            let freshClone = scratch.appendingPathComponent("fresh-after-layout-migration-race", isDirectory: true)
+            _ = shell("/usr/bin/git", ["clone", remote.path, freshClone.path])
+            check(fm.fileExists(atPath: freshClone.appendingPathComponent("GrandLineDocs/personal-tasks/tasks/active.yaml").path),
+                  "raced-destination migration: the (non-nested) move must have been pushed to the remote")
+            check(!fm.fileExists(atPath: freshClone.appendingPathComponent("GrandLineDocs/personal-tasks/personal-tasks").path),
+                  "raced-destination migration: the remote itself must not carry a nested folder either")
         }
 
         if !failures.isEmpty {
