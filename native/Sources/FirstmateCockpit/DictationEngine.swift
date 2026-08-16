@@ -236,7 +236,51 @@ final class DictationEngine {
     /// `hardCeilingWorkItem`'s doc comment) - deliberately independent of
     /// this engine's own internal state, so it stays a real safety net even
     /// against a class of bug this task's own fix didn't anticipate.
-    private static let hardTranscribingCeiling: TimeInterval = finishTimeout + 5
+    ///
+    /// fm/grandline-dictation-long-utterance-status-race: this used to be a
+    /// single fixed constant (`finishTimeout + 5` = 13s) regardless of how
+    /// much audio was actually captured - live-reproduced (real mic, real
+    /// `say`-produced ~49s utterance, local Whisper engine enabled) that a
+    /// genuinely long recording can legitimately need more than 13s total
+    /// (Apple's own finalization wait plus, once the local Whisper engine is
+    /// enabled, `whisper_full`'s own processing - both scale with audio
+    /// length, not just a fixed cost). When that happens, this ceiling used
+    /// to fire *before* the real `finish(text:)` completion, forcing the
+    /// display to "Didn't catch that" even though the real pipeline went on
+    /// to succeed moments later (a correct transcript pasted and recorded to
+    /// history) - exactly the captain's reported symptom: history and the
+    /// visible status disagreeing, only for long utterances. Confirmed live
+    /// with Metal disabled (`FM_WHISPER_METAL_RESOURCES_OVERRIDE` pointed at
+    /// an empty directory, simulating slower-than-this-machine's-own
+    /// Metal-accelerated transcription): the ceiling fired at exactly 13s
+    /// while the real transcription was still running.
+    ///
+    /// `hardCeilingDuration(forCapturedAudioSeconds:)` below now scales this
+    /// ceiling with the recording's own captured duration instead of a fixed
+    /// number, so a longer recording gets a proportionally longer allowance
+    /// before it's considered "stuck" - see that method's own doc comment for
+    /// the reasoning and its limits. This is deliberately *not* the whole
+    /// fix: see `report(_:isCeilingTimeout:)`'s doc comment for the other
+    /// half - a late-but-real completion must still be able to correct an
+    /// already-shown ceiling-forced display, since no fixed (or even
+    /// duration-scaled) ceiling can rule out every legitimately-slow case
+    /// (a cold model load, thermal throttling, genuinely slower hardware).
+    private static func hardCeilingDuration(forCapturedAudioSeconds capturedAudioSeconds: TimeInterval) -> TimeInterval {
+        let baseline = finishTimeout + 5 // 13s - unchanged, so a short utterance's behavior is untouched.
+        // Live-measured on real Apple Silicon with Metal: a ~49s utterance's
+        // whole pipeline (Apple finalization + whisper transcription)
+        // completed in ~5-6s - so allowing the recording's own duration again,
+        // on top of the fixed baseline, is a generous multiple of that real
+        // measurement, comfortably covering realistic variance (slower
+        // hardware, thermal throttling, a cold model load) without waiting
+        // anywhere near what a full CPU-only Metal fallback would need (a
+        // distinct, much bigger performance problem - see this file's
+        // "Whisper engine" section in `CLAUDE.md` for the ~20x-realtime
+        // CPU-only cost that motivated adding Metal acceleration in the
+        // first place; no ceiling sized for interactive use should try to
+        // wait that out).
+        return baseline + max(0, capturedAudioSeconds)
+    }
 
     /// The exact `NSError` shape `SFSpeechRecognizer`'s `recognitionTask(with:)`
     /// completion reports when macOS's own system-level Dictation setting
@@ -279,28 +323,56 @@ final class DictationEngine {
     /// `lastReportedStatus` and arms/disarms `hardCeilingWorkItem` so every
     /// status transition (not just the ones this task happened to touch)
     /// keeps that watchdog correctly in sync.
-    private func report(_ status: DictationStatus) {
+    ///
+    /// fm/grandline-dictation-long-utterance-status-race: `onStatusChanged`
+    /// now carries a second `isCeilingTimeout` flag, `true` only for the one
+    /// call the hard ceiling itself makes when it gives up waiting. This is
+    /// the "supersede/correct" half of that task's fix (the other half is
+    /// `hardCeilingDuration(forCapturedAudioSeconds:)`'s duration-aware
+    /// scaling above): the ceiling firing does not mean the real pipeline
+    /// stopped - `finish(text:)`/`deliver(_:duration:)` keep running in the
+    /// background regardless and will call `report(_:)` again with the real
+    /// outcome once they complete, exactly like they already did before this
+    /// fix. What consumers need is a way to tell "this is a tentative
+    /// give-up, a real result may still follow" apart from "this is the real,
+    /// final outcome" - `DictationHUDController.handle(_:isCeilingTimeout:)`
+    /// is the one consumer that needed this distinction (it gates on
+    /// `wasActive` to tell a real completion apart from an unrelated
+    /// permission-button click - see that file's header - and used to clear
+    /// that flag on the ceiling's forced failure too, silently discarding any
+    /// later, real, successful completion). `DictationController`'s own
+    /// status card has no such gating and already showed the eventual real
+    /// correction unconditionally.
+    private func report(_ status: DictationStatus, isCeilingTimeout: Bool = false) {
         lastReportedStatus = status
         if status == .transcribing {
             hardCeilingWorkItem?.cancel()
+            let capturedAudioSeconds = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+            let ceiling = Self.hardCeilingDuration(forCapturedAudioSeconds: capturedAudioSeconds)
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self, self.lastReportedStatus == .transcribing else { return }
                 self.lastReportedStatus = .didNotCatchThat
-                self.onStatusChanged?(.didNotCatchThat)
+                self.onStatusChanged?(.didNotCatchThat, true)
             }
             hardCeilingWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.hardTranscribingCeiling, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + ceiling, execute: workItem)
         } else {
             hardCeilingWorkItem?.cancel()
             hardCeilingWorkItem = nil
         }
-        onStatusChanged?(status)
+        onStatusChanged?(status, isCeilingTimeout)
     }
 
     /// Fired on every state transition (recording start/stop, back to ready,
     /// a permission gap discovered at record time) - `DictationController`
     /// subscribes while visible so the page never shows a stale status.
-    var onStatusChanged: ((DictationStatus) -> Void)?
+    ///
+    /// The second parameter, `isCeilingTimeout`, is `true` only for the one
+    /// call `report(_:isCeilingTimeout:)`'s hard-ceiling watchdog itself
+    /// makes (see that method's doc comment) - every other call passes
+    /// `false`, including the real, final correction that always follows a
+    /// ceiling-forced display once the actual pipeline completes.
+    var onStatusChanged: ((DictationStatus, Bool) -> Void)?
 
     /// Fired with the final recognized text and real recording duration right
     /// after a successful paste (phase 2, fm/grandline-dictation-phase2) -

@@ -187,9 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // local+global monitors are still registered now regardless -
         // registering them is free and has nothing to do with whether the
         // grant exists yet.
-        dictationEngine.onStatusChanged = { [weak self] status in
+        dictationEngine.onStatusChanged = { [weak self] status, isCeilingTimeout in
             self?.appShell.setDictationEngineStatus(status)
-            self?.dictationHUD.handle(status)
+            self?.dictationHUD.handle(status, isCeilingTimeout: isCeilingTimeout)
         }
         // Phase 2: bias recognition toward the captain's personal vocabulary,
         // and record every successful (real, pasted) transcript into
@@ -831,7 +831,6 @@ if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_ENGINE_TESTS"] == "1" {
 if ProcessInfo.processInfo.environment["FM_RUN_WHISPER_METAL_FALLBACK_ONLY_TEST"] == "1" {
     exit(WhisperEngineSelfTest.runRealModelOnly() ? 0 : 1)
 }
-
 
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real

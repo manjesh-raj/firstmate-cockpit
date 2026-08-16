@@ -125,7 +125,31 @@ final class DictationHUDController {
 
     /// The one entry point - fed every `DictationStatus` the engine reports,
     /// exactly like `AppShellController.setDictationEngineStatus` already is.
-    func handle(_ status: DictationStatus) {
+    ///
+    /// `isCeilingTimeout` (fm/grandline-dictation-long-utterance-status-race)
+    /// is `true` only for the one `.didNotCatchThat` the engine's hard-ceiling
+    /// watchdog forces when it gives up waiting - see
+    /// `DictationEngine.report(_:isCeilingTimeout:)`'s doc comment. The real
+    /// pipeline keeps running in the background regardless of that forced
+    /// display and will report the true outcome once it completes, so
+    /// `wasActive` is deliberately left `true` in that one case instead of
+    /// being cleared like a genuine terminal status would - live-reproduced
+    /// (real mic, real long utterance, local Whisper engine, Metal disabled
+    /// to force slower-than-usual transcription) that clearing it here
+    /// silently discarded the later, real, successful completion: the HUD
+    /// showed "Didn't catch that" and then nothing, even though the
+    /// transcript was pasted and recorded to history moments later. Any
+    /// later status - success or a genuine failure - still correctly
+    /// supersedes this tentative display and clears `wasActive` for real,
+    /// exactly like today. The one accepted trade-off: if this specific
+    /// dictation attempt truly never completes (not just slow - genuinely
+    /// hung), `wasActive` stays `true` until the next `.recording`, so an
+    /// unrelated permission-button click on the Dictation page in that
+    /// narrow window could show one spurious "Pasted" flash - judged a far
+    /// smaller cosmetic risk than the bug this fixes, and a case the
+    /// existing hard ceiling already treats as "give up and show something,"
+    /// not "recover cleanly."
+    func handle(_ status: DictationStatus, isCeilingTimeout: Bool = false) {
         switch status {
         case .recording:
             wasActive = true
@@ -138,7 +162,9 @@ final class DictationHUDController {
             present(.cleaningUp)
         case .didNotCatchThat:
             guard wasActive else { return }
-            wasActive = false
+            if !isCeilingTimeout {
+                wasActive = false
+            }
             present(.failure("Didn't catch that"))
         case .systemDictationDisabled:
             guard wasActive else { return }
