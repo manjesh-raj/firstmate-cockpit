@@ -500,6 +500,16 @@ final class DocsController: NSViewController {
 
         buildRunbookEditor()
 
+        // `runbookEditorContainer` is a bare `NSView()` that never had this
+        // set - see AGENTS.md's "AppKit gotchas" entry (3)/(11) for the full
+        // mechanism: left at its default `true`, AppKit also synthesizes
+        // required constraints pinning the view to its zero-size initial
+        // frame, which fight the explicit fill constraints below the moment
+        // the window tries to grow, and a contentViewController-driven
+        // window resolves that by snapping its own frame back down instead
+        // of breaking either required constraint.
+        runbookEditorContainer.translatesAutoresizingMaskIntoConstraints = false
+
         runbooksContainer.addSubview(listStack)
         runbooksContainer.addSubview(runbookEditorContainer)
         NSLayoutConstraint.activate([
