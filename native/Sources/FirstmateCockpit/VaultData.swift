@@ -204,16 +204,19 @@ enum VaultSource {
 
     /// Fire-and-forget attempt to start Automic Vault's background approval
     /// service (its menu-bar app) - `open -a` launches it, or silently
-    /// no-ops if it's already running, and does not steal focus since a
-    /// menu-bar app runs with an accessory activation policy and no regular
-    /// window. Safe to call before the captain has unlocked anything - this
-    /// only starts Automic Vault's own helper, never touches this app's lock
-    /// state - and never blocks: `open` returns almost immediately
+    /// no-ops if it's already running. Passes `-g` (do not bring the app to
+    /// the foreground) - confirmed live that plain `open -a` activates
+    /// whatever it targets regardless of that app's own `LSUIElement`
+    /// setting, which is only about Dock/menu-bar presence, not activation -
+    /// without `-g` this visibly steals focus to Automic Vault on every
+    /// launch/relock. Safe to call before the captain has unlocked anything -
+    /// this only starts Automic Vault's own helper, never touches this app's
+    /// lock state - and never blocks: `open` returns almost immediately
     /// regardless of whether the launched app has finished starting.
     static func ensureServiceRunning() {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = ["-a", "Automic Vault"]
+        proc.arguments = ["-g", "-a", "Automic Vault"]
         proc.environment = childEnvironmentDict()
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
