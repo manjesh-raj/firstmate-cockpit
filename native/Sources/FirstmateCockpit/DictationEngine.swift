@@ -58,6 +58,7 @@ enum DictationStatus: Equatable {
     case needsAccessibility
     case recording
     case transcribing
+    case didNotCatchThat
 
     var title: String {
         switch self {
@@ -67,6 +68,7 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "Needs Accessibility access"
         case .recording: return "Recording…"
         case .transcribing: return "Transcribing…"
+        case .didNotCatchThat: return "Didn't catch that"
         }
     }
 
@@ -78,6 +80,7 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "Grand Line needs Accessibility access so the Right ⌥ Option shortcut works from any app, and so it can paste the result at your cursor."
         case .recording: return "Listening - release Right ⌥ Option to transcribe."
         case .transcribing: return "Turning your speech into text…"
+        case .didNotCatchThat: return "No speech was recognized that time - hold Right ⌥ Option and try again."
         }
     }
 
@@ -89,13 +92,14 @@ enum DictationStatus: Equatable {
         case .needsAccessibility: return "hand.raised.slash.fill"
         case .recording: return "waveform"
         case .transcribing: return "ellipsis.circle.fill"
+        case .didNotCatchThat: return "questionmark.circle.fill"
         }
     }
 
     var tint: HelmTint {
         switch self {
         case .ready: return .good
-        case .needsMicrophone, .needsSpeechRecognition, .needsAccessibility: return .warn
+        case .needsMicrophone, .needsSpeechRecognition, .needsAccessibility, .didNotCatchThat: return .warn
         case .recording, .transcribing: return .accent
         }
     }
@@ -181,6 +185,33 @@ final class DictationEngine {
     private(set) var isRecording = false
     private var isFinishing = false
 
+    /// The most recent non-empty transcript seen from *any* result while a
+    /// recognition is in flight - partial or final. Needed because a real,
+    /// live-reproduced `SFSpeechRecognizer` quirk (confirmed on-device, with
+    /// `shouldReportPartialResults = true` below) can deliver a non-final
+    /// result carrying the correct, complete transcript, then a *final*
+    /// result whose `bestTranscription.formattedString` is empty - most
+    /// reliably reproduced by holding the hotkey through a few seconds of
+    /// trailing silence after speech ends, a completely ordinary real usage
+    /// pattern. `finish(text:)` falls back to this instead of the (possibly
+    /// empty) final text so that a correctly recognized utterance is never
+    /// silently discarded. Reset at the start of every `beginCapture`.
+    private var bestTranscriptSeen = ""
+
+    /// Guards against waiting forever for a final result that may never
+    /// arrive - scheduled right after `endAudio()` in `stopRecording()`,
+    /// cancelled the moment `finish(text:)` actually runs (whether triggered
+    /// by a real final result, a real error, or this timeout itself).
+    private var finishTimeoutWorkItem: DispatchWorkItem?
+
+    /// Bounded wait, after the hotkey is released and `endAudio()` is called,
+    /// for a final result to arrive before finalizing with whatever transcript
+    /// (if any) has been seen so far. Chosen generously above the ~4-5s
+    /// trailing-silence gap that reliably reproduced the empty-final-result
+    /// quirk above, while still being far short of "the captain gives up and
+    /// assumes the app is broken."
+    private static let finishTimeout: TimeInterval = 8
+
     /// Fired on every state transition (recording start/stop, back to ready,
     /// a permission gap discovered at record time) - `DictationController`
     /// subscribes while visible so the page never shows a stale status.
@@ -237,12 +268,19 @@ final class DictationEngine {
     private func beginCapture(recognizer: SFSpeechRecognizer) {
         guard wantsToRecord, !isRecording else { return }
         let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = false
+        // Partial results are required, not optional: see `bestTranscriptSeen`
+        // above for the real, live-reproduced failure mode this fixes (a
+        // final result can arrive with an empty transcript even though an
+        // immediately-prior partial result had the real, correct one).
+        request.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
         recognitionRequest = request
         isFinishing = false
+        bestTranscriptSeen = ""
+        finishTimeoutWorkItem?.cancel()
+        finishTimeoutWorkItem = nil
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -266,9 +304,19 @@ final class DictationEngine {
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
-            if let result, result.isFinal {
-                self.finish(text: result.bestTranscription.formattedString)
+            if let result {
+                let text = result.bestTranscription.formattedString
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.bestTranscriptSeen = text
+                }
+                if result.isFinal {
+                    self.finish(text: text)
+                }
             } else if error != nil {
+                // A real error still might trail a good partial result (e.g.
+                // a transient no-speech-detected error after real words were
+                // already recognized) - `finish` falls back to
+                // `bestTranscriptSeen` rather than discarding it outright.
                 self.finish(text: nil)
             }
         }
@@ -286,19 +334,35 @@ final class DictationEngine {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         recognitionRequest?.endAudio()
+
+        // A final result can be delayed indefinitely (or, per the quirk
+        // `bestTranscriptSeen` exists for, arrive but carry no usable text) -
+        // this timeout is what turns "wait forever" into "finalize with
+        // whatever was actually heard, or say so honestly."
+        let workItem = DispatchWorkItem { [weak self] in self?.finish(text: nil) }
+        finishTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.finishTimeout, execute: workItem)
     }
 
     private func finish(text: String?) {
         guard !isFinishing else { return }
         isFinishing = true
+        finishTimeoutWorkItem?.cancel()
+        finishTimeoutWorkItem = nil
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
-        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Self.pasteAtCursor(text)
-            onTranscript?(text)
+
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let finalText = !trimmed.isEmpty ? text! : (bestTranscriptSeen.isEmpty ? nil : bestTranscriptSeen)
+
+        if let finalText {
+            Self.pasteAtCursor(finalText)
+            onTranscript?(finalText)
+            onStatusChanged?(DictationPermissions.currentStatus())
+        } else {
+            onStatusChanged?(.didNotCatchThat)
         }
-        onStatusChanged?(DictationPermissions.currentStatus())
     }
 
     /// Pastes `text` at the current cursor position in whichever app

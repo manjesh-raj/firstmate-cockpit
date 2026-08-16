@@ -271,7 +271,7 @@ final class DictationController: NSViewController {
         case .needsAccessibility:
             statusActionButton.title = "Request Accessibility Access"
             statusActionButton.isHidden = false
-        case .ready, .recording, .transcribing:
+        case .ready, .recording, .transcribing, .didNotCatchThat:
             statusActionButton.isHidden = true
         }
         applyTheme()
@@ -316,7 +316,7 @@ final class DictationController: NSViewController {
             // a grant made while this page wasn't frontmost. Re-check now
             // too, in case it was already granted (a no-op prompt).
             refresh()
-        case .ready, .recording, .transcribing:
+        case .ready, .recording, .transcribing, .didNotCatchThat:
             break
         }
     }
