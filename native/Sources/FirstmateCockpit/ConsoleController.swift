@@ -129,6 +129,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private let sreLeadPaneSeparator = NSView()
     private let sreLeadHeader = NSView()
     private let sreLeadHeaderLabel = NSTextField(labelWithString: "SRE Lead")
+    /// "Generate Postmortem" (`fm/grandline-sre-lead-postmortem`) - hidden
+    /// until `updateGeneratePostmortemButton()` sees a real assistant reply
+    /// in the pane (see `SRELeadChatView.hasRealExchange`), so it never
+    /// appears over an empty/just-opened session.
+    private let sreLeadGeneratePostmortemButton = NSButton()
+    /// Only ever created on demand (`generatePostmortemClicked`) - a fresh
+    /// `DocsRunbookStore()` shares `DocsRunbookGitSync.shared`'s singleton
+    /// clone/queue exactly like `DocsController`'s own instance does (see
+    /// that type's header), so this never opens a second clone of the repo.
+    private lazy var docsRunbookStore = DocsRunbookStore()
     private var sreLeadPaneWidthConstraint: NSLayoutConstraint!
     private let sreLeadPaneWidth: CGFloat = 380
 
@@ -794,6 +804,18 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
         sreLeadHeader.addSubview(sreLeadHeaderLabel)
 
+        sreLeadGeneratePostmortemButton.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadGeneratePostmortemButton.title = ""
+        sreLeadGeneratePostmortemButton.isBordered = false
+        sreLeadGeneratePostmortemButton.wantsLayer = true
+        sreLeadGeneratePostmortemButton.toolTip = "Generate Postmortem"
+        sreLeadGeneratePostmortemButton.image = NSImage(systemSymbolName: "doc.badge.plus", accessibilityDescription: "Generate Postmortem")
+        sreLeadGeneratePostmortemButton.imageScaling = .scaleProportionallyDown
+        sreLeadGeneratePostmortemButton.target = self
+        sreLeadGeneratePostmortemButton.action = #selector(generatePostmortemClicked)
+        sreLeadGeneratePostmortemButton.isHidden = true
+        sreLeadHeader.addSubview(sreLeadGeneratePostmortemButton)
+
         NSLayoutConstraint.activate([
             sreLeadPaneSeparator.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
             sreLeadPaneSeparator.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
@@ -807,6 +829,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
             sreLeadHeaderLabel.leadingAnchor.constraint(equalTo: sreLeadHeader.leadingAnchor, constant: 12),
             sreLeadHeaderLabel.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
+
+            sreLeadGeneratePostmortemButton.trailingAnchor.constraint(equalTo: sreLeadHeader.trailingAnchor, constant: -10),
+            sreLeadGeneratePostmortemButton.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
+            sreLeadGeneratePostmortemButton.widthAnchor.constraint(equalToConstant: 22),
+            sreLeadGeneratePostmortemButton.heightAnchor.constraint(equalToConstant: 22),
         ])
     }
 
@@ -863,11 +890,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                     self.sreLeadPhase = .ready
                     self.sreLeadButton?.setState(.ready)
                     self.sreLeadButton?.applyTheme(self.theme)
+                    self.updateGeneratePostmortemButton()
                 case .failure(let error):
                     self.sreLeadPhase = .failed
                     self.sreLeadButton?.setState(.failed)
                     self.sreLeadButton?.applyTheme(self.theme)
                     self.showSRELeadError(error.message)
+                    self.updateGeneratePostmortemButton()
                 }
             }
         }
@@ -902,6 +931,46 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         chat.append(SRELeadMessage(role: .error, text: message))
     }
 
+    /// The pane header's "Generate Postmortem" button is only ever shown once
+    /// there's a real assistant reply to summarize (`SRELeadChatView.hasRealExchange`)
+    /// - wired to fire on every `append`/`clearMessages` via `chat.onMessagesChanged`
+    /// (see `makeSRELeadChat`), and called directly after `startSRELead`'s own
+    /// session-open/session-fail transitions since those don't append through
+    /// the normal submit path.
+    private func updateGeneratePostmortemButton() {
+        sreLeadGeneratePostmortemButton.isHidden = !(sreLeadChat?.hasRealExchange ?? false)
+    }
+
+    /// "Generate Postmortem": summarizes the pane's own investigation
+    /// transcript into a structured markdown document via one non-
+    /// interactive `claude -p` call (`SRELeadPostmortem.generate`), then
+    /// saves it into the same Docs → Postmortems store phase 1 built
+    /// (`DocsRunbookStore.createPostmortem`). A failure here only ever
+    /// appends an error message to the pane's existing chat feed - the
+    /// investigation transcript itself is never touched, so the captain can
+    /// retry with nothing lost.
+    @objc private func generatePostmortemClicked() {
+        guard let chat = sreLeadChat, chat.hasRealExchange, sreLeadGeneratePostmortemButton.isEnabled else { return }
+        let transcript = chat.transcriptForPostmortem
+        let hostLabel = primarySSHTab?.name ?? "this host"
+
+        sreLeadGeneratePostmortemButton.isEnabled = false
+        chat.append(SRELeadMessage(role: .status, text: "Generating postmortem\u{2026}"))
+
+        SRELeadPostmortem.generate(hostLabel: hostLabel, transcript: transcript) { [weak self, weak chat] result in
+            guard let self, let chat else { return }
+            self.sreLeadGeneratePostmortemButton.isEnabled = true
+            switch result {
+            case .success(let markdown):
+                let title = DocsRunbookStore.titleFromContent(markdown, fallback: "Postmortem - \(hostLabel)")
+                let saved = self.docsRunbookStore.createPostmortem(title: title, content: markdown)
+                chat.append(SRELeadMessage(role: .status, text: "Postmortem saved: \u{201C}\(saved.title)\u{201D} - see Docs \u{2192} Postmortems."))
+            case .failure(let error):
+                chat.append(SRELeadMessage(role: .error, text: "Couldn't generate the postmortem: \(error.message). You can try again."))
+            }
+        }
+    }
+
     /// Toggle-close (design brief Part B): kill any in-flight `claude -p`
     /// turn and remove every scratch file `SRELead.setUp` wrote, exactly
     /// like `cleanupSSHKeyTempFile` does for a regular tab - nothing
@@ -919,12 +988,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadPhase = .notStarted
         sreLeadButton?.setState(.notStarted)
         sreLeadButton?.applyTheme(theme)
+        sreLeadGeneratePostmortemButton.isEnabled = true
+        updateGeneratePostmortemButton()
         setSRELeadPaneOpen(false)
     }
 
     private func makeSRELeadChat() -> SRELeadChatView {
         let chat = SRELeadChatView(frame: .zero)
         chat.onSubmit = { [weak self] text in self?.handleSRELeadSubmit(text) }
+        chat.onMessagesChanged = { [weak self] in self?.updateGeneratePostmortemButton() }
         chat.setInputEnabled(false)
         sreLeadPane.addSubview(chat)
         NSLayoutConstraint.activate([
@@ -1170,6 +1242,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadPaneSeparator.layer?.backgroundColor = line.cgColor
         sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
         sreLeadHeaderLabel.textColor = ink
+        sreLeadGeneratePostmortemButton.contentTintColor = ink
         sreLeadChat?.applyTheme(theme)
     }
 
