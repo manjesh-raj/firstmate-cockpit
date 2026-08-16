@@ -220,6 +220,56 @@ final class DictationEngine {
     /// assumes the app is broken."
     private static let finishTimeout: TimeInterval = 8
 
+    /// Defense-in-depth ceiling on top of `finishTimeout` above (see
+    /// `hardCeilingWorkItem`'s doc comment) - deliberately independent of
+    /// this engine's own internal state, so it stays a real safety net even
+    /// against a class of bug this task's own fix didn't anticipate.
+    private static let hardTranscribingCeiling: TimeInterval = finishTimeout + 5
+
+    /// The most recent status this engine actually told `onStatusChanged`
+    /// about - tracked purely so `hardCeilingWorkItem` can check "are we
+    /// still showing Transcribing…" without touching `isFinishing`/
+    /// `isRecording` at all (see that property's own doc comment for why
+    /// that separation matters).
+    private var lastReportedStatus: DictationStatus = .ready
+
+    /// Absolute wall-clock watchdog, scheduled every time `.transcribing` is
+    /// reported and cancelled the moment any other status is reported -
+    /// fires `Self.hardTranscribingCeiling` after `.transcribing` regardless
+    /// of `isFinishing`/`isRecording`'s internal state. This is deliberately
+    /// NOT the same mechanism as `finishTimeoutWorkItem` (which the real bug
+    /// fixed by this task lived in - see `finish(text:)`'s doc comment for
+    /// the exact race): that timeout calls back into `finish(text:)`, which
+    /// can itself be silently swallowed by `isFinishing`'s own guard if
+    /// something has gone wrong internally. This watchdog bypasses all of
+    /// that and forces the *displayed* status back to something actionable
+    /// on its own, so "stuck on Transcribing… forever" stays categorically
+    /// impossible even against a future bug this task's own fix didn't
+    /// anticipate, not just against the specific race found and fixed here.
+    private var hardCeilingWorkItem: DispatchWorkItem?
+
+    /// The one place `onStatusChanged` is ever invoked from - tracks
+    /// `lastReportedStatus` and arms/disarms `hardCeilingWorkItem` so every
+    /// status transition (not just the ones this task happened to touch)
+    /// keeps that watchdog correctly in sync.
+    private func report(_ status: DictationStatus) {
+        lastReportedStatus = status
+        if status == .transcribing {
+            hardCeilingWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, self.lastReportedStatus == .transcribing else { return }
+                self.lastReportedStatus = .didNotCatchThat
+                self.onStatusChanged?(.didNotCatchThat)
+            }
+            hardCeilingWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.hardTranscribingCeiling, execute: workItem)
+        } else {
+            hardCeilingWorkItem?.cancel()
+            hardCeilingWorkItem = nil
+        }
+        onStatusChanged?(status)
+    }
+
     /// Fired on every state transition (recording start/stop, back to ready,
     /// a permission gap discovered at record time) - `DictationController`
     /// subscribes while visible so the page never shows a stale status.
@@ -289,7 +339,7 @@ final class DictationEngine {
         guard DictationPermissions.microphone == .granted,
               DictationPermissions.speechRecognition == .granted,
               let recognizer, recognizer.isAvailable else {
-            onStatusChanged?(DictationPermissions.currentStatus())
+            report(DictationPermissions.currentStatus())
             return
         }
         beginCapture(recognizer: recognizer)
@@ -333,13 +383,13 @@ final class DictationEngine {
         } catch {
             inputNode.removeTap(onBus: 0)
             recognitionRequest = nil
-            onStatusChanged?(DictationPermissions.currentStatus())
+            report(DictationPermissions.currentStatus())
             return
         }
 
         isRecording = true
         recordingStartedAt = Date()
-        onStatusChanged?(.recording)
+        report(.recording)
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
@@ -365,11 +415,20 @@ final class DictationEngine {
     /// and signals end-of-audio to the recognizer; the recognizer's own
     /// completion (above) is what actually finishes the pipeline and pastes,
     /// since a final result can arrive slightly after `endAudio()`.
+    ///
+    /// Guards on `isRecording`, which `finish(text:)` now also clears the
+    /// moment recognition actually ends (see that method's doc comment) -
+    /// so if recognition already completed before the hotkey was released,
+    /// this call correctly no-ops instead of re-triggering the stuck-forever
+    /// race a captain hit with Right ⌘ Command configured (reproduced live
+    /// and just as reproducible with the default Right ⌥ Option - it's a
+    /// pure timing race, not specific to either key; see this file's header
+    /// and `CLAUDE.md`'s Dictation section for the full writeup).
     func stopRecording() {
         wantsToRecord = false
         guard isRecording else { return }
         isRecording = false
-        onStatusChanged?(.transcribing)
+        report(.transcribing)
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         recognitionRequest?.endAudio()
@@ -392,13 +451,34 @@ final class DictationEngine {
         recognitionTask = nil
         recognitionRequest = nil
 
+        // The real root cause of the stuck-forever bug this method's header
+        // now documents: recognition can complete (a real final result, OR -
+        // as live-reproduced here - a fast error like "Siri and Dictation
+        // are disabled") *before* the hotkey is ever released. `isRecording`
+        // used to stay `true` in that case (only `stopRecording()` ever
+        // cleared it), so the *later* `stopRecording()` call on release
+        // would still pass its own `guard isRecording`, overwrite the status
+        // this method is about to set back to `.transcribing`, and schedule
+        // a second `finishTimeoutWorkItem` - whose eventual `finish(text:)`
+        // call then hit the `guard !isFinishing` above and returned with no
+        // status update at all. Stuck on "Transcribing…" forever, with no
+        // error and no revert. Tearing capture down right here, the moment
+        // recognition actually ends, closes that race: by the time
+        // `stopRecording()` runs later, `isRecording` is already `false` and
+        // it correctly no-ops instead of stomping this method's own result.
+        if isRecording {
+            isRecording = false
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
+
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let finalText = !trimmed.isEmpty ? text! : (bestTranscriptSeen.isEmpty ? nil : bestTranscriptSeen)
         let duration = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         recordingStartedAt = nil
 
         guard let finalText else {
-            onStatusChanged?(.didNotCatchThat)
+            report(.didNotCatchThat)
             return
         }
 
@@ -407,7 +487,7 @@ final class DictationEngine {
             return
         }
 
-        onStatusChanged?(.cleaningUp)
+        report(.cleaningUp)
         DictationCleanup.rewrite(finalText) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -431,7 +511,7 @@ final class DictationEngine {
     private func deliver(_ text: String, duration: TimeInterval) {
         Self.pasteAtCursor(text)
         onTranscript?(text, duration)
-        onStatusChanged?(DictationPermissions.currentStatus())
+        report(DictationPermissions.currentStatus())
     }
 
     /// Pastes `text` at the current cursor position in whichever app
