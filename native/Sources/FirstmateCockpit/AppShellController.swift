@@ -44,7 +44,7 @@ final class AppShellController: NSViewController {
     private let review = ReviewController()
     private let tools = ToolsController()
     private let vault = VaultController()
-    private let dictation = DictationController()
+    private let dictation: DictationController
     private let docs = DocsController()
     private let updates = UpdatesController()
     private let bootstrap: BootstrapController
@@ -101,15 +101,26 @@ final class AppShellController: NSViewController {
     /// presentation is forwarded rather than owned here.
     var onLogoutRequested: (() -> Void)?
 
+    /// Fired whenever the Dictation page's shortcut recorder captures a new
+    /// combo - the app delegate is what actually owns the live
+    /// `DictationHotkey` instance, matching `onFontSizeStep`'s own
+    /// forward-don't-own convention.
+    var onDictationShortcutChanged: ((DictationShortcut) -> Void)? {
+        get { dictation.onShortcutChanged }
+        set { dictation.onShortcutChanged = newValue }
+    }
+
     init(
         hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
         hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
+        dictationStore: DictationStore,
         makeHostConsole: @escaping () -> ConsoleController
     ) {
         self.hostsPanel = hostsPanel
         self.console = console
         self.settings = settings
         self.overview = FleetController()
+        self.dictation = DictationController(store: dictationStore)
         // Phase 5 (cockpit-shift-power-features): `shiftStore` is now built
         // once by the app delegate and shared with the menu bar item, the
         // search palette, and quick capture - all of which need to read/

@@ -43,7 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // app's whole lifetime, driven by `DictationHotkey`'s hold/release
     // callbacks - mirrors `shiftHotkey`/`shiftQuickCapture`'s own shape.
     let dictationEngine = DictationEngine()
+    // Phase 2 (fm/grandline-dictation-phase2): transcription history +
+    // personal vocabulary, shared by the Dictation page and the engine
+    // (vocabulary bias, history recording) - same "one store, every reader/
+    // writer shares it" convention as `shiftStore`.
+    let dictationStore = DictationStore()
     lazy var dictationHotkey = DictationHotkey(
+        shortcut: AppSettings.shared.dictationShortcut,
         onDown: { [weak self] in self?.dictationEngine.startRecording() },
         onUp: { [weak self] in self?.dictationEngine.stopRecording() }
     )
@@ -60,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return AppShellController(
             hostsPanel: hostsPanel, console: console, settings: settingsController,
             hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, shiftStore: shiftStore,
+            dictationStore: dictationStore,
             makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
         )
     }()
@@ -178,7 +185,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dictationEngine.onStatusChanged = { [weak self] status in
             self?.appShell.setDictationEngineStatus(status)
         }
+        // Phase 2: bias recognition toward the captain's personal vocabulary,
+        // and record every successful (real, pasted) transcript into
+        // history - both read/write the one shared `dictationStore` above.
+        dictationEngine.vocabularyProvider = { [weak self] in self?.dictationStore.vocabulary ?? [] }
+        dictationEngine.onTranscript = { [weak self] text, duration in
+            self?.dictationStore.recordHistory(text: text, durationSeconds: duration, date: Date())
+        }
+        // Phase 2: the Dictation page's shortcut recorder edits
+        // `AppSettings.dictationShortcut` itself and reports the change here
+        // so the *live* hotkey instance actually picks it up - a plain
+        // settings write with no restart would leave the old monitor
+        // installed (see `DictationHotkey.updateShortcut`'s own header).
+        appShell.onDictationShortcutChanged = { [weak self] shortcut in
+            self?.dictationHotkey.updateShortcut(shortcut)
+        }
         dictationHotkey.start()
+
         // `shiftMenuBar` is `lazy` - force it into existence now so its
         // `NSStatusItem` actually appears at launch rather than only the
         // first time something else happens to reference the property.
@@ -762,6 +785,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_MIRROR_RESOLVE_RACE_TESTS"] == "1
 // DictationHotkeySelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_HOTKEY_TESTS"] == "1" {
     exit(DictationHotkeySelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-dictation-phase2`: same convention, for `DictationStore`'s
+// history/vocabulary persistence and `DictationShortcut`'s encode/decode +
+// display-string logic - see DictationDataSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_DATA_TESTS"] == "1" {
+    exit(DictationDataSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
