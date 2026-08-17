@@ -124,13 +124,31 @@ final class ShiftController: NSViewController {
         let followUpSection = buildFollowUpSection()
         let projectsSection = buildProjectsSection()
 
+        // Side by side, not stacked (captain ask): two equal-width columns,
+        // matching this app's plain-horizontal-NSStackView convention for
+        // multi-column layout elsewhere (e.g. `statsRow` itself). No
+        // responsive breakpoint - this app has no existing convention for
+        // that (unlike `ToolsController`'s grid, which recomputes column
+        // count from measured width for a much larger, unbounded card
+        // count), and a fixed two-column row is the simpler, consistent
+        // choice for exactly two panels. `.fillEqually` sizes both panels to
+        // the same width; each panel keeps its own fixed scroll height (see
+        // `buildTaskSection`/`buildFollowUpSection`), so `.top` alignment
+        // keeps them flush at the top rather than vertically centered
+        // against each other.
+        let tasksRow = NSStackView(views: [taskSection, followUpSection])
+        tasksRow.orientation = .horizontal
+        tasksRow.distribution = .fillEqually
+        tasksRow.alignment = .top
+        tasksRow.spacing = 20
+        tasksRow.translatesAutoresizingMaskIntoConstraints = false
+
         dashboardContainer.orientation = .vertical
         dashboardContainer.alignment = .leading
         dashboardContainer.spacing = 20
         dashboardContainer.translatesAutoresizingMaskIntoConstraints = false
         dashboardContainer.addArrangedSubview(statsRow)
-        dashboardContainer.addArrangedSubview(taskSection)
-        dashboardContainer.addArrangedSubview(followUpSection)
+        dashboardContainer.addArrangedSubview(tasksRow)
         dashboardContainer.addArrangedSubview(projectsSection)
 
         let weeklyReviewSection = buildWeeklyReviewSection()
@@ -152,8 +170,7 @@ final class ShiftController: NSViewController {
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             dashboardContainer.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             statsRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
-            taskSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
-            followUpSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            tasksRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             projectsSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             weeklyReviewSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
