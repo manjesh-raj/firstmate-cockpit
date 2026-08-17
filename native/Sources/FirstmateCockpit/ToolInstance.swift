@@ -44,6 +44,131 @@ enum ToolContentSnapshot {
     case cert(input: String)
     case cron(expression: String)
     case resource(millicores: String, cores: String, memoryQuantity: String)
+    /// VPN has no per-tab input to carry - it's global singleton status, not
+    /// duplicable content (see `ToolKind.isSingleton`); `ToolsController`
+    /// never actually calls `duplicateTab` for this kind, but the snapshot
+    /// case still has to exist for the switch below to stay exhaustive.
+    case vpn
+}
+
+/// One VPN's status card (fm/grandline-vpn-toggle-integration) - icon-free
+/// status dot, name, a status line (state + profile + duration where
+/// available), and a real Connect/Disconnect button. Used only by
+/// `ToolInstance.buildVpnPanel()` - the rail's own `VPNToggleRowView`
+/// (`IconRailController.swift`) is a separate, more compact view for the
+/// narrow rail; both read from the same `VPNStatusCenter`.
+private final class VPNStatusCardView: NSView {
+    let kind: VPNKind
+    private let dot = NSView()
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private let actionButton = NSButton()
+    var onConnectToggle: ((Bool) -> Void)?
+    private var lastConnected = false
+
+    init(kind: VPNKind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 10
+
+        nameLabel.stringValue = kind.displayName
+        nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        dot.wantsLayer = true
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.layer?.cornerRadius = 4
+
+        let nameRow = NSStackView(views: [dot, nameLabel])
+        nameRow.orientation = .horizontal
+        nameRow.spacing = 6
+        nameRow.alignment = .centerY
+
+        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.preferredMaxLayoutWidth = 420
+
+        let textStack = NSStackView(views: [nameRow, statusLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        actionButton.bezelStyle = .rounded
+        actionButton.target = self
+        actionButton.action = #selector(actionClicked)
+        actionButton.setContentHuggingPriority(.required, for: .horizontal)
+        actionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [textStack, actionButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+        ])
+        update(status: .unknown, theme: ThemeManager.shared.theme)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    @objc private func actionClicked() {
+        onConnectToggle?(!lastConnected)
+    }
+
+    func update(status: VPNConnectionStatus, theme: HelmTheme) {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let muted = HelmTheme.mutedInk(theme)
+        nameLabel.textColor = ink
+        statusLabel.textColor = muted
+
+        let dotHex: String
+        var text = ""
+        var buttonTitle = "Connect"
+        var buttonEnabled = true
+        lastConnected = false
+
+        switch status {
+        case .connected(let profile, let duration):
+            dotHex = HelmTint.good.hex(in: theme)
+            var parts = ["Connected"]
+            if let profile { parts.append(profile) }
+            if let duration { parts.append(duration) }
+            text = parts.joined(separator: " \u{00b7} ")
+            buttonTitle = "Disconnect"
+            lastConnected = true
+        case .connecting:
+            dotHex = HelmTint.warn.hex(in: theme)
+            text = "Connecting\u{2026}"
+            buttonEnabled = false
+        case .disconnecting:
+            dotHex = HelmTint.warn.hex(in: theme)
+            text = "Disconnecting\u{2026}"
+            buttonEnabled = false
+        case .disconnected:
+            dotHex = theme.chromeLineHex
+            text = "Disconnected"
+            buttonTitle = "Connect"
+        case .unknown:
+            dotHex = HelmTint.critical.hex(in: theme)
+            text = "Unknown - couldn't confirm the last action"
+            buttonTitle = "Connect"
+        }
+
+        dot.layer?.backgroundColor = HelmTheme.nsColor(dotHex).cgColor
+        statusLabel.stringValue = text
+        actionButton.title = buttonTitle
+        actionButton.isEnabled = buttonEnabled
+    }
 }
 
 /// One open Tools tab. An `NSObject` subclass so its own buttons can target
@@ -119,6 +244,10 @@ final class ToolInstance: NSObject {
     private var memoryQuantityField: NSTextField!
     private var memoryOutput: NSTextView!
 
+    // MARK: VPN (fm/grandline-vpn-toggle-integration)
+    private var vpnCardViews: [VPNKind: VPNStatusCardView] = [:]
+    private var vpnStatusToken: UUID?
+
     private var yamlCopyButton: NSButton!
     private var jsonCopyButton: NSButton!
     private var base64CopyButton: NSButton!
@@ -152,9 +281,21 @@ final class ToolInstance: NSObject {
         case .cert: view = buildCertPanel()
         case .cron: view = buildCronPanel()
         case .resource: view = buildResourcePanel()
+        case .vpn: view = buildVpnPanel()
         }
         applyTheme(theme)
         applyFontSize(FontSizeManager.shared.size)
+    }
+
+    /// `fm/grandline-vpn-toggle-integration`: releases the VPN tab's
+    /// `VPNStatusCenter` observer token when the tab closes - the same
+    /// "own and release your token" convention `ConsoleController` already
+    /// follows for `ThemeManager` (see that class's own `shutdown()`), since
+    /// a Tools tab, like a host's dedicated Console page, can be deallocated
+    /// mid-session (closing the tab) rather than living for the app's whole
+    /// lifetime.
+    deinit {
+        if let vpnStatusToken { VPNStatusCenter.shared.unobserve(vpnStatusToken) }
     }
 
     // MARK: Content snapshot (Duplicate)
@@ -170,6 +311,7 @@ final class ToolInstance: NSObject {
         case .cert: return .cert(input: certInput.string)
         case .cron: return .cron(expression: cronInput.stringValue)
         case .resource: return .resource(millicores: cpuMillicoresField.stringValue, cores: cpuCoresField.stringValue, memoryQuantity: memoryQuantityField.stringValue)
+        case .vpn: return .vpn
         }
     }
 
@@ -1185,6 +1327,53 @@ final class ToolInstance: NSObject {
         copyToClipboard(memoryOutput.string)
     }
 
+    // MARK: VPN (fm/grandline-vpn-toggle-integration)
+
+    /// Both VPNs' live status/profile/duration, plus their own
+    /// connect/disconnect controls - the same underlying `VPNStatusCenter`
+    /// state the rail's toggles drive (see `IconRailController`'s VPN
+    /// section), just with more detail. This is the one Tools panel that
+    /// shows global singleton state rather than per-tab content - see
+    /// `ToolKind.isSingleton`'s doc comment on `ToolsController.swift` for
+    /// why a second concurrent VPN tab is deliberately never opened.
+    private func buildVpnPanel() -> NSView {
+        let note = NSTextField(wrappingLabelWithString: "Only one VPN can be connected at a time - turning one on disconnects the other automatically.")
+        note.font = .systemFont(ofSize: 10.5)
+        note.preferredMaxLayoutWidth = 640
+        mutedLabels.append(note)
+
+        var columnViews: [NSView] = [note]
+        for kind in VPNKind.allCases {
+            let card = VPNStatusCardView(kind: kind)
+            card.onConnectToggle = { requestOn in VPNStatusCenter.shared.toggle(kind, requestOn: requestOn) }
+            vpnCardViews[kind] = card
+            columnViews.append(card)
+        }
+
+        let content = NSStackView(views: columnViews)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 10
+        for card in vpnCardViews.values {
+            card.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+            cardBackgroundViews.append(card)
+        }
+
+        vpnStatusToken = VPNStatusCenter.shared.observe { [weak self] snapshot in
+            self?.applyVpnSnapshot(snapshot)
+        }
+
+        return panelCard(
+            icon: ToolKind.vpn.symbol, tint: ToolKind.vpn.tint, title: ToolKind.vpn.title,
+            subtitle: ToolKind.vpn.description, content: content
+        )
+    }
+
+    private func applyVpnSnapshot(_ snapshot: VPNStatusCenter.Snapshot) {
+        vpnCardViews[.barracuda]?.update(status: snapshot.barracuda, theme: theme)
+        vpnCardViews[.openVPN]?.update(status: snapshot.openVPN, theme: theme)
+    }
+
     // MARK: Theme
 
     func applyTheme(_ theme: HelmTheme) {
@@ -1215,6 +1404,7 @@ final class ToolInstance: NSObject {
         }
         recolorStatus()
         diffResultView?.applyTheme(theme)
+        if kind == .vpn { applyVpnSnapshot(VPNStatusCenter.shared.snapshot) }
     }
 
     /// Every monospace text area on this tab follows `FontSizeManager` -
