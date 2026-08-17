@@ -54,6 +54,26 @@
 // resizeToFit()` already uses, rather than relying on `NSPopover`'s
 // occasionally-inconsistent automatic Auto-Layout-driven resize.
 //
+// `fm/grandline-shift-side-by-side-composer-height` gave the intent field
+// real multi-line height (captain: "increase the vertical view... so the
+// user can see the text more and have a better visibility") - the field was
+// a single-line `NSTextField` that scrolled its own content sideways as you
+// typed. `intentTextView`/`intentScroll` (a bordered, corner-radius
+// `NSScrollView`/`NSTextView` pair, mirroring the code block's own
+// `codeScroll`/`codeTextView` styling below rather than inventing a new
+// look) replace it - `NSTextView` has no built-in placeholder API the way
+// `NSTextField`'s cell does, so `intentPlaceholderLabel` is a plain muted
+// label overlaid at the text container's own inset, toggled by
+// `NSTextViewDelegate.textDidChange(_:)`. `⌘⏎` still fires Generate: that
+// shortcut was already handled by `generateButton`'s own `keyEquivalent`,
+// which `NSWindow`'s `performKeyEquivalent:` traversal reaches before an
+// event ever gets to whichever view is first responder - unaffected by
+// swapping the field for a text view. A plain Return now inserts a newline
+// (the field's own former submit-on-Return action only ever existed because
+// a single-line field has no better use for Return) rather than submitting,
+// which is the expected behavior for a field that's now genuinely
+// multi-line.
+//
 // Nothing here ever runs a generated command automatically - see
 // `ConsoleCommandComposer.swift`'s header and this task's PR description for
 // the full design-constraint reasoning (SRE Lead's own approval-gated
@@ -130,7 +150,7 @@ final class ConsoleComposerController: NSObject, NSPopoverDelegate {
 /// kept - this is a one-shot generate-review-run per tab open, per the
 /// task's explicit scope; closing and reopening the popover always starts
 /// fresh (`reset()`).
-private final class ConsoleComposerViewController: NSViewController {
+private final class ConsoleComposerViewController: NSViewController, NSTextViewDelegate {
     private var theme = ThemeManager.shared.theme
 
     /// Popover width grows to fit a long generated command, floored/capped
@@ -140,9 +160,15 @@ private final class ConsoleComposerViewController: NSViewController {
     static let maxWidth: CGFloat = 640
     private var rootWidthConstraint: NSLayoutConstraint!
 
+    /// A few visible lines of wrapped text, per the captain's explicit ask -
+    /// see this file's header for why this replaced a single-line field.
+    static let intentHeight: CGFloat = 72
+
     private let iconTile = IconTileView(size: 30, cornerRadius: 8)
     private let titleLabel = NSTextField(labelWithString: "Compose a command")
-    private let intentField = NSTextField()
+    private let intentScroll = NSScrollView()
+    private let intentTextView = NSTextView()
+    private let intentPlaceholderLabel = NSTextField(labelWithString: "Describe what you want to run…")
     private let generateButton = NSButton(title: "Generate", target: nil, action: nil)
     private let shortcutHintLabel = NSTextField(labelWithString: "\u{2318}\u{23ce} to generate")
     private let statusLabel = NSTextField(labelWithString: "")
@@ -180,27 +206,35 @@ private final class ConsoleComposerViewController: NSViewController {
         titleRow.spacing = 10
         titleRow.translatesAutoresizingMaskIntoConstraints = false
 
-        intentField.placeholderString = "Describe what you want to run…"
-        intentField.font = .systemFont(ofSize: 12)
-        intentField.target = self
-        intentField.action = #selector(generateClicked)
+        buildIntentField()
 
         generateButton.target = self
         generateButton.action = #selector(generateClicked)
         generateButton.bezelStyle = .rounded
         generateButton.controlSize = .small
-        // The intent field already submits on a plain Return via its own
-        // target/action above (the natural behavior for a single-line
-        // field) - this gives the same action a second, always-available
-        // trigger regardless of first responder, matching the hint text
-        // below.
+        // `⌘⏎` fires Generate regardless of first responder - `NSWindow`'s
+        // `performKeyEquivalent:` traversal reaches this button before a
+        // command-modified key event ever reaches whichever view is first
+        // responder, so this works the same whether the intent field is
+        // focused or not. A plain Return inside the (now multi-line) intent
+        // field just inserts a newline, per this file's header.
         generateButton.keyEquivalent = "\r"
         generateButton.keyEquivalentModifierMask = [.command]
 
-        let generateRow = NSStackView(views: [intentField, generateButton])
+        let generateRow = NSStackView(views: [intentScroll, generateButton])
         generateRow.orientation = .horizontal
+        generateRow.distribution = .fill
+        generateRow.alignment = .bottom
         generateRow.spacing = 6
         generateRow.translatesAutoresizingMaskIntoConstraints = false
+        // Gotcha #10 (AGENTS.md): `.gravityAreas` (the default) doesn't let
+        // hugging/compression priorities absorb slack width - `.fill` plus
+        // an explicit priority split is what makes `intentScroll`, not
+        // `generateButton`, take the row's leftover width.
+        intentScroll.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        intentScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        generateButton.setContentHuggingPriority(.required, for: .horizontal)
+        generateButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         shortcutHintLabel.font = .systemFont(ofSize: 10)
         shortcutHintLabel.textColor = HelmTheme.mutedInk(theme)
@@ -261,10 +295,59 @@ private final class ConsoleComposerViewController: NSViewController {
             commandStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
             codeScroll.widthAnchor.constraint(equalTo: commandStack.widthAnchor),
             codeScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
-            intentField.widthAnchor.constraint(greaterThanOrEqualToConstant: 210),
+            intentScroll.heightAnchor.constraint(equalToConstant: Self.intentHeight),
+            intentPlaceholderLabel.leadingAnchor.constraint(equalTo: intentScroll.leadingAnchor, constant: 8),
+            intentPlaceholderLabel.topAnchor.constraint(equalTo: intentScroll.topAnchor, constant: 8),
+            intentPlaceholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: intentScroll.trailingAnchor, constant: -8),
         ])
 
         applyTheme(theme)
+    }
+
+    /// A bordered, corner-radius `NSScrollView`/`NSTextView` pair sized for
+    /// a few visible lines - mirrors `buildCodeBlock()`'s own code-block
+    /// styling below rather than a plain single-line `NSTextField`. See this
+    /// file's header for why (captain ask for more visible height) and why
+    /// the placeholder is a manually-overlaid label rather than a built-in
+    /// API (`NSTextView` has none).
+    private func buildIntentField() {
+        intentTextView.isRichText = false
+        intentTextView.isEditable = true
+        intentTextView.isSelectable = true
+        intentTextView.font = .systemFont(ofSize: 12)
+        intentTextView.textContainerInset = NSSize(width: 4, height: 6)
+        intentTextView.isVerticallyResizable = true
+        intentTextView.isHorizontallyResizable = false
+        intentTextView.autoresizingMask = [.width]
+        intentTextView.textContainer?.widthTracksTextView = true
+        intentTextView.drawsBackground = false
+        intentTextView.delegate = self
+
+        intentScroll.documentView = intentTextView
+        intentScroll.hasVerticalScroller = true
+        intentScroll.borderType = .noBorder
+        intentScroll.wantsLayer = true
+        intentScroll.layer?.cornerRadius = 8
+        intentScroll.layer?.borderWidth = 1
+        intentScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        intentPlaceholderLabel.font = intentTextView.font
+        intentPlaceholderLabel.isEditable = false
+        intentPlaceholderLabel.isBordered = false
+        intentPlaceholderLabel.isSelectable = false
+        intentPlaceholderLabel.drawsBackground = false
+        intentPlaceholderLabel.lineBreakMode = .byWordWrapping
+        intentPlaceholderLabel.maximumNumberOfLines = 1
+        intentPlaceholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        intentScroll.addSubview(intentPlaceholderLabel)
+    }
+
+    func textDidChange(_ notification: Notification) {
+        updateIntentPlaceholderVisibility()
+    }
+
+    private func updateIntentPlaceholderVisibility() {
+        intentPlaceholderLabel.isHidden = !intentTextView.string.isEmpty
     }
 
     /// Mirrors `ToolInstance.codeEditor`'s own monospace/bordered/rounded
@@ -295,13 +378,14 @@ private final class ConsoleComposerViewController: NSViewController {
     }
 
     func reset() {
-        intentField.stringValue = ""
+        intentTextView.string = ""
+        updateIntentPlaceholderVisibility()
         generatedCommand = nil
         codeTextView.string = ""
         commandStack.isHidden = true
         statusLabel.isHidden = true
         generateButton.isEnabled = true
-        intentField.isEnabled = true
+        intentTextView.isEditable = true
         statusIsError = false
         updateWidth(for: nil)
     }
@@ -324,6 +408,10 @@ private final class ConsoleComposerViewController: NSViewController {
         codeTextView.textColor = ink
         codeTextView.backgroundColor = background
         codeScroll.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        intentTextView.textColor = ink
+        intentTextView.insertionPointColor = ink
+        intentPlaceholderLabel.textColor = muted
+        intentScroll.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
     }
 
     /// Measures the generated command's longest line against the code
@@ -351,12 +439,12 @@ private final class ConsoleComposerViewController: NSViewController {
     func focusIntentField() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.view.window?.makeFirstResponder(self.intentField)
+            self.view.window?.makeFirstResponder(self.intentTextView)
         }
     }
 
     @objc private func generateClicked() {
-        let intent = intentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = intentTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !intent.isEmpty else { return }
         generatedCommand = nil
         commandStack.isHidden = true
@@ -365,13 +453,13 @@ private final class ConsoleComposerViewController: NSViewController {
         statusLabel.textColor = HelmTheme.mutedInk(theme)
         statusLabel.stringValue = "Generating…"
         generateButton.isEnabled = false
-        intentField.isEnabled = false
+        intentTextView.isEditable = false
         updateWidth(for: nil)
 
         ConsoleCommandComposer.generate(intent: intent) { [weak self] result in
             guard let self else { return }
             self.generateButton.isEnabled = true
-            self.intentField.isEnabled = true
+            self.intentTextView.isEditable = true
             switch result {
             case .success(let command):
                 self.statusLabel.isHidden = true
