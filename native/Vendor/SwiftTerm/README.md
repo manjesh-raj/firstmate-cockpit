@@ -66,12 +66,81 @@ saturated color darkens/lightens rather than desaturating to gray). See
 why the blend direction can't simply be inferred from which side of the background
 the foreground currently sits on.
 
+## Third patch: wrap redraw boundary (`fm/grandline-terminal-wrap-duplicate-char`)
+
+A captain-reported bug: when a long line soft-wraps to a second visual row in a
+Console tab, the wrapped continuation row can start with a stray extra character -
+observed as a duplicate of the original line's own leading (colored) character, e.g.
+a `git diff`-style `+` marker reappearing at the start of the wrapped row. Confirmed
+by the reporting task to be width-dependent (present only when a wrap actually
+occurs) and not specific to one Console tab (Shell and the Herdr mirror tab, which
+share this same vendored `TerminalView`, both showed it).
+
+**What this task's own investigation found, and what it didn't.** An extensive
+battery of tests against `Terminal`/`Buffer` (live wrap during print, wrap that
+triggers a `scroll()`, `reflowNarrower` at many widths and through repeated
+narrower/wider round-trips, byte-by-byte feeding to rule out PTY chunking, and an
+exact reconstruction of the reported line/column width) never produced a duplicated
+character in the underlying buffer content - `getCharacter()` on every affected cell
+was correct in every case tried. A real `TerminalView` instance's `buildAttributedString`
+output and an actual rendered `CGImage` bitmap (via `cacheDisplay(in:to:)`) were also
+checked and were clean. This rules out the `Buffer`/`Terminal` wrap and reflow logic
+itself (`insertAsciiRun`, `insertCharacter`, `reflowNarrower`) as the source of
+*content*-level duplication, and rules out a one-shot forced-fresh-redraw of the
+final state as a way to see the bug.
+
+**What `cacheDisplay(in:to:)` structurally cannot reveal** is a class of bug where the
+underlying buffer content and a *fresh* full render are both correct, but a live
+*incremental* (dirty-rect-only) redraw leaves stale pixels from a previous frame
+sitting at a row's edge, because `cacheDisplay` always forces a full draw of the
+requested rect - it never exercises AppKit's own "only redraw what was invalidated"
+path where a staleness bug like this would actually live. Reading
+`TerminalView.updateDisplay`'s invalidation-rect computation with that in mind found a
+real, concrete asymmetry: when a redraw's dirty row range doesn't reach the last
+visible row, the code already extends the invalidated rect down by one extra cell
+("so the sub-cell remainder just below the band's bottom row - descenders / tall
+unicode - is cleared too", per that code's own existing comment) - but there was no
+symmetric extension *upward* for a range that doesn't start at the first visible row.
+A wrap's continuation row is exactly this shape: freshly written into (via `_y += 1`
+or a `scroll()`-supplied row), non-zero `rowStart` relative to the viewport, redrawn
+without necessarily also touching the row above it. Without the upward extension, any
+leftover pixels from whatever that row's `BufferLine` slot in the circular buffer
+last displayed - plausible in a `git diff`-heavy session with many similarly-colored
+`+` lines reusing scrollback slots as they scroll past - are never included in the
+invalidated-and-cleared area when a later partial redraw only covers that one row.
+
+The fix (`Apple/AppleTerminalView.swift`) extracts the whole invalidation-rect
+computation out of `updateDisplay` into a pure, testable
+`TerminalView.invalidationRegion(rowStart:rowEnd:terminalRows:frameWidth:frameHeight:cellHeight:)`,
+and adds the missing symmetric case: when `rowStart > 0`, the region is extended
+upward by one more cell, mirroring the existing downward extension exactly. The two
+pre-existing behaviors (extend down when `rowEnd` isn't the last row; extend fully to
+`y = 0` when it is) are unchanged - covered by
+`native/Sources/FirstmateCockpit/TerminalWrapRedrawSelfTest.swift`
+(`FM_RUN_TERMINAL_WRAP_REDRAW_TESTS=1`), which also covers the new upward extension
+and the exact mid-screen wrap shape (`rowStart`/`rowEnd` both strictly interior) from
+the captain's report.
+
+**Be honest about what is and isn't proven here.** The self-test proves the geometry
+fix is genuinely symmetric and doesn't regress the two behaviors that already existed.
+It does not - and structurally cannot, being a pure function with no view/CGContext -
+prove that this was *the* mechanism behind the captain's screenshot, since confirming
+that would need a real on-screen window driving genuine incremental AppKit redraws
+across multiple frames (this sandbox has no way to grant Screen Recording/Accessibility
+permission, and `cacheDisplay` bypasses incremental drawing entirely - see this
+project's own `AGENTS.md` "Verifying native UI bugs without a real screenshot"
+convention for the general constraint). If the captain can still reproduce the
+duplicated character after this fix ships, the next step should be a live, on-device
+repro with real window resizes and real captured frames, not another headless attempt.
+
 ## Updating this vendored copy
 
 If SwiftTerm's own `dimmedColor` is ever fixed upstream (or a future version adds a
 public/open hook for it), prefer reverting to a plain remote SPM dependency in
 `native/Package.swift` and deleting this directory over carrying the patch forward.
 Otherwise, to pick up a newer upstream release: replace `Sources/SwiftTerm` with the
-new version's tree, then re-apply both patches - `dimmedColor` and `legibleColor` -
-to `Mac/MacExtensions.swift`, `iOS/iOSExtensions.swift`, `Dimming.swift`, and the
-`getAttributes` call site in `Apple/AppleTerminalView.swift`.
+new version's tree, then re-apply all three patches - `dimmedColor` and
+`legibleColor` (`Mac/MacExtensions.swift`, `iOS/iOSExtensions.swift`, `Dimming.swift`,
+and the `getAttributes` call site in `Apple/AppleTerminalView.swift`) and the
+`invalidationRegion` wrap-redraw-boundary fix in `updateDisplay`
+(`Apple/AppleTerminalView.swift`).
