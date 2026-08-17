@@ -4,10 +4,18 @@
 // replacing the "coming soon" `PlaceholderViewController`. Structure mirrors
 // `backend/static/index.html`'s Fleet view: a greeting header, an answer
 // banner that goes calm/loud depending on whether anything needs the
-// captain, a row of quiet stat readouts, an "In flight" section of working
-// crew, and a "Ready to merge" section of open PRs with Review/Merge
-// actions. All data comes from `FleetData.swift`, which reads this
+// captain, a row of quiet stat readouts, and an "In flight" section of
+// working crew. All data comes from `FleetData.swift`, which reads this
 // machine's real firstmate home - nothing here is fabricated.
+//
+// fm/grandline-overview-drop-duplicate-pr-list: this page used to also carry
+// a full itemized "Ready to merge" list (one row per PR, its own Review/
+// Merge actions) built from the exact same `OpenPRsSource.fetch()` +
+// `FleetDataSource.mergedPRs` data `.review` (`ReviewController.swift`)
+// already presents, grouped by forge - a captain-flagged triplication (stat
+// tile + this list + Review's own list). That list is gone; the "ready to
+// merge" stat tile is the one signal left here, and it's clickable straight
+// through to `.review` via `onNavigateToReview`.
 
 import AppKit
 
@@ -30,16 +38,12 @@ final class FleetController: NSViewController {
     private let inFlightHeader = NSTextField(labelWithString: "")
     private let inFlightStack = NSStackView()
 
-    private let readyHeader = NSTextField(labelWithString: "")
-    private let readyStack = NSStackView()
-
-    /// Shown in place of the four data sections above until the first
+    /// Shown in place of the data sections above until the first
     /// `render(...)` lands - see the loading-state note on `buildLoadingState`.
     private let loadingContainer = NSView()
     private let loadingSpinner = NSProgressIndicator()
     private let loadingLabel = NSTextField(labelWithString: "Loading fleet data\u{2026}")
     private var inFlightSectionView: NSView!
-    private var readySectionView: NSView!
     private var hasLoadedOnce = false
 
     private var theme: HelmTheme = ThemeManager.shared.theme
@@ -52,6 +56,12 @@ final class FleetController: NSViewController {
     /// straight to `IconRailController.setBadgeCount(_:for: .overview)`.
     var onNeedsDecisionCountChanged: ((Int) -> Void)?
 
+    /// fm/grandline-overview-drop-duplicate-pr-list: fired when the captain
+    /// clicks the "ready to merge" stat tile - `AppShellController` wires
+    /// this to `show(.review)`, the same navigation call every other
+    /// cross-page jump in this app already uses.
+    var onNavigateToReview: (() -> Void)?
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 940, height: 720))
         root.wantsLayer = true
@@ -60,8 +70,8 @@ final class FleetController: NSViewController {
         // `FlippedView` (not a plain `NSView`), matching `SettingsController`'s
         // established Fix 4 pattern: a non-flipped document view puts y=0 at
         // its *bottom*, so before data arrives - while the content is still
-        // shorter than the viewport, since `inFlightStack`/`readyStack` start
-        // with zero arranged subviews - AppKit rests it against the bottom of
+        // shorter than the viewport, since `inFlightStack` starts with zero
+        // arranged subviews - AppKit rests it against the bottom of
         // the clip view, leaving a blank gap the size of the shortfall sitting
         // above it, with the header pushed down into (or past) that gap. Once
         // rows are added and the content grows, it snaps back up - exactly the
@@ -75,9 +85,7 @@ final class FleetController: NSViewController {
         buildStatsRow()
         let loadingSection = buildLoadingState()
         let inFlightSection = buildSection(header: inFlightHeader, iconSymbol: "clock", title: "In flight", stack: inFlightStack)
-        let readySection = buildSection(header: readyHeader, iconSymbol: "arrow.triangle.pull", title: "Ready to merge", stack: readyStack)
         inFlightSectionView = inFlightSection
-        readySectionView = readySection
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
@@ -88,14 +96,12 @@ final class FleetController: NSViewController {
         contentStack.addArrangedSubview(bannerView)
         contentStack.addArrangedSubview(statsRow)
         contentStack.addArrangedSubview(inFlightSection)
-        contentStack.addArrangedSubview(readySection)
 
-        // The four data sections stay hidden behind the loading skeleton
-        // until the first successful `render(...)` - see `buildLoadingState`.
+        // The data sections stay hidden behind the loading skeleton until the
+        // first successful `render(...)` - see `buildLoadingState`.
         bannerView.isHidden = true
         statsRow.isHidden = true
         inFlightSection.isHidden = true
-        readySection.isHidden = true
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
@@ -107,7 +113,6 @@ final class FleetController: NSViewController {
             bannerView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             statsRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             inFlightSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
-            readySection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
 
         scroll.documentView = content
@@ -263,11 +268,23 @@ final class FleetController: NSViewController {
         return loadingContainer
     }
 
-    private func statTile(icon: String, value: String, label: String) -> NSView {
+    /// `onClick`, when set, wires a plain `NSClickGestureRecognizer` on the
+    /// tile's container - no nested real control, so no hit-testing hazard
+    /// (matching `SettingsController`'s theme/session cards and
+    /// `ShiftProjectViews`' project cards, the same clickable-plain-view
+    /// pattern used throughout this app). fm/grandline-overview-drop-
+    /// duplicate-pr-list: this is how the "ready to merge" stat tile jumps
+    /// straight to `.review`'s full list, after removing this page's own
+    /// duplicate itemized copy of it.
+    private func statTile(icon: String, value: String, label: String, onClick: Selector? = nil) -> NSView {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.cornerRadius = 10
         container.translatesAutoresizingMaskIntoConstraints = false
+        if let onClick {
+            container.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: onClick))
+            container.toolTip = "View in Review"
+        }
 
         let iconView = NSImageView()
         iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
@@ -383,8 +400,8 @@ final class FleetController: NSViewController {
 
     /// `mergedPRs == nil` means the (slow) PR fetch hasn't finished yet -
     /// every other field from `snapshot` still renders immediately, and the
-    /// "Ready to merge" section shows a loading placeholder instead of a
-    /// premature "nothing waiting on you" empty state.
+    /// "ready to merge" stat tile shows 0 until this method is called again
+    /// once the fetch completes.
     private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]?) {
         if !hasLoadedOnce {
             hasLoadedOnce = true
@@ -393,7 +410,6 @@ final class FleetController: NSViewController {
             bannerView.isHidden = false
             statsRow.isHidden = false
             inFlightSectionView.isHidden = false
-            readySectionView.isHidden = false
         }
 
         rowContainers.removeAll()
@@ -416,13 +432,6 @@ final class FleetController: NSViewController {
         rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot)
         rebuildTaskRows(into: inFlightStack, tasks: working, emptyTitle: "All hands idle", emptyBody: "No crew are working right now. Send your first mate a task from the console and this board lights up.")
         inFlightHeader.stringValue = "In flight (\(working.count))"
-        if let mergedPRs {
-            rebuildPRRows(mergedPRs)
-            readyHeader.stringValue = "Ready to merge (\(mergedPRs.count))"
-        } else {
-            rebuildPRRowsLoading()
-            readyHeader.stringValue = "Ready to merge"
-        }
 
         applyTheme()
 
@@ -474,7 +483,7 @@ final class FleetController: NSViewController {
         }
 
         statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(working)", label: "working"))
-        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge"))
+        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", onClick: #selector(readyToMergeTileClicked)))
         statsRow.addArrangedSubview(statTile(icon: "line.3.horizontal", value: "\(snapshot.queuedCount)", label: "queued"))
         statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(snapshot.doneCount)", label: "done today"))
         statsRow.addArrangedSubview(statTile(icon: "shippingbox", value: "\(snapshot.projectsCount)", label: "projects"))
@@ -494,30 +503,6 @@ final class FleetController: NSViewController {
             let row = taskRowView(task)
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-    }
-
-    private func rebuildPRRowsLoading() {
-        for v in readyStack.arrangedSubviews {
-            readyStack.removeArrangedSubview(v)
-            v.removeFromSuperview()
-        }
-        readyStack.addArrangedSubview(emptyStateView(icon: "arrow.triangle.2.circlepath", title: "Checking for open pull requests…", body: "Scanning your project clones for anything ready to merge."))
-    }
-
-    private func rebuildPRRows(_ prs: [MergedPR]) {
-        for v in readyStack.arrangedSubviews {
-            readyStack.removeArrangedSubview(v)
-            v.removeFromSuperview()
-        }
-        if prs.isEmpty {
-            readyStack.addArrangedSubview(emptyStateView(icon: "checkmark.seal", title: "Nothing waiting on you", body: "No open pull requests across your projects. They show up here the moment a crewmate opens one."))
-            return
-        }
-        for pr in prs {
-            let row = prRowView(pr)
-            readyStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: readyStack.widthAnchor).isActive = true
         }
     }
 
@@ -613,83 +598,6 @@ final class FleetController: NSViewController {
         }
     }
 
-    private func prRowView(_ pr: MergedPR) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
-        iconView.contentTintColor = HelmTheme.nsColor(theme.accentHex)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let heading = pr.title.isEmpty ? (pr.number != nil ? "PR #\(pr.number!)" : "PR") : pr.title
-        let titleLabel = NSTextField(labelWithString: heading)
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.maximumNumberOfLines = 1
-
-        var subBits: [String] = []
-        if !pr.repo.isEmpty { subBits.append(pr.repo) }
-        subBits.append(pr.number != nil ? "PR #\(pr.number!)" : "PR")
-        if let forge = pr.forge { subBits.append(forge) }
-        let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
-        subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.textColor = HelmTheme.mutedInk(theme)
-        subLabel.lineBreakMode = .byTruncatingTail
-        subLabel.maximumNumberOfLines = 1
-
-        let textStack = NSStackView(views: [titleLabel, subLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let (checksLabel, checksColorHex) = checksVisuals(pr.checks)
-        let checksPill = pillLabelView(text: checksLabel, colorHex: checksColorHex)
-
-        let reviewButton = NSButton(title: "Review", target: self, action: #selector(reviewPR(_:)))
-        reviewButton.bezelStyle = .rounded
-        reviewButton.controlSize = .small
-        reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
-
-        var trailing: [NSView] = [checksPill, reviewButton]
-        if pr.source == "work", let taskID = pr.taskID {
-            let mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergePR(_:)))
-            mergeButton.bezelStyle = .rounded
-            mergeButton.controlSize = .small
-            mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
-            trailing.append(mergeButton)
-        }
-
-        let row = NSStackView(views: [iconView, textStack] + trailing)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        // Same rule as taskRowView: icon and every trailing control (badge,
-        // Review, Merge) stay fixed-size under narrow widths; only the
-        // title/subtitle text truncates. Previously nothing set compression
-        // resistance on the trailing controls, so a long PR title could
-        // squeeze the checks pill below its fitting width and force it (and
-        // the buttons after it) onto a visually wrapped second line.
-        iconView.setContentHuggingPriority(.required, for: .horizontal)
-        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for t in trailing {
-            t.setContentHuggingPriority(.required, for: .horizontal)
-            t.setContentCompressionResistancePriority(.required, for: .horizontal)
-        }
-
-        return wrapRow(row, minHeight: 38)
-    }
-
-    private func checksVisuals(_ checks: String) -> (label: String, colorHex: String) {
-        switch checks {
-        case "green": return ("checks pass", theme.ansiHex[2])
-        case "red": return ("checks failing", theme.ansiHex[1])
-        case "pending": return ("checks running", theme.ansiHex[3])
-        default: return ("no checks", theme.chromeInkHex)
-        }
-    }
-
     private func pillLabelView(text: String, colorHex: String) -> NSView {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 10, weight: .semibold)
@@ -731,43 +639,8 @@ final class FleetController: NSViewController {
 
     // MARK: Actions
 
-    @objc private func reviewPR(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue, let url = URL(string: raw) else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc private func mergePR(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue else { return }
-        let parts = raw.components(separatedBy: "\u{0}")
-        guard parts.count == 2 else { return }
-        let prURL = parts[1]
-
-        let alert = NSAlert()
-        alert.messageText = "Merge this PR?"
-        alert.informativeText = prURL
-        alert.addButton(withTitle: "Merge")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        sender.isEnabled = false
-        sender.title = "Merging\u{2026}"
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = FleetDataSource.mergePR(url: prURL)
-            DispatchQueue.main.async {
-                if result.ok {
-                    self?.refresh()
-                } else {
-                    sender.isEnabled = true
-                    sender.title = "Merge"
-                    let failAlert = NSAlert()
-                    failAlert.messageText = "Merge failed"
-                    failAlert.informativeText = result.message
-                    failAlert.alertStyle = .warning
-                    failAlert.runModal()
-                }
-            }
-        }
+    @objc private func readyToMergeTileClicked() {
+        onNavigateToReview?()
     }
 
     // MARK: Theme
@@ -800,7 +673,6 @@ final class FleetController: NSViewController {
         bannerBody.textColor = muted
 
         inFlightHeader.textColor = ink
-        readyHeader.textColor = ink
 
         for (container, iconView, valueLabel, nameLabel) in stashedTileParts {
             container.layer?.backgroundColor = surface.cgColor
