@@ -2,21 +2,25 @@
 //
 // The `.docs` rail destination. `fm/grandline-docs-knowledge-foundation`
 // ("Knowledge and speed", phase 1) restructured this from a single embedded
-// browser into a 5-tab page - see AGENTS.md's "Knowledge" section for the
+// browser into a multi-tab page - see AGENTS.md's "Knowledge" section for the
 // full shape and what's explicitly deferred to later phases. The tab bar
 // mirrors Shift's own fixed two-tab switcher (`ShiftController.buildTabRow`)
 // - clickable `HoverHighlightView` pills, not `NSSegmentedControl` - since
-// these 5 tabs are fixed and always present, not user-creatable/closeable
+// these 4 tabs are fixed and always present, not user-creatable/closeable
 // like the Tools page's own multi-instance `TabChipView` strip.
 //
 // Tab 1, Playbook, is byte-for-byte the same locked-down embedded `WKWebView`
 // onto the captain's real DevOps Playbook this page always was - none of
-// that code changed, only its container. Tabs 2-5 are new: Runbooks (real
+// that code changed, only its container. Tabs 2-4 are new: Runbooks (real
 // CRUD, git-synced), Postmortems (list/display only - generation is a later
-// task), Search (real, scoped to Runbooks + Postmortems), and Command
-// Composer (explanatory pointer only - the real composer UI lives in
-// Console's own "✨ Compose" toolbar button, see `ConsoleCommandComposer.swift`
-// / `ConsoleComposerPopover.swift`; this tab never duplicates it).
+// task), and Search (real, scoped to Runbooks + Postmortems). The original
+// phase-1 build also shipped a 5th "Command Composer" tab that only ever
+// showed an explanatory pointer at the real feature (Console's own
+// "✨ Compose" toolbar button, see `ConsoleCommandComposer.swift` /
+// `ConsoleComposerPopover.swift`) - `fm/grandline-composer-cleanup-and-polish`
+// removed it outright once the captain confirmed it added nothing beyond
+// that redirect message; the real composer needs no in-Docs pointer, since
+// its own toolbar button is self-explanatory.
 //
 // Root view follows this app's own documented gotcha #8 (`AGENTS.md`): a
 // plain `NSView` with `wantsLayer`/`HelmTheme` background, not
@@ -30,7 +34,7 @@ final class DocsController: NSViewController {
     static let liveSiteURL = URL(string: "https://manjesh-raj.github.io/devops-playbook/")!
 
     private enum DocsTab: Int, CaseIterable {
-        case playbook, runbooks, postmortems, search, composer
+        case playbook, runbooks, postmortems, search
 
         var title: String {
             switch self {
@@ -38,7 +42,6 @@ final class DocsController: NSViewController {
             case .runbooks: return "Runbooks"
             case .postmortems: return "Postmortems"
             case .search: return "Search"
-            case .composer: return "Command Composer"
             }
         }
     }
@@ -109,10 +112,6 @@ final class DocsController: NSViewController {
     private let searchResultsStack = NSStackView()
     private let searchEmptyLabel = NSTextField(labelWithString: "Type to search Runbooks and Postmortems.")
 
-    // MARK: Command Composer
-
-    private let composerContainer = NSView()
-
     private var theme: HelmTheme = ThemeManager.shared.theme
 
     override func loadView() {
@@ -136,9 +135,8 @@ final class DocsController: NSViewController {
         buildRunbooksContainer()
         buildPostmortemsContainer()
         buildSearchContainer()
-        buildComposerContainer()
 
-        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer, composerContainer] {
+        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer] {
             container.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(container)
             NSLayoutConstraint.activate([
@@ -248,7 +246,6 @@ final class DocsController: NSViewController {
         runbooksContainer.isHidden = tab != .runbooks
         postmortemsContainer.isHidden = tab != .postmortems
         searchContainer.isHidden = tab != .search
-        composerContainer.isHidden = tab != .composer
         if tab == .runbooks { reloadRunbooksList() }
         if tab == .postmortems { reloadPostmortemsList() }
         applyTheme()
@@ -900,55 +897,6 @@ final class DocsController: NSViewController {
         showPostmortem(id)
     }
 
-    // MARK: Command Composer
-
-    private func buildComposerContainer() {
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 34, weight: .light))
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        let title = NSTextField(labelWithString: "Command Composer")
-        title.font = .systemFont(ofSize: 16, weight: .semibold)
-        title.alignment = .center
-        title.translatesAutoresizingMaskIntoConstraints = false
-
-        let body = NSTextField(wrappingLabelWithString: "The composer is live in Console, not here. Open any plain shell tab and click the \"✨ Compose\" button in its toolbar, describe your intent in plain English, review the generated command, and run it right there.")
-        body.font = .systemFont(ofSize: 12.5)
-        body.alignment = .center
-        body.preferredMaxLayoutWidth = 420
-        body.translatesAutoresizingMaskIntoConstraints = false
-
-        let pillLabel = NSTextField(labelWithString: "Available in Console")
-        let pill = NSView()
-        ToolRowLayout.pill(text: "Available in Console", colorHex: theme.ansiHex[2], into: pill, label: pillLabel)
-
-        let stack = NSStackView(views: [icon, title, body, pill])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.setCustomSpacing(16, after: body)
-
-        composerContainer.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: composerContainer.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: composerContainer.centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: composerContainer.widthAnchor, constant: -80),
-        ])
-        composerIcon = icon
-        composerTitle = title
-        composerBody = body
-        composerPill = pill
-        composerPillLabel = pillLabel
-    }
-
-    private var composerIcon: NSImageView?
-    private var composerTitle: NSTextField?
-    private var composerBody: NSTextField?
-    private var composerPill: NSView?
-    private var composerPillLabel: NSTextField?
-
     // MARK: Shared row builder (Runbooks/Postmortems/Search results)
 
     private func buildDocRow(title: String, subtitle: String, icon: String, tint: HelmTint, onOpen: @escaping () -> Void, onDelete: (() -> Void)?) -> NSView {
@@ -1025,7 +973,7 @@ final class DocsController: NSViewController {
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
 
-        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer, composerContainer] {
+        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer] {
             container.wantsLayer = true
             container.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         }
@@ -1062,13 +1010,6 @@ final class DocsController: NSViewController {
         postmortemDetailTextView.textColor = ink
         postmortemDetailTextView.backgroundColor = surface
         searchEmptyLabel.textColor = muted
-
-        composerIcon?.contentTintColor = muted
-        composerTitle?.textColor = ink
-        composerBody?.textColor = muted
-        if let pill = composerPill, let label = composerPillLabel {
-            ToolRowLayout.pill(text: "Available in Console", colorHex: theme.ansiHex[2], into: pill, label: label)
-        }
 
         for stack in [runbookListStack, postmortemListStack, searchResultsStack] {
             for row in stack.arrangedSubviews {
