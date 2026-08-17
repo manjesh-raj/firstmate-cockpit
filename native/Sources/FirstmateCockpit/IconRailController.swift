@@ -272,7 +272,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     private(set) var activeHostID: UUID?
     private var buttons: [RailDestination: NSButton] = [:]
     /// `fm/grandline-rail-unified-rework`: a `HoverTrackingButton` (the same
-    /// button type `setupButton`/`hostsButton`/`vpnButton` already use)
+    /// button type `setupButton`/`hostsButton` already use)
     /// rather than a plain `NSButton`, so the avatar's accent ring can
     /// brighten on hover - see `avatarGradientLayer`/`avatarRingLayer` below
     /// and `restyle(_:)`'s avatar section. Click behavior (opening
@@ -305,37 +305,32 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     private var badgeLabelInsets: [RailDestination: (leading: NSLayoutConstraint, trailing: NSLayoutConstraint)] = [:]
 
     /// The saved hosts currently pinned to the rail - no longer rendered as
-    /// their own permanent icon column (`fm/grandline-hosts-vpn-flyout-redesign`
+    /// their own permanent icon column (the hosts-flyout redesign
     /// replaced that, and its "more hosts" overflow flyout, with a single
     /// "Hosts" rail row that opens `HostsFlyoutViewController` listing every
     /// saved host on demand). `setHosts` just keeps this array current so the
     /// flyout always shows live content the next time it's opened.
     private var hosts: [Host] = []
 
-    /// `fm/grandline-hosts-vpn-flyout-redesign`: "Hosts" and "VPN" are now a
-    /// single rail row each, positioned inside `navStack` right where the old
-    /// per-host icon block and VPN toggle section used to sit (see
-    /// `loadView`'s daily-use loop) - both open a small flyout `NSPopover` on
-    /// click, reusing the exact `SetupFlyoutViewController`/click-to-toggle
-    /// mechanism `buildSetupButton()`/`setupClicked()` already established,
-    /// rather than a second interaction pattern. Neither is a
+    /// the hosts-flyout redesign: "Hosts" is a single rail row,
+    /// positioned inside `navStack` right where the old per-host icon block
+    /// used to sit (see `loadView`'s daily-use loop) - it opens a small
+    /// flyout `NSPopover` on click, reusing the exact `SetupFlyoutViewController`/
+    /// click-to-toggle mechanism `buildSetupButton()`/`setupClicked()` already
+    /// established, rather than a second interaction pattern. It is not a
     /// `RailDestination` of its own for dispatch purposes - `.hosts` still is
     /// (for `AppShellController.show(.hosts)`/`setActive(.hosts)`), but its
     /// rail row no longer calls `onSelect` directly; the flyout's own
-    /// "Manage Hosts & Keys…" row does that instead. "VPN" has no
-    /// `RailDestination`/page of its own at all, same as "Setup".
+    /// "Manage Hosts & Keys…" row does that instead.
     private let hostsButton = HoverTrackingButton()
     private var hostsPopover: NSPopover?
-    private let vpnButton = HoverTrackingButton()
-    private var vpnPopover: NSPopover?
 
     /// fm/grandline-sidebar-nav-polish: a hairline divider between the logo
     /// mark and the first daily-use row (Overview) - the captain noticed the
     /// mark/nav boundary had no divider while every other section boundary
     /// (above/below the per-host block) already does.
     ///
-    /// `fm/grandline-vpn-divider-and-connect-fixes`: this used to be an
-    /// `NSBox(.separator)`, matching what every OTHER divider in this file
+    /// This used to be an `NSBox(.separator)`, matching what every OTHER divider in this file
     /// (`navStackDivider()`'s rows, `dividerSetupAvatar`) also used - but
     /// `.separator`-typed `NSBox`es unconditionally draw AppKit's own system
     /// separator color and silently IGNORE any `.fillColor` set on them
@@ -451,17 +446,16 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
 
     /// `fm/grandline-rail-unify-and-mark-polish`: whether each flyout-driven
     /// row's own popover is currently showing - a rail row that opens a
-    /// flyout (Hosts/VPN/Setup) previously showed no active/pressed state at
+    /// flyout (Hosts/Setup) previously showed no active/pressed state at
     /// all while its flyout was open, unlike a real destination like Console,
     /// which highlights for as long as it's the shown page. Fed into
-    /// `restyle(_:)`'s existing active-state coloring for these three rows;
+    /// `restyle(_:)`'s existing active-state coloring for these rows;
     /// set on `show*Flyout()` and cleared via `NSPopoverDelegate.popoverDidClose(_:)`
     /// (not just the `*Clicked()` performClose branch) so a `.transient`
     /// popover dismissed by an outside click - which never goes through
-    /// `hostsClicked()`/`vpnClicked()`/`setupClicked()` at all - still clears
+    /// `hostsClicked()`/`setupClicked()` at all - still clears
     /// the highlight.
     private var isHostsFlyoutOpen = false
-    private var isVpnFlyoutOpen = false
     private var isSetupFlyoutOpen = false
 
     /// Margin the top group (logo mark) keeps from the window's top edge,
@@ -492,11 +486,11 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     /// individually-positioned `root` subviews instead, specifically so the
     /// old per-host icon *block* above them (a variable-height `NSStackView`
     /// with no height constraint of its own) could grow/shrink freely
-    /// without disturbing them. `fm/grandline-hosts-vpn-flyout-redesign`
+    /// without disturbing them. the hosts-flyout redesign
     /// already removed that variable-height block (replaced by the fixed-
-    /// height "Hosts"/"VPN" flyout-trigger rows, themselves ordinary
-    /// `navStack` arranged subviews) - so the original reason to keep the
-    /// utility rows out of `navStack` no longer applies. They now simply
+    /// height "Hosts" flyout-trigger row, itself an ordinary `navStack`
+    /// arranged subview) - so the original reason to keep the utility rows
+    /// out of `navStack` no longer applies. They now simply
     /// continue `navStack`'s own loop, separated by the exact same
     /// `navStackDivider()` calls the daily-use rows already use - one list,
     /// one spacing rhythm, no group boundary anywhere inside it.
@@ -577,23 +571,20 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         let dailyUseDestinations = RailDestination.allCases.filter { $0.isDailyUse }
         for (index, dest) in dailyUseDestinations.enumerated() {
             // fm/grandline-rail-followup-fixes: a hairline separator between
-            // each daily-use row (Overview | Console | Hosts | VPN | Tasks |
+            // each daily-use row (Overview | Console | Hosts | Tasks |
             // Review), matching the existing `NSBox(.separator)` style
             // already used elsewhere in the rail - captain ask was scoped to
             // this group only, so the utility group is untouched.
             if index > 0 { navStackDivider() }
             if dest == .hosts {
-                // `fm/grandline-hosts-vpn-flyout-redesign`: "Hosts" and "VPN"
-                // are a single flyout-opening row each, right where the old
-                // per-host icon block and VPN toggle section used to sit
-                // (below Console, above Tasks/Review) - see `buildHostsButton()`/
-                // `buildVpnButton()` and the properties' own doc comments.
-                // `.hosts` itself is still the `RailDestination` case that
-                // drives this position (case order, `isDailyUse`), it just no
+                // the hosts-flyout redesign: "Hosts" is a
+                // single flyout-opening row, right where the old per-host
+                // icon block used to sit (below Console, above Tasks/Review)
+                // - see `buildHostsButton()`'s own doc comment. `.hosts`
+                // itself is still the `RailDestination` case that drives
+                // this position (case order, `isDailyUse`), it just no
                 // longer builds a plain `railButton(for:)`.
                 navStack.addArrangedSubview(buildHostsButton())
-                navStackDivider()
-                navStack.addArrangedSubview(buildVpnButton())
                 continue
             }
             let button = railButton(for: dest)
@@ -978,7 +969,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         onSelect?(dest)
     }
 
-    /// Fix 3 (fixes4), superseded by `fm/grandline-hosts-vpn-flyout-redesign`:
+    /// Fix 3 (fixes4), superseded by the hosts-flyout redesign:
     /// keeps the saved-host list current so the "Hosts" flyout (opened on
     /// demand via `hostsClicked`) always shows live content the next time it
     /// opens - there is no persistent per-host rail UI left to rebuild here.
@@ -1042,49 +1033,10 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         restyle(ThemeManager.shared.theme)
     }
 
-    /// Builds the "VPN" rail row - see the `vpnButton` property's doc
-    /// comment. Otherwise built exactly like `buildSetupButton()`; "VPN" has
-    /// no `RailDestination`/page of its own, same as "Setup".
-    private func buildVpnButton() -> NSButton {
-        let button = buildRailRowButton(
-            title: "VPN",
-            symbol: "shield.lefthalf.filled",
-            tooltip: "VPN (Barracuda, OpenVPN)",
-            existingButton: vpnButton
-        )
-        button.target = self
-        button.action = #selector(vpnClicked)
-        return button
-    }
-
-    @objc private func vpnClicked() {
-        if vpnPopover?.isShown == true {
-            vpnPopover?.performClose(nil)
-        } else {
-            showVpnFlyout()
-        }
-    }
-
-    /// Shows the VPN flyout, anchored to the VPN button's trailing edge -
-    /// see `VPNFlyoutViewController` for its content. Reads/writes the same
-    /// `VPNStatusCenter` singleton the Tools "VPN" panel already shares, so
-    /// the two never disagree about which VPN is on.
-    private func showVpnFlyout() {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.delegate = self
-        popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
-        popover.contentViewController = VPNFlyoutViewController()
-        popover.show(relativeTo: vpnButton.bounds, of: vpnButton, preferredEdge: .maxX)
-        vpnPopover = popover
-        isVpnFlyoutOpen = true
-        restyle(ThemeManager.shared.theme)
-    }
-
     /// `fm/grandline-rail-unify-and-mark-polish`: clears whichever
     /// flyout-open flag matches the popover that just closed - fires for
     /// *every* dismissal path (an explicit `performClose(nil)` from
-    /// `hostsClicked()`/`vpnClicked()`/`setupClicked()`, a row selection, or
+    /// `hostsClicked()`/`setupClicked()`, a row selection, or
     /// a `.transient` popover's own outside-click auto-dismiss, which never
     /// goes through any of those methods), so the triggering row's highlight
     /// always clears in step with the flyout actually closing.
@@ -1092,8 +1044,6 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         guard let popover = notification.object as? NSPopover else { return }
         if popover === hostsPopover {
             isHostsFlyoutOpen = false
-        } else if popover === vpnPopover {
-            isVpnFlyoutOpen = false
         } else if popover === setupPopover {
             isSetupFlyoutOpen = false
         } else {
@@ -1277,7 +1227,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         // previously this row showed no active state at all while its
         // flyout was showing, unlike a real destination like Console) -
         // since the rail no longer has a per-host icon of its own to
-        // highlight (`fm/grandline-hosts-vpn-flyout-redesign` moved that
+        // highlight (the hosts-flyout redesign moved that
         // into the flyout), this is the closest equivalent: "one of the
         // things this row leads to is what's showing now," the same idea
         // "Setup" already uses for its own sub-items below.
@@ -1286,15 +1236,6 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         hostsButton.contentTintColor = hostsColor
         hostsButton.attributedTitle = attributedRowTitle("Hosts", color: hostsColor)
         hostsButton.layer?.backgroundColor = (hostsIsActive ? accentTint : .clear).cgColor
-
-        // "VPN" has no destination/page of its own at all - the plain
-        // inactive ink color at rest, but still highlights (like every other
-        // flyout-trigger row) for as long as its own flyout is open.
-        let vpnIsActive = isVpnFlyoutOpen
-        let vpnColor = vpnIsActive ? accent : ink.withAlphaComponent(0.65)
-        vpnButton.contentTintColor = vpnColor
-        vpnButton.attributedTitle = attributedRowTitle("VPN", color: vpnColor)
-        vpnButton.layer?.backgroundColor = (vpnIsActive ? accentTint : .clear).cgColor
 
         // "Setup" itself highlights whenever one of its sub-items
         // (Bootstrap/Updates/Automation) is the active destination, or
@@ -1320,7 +1261,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     /// (rather than a flat fill); the ring is a soft accent-colored border,
     /// subtle at rest and brightening (higher alpha, slightly thicker) on
     /// hover, using the same `HoverTrackingButton` type `setupButton`/
-    /// `hostsButton`/`vpnButton` already use rather than a new hover
+    /// `hostsButton` already use rather than a new hover
     /// mechanism.
     private func restyleAvatar(_ theme: HelmTheme) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
@@ -1461,7 +1402,7 @@ private final class SetupFlyoutViewController: NSViewController {
 
 }
 
-/// The "Hosts" flyout's content (`fm/grandline-hosts-vpn-flyout-redesign`,
+/// The "Hosts" flyout's content (the hosts-flyout redesign,
 /// replacing the old always-visible per-host icon block and its own "more
 /// hosts" overflow flyout at 3+ hosts - see this file's header). One row per
 /// saved host (quick-connect, same `onConnectHost` path as before - only
@@ -1640,203 +1581,6 @@ private final class HostsFlyoutViewController: NSViewController {
     }
 
     @objc private func manageClicked() { onManage() }
-}
-
-/// The "VPN" flyout's content (`fm/grandline-hosts-vpn-flyout-redesign`,
-/// replacing the old always-visible narrow icon-above-toggle rail rows,
-/// which squeezed "Barracuda" down to "Barracu…" - see this file's header).
-/// Same underlying `VPNStatusCenter` the Tools "VPN" panel already shares -
-/// this flyout only gives it real width to render in, kept live for as long
-/// as the flyout is open (both observer tokens are released in `deinit`).
-private final class VPNFlyoutViewController: NSViewController {
-    private var themeObservation: ThemeObservation?
-    private var vpnStatusToken: UUID?
-    private var rows: [VPNKind: VPNFlyoutRowView] = [:]
-
-    deinit {
-        if let themeObservation { ThemeManager.shared.unobserve(themeObservation) }
-        if let vpnStatusToken { VPNStatusCenter.shared.unobserve(vpnStatusToken) }
-    }
-
-    override func loadView() {
-        let root = NSView()
-        root.wantsLayer = true
-        view = root
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
-        ])
-
-        for kind in VPNKind.allCases {
-            let row = VPNFlyoutRowView(kind: kind)
-            row.onToggle = { isOn in VPNStatusCenter.shared.toggle(kind, requestOn: isOn) }
-            rows[kind] = row
-            stack.addArrangedSubview(row)
-        }
-
-        themeObservation = ThemeManager.shared.observe { [weak self, weak root] theme in
-            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-            guard let self else { return }
-            for row in self.rows.values { row.applyTheme(theme) }
-        }
-        vpnStatusToken = VPNStatusCenter.shared.observe { [weak self] snapshot in
-            self?.applySnapshot(snapshot)
-        }
-    }
-
-    private func applySnapshot(_ snapshot: VPNStatusCenter.Snapshot) {
-        updateRow(.barracuda, status: snapshot.barracuda)
-        updateRow(.openVPN, status: snapshot.openVPN)
-    }
-
-    private func updateRow(_ kind: VPNKind, status: VPNConnectionStatus) {
-        guard let row = rows[kind] else { return }
-        let theme = ThemeManager.shared.theme
-        let dotHex: String
-        let isTransitioning: Bool
-        switch status {
-        case .connected:
-            dotHex = HelmTint.good.hex(in: theme)
-            isTransitioning = false
-        case .connecting, .disconnecting:
-            dotHex = HelmTint.warn.hex(in: theme)
-            isTransitioning = true
-        case .disconnected:
-            dotHex = theme.chromeLineHex
-            isTransitioning = false
-        case .unknown:
-            dotHex = HelmTint.critical.hex(in: theme)
-            isTransitioning = false
-        }
-        row.setDotColor(HelmTheme.nsColor(dotHex))
-        row.setToggleState(status.isConnected)
-        row.setEnabled(!isTransitioning)
-        row.setSubtitle(Self.subtitle(status: status))
-    }
-
-    private static func subtitle(status: VPNConnectionStatus) -> String {
-        switch status {
-        case .connected(let profile, let duration):
-            var parts: [String] = []
-            if let profile { parts.append(profile) }
-            if let duration { parts.append(duration) }
-            return parts.isEmpty ? "Connected" : parts.joined(separator: " \u{00b7} ")
-        case .connecting: return "Connecting\u{2026}"
-        case .disconnecting: return "Disconnecting\u{2026}"
-        case .disconnected: return "Not connected"
-        case .unknown: return "Unknown - couldn't confirm the last action"
-        }
-    }
-}
-
-/// One row in the "VPN" flyout - a status dot, the VPN's full name (never
-/// truncated - the flyout has real width, unlike the old rail row this
-/// replaces), a small status/profile subtitle, and a real `NSSwitch` issuing
-/// a connect/disconnect request on click. `row.distribution = .fill` plus
-/// `.required` hugging/compression resistance on the dot and toggle (with
-/// `.defaultLow` on the text stack) avoids the `.gravityAreas`-default trap
-/// this file's own AppKit-gotcha history documents elsewhere in this project
-/// (a horizontal `NSStackView` left at its default distribution doesn't
-/// honor those priorities at all).
-private final class VPNFlyoutRowView: NSView {
-    let kind: VPNKind
-    private let dot = NSView()
-    private let nameLabel = NSTextField(labelWithString: "")
-    private let subtitleLabel = NSTextField(labelWithString: "")
-    private let toggle = NSSwitch()
-    var onToggle: ((Bool) -> Void)?
-
-    init(kind: VPNKind) {
-        self.kind = kind
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-
-        nameLabel.stringValue = kind.displayName
-        nameLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        subtitleLabel.font = .systemFont(ofSize: 10.5)
-        subtitleLabel.lineBreakMode = .byTruncatingTail
-        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        dot.wantsLayer = true
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.layer?.cornerRadius = 3
-        dot.setContentHuggingPriority(.required, for: .horizontal)
-        dot.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let textStack = NSStackView(views: [nameLabel, subtitleLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 1
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        toggle.controlSize = .small
-        toggle.target = self
-        toggle.action = #selector(toggleFlipped)
-        toggle.setContentHuggingPriority(.required, for: .horizontal)
-        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [dot, textStack, toggle])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.distribution = .fill
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            dot.widthAnchor.constraint(equalToConstant: 7),
-            dot.heightAnchor.constraint(equalToConstant: 7),
-            widthAnchor.constraint(equalToConstant: 220),
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) not supported")
-    }
-
-    @objc private func toggleFlipped() {
-        onToggle?(toggle.state == .on)
-    }
-
-    /// Reflects a status update - setting `NSSwitch.state` directly (as
-    /// opposed to a real click) never fires `action`, so this can never
-    /// loop back into `onToggle` as a side effect of merely displaying a
-    /// status the captain didn't just request.
-    func setToggleState(_ isOn: Bool) {
-        toggle.state = isOn ? .on : .off
-    }
-
-    func setEnabled(_ enabled: Bool) {
-        toggle.isEnabled = enabled
-    }
-
-    func setDotColor(_ color: NSColor) {
-        dot.layer?.backgroundColor = color.cgColor
-    }
-
-    func setSubtitle(_ text: String) {
-        subtitleLabel.stringValue = text
-    }
-
-    func applyTheme(_ theme: HelmTheme) {
-        nameLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        subtitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.6)
-    }
 }
 
 /// A plain `NSButton` that reports mouse-enter/exit via a closure instead of
