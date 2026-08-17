@@ -55,6 +55,13 @@ final class DocsController: NSViewController {
     /// Keeps `ClosureSleeve`/gesture-recognizer targets alive for as long as
     /// the rows they're attached to exist - reset on every full row rebuild.
     private var rowSleeves: [ClosureSleeve] = []
+    /// The compact card containers built by `buildDocRow`, one list per tab
+    /// so reloading one tab's list never drops the other's theming refs -
+    /// kept so `applyTheme()` can re-tint their border, matching
+    /// `ToolsController.cardBorderViews`'s own convention. Each list is reset
+    /// on its own tab's full row rebuild alongside `rowSleeves`.
+    private var runbookRowCards: [HoverHighlightView] = []
+    private var postmortemRowCards: [HoverHighlightView] = []
 
     private let runbookStore = DocsRunbookStore()
 
@@ -467,7 +474,12 @@ final class DocsController: NSViewController {
         runbookListStack.spacing = 8
         runbookListStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let listContent = NSView()
+        // `FlippedView`, not a plain `NSView()` - see AGENTS.md's Docs section
+        // and AppKit gotcha (9): a non-flipped document view puts y=0 at the
+        // *bottom*, so content shorter than the viewport (the common case
+        // here) rests against the bottom of the scroll area instead of the
+        // top, leaving a large empty gap above the rows.
+        let listContent = FlippedView()
         listContent.translatesAutoresizingMaskIntoConstraints = false
         listContent.addSubview(runbookListStack)
         NSLayoutConstraint.activate([
@@ -481,7 +493,12 @@ final class DocsController: NSViewController {
         runbookListScroll.hasVerticalScroller = true
         runbookListScroll.drawsBackground = false
         runbookListScroll.translatesAutoresizingMaskIntoConstraints = false
-        listContent.widthAnchor.constraint(equalTo: runbookListScroll.contentView.widthAnchor).isActive = true
+        // `>=`, not `==` - a fixed-width compact card (see `buildDocRow`) can
+        // be wider than a narrow window's visible scroll area; an exact
+        // equality there would conflict with the card's own required width
+        // constraint instead of just letting the document view grow past the
+        // viewport (scrolling horizontally in that rare case).
+        listContent.widthAnchor.constraint(greaterThanOrEqualTo: runbookListScroll.contentView.widthAnchor).isActive = true
 
         let listStack = NSStackView(views: [headerRow, runbookListScroll])
         listStack.orientation = .vertical
@@ -589,6 +606,7 @@ final class DocsController: NSViewController {
 
     private func reloadRunbooksList() {
         runbookListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        runbookRowCards.removeAll()
         let runbooks = runbookStore.listRunbooks()
         runbooksHeaderCountLabel.stringValue = "\(runbooks.count)"
         if runbooks.isEmpty {
@@ -604,10 +622,10 @@ final class DocsController: NSViewController {
                 icon: "doc.text",
                 tint: .info,
                 onOpen: { [weak self] in self?.beginEditRunbook(runbook.id) },
-                onDelete: { [weak self] in self?.confirmDeleteRunbook(id: runbook.id, title: runbook.title) }
+                onDelete: { [weak self] in self?.confirmDeleteRunbook(id: runbook.id, title: runbook.title) },
+                cardList: &runbookRowCards
             )
             runbookListStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: runbookListStack.widthAnchor).isActive = true
         }
         applyTheme()
     }
@@ -713,7 +731,9 @@ final class DocsController: NSViewController {
         postmortemListStack.spacing = 8
         postmortemListStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let listContent = NSView()
+        // `FlippedView`, not a plain `NSView()` - same top-anchoring fix as
+        // the Runbooks list above (AppKit gotcha (9) in AGENTS.md).
+        let listContent = FlippedView()
         listContent.translatesAutoresizingMaskIntoConstraints = false
         listContent.addSubview(postmortemListStack)
         NSLayoutConstraint.activate([
@@ -726,7 +746,9 @@ final class DocsController: NSViewController {
         postmortemListScroll.hasVerticalScroller = true
         postmortemListScroll.drawsBackground = false
         postmortemListScroll.translatesAutoresizingMaskIntoConstraints = false
-        listContent.widthAnchor.constraint(equalTo: postmortemListScroll.contentView.widthAnchor).isActive = true
+        // `>=`, not `==` - see the matching comment on the Runbooks list's
+        // own document-view width constraint above.
+        listContent.widthAnchor.constraint(greaterThanOrEqualTo: postmortemListScroll.contentView.widthAnchor).isActive = true
 
         postmortemEmptyLabel.font = .systemFont(ofSize: 12)
         postmortemEmptyLabel.preferredMaxLayoutWidth = 420
@@ -762,6 +784,7 @@ final class DocsController: NSViewController {
 
     private func reloadPostmortemsList() {
         postmortemListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        postmortemRowCards.removeAll()
         let postmortems = runbookStore.listPostmortems()
         postmortemEmptyLabel.isHidden = !postmortems.isEmpty
         postmortemListScroll.isHidden = postmortems.isEmpty
@@ -772,10 +795,10 @@ final class DocsController: NSViewController {
                 icon: "exclamationmark.triangle",
                 tint: .warn,
                 onOpen: { [weak self] in self?.showPostmortem(postmortem.id) },
-                onDelete: nil
+                onDelete: nil,
+                cardList: &postmortemRowCards
             )
             postmortemListStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: postmortemListStack.widthAnchor).isActive = true
         }
         if selectedPostmortemID == nil {
             postmortemDetailScroll.isHidden = true
@@ -806,12 +829,22 @@ final class DocsController: NSViewController {
 
     // MARK: Shared row builder (Runbooks/Postmortems/Search results)
 
-    private func buildDocRow(title: String, subtitle: String, icon: String, tint: HelmTint, onOpen: @escaping () -> Void, onDelete: (() -> Void)?) -> NSView {
-        let iconTile = IconTileView()
-        iconTile.configure(symbol: icon, tint: tint)
+    /// A compact card - `IconTileView` + title + a short secondary line -
+    /// matching the Tools page's own landing-grid card treatment
+    /// (`ToolsController.toolCard`), per the captain's explicit "something
+    /// like this should be enough" reference. Deliberately a fixed, bounded
+    /// width rather than stretched to the full list width (the prior "row"
+    /// shape) - that's what actually reads as a compact card instead of an
+    /// oversized full-bleed banner.
+    private static let docCardWidth: CGFloat = 320
+    private static let docCardPadding: CGFloat = 8
+
+    private func buildDocRow(title: String, subtitle: String, icon: String, tint: HelmTint, onOpen: @escaping () -> Void, onDelete: (() -> Void)?, cardList: inout [HoverHighlightView]) -> NSView {
+        let iconTile = IconTileView(size: 26, cornerRadius: 7)
+        iconTile.configure(symbol: icon, tint: tint, pointSize: 12)
 
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
 
@@ -849,19 +882,22 @@ final class DocsController: NSViewController {
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let container = HoverHighlightView()
-        container.cornerRadius = 8
+        container.cornerRadius = 9
+        container.layer?.borderWidth = 1
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.docCardPadding),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.docCardPadding),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.docCardPadding),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.docCardPadding),
+            container.widthAnchor.constraint(equalToConstant: Self.docCardWidth),
         ])
         let openSleeve = ClosureSleeve(onOpen)
         rowSleeves.append(openSleeve)
         let click = NSClickGestureRecognizer(target: openSleeve, action: #selector(ClosureSleeve.invoke))
         container.addGestureRecognizer(click)
+        cardList.append(container)
         return container
     }
 
@@ -917,11 +953,11 @@ final class DocsController: NSViewController {
         postmortemDetailTextView.textColor = ink
         postmortemDetailTextView.backgroundColor = surface
 
-        for stack in [runbookListStack, postmortemListStack] {
-            for row in stack.arrangedSubviews {
-                guard let hover = row as? HoverHighlightView else { continue }
+        for cards in [runbookRowCards, postmortemRowCards] {
+            for hover in cards {
                 hover.normalColor = .clear
                 hover.hoverColor = line.withAlphaComponent(0.18)
+                hover.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
                 for case let sub as NSStackView in hover.subviews {
                     for view in sub.arrangedSubviews {
                         if let iconTile = view as? IconTileView { iconTile.applyTheme(theme) }
