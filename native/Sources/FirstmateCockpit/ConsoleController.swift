@@ -1493,6 +1493,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             FontSizeManager.shared.unobserve(fontSizeObservation)
             self.fontSizeObservation = nil
         }
+        composer.shutdown()
     }
 
     // MARK: Window title
