@@ -11,16 +11,20 @@
 //
 // Tab 1, Playbook, is byte-for-byte the same locked-down embedded `WKWebView`
 // onto the captain's real DevOps Playbook this page always was - none of
-// that code changed, only its container. Tabs 2-4 are new: Runbooks (real
-// CRUD, git-synced), Postmortems (list/display only - generation is a later
-// task), and Search (real, scoped to Runbooks + Postmortems). The original
-// phase-1 build also shipped a 5th "Command Composer" tab that only ever
-// showed an explanatory pointer at the real feature (Console's own
-// "✨ Compose" toolbar button, see `ConsoleCommandComposer.swift` /
-// `ConsoleComposerPopover.swift`) - `fm/grandline-composer-cleanup-and-polish`
-// removed it outright once the captain confirmed it added nothing beyond
-// that redirect message; the real composer needs no in-Docs pointer, since
-// its own toolbar button is self-explanatory.
+// that code changed, only its container. Tabs 2-3 are new: Runbooks (real
+// CRUD, git-synced) and Postmortems (list/display only - generation is a
+// later task). The original phase-1 build also shipped a 5th "Command
+// Composer" tab that only ever showed an explanatory pointer at the real
+// feature (Console's own "✨ Compose" toolbar button, see
+// `ConsoleCommandComposer.swift` / `ConsoleComposerPopover.swift`) -
+// `fm/grandline-composer-cleanup-and-polish` removed it outright once the
+// captain confirmed it added nothing beyond that redirect message. This
+// page's own in-page "Search" tab (real, scoped to Runbooks + Postmortems)
+// was removed the same way by `fm/grandline-unified-search-fixes`, once
+// phase 4's real, working `⌘K` unified search palette (`UnifiedSearch.swift`)
+// made it a second, weaker entry point to the exact same content - the
+// underlying `DocsKnowledgeSearch`/`UnifiedSearchIndex` logic that `⌘K`
+// depends on is untouched, only this page's own duplicate UI is gone.
 //
 // Root view follows this app's own documented gotcha #8 (`AGENTS.md`): a
 // plain `NSView` with `wantsLayer`/`HelmTheme` background, not
@@ -34,14 +38,13 @@ final class DocsController: NSViewController {
     static let liveSiteURL = URL(string: "https://manjesh-raj.github.io/devops-playbook/")!
 
     private enum DocsTab: Int, CaseIterable {
-        case playbook, runbooks, postmortems, search
+        case playbook, runbooks, postmortems
 
         var title: String {
             switch self {
             case .playbook: return "Playbook"
             case .runbooks: return "Runbooks"
             case .postmortems: return "Postmortems"
-            case .search: return "Search"
             }
         }
     }
@@ -104,14 +107,6 @@ final class DocsController: NSViewController {
     private let postmortemEmptyLabel = NSTextField(wrappingLabelWithString: "No postmortems yet. These will appear here once SRE Lead's \u{201c}Generate Postmortem\u{201d} step is built - a later task.")
     private var selectedPostmortemID: String?
 
-    // MARK: Search
-
-    private let searchContainer = NSView()
-    private let searchField = NSSearchField()
-    private let searchResultsScroll = NSScrollView()
-    private let searchResultsStack = NSStackView()
-    private let searchEmptyLabel = NSTextField(labelWithString: "Type to search Runbooks and Postmortems.")
-
     private var theme: HelmTheme = ThemeManager.shared.theme
 
     override func loadView() {
@@ -134,9 +129,8 @@ final class DocsController: NSViewController {
         buildPlaybookContainer()
         buildRunbooksContainer()
         buildPostmortemsContainer()
-        buildSearchContainer()
 
-        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer] {
+        for container in [playbookContainer, runbooksContainer, postmortemsContainer] {
             container.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(container)
             NSLayoutConstraint.activate([
@@ -245,7 +239,6 @@ final class DocsController: NSViewController {
         playbookContainer.isHidden = tab != .playbook
         runbooksContainer.isHidden = tab != .runbooks
         postmortemsContainer.isHidden = tab != .postmortems
-        searchContainer.isHidden = tab != .search
         if tab == .runbooks { reloadRunbooksList() }
         if tab == .postmortems { reloadPostmortemsList() }
         applyTheme()
@@ -797,96 +790,10 @@ final class DocsController: NSViewController {
         postmortemDetailScroll.isHidden = false
     }
 
-    // MARK: Search
-
-    private func buildSearchContainer() {
-        let header = NSTextField(labelWithString: "Search")
-        header.font = .systemFont(ofSize: 15, weight: .semibold)
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        searchField.placeholderString = "Search runbooks and postmortems\u{2026}"
-        searchField.target = self
-        searchField.action = #selector(searchFieldChanged)
-        searchField.delegate = self
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-
-        searchEmptyLabel.font = .systemFont(ofSize: 12)
-        searchEmptyLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        searchResultsStack.orientation = .vertical
-        searchResultsStack.alignment = .leading
-        searchResultsStack.spacing = 8
-        searchResultsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let resultsContent = NSView()
-        resultsContent.translatesAutoresizingMaskIntoConstraints = false
-        resultsContent.addSubview(searchResultsStack)
-        NSLayoutConstraint.activate([
-            searchResultsStack.leadingAnchor.constraint(equalTo: resultsContent.leadingAnchor),
-            searchResultsStack.trailingAnchor.constraint(equalTo: resultsContent.trailingAnchor),
-            searchResultsStack.topAnchor.constraint(equalTo: resultsContent.topAnchor),
-            searchResultsStack.bottomAnchor.constraint(lessThanOrEqualTo: resultsContent.bottomAnchor),
-        ])
-        searchResultsScroll.documentView = resultsContent
-        searchResultsScroll.hasVerticalScroller = true
-        searchResultsScroll.drawsBackground = false
-        searchResultsScroll.translatesAutoresizingMaskIntoConstraints = false
-        resultsContent.widthAnchor.constraint(equalTo: searchResultsScroll.contentView.widthAnchor).isActive = true
-
-        let stack = NSStackView(views: [header, searchField, searchEmptyLabel, searchResultsScroll])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        searchContainer.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: searchContainer.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor, constant: -18),
-            stack.topAnchor.constraint(equalTo: searchContainer.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor, constant: -16),
-            searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            searchResultsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-    }
-
-    @objc private func searchFieldChanged() { runSearch() }
-
-    private func runSearch() {
-        let query = searchField.stringValue
-        searchResultsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let results = DocsKnowledgeSearch.search(query: query, store: runbookStore)
-        searchEmptyLabel.stringValue = query.trimmingCharacters(in: .whitespaces).isEmpty
-            ? "Type to search Runbooks and Postmortems."
-            : "No matches for \u{201c}\(query)\u{201d}."
-        searchEmptyLabel.isHidden = !results.isEmpty
-        for result in results {
-            let row = buildDocRow(
-                title: "[\(result.scope.rawValue)] \(result.runbook.title)",
-                subtitle: result.snippet,
-                icon: result.scope == .runbook ? "doc.text" : "exclamationmark.triangle",
-                tint: result.scope == .runbook ? .info : .warn,
-                onOpen: { [weak self] in self?.openSearchResult(result) },
-                onDelete: nil
-            )
-            searchResultsStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: searchResultsStack.widthAnchor).isActive = true
-        }
-        applyTheme()
-    }
-
-    private func openSearchResult(_ result: DocsKnowledgeSearchResult) {
-        switch result.scope {
-        case .runbook: openRunbook(id: result.runbook.id)
-        case .postmortem: openPostmortem(id: result.runbook.id)
-        }
-    }
-
-    /// Entry points for the phase-4 unified `⌘K` search palette
-    /// (`UnifiedSearchController`, owned outside this page) - the same
-    /// "switch tab, then open" behavior `openSearchResult` above already
-    /// uses for the in-page Search tab, so there is exactly one "open this
-    /// runbook/postmortem" behavior regardless of entry point.
+    /// Entry points for the unified `⌘K` search palette
+    /// (`UnifiedSearchController`, owned outside this page) - the one "open
+    /// this runbook/postmortem" behavior, now that this page's own in-page
+    /// Search tab (which used to duplicate this) is gone.
     func openRunbook(id: String) {
         showTab(.runbooks)
         beginEditRunbook(id)
@@ -973,7 +880,7 @@ final class DocsController: NSViewController {
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
 
-        for container in [playbookContainer, runbooksContainer, postmortemsContainer, searchContainer] {
+        for container in [playbookContainer, runbooksContainer, postmortemsContainer] {
             container.wantsLayer = true
             container.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         }
@@ -1009,9 +916,8 @@ final class DocsController: NSViewController {
         postmortemEmptyLabel.textColor = muted
         postmortemDetailTextView.textColor = ink
         postmortemDetailTextView.backgroundColor = surface
-        searchEmptyLabel.textColor = muted
 
-        for stack in [runbookListStack, postmortemListStack, searchResultsStack] {
+        for stack in [runbookListStack, postmortemListStack] {
             for row in stack.arrangedSubviews {
                 guard let hover = row as? HoverHighlightView else { continue }
                 hover.normalColor = .clear
@@ -1039,13 +945,6 @@ final class ClosureSleeve: NSObject {
     private let closure: () -> Void
     init(_ closure: @escaping () -> Void) { self.closure = closure }
     @objc func invoke() { closure() }
-}
-
-extension DocsController: NSSearchFieldDelegate {
-    func controlTextDidChange(_ obj: Notification) {
-        guard obj.object as? NSSearchField === searchField else { return }
-        runSearch()
-    }
 }
 
 extension DocsController: WKNavigationDelegate {
