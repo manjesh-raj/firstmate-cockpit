@@ -748,6 +748,9 @@ if ProcessInfo.processInfo.environment["FM_RUN_CRON_EXPLAINER_TESTS"] == "1" {
 if ProcessInfo.processInfo.environment["FM_RUN_RESOURCE_UNITS_TESTS"] == "1" {
     exit(ResourceUnitsSelfTest.run() ? 0 : 1)
 }
+if ProcessInfo.processInfo.environment["FM_RUN_TERMINAL_WRAP_REDRAW_TESTS"] == "1" {
+    exit(TerminalWrapRedrawSelfTest.run() ? 0 : 1)
+}
 if ProcessInfo.processInfo.environment["FM_RUN_CERT_INSPECTOR_TESTS"] == "1" {
     exit(CertInspectorSelfTest.run() ? 0 : 1)
 }

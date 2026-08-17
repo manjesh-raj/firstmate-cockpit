@@ -1746,6 +1746,59 @@ extension TerminalView {
 #endif
     }
     
+    /// Computes the AppKit (flipped-from-top, Y-up) invalidation rect that must be
+    /// cleared and redrawn to cover terminal rows `rowStart...rowEnd` (screen-relative,
+    /// 0 = topmost visible row), given `terminalRows` total visible rows on screen.
+    ///
+    /// A dirty region that doesn't already touch a screen edge is extended by one
+    /// extra cell on that side, so an adjacent row's glyph overhang (a tall/oversized
+    /// character, or - for a row a wrap or scroll just brought into use - leftover
+    /// prior-frame pixels from whatever this row's `BufferLine` slot in the circular
+    /// buffer previously held) can never be left uncleared right at the boundary.
+    /// This is pulled out as a pure function (no view/CGContext access) specifically
+    /// so it can be covered by a deterministic, non-visual self-test - see
+    /// `native/Vendor/SwiftTerm/README.md`'s "wrap redraw boundary" local-patch entry.
+    public static func invalidationRegion (rowStart: Int, rowEnd: Int, terminalRows: Int,
+                                     frameWidth: CGFloat, frameHeight: CGFloat, cellHeight: CGFloat) -> CGRect
+    {
+        let baseLine = frameHeight
+        var region = CGRect (x: 0,
+                             y: baseLine - (cellHeight + CGFloat(rowEnd) * cellHeight),
+                             width: frameWidth,
+                             height: CGFloat(rowEnd-rowStart + 1) * cellHeight)
+
+        // If we are the last line, we should also queue a refresh for the "remaining" bits at the
+        // end which can be redrawn by large unicode
+        if rowEnd == terminalRows - 1 {
+            let oh = region.height
+            let oy = region.origin.y
+            region = CGRect (x: 0, y: 0, width: frameWidth, height: oh + oy)
+        } else {
+            // Region ends mid-screen (a restricted DECSTBM region): extend the
+            // invalidation down by one cell so the sub-cell remainder just below the
+            // band's bottom row (descenders / tall unicode) is cleared too. Previously
+            // only rowEnd == rows-1 got this, leaving a one-row ghost below the region.
+            let newY = max (0, region.origin.y - cellHeight)
+            region = CGRect (x: 0, y: newY, width: frameWidth, height: region.maxY - newY)
+        }
+
+        // Symmetric case (fm/grandline-terminal-wrap-duplicate-char): a region that
+        // does not start at row 0 can have its own top edge bled into by the row
+        // immediately above it - an oversized/tall glyph, or, for a row a wrap or
+        // scroll just brought into use, the CircularList slot's still-visible
+        // prior-frame pixels sitting right above the new row's own top edge. The
+        // "extend down" fix above already covers the analogous case at the bottom
+        // of a region that doesn't reach the last screen row; this closes the same
+        // gap at the top of a region that doesn't start at the first screen row, so
+        // one more cell above rowStart is always included in what gets cleared and
+        // redrawn.
+        if rowStart > 0 {
+            region = CGRect (x: 0, y: region.origin.y, width: frameWidth, height: region.height + cellHeight)
+        }
+
+        return region
+    }
+
     /// Update visible area
     func updateDisplay (notifyAccessibility: Bool)
     {
@@ -1785,27 +1838,9 @@ extension TerminalView {
         terminal.clearUpdateRange ()
 
         #if os(macOS)
-        let baseLine = frame.height
-        var region = CGRect (x: 0,
-                             y: baseLine - (cellDimension.height + CGFloat(rowEnd) * cellDimension.height),
-                             width: frame.width,
-                             height: CGFloat(rowEnd-rowStart + 1) * cellDimension.height)
-        
-        // If we are the last line, we should also queue a refresh for the "remaining" bits at the
-        // end which can be redrawn by large unicode
-        if rowEnd == terminal.rows - 1 {
-            let oh = region.height
-            let oy = region.origin.y
-            region = CGRect (x: 0, y: 0, width: frame.width, height: oh + oy)
-        } else {
-            // Region ends mid-screen (a restricted DECSTBM region): extend the
-            // invalidation down by one cell so the sub-cell remainder just below the
-            // band's bottom row (descenders / tall unicode) is cleared too. Previously
-            // only rowEnd == rows-1 got this, leaving a one-row ghost below the region.
-            let extra = cellDimension.height
-            let newY = max (0, region.origin.y - extra)
-            region = CGRect (x: 0, y: newY, width: frame.width, height: region.maxY - newY)
-        }
+        let region = TerminalView.invalidationRegion (
+            rowStart: rowStart, rowEnd: rowEnd, terminalRows: terminal.rows,
+            frameWidth: frame.width, frameHeight: frame.height, cellHeight: cellDimension.height)
 #if canImport(MetalKit)
         if metalView != nil {
             let buffer = terminal.displayBuffer
