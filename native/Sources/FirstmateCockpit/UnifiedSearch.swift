@@ -65,6 +65,19 @@ final class UnifiedSearchController: NSWindowController, NSTextFieldDelegate {
     private var results: [UnifiedSearchResult] = []
     private var selectedIndex = 0
     private var rowViews: [UnifiedSearchRowView] = []
+    // Fix (dismiss bug): a click anywhere outside the palette - on the main
+    // window, or in another app entirely (the panel floats at `.floating`
+    // level above everything) - should close it, same as Spotlight/any
+    // command palette. Neither this class nor `ShiftSearchController` had
+    // this before; a bare `NSPanel` (unlike `NSPopover`) has no built-in
+    // outside-click dismissal, and nothing here previously installed a
+    // monitor to fill that gap. A local monitor covers a click landing in a
+    // different window of this same app; a global monitor covers a click in
+    // a different app - mirrors `ShiftGlobalHotkey`'s established
+    // local+global monitor pair (`ShiftQuickCapture.swift`), just for mouse
+    // clicks instead of a hotkey.
+    private var outsideClickMonitor: Any?
+    private var globalOutsideClickMonitor: Any?
 
     init(store: DocsRunbookStore) {
         self.store = store
@@ -93,6 +106,19 @@ final class UnifiedSearchController: NSWindowController, NSTextFieldDelegate {
 
     private func buildUI(in panel: NSPanel) {
         guard let content = panel.contentView else { return }
+        // Fix (theme bug): without this, the content view has no layer at
+        // all until a descendant view (e.g. a result row's `HoverHighlightView`)
+        // is added and forces layer-backing on its ancestor chain - which
+        // hasn't happened yet the first time `applyTheme` runs (called
+        // immediately by `ThemeManager.shared.observe` below, before
+        // `present()` has ever built a row). That first call's
+        // `contentView.layer?.backgroundColor = ...` silently no-ops against
+        // a nil layer, so the palette renders as plain unthemed system gray
+        // until some *later* theme change happens to re-run `applyTheme`
+        // after rows exist. Setting `wantsLayer` here guarantees the layer
+        // exists before `applyTheme` is ever called. See AGENTS.md's
+        // `ThemeManager`/`HelmTheme` checklist, gotcha #8.
+        content.wantsLayer = true
 
         searchField.placeholderString = "Search runbooks and postmortems\u{2026}"
         searchField.font = .systemFont(ofSize: 16)
@@ -158,6 +184,25 @@ final class UnifiedSearchController: NSWindowController, NSTextFieldDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(searchField)
+        installOutsideClickMonitors()
+    }
+
+    private func installOutsideClickMonitors() {
+        removeOutsideClickMonitors()
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            if event.window !== self?.window { self?.dismiss() }
+            return event
+        }
+        globalOutsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismiss()
+        }
+    }
+
+    private func removeOutsideClickMonitors() {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        if let globalOutsideClickMonitor { NSEvent.removeMonitor(globalOutsideClickMonitor) }
+        outsideClickMonitor = nil
+        globalOutsideClickMonitor = nil
     }
 
     // MARK: NSTextFieldDelegate
@@ -255,7 +300,7 @@ final class UnifiedSearchController: NSWindowController, NSTextFieldDelegate {
     private func selectCurrent() {
         guard selectedIndex >= 0, selectedIndex < results.count else { return }
         let result = results[selectedIndex]
-        window?.orderOut(nil)
+        dismiss()
         switch result.kind {
         case .runbook: onSelectRunbook?(result.id)
         case .postmortem: onSelectPostmortem?(result.id)
@@ -264,6 +309,7 @@ final class UnifiedSearchController: NSWindowController, NSTextFieldDelegate {
 
     func dismiss() {
         window?.orderOut(nil)
+        removeOutsideClickMonitors()
     }
 
     private func applyTheme(_ theme: HelmTheme) {
