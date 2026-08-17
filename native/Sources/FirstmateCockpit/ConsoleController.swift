@@ -105,6 +105,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// host's tab, see `updateBlockViewControls`.
     private var blockViewToggleButton = NSButton()
     private var blockViewRefreshButton = NSButton()
+    /// Phase 3 of "Knowledge and speed" (`fm/grandline-console-command-
+    /// composer`) - only ever shown for a plain `.shell` tab that isn't a
+    /// one-shot command, see `updateComposeControls`.
+    private var composeButton = NSButton()
+    private let composer = ConsoleComposerController()
     private let separator = NSView()
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
@@ -167,6 +172,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
         buildSRELeadPane()
         root.addSubview(sreLeadPane)
+
+        // The one path that ever sends a composed command anywhere - see
+        // `ConsoleComposerPopover.swift`'s header for why this is never
+        // triggered automatically.
+        composer.onRunInTerminal = { [weak self] command in
+            self?.currentTab?.terminal.send(txt: command + "\n")
+        }
 
         sreLeadPaneWidthConstraint = sreLeadPane.widthAnchor.constraint(equalToConstant: 0)
 
@@ -278,6 +290,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
         blockViewToggleButton = makeIconButton(symbol: "rectangle.grid.1x2", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
         blockViewRefreshButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Refresh Blocks", action: #selector(refreshBlockView))
+        composeButton = makeIconButton(symbol: "sparkles", tooltip: "Compose a command…", action: #selector(toggleComposer))
 
         // SRE Lead (design brief Part C) and block view (`fm/cockpit-block-
         // view-stage0`) are both dedicated-host-page-only affordances - the
@@ -296,6 +309,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if !isFirstmateConsole {
             toolViews += [blockViewToggleButton, blockViewRefreshButton]
         }
+        // Compose (phase 3, `fm/grandline-console-command-composer`) is
+        // available on both the shared Firstmate console (its Shell tab is a
+        // plain `.shell` launch too) and every dedicated host page - visibility
+        // is per-tab (`updateComposeControls`), not per-console like SRE
+        // Lead/block view above.
+        toolViews.append(composeButton)
         toolViews.append(logButton)
         let tools = NSStackView(views: toolViews)
         tools.orientation = .horizontal
@@ -1132,7 +1151,34 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateWindowTitle(from: tab)
         updateLogButton()
         updateBlockViewControls()
+        updateComposeControls()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
+    }
+
+    // MARK: Compose (`fm/grandline-console-command-composer`)
+
+    /// Only ever shown for a plain `.shell` tab that isn't a one-shot
+    /// provisioning command (`isOneShotCommand`) - never an SSH tab (a
+    /// different remote shell's own command syntax), a Mirror/Herdr tab (not
+    /// a captain-typed shell at all), or a one-shot command tab (already has
+    /// a fixed, tracked purpose). Closes the popover outright when the
+    /// current tab stops qualifying (e.g. switching away mid-review), so it
+    /// never sits open pointed at a tab it no longer applies to.
+    private func updateComposeControls() {
+        let available: Bool
+        if let tab = currentTab, case .shell = tab.launch, !tab.isOneShotCommand {
+            available = true
+        } else {
+            available = false
+        }
+        composeButton.isHidden = !available
+        if !available { composer.close() }
+        composeButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+    }
+
+    @objc private func toggleComposer() {
+        guard !composeButton.isHidden else { return }
+        composer.toggle(relativeTo: composeButton)
     }
 
     // MARK: Block view (`fm/cockpit-block-view-stage0`)
@@ -1236,6 +1282,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         styleChips()
         updateLogButton()
         updateBlockViewControls()
+        updateComposeControls()
 
         sreLeadButton?.applyTheme(theme)
         sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
