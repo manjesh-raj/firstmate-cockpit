@@ -133,7 +133,7 @@ enum RailDestination: CaseIterable {
     }
 }
 
-final class IconRailController: NSViewController {
+final class IconRailController: NSViewController, NSPopoverDelegate {
 
     /// Rail width (fm/grandline-sidebar-labeled-nav): widened from the prior
     /// icon-only 60pt to fit an icon + a text label stacked vertically for
@@ -384,40 +384,90 @@ final class IconRailController: NSViewController {
     private let mark = NSImageView()
     private var isUnlockedForMark = false
 
+    /// `fm/grandline-rail-unify-and-mark-polish`: a subtle accent-tinted
+    /// gradient tile behind the sailboat glyph, replacing its previous plain
+    /// template-color rendering (the one thing making the mark read "bland"
+    /// per captain feedback) - the same "flat color -> theme accent"
+    /// `CAGradientLayer` + soft ring treatment `restyleAvatar`/
+    /// `avatarGradientLayer` already established, reused rather than
+    /// inventing a second visual language. Sized once in `loadView` (the
+    /// mark's own 34x34 bounds are fixed, so the layer's frame never needs
+    /// re-laying-out); `restyleMark` re-tunes its colors on every theme
+    /// change, same as `restyleAvatar`. The existing bob animation
+    /// (`setUnlocked`) and lock/unlock weight change are untouched - this
+    /// only changes the mark's background/tint, never its transform or
+    /// symbol weight logic.
+    private let markGradientLayer = CAGradientLayer()
+
+    /// `fm/grandline-rail-unify-and-mark-polish`: whether each flyout-driven
+    /// row's own popover is currently showing - a rail row that opens a
+    /// flyout (Hosts/VPN/Setup) previously showed no active/pressed state at
+    /// all while its flyout was open, unlike a real destination like Console,
+    /// which highlights for as long as it's the shown page. Fed into
+    /// `restyle(_:)`'s existing active-state coloring for these three rows;
+    /// set on `show*Flyout()` and cleared via `NSPopoverDelegate.popoverDidClose(_:)`
+    /// (not just the `*Clicked()` performClose branch) so a `.transient`
+    /// popover dismissed by an outside click - which never goes through
+    /// `hostsClicked()`/`vpnClicked()`/`setupClicked()` at all - still clears
+    /// the highlight.
+    private var isHostsFlyoutOpen = false
+    private var isVpnFlyoutOpen = false
+    private var isSetupFlyoutOpen = false
+
     /// Margin the top group (logo mark) keeps from the window's top edge,
     /// and the bottom group (avatar) keeps from the window's bottom edge -
     /// see the two-anchor-groups layout doc comment on `loadView` below.
     private static let railEdgeMargin: CGFloat = 14
 
-    /// `fm/grandline-rail-unified-rework`: **captain override, live review**
-    /// - superseding this task's own original requirement 3 (vertically
-    /// centering the whole rail as one block). The captain watched the
-    /// centered version running and asked for a different, two-anchor-groups
-    /// layout instead: the top group (logo mark, daily-use rows, HOSTS
-    /// section) pins to the window's *top* edge exactly as it always has;
-    /// the bottom group (utility rows + avatar) pins to the window's
-    /// *bottom* edge; any leftover vertical space in a tall window lives
-    /// entirely in the one gap *between* those two groups (between the end
-    /// of the HOSTS section and the start of the utility group), not
-    /// distributed as symmetric centering and not collecting below the
-    /// avatar (PR #132's bug, which prompted requirement 3 in the first
-    /// place). Each group is its own single rigid chain of required, fixed
-    /// equalities - unchanged from the fullheight fix's own reasoning for why
-    /// no individual section within a group can stretch (see `sectionGap`'s
-    /// doc comment) - anchored independently from the top and the bottom of
-    /// `root`. The *only* new piece is the connector between the two groups:
-    /// a required `>=` inequality (`toolsButton.topAnchor >= dividerBelowHosts.bottomAnchor
-    /// + sectionGap`), not an equality and not a soft/range constraint. Since
-    /// both endpoints of that inequality are already fully, independently
-    /// determined by their own group's rigid chain, the "flex" is not a
-    /// stretchy spacer view competing with anything else for slack - it's
-    /// simply whatever room is left between two fixed points, which is what
-    /// keeps this from regressing into PR #131/#132's specific bug (where a
-    /// range constraint *and* a soft bottom-pin together let `hostsStack`
-    /// itself, which has no explicit height, become the thing that absorbed
-    /// slack). Here `hostsStack`'s height is never in question - it's fully
-    /// pinned within the top group's own rigid chain, independent of window
-    /// height.
+    /// `fm/grandline-rail-unify-and-mark-polish` **supersedes the two-anchor-
+    /// groups design** `fm/grandline-rail-unified-rework` established (the
+    /// doc comment this replaces described a top-pinned group - logo mark,
+    /// daily-use rows, HOSTS section - and an independently bottom-pinned
+    /// group - utility rows + avatar - joined by one `>=` connector). Real
+    /// captain screenshots showed that split reading as two visually
+    /// different gaps: more space above "Tools" than below it (the connector
+    /// itself), and more space after "Setup" than between any other pair of
+    /// rows (the old bottom group's own fixed `sectionGap`/`rowSpacing`
+    /// rhythm happened to read differently once nothing else on the page
+    /// used exactly that gap). The captain's own framing: stop treating
+    /// daily-use and utility as two groups at all - one continuous, evenly-
+    /// spaced list, Overview through Setup, with a divider between every
+    /// consecutive pair (including the previously-missing one after Review),
+    /// and only the profile/avatar visually separated at the very bottom.
+    ///
+    /// The fix is smaller than a full redesign, per the captain's own hint:
+    /// `navStack` already held the daily-use rows as arranged subviews with
+    /// a uniform `rowSpacing`/divider rhythm (`navStackDivider()`) - the
+    /// utility rows (Tools/Vault/Dictation/Docs/Setup) used to be
+    /// individually-positioned `root` subviews instead, specifically so the
+    /// old per-host icon *block* above them (a variable-height `NSStackView`
+    /// with no height constraint of its own) could grow/shrink freely
+    /// without disturbing them. `fm/grandline-hosts-vpn-flyout-redesign`
+    /// already removed that variable-height block (replaced by the fixed-
+    /// height "Hosts"/"VPN" flyout-trigger rows, themselves ordinary
+    /// `navStack` arranged subviews) - so the original reason to keep the
+    /// utility rows out of `navStack` no longer applies. They now simply
+    /// continue `navStack`'s own loop, separated by the exact same
+    /// `navStackDivider()` calls the daily-use rows already use - one list,
+    /// one spacing rhythm, no group boundary anywhere inside it.
+    ///
+    /// Only the avatar keeps its own independent anchor, pinned to `root`'s
+    /// *bottom* edge exactly as before, with its own divider
+    /// (`dividerSetupAvatar`) above it - the one deliberate visual exception
+    /// the captain confirmed. The one remaining flex point is the connector
+    /// between the end of the unified list and that divider: a required
+    /// `>=` inequality (`dividerSetupAvatar.topAnchor >= navStack.bottomAnchor
+    /// + sectionGap`), mirroring the old design's own connector reasoning -
+    /// both endpoints are already fully, independently determined (`navStack`
+    /// top-anchored from `root.topAnchor`; the divider/avatar pair bottom-
+    /// anchored from `root.bottomAnchor`), so this is genuinely just "however
+    /// much room is left between two fixed points," never a stretchy spacer
+    /// view competing for slack the way `hostsStack` once accidentally did
+    /// (see the fullheight-fix history above this comment for why that
+    /// distinction matters). In practice, any leftover height in a tall
+    /// window collects in exactly the gap that already read as "more space
+    /// after Setup" before this change - this task tightens and relabels
+    /// that single flexible point rather than inventing a new one.
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 760))
         root.wantsLayer = true
@@ -441,14 +491,24 @@ final class IconRailController: NSViewController {
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
             self?.edgeLine.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
             self?.restyle(theme)
+            self?.restyleMark(theme)
         }
 
         mark.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Manjesh Grand Line")
         mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .medium)
         mark.wantsLayer = true
         mark.layer?.cornerRadius = 10
+        mark.layer?.masksToBounds = true
         mark.imageScaling = .scaleProportionallyDown
         mark.translatesAutoresizingMaskIntoConstraints = false
+        // `fm/grandline-rail-unify-and-mark-polish`: the same gradient-tile
+        // treatment `avatarGradientLayer` uses - sized once since the mark's
+        // own bounds are fixed (34x34 via the constraints below).
+        markGradientLayer.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+        markGradientLayer.cornerRadius = 10
+        markGradientLayer.startPoint = CGPoint(x: 0.2, y: 0.9)
+        markGradientLayer.endPoint = CGPoint(x: 0.9, y: 0.1)
+        mark.layer?.insertSublayer(markGradientLayer, at: 0)
 
         let navStack = NSStackView()
         navStack.orientation = .vertical
@@ -489,85 +549,37 @@ final class IconRailController: NSViewController {
             navStack.addArrangedSubview(button)
         }
 
-        // Tools (cockpit-tools-page-core) sits directly below `navStack`
-        // (which now ends with the Hosts/VPN flyout rows above), directly
-        // above Vault, which sits directly above Docs,
-        // which sits directly above the "Setup" group (fm/grandline-rail-setup-group
-        // - Bootstrap and Updates, collapsed into one entry, see
-        // `buildSetupButton()`), which in turn sits directly above the
-        // avatar - Settings no longer has its own row here at all
-        // (fm/grandline-avatar-menu-and-setup-guide moved it into the avatar
-        // popover, see `AvatarLogoutPopoverController`). All of these are
-        // still real `RailDestination` cases for switching purposes
-        // (Bootstrap/Updates/Settings included); only their vertical
-        // position (or, for Settings, entry point) moves out of `navStack`.
-        let toolsButton = railButton(for: .tools)
-        buttons[.tools] = toolsButton
-        toolsButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(toolsButton)
-
-        let vaultButton = railButton(for: .vault)
-        buttons[.vault] = vaultButton
-        vaultButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(vaultButton)
-
-        // Dictation (fm/grandline-dictation-mvp) sits directly below Vault
-        // and above Docs - see `RailDestination`'s doc comment above.
-        let dictationButton = railButton(for: .dictation)
-        buttons[.dictation] = dictationButton
-        dictationButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(dictationButton)
-
-        let docsButton = railButton(for: .docs)
-        buttons[.docs] = docsButton
-        docsButton.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(docsButton)
-
-        let setupGroup = buildSetupButton()
-        setupGroup.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(setupGroup)
-
-        // fm/grandline-rail-utility-separators: a hairline separator between
-        // each utility row (Tools | Vault | Docs | Updates/Bootstrap "Setup"),
-        // matching the daily-use group's own `NSBox(.separator)` treatment
-        // (fm/grandline-rail-followup-fixes) - captain ask, scoped to this
-        // group only. These buttons aren't in a stack view (they're
-        // individually positioned so the per-host block above them can grow),
-        // so each divider is a plain sibling view sized/centered the same way
-        // the daily-use dividers are (`navStack.widthAnchor - 16`, i.e.
-        // `Self.width - 28` here since these buttons live directly in
-        // `root` rather than an inset stack).
-        func utilityDivider() -> NSBox {
-            let divider = NSBox()
-            divider.boxType = .separator
-            divider.translatesAutoresizingMaskIntoConstraints = false
-            root.addSubview(divider)
-            divider.widthAnchor.constraint(equalToConstant: Self.width - 28).isActive = true
-            divider.centerXAnchor.constraint(equalTo: root.centerXAnchor).isActive = true
-            return divider
+        // Tools/Vault/Dictation/Docs/"Setup" (fm/grandline-rail-unify-and-mark-polish)
+        // continue `navStack`'s own loop directly - one continuous,
+        // evenly-spaced list with the daily-use rows above, separated by the
+        // same `navStackDivider()` rhythm, rather than a separately-anchored
+        // group. All of these are still real `RailDestination` cases for
+        // switching purposes (Bootstrap/Updates/Automation/Settings
+        // included); only their vertical position (or, for Settings, entry
+        // point) is what moves.
+        for dest: RailDestination in [.tools, .vault, .dictation, .docs] {
+            navStackDivider()
+            let button = railButton(for: dest)
+            buttons[dest] = button
+            navStack.addArrangedSubview(button)
         }
-        // `fm/grandline-rail-unified-rework`: marks the utility group's own
-        // top edge, mirroring `dividerAboveNav`'s role for the daily-use
-        // group below the logo mark - without it, the (now potentially
-        // large, per the two-anchor-groups layout above) gap between
-        // `navStack` and Tools had no visual edge at all, reading as a
-        // missing divider rather than an intentional flexible gap. This is
-        // also the ONE divider between the two groups
-        // (`fm/grandline-hosts-vpn-flyout-redesign` removed the old HOSTS/
-        // VPN sections' own dividers below `navStack`, which used to sit
-        // directly against this one with nothing between them - a doubled-
-        // divider bug fixed simply by there no longer being a second one).
-        let dividerAboveTools = utilityDivider()
-        let dividerToolsVault = utilityDivider()
-        let dividerVaultDictation = utilityDivider()
-        let dividerDictationDocs = utilityDivider()
-        let dividerDocsSetup = utilityDivider()
-        // fm/grandline-vault-header-and-avatar-divider: same treatment,
-        // between the last utility row ("Setup", since
-        // fm/grandline-avatar-menu-and-setup-guide moved Settings off this
-        // chain) and the avatar pinned at the very bottom - the one boundary
-        // in this bottom-up chain that didn't have one yet.
-        let dividerSetupAvatar = utilityDivider()
+        navStackDivider()
+        let setupGroup = buildSetupButton()
+        navStack.addArrangedSubview(setupGroup)
+
+        // The one remaining divider sits between the unified list's last row
+        // ("Setup") and the avatar pinned at the very bottom - the one
+        // deliberate visual exception the captain confirmed. Built the same
+        // way `navStackDivider()`'s dividers are sized (matches width
+        // exactly: `navStack`'s width is `Self.width - 12`, so
+        // `navStack.widthAnchor - 16` there equals the `Self.width - 28`
+        // used here, since this divider lives directly in `root` rather than
+        // inside the stack) so it reads as the same divider style, not a
+        // visually distinct one.
+        let dividerSetupAvatar = NSBox()
+        dividerSetupAvatar.boxType = .separator
+        dividerSetupAvatar.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(dividerSetupAvatar)
 
         avatar.title = "M"
         avatar.isBordered = false
@@ -603,8 +615,9 @@ final class IconRailController: NSViewController {
         NSLayoutConstraint.activate([
             view.widthAnchor.constraint(equalToConstant: Self.width),
 
-            // Top group: pinned to the window's top edge exactly as it
-            // always has been - unchanged from before this task.
+            // The unified list: pinned to the window's top edge exactly as
+            // the daily-use rows always were - unchanged from before this
+            // task, just extended to cover every row through "Setup".
             mark.topAnchor.constraint(equalTo: root.topAnchor, constant: Self.railEdgeMargin),
             mark.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             mark.widthAnchor.constraint(equalToConstant: 34),
@@ -618,52 +631,40 @@ final class IconRailController: NSViewController {
             navStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
             navStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
 
-            // The one connector between the two groups (captain override,
-            // see this method's own doc comment above): a required minimum
-            // gap, not an equality - both `navStack.bottomAnchor` (top group,
-            // anchored from `root.topAnchor`, and now ending with the Hosts/
-            // VPN flyout rows - `fm/grandline-hosts-vpn-flyout-redesign`
-            // removed the separate HOSTS/VPN sections that used to extend the
-            // top group past `navStack`) and `toolsButton.topAnchor` (bottom
-            // group, anchored from `root.bottomAnchor` via `avatar` below)
-            // are each already fully determined by their own group's rigid
-            // chain, so this inequality never has to resolve any actual
-            // stretch - any leftover window height just becomes extra room
-            // here. `dividerAboveTools` is also the ONE divider between the
-            // two groups - there is no second one to double up against.
-            dividerAboveTools.topAnchor.constraint(greaterThanOrEqualTo: navStack.bottomAnchor, constant: Self.sectionGap),
-            toolsButton.topAnchor.constraint(equalTo: dividerAboveTools.bottomAnchor, constant: Self.sectionGap),
-
-            toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            vaultButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            dictationButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            docsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            setupGroup.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             avatar.widthAnchor.constraint(equalToConstant: 36),
             avatar.heightAnchor.constraint(equalToConstant: 36),
 
-            // Bottom group: pinned to the window's bottom edge via `avatar`
-            // - the one new anchor point this override adds. Everything
-            // above it (`setupGroup`, `docsButton`, `vaultButton`,
-            // `toolsButton`, and their dividers) is positioned by the same
-            // required, fixed bottom-up chain this rail already had, just
-            // now anchored from `root.bottomAnchor` instead of transitively
-            // from `navStack`.
+            // Avatar: pinned to the window's bottom edge, with its own
+            // divider above it - the one visual exception to "one continuous
+            // list" (see this method's own doc comment above).
             avatar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.railEdgeMargin),
             dividerSetupAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
-            setupGroup.bottomAnchor.constraint(equalTo: dividerSetupAvatar.topAnchor, constant: -Self.sectionGap),
-            dividerDocsSetup.bottomAnchor.constraint(equalTo: setupGroup.topAnchor, constant: -Self.rowSpacing),
-            docsButton.bottomAnchor.constraint(equalTo: dividerDocsSetup.topAnchor, constant: -Self.rowSpacing),
-            dividerDictationDocs.bottomAnchor.constraint(equalTo: docsButton.topAnchor, constant: -Self.rowSpacing),
-            dictationButton.bottomAnchor.constraint(equalTo: dividerDictationDocs.topAnchor, constant: -Self.rowSpacing),
-            dividerVaultDictation.bottomAnchor.constraint(equalTo: dictationButton.topAnchor, constant: -Self.rowSpacing),
-            vaultButton.bottomAnchor.constraint(equalTo: dividerVaultDictation.topAnchor, constant: -Self.rowSpacing),
-            dividerToolsVault.bottomAnchor.constraint(equalTo: vaultButton.topAnchor, constant: -Self.rowSpacing),
-            toolsButton.bottomAnchor.constraint(equalTo: dividerToolsVault.topAnchor, constant: -Self.rowSpacing),
+            dividerSetupAvatar.leadingAnchor.constraint(equalTo: navStack.leadingAnchor),
+            dividerSetupAvatar.trailingAnchor.constraint(equalTo: navStack.trailingAnchor),
+
+            // The one remaining flex point: both `navStack.bottomAnchor`
+            // (top-anchored from `root.topAnchor`) and
+            // `dividerSetupAvatar.bottomAnchor` (bottom-anchored from
+            // `root.bottomAnchor` via `avatar`) are each already fully,
+            // independently determined - so this required minimum-gap
+            // inequality never has to resolve any actual stretch; any
+            // leftover window height just becomes extra room here, exactly
+            // where the old two-group design's own flex point already sat.
+            dividerSetupAvatar.topAnchor.constraint(greaterThanOrEqualTo: navStack.bottomAnchor, constant: Self.sectionGap),
         ])
 
         restyle(ThemeManager.shared.theme)
+        // `restyleMark`'s first run (inside the `ThemeManager.shared.observe`
+        // registration above, which fires synchronously at registration
+        // time) happens before `mark.wantsLayer`/`markGradientLayer` are set
+        // up further down this method, so `mark.layer` is still nil then and
+        // the border/gradient set silently no-ops - the same reason
+        // `restyleAvatar` needs a second call here via `restyle(_:)` above,
+        // now that `mark` needs one too (verified live via a temporary
+        // geometry probe: `mark.layer?.borderWidth` read back as 0 without
+        // this line).
+        restyleMark(ThemeManager.shared.theme)
         setActive(active)
     }
 
@@ -775,6 +776,7 @@ final class IconRailController: NSViewController {
     private func showSetupFlyout() {
         let popover = NSPopover()
         popover.behavior = .transient
+        popover.delegate = self
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = SetupFlyoutViewController(
             destinations: [.updates, .bootstrap, .automation],
@@ -787,6 +789,8 @@ final class IconRailController: NSViewController {
         )
         popover.show(relativeTo: setupButton.bounds, of: setupButton, preferredEdge: .maxX)
         setupPopover = popover
+        isSetupFlyoutOpen = true
+        restyle(ThemeManager.shared.theme)
     }
 
     /// Pins a small count-badge overlay near the icon's top-trailing corner
@@ -948,6 +952,7 @@ final class IconRailController: NSViewController {
     private func showHostsFlyout() {
         let popover = NSPopover()
         popover.behavior = .transient
+        popover.delegate = self
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = HostsFlyoutViewController(
             hosts: hosts,
@@ -963,6 +968,8 @@ final class IconRailController: NSViewController {
         )
         popover.show(relativeTo: hostsButton.bounds, of: hostsButton, preferredEdge: .maxX)
         hostsPopover = popover
+        isHostsFlyoutOpen = true
+        restyle(ThemeManager.shared.theme)
     }
 
     /// Builds the "VPN" rail row - see the `vpnButton` property's doc
@@ -995,10 +1002,34 @@ final class IconRailController: NSViewController {
     private func showVpnFlyout() {
         let popover = NSPopover()
         popover.behavior = .transient
+        popover.delegate = self
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = VPNFlyoutViewController()
         popover.show(relativeTo: vpnButton.bounds, of: vpnButton, preferredEdge: .maxX)
         vpnPopover = popover
+        isVpnFlyoutOpen = true
+        restyle(ThemeManager.shared.theme)
+    }
+
+    /// `fm/grandline-rail-unify-and-mark-polish`: clears whichever
+    /// flyout-open flag matches the popover that just closed - fires for
+    /// *every* dismissal path (an explicit `performClose(nil)` from
+    /// `hostsClicked()`/`vpnClicked()`/`setupClicked()`, a row selection, or
+    /// a `.transient` popover's own outside-click auto-dismiss, which never
+    /// goes through any of those methods), so the triggering row's highlight
+    /// always clears in step with the flyout actually closing.
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover else { return }
+        if popover === hostsPopover {
+            isHostsFlyoutOpen = false
+        } else if popover === vpnPopover {
+            isVpnFlyoutOpen = false
+        } else if popover === setupPopover {
+            isSetupFlyoutOpen = false
+        } else {
+            return
+        }
+        restyle(ThemeManager.shared.theme)
     }
 
     private lazy var avatarPopover: NSPopover = {
@@ -1170,30 +1201,40 @@ final class IconRailController: NSViewController {
             button.layer?.backgroundColor = (isActive ? accentTint : .clear).cgColor
         }
         // "Hosts" itself highlights whenever the full Hosts management page
-        // (`.hosts`) is showing, or whenever a saved host's own dedicated
-        // page is (`activeHostID != nil`) - since the rail no longer has a
-        // per-host icon of its own to highlight (`fm/grandline-hosts-vpn-flyout-redesign`
-        // moved that into the flyout), this is the closest equivalent: "one
-        // of the things this row leads to is what's showing now," the same
-        // idea "Setup" already uses for its own sub-items below.
-        let hostsIsActive = active == .hosts || activeHostID != nil
+        // (`.hosts`) is showing, whenever a saved host's own dedicated page
+        // is (`activeHostID != nil`), or whenever its own flyout is
+        // currently open (`fm/grandline-rail-unify-and-mark-polish` -
+        // previously this row showed no active state at all while its
+        // flyout was showing, unlike a real destination like Console) -
+        // since the rail no longer has a per-host icon of its own to
+        // highlight (`fm/grandline-hosts-vpn-flyout-redesign` moved that
+        // into the flyout), this is the closest equivalent: "one of the
+        // things this row leads to is what's showing now," the same idea
+        // "Setup" already uses for its own sub-items below.
+        let hostsIsActive = active == .hosts || activeHostID != nil || isHostsFlyoutOpen
         let hostsColor = hostsIsActive ? accent : ink.withAlphaComponent(0.65)
         hostsButton.contentTintColor = hostsColor
         hostsButton.attributedTitle = attributedRowTitle("Hosts", color: hostsColor)
         hostsButton.layer?.backgroundColor = (hostsIsActive ? accentTint : .clear).cgColor
 
-        // "VPN" has no destination/page of its own at all - always the
-        // plain inactive ink color, like an inert utility row.
-        let vpnColor = ink.withAlphaComponent(0.65)
+        // "VPN" has no destination/page of its own at all - the plain
+        // inactive ink color at rest, but still highlights (like every other
+        // flyout-trigger row) for as long as its own flyout is open.
+        let vpnIsActive = isVpnFlyoutOpen
+        let vpnColor = vpnIsActive ? accent : ink.withAlphaComponent(0.65)
         vpnButton.contentTintColor = vpnColor
         vpnButton.attributedTitle = attributedRowTitle("VPN", color: vpnColor)
-        vpnButton.layer?.backgroundColor = NSColor.clear.cgColor
+        vpnButton.layer?.backgroundColor = (vpnIsActive ? accentTint : .clear).cgColor
 
         // "Setup" itself highlights whenever one of its sub-items
-        // (Bootstrap/Updates) is the active destination - it has no
-        // `RailDestination` of its own, so it isn't covered by the `buttons`
-        // loop above.
-        let setupIsActive = activeHostID == nil && (active == .updates || active == .bootstrap)
+        // (Bootstrap/Updates/Automation) is the active destination, or
+        // whenever its own flyout is open - it has no `RailDestination` of
+        // its own, so it isn't covered by the `buttons` loop above.
+        // (`.automation` was missing from this check before this task - a
+        // pre-existing gap in the same "does this row's own state look
+        // active" class of bug the flyout-open fix addresses, fixed
+        // alongside it.)
+        let setupIsActive = (activeHostID == nil && (active == .updates || active == .bootstrap || active == .automation)) || isSetupFlyoutOpen
         let setupColor = setupIsActive ? accent : ink.withAlphaComponent(0.65)
         setupButton.contentTintColor = setupColor
         setupButton.attributedTitle = attributedRowTitle("Setup", color: setupColor)
@@ -1219,6 +1260,24 @@ final class IconRailController: NSViewController {
         avatarGradientLayer.colors = [flat.cgColor, accent.withAlphaComponent(0.55).cgColor]
         avatar.layer?.borderWidth = avatarIsHovering ? 2 : 1.25
         avatar.layer?.borderColor = accent.withAlphaComponent(avatarIsHovering ? 0.85 : 0.4).cgColor
+    }
+
+    /// `fm/grandline-rail-unify-and-mark-polish`: the sailboat mark's own
+    /// gradient tile + soft ring, mirroring `restyleAvatar(_:)`'s treatment
+    /// (a flat base blending into the active theme's accent, plus a subtle
+    /// accent-tinted border) rather than a custom raster asset - keeps the
+    /// mark reading as this app's own established "give a plain glyph more
+    /// visual weight" convention. Deliberately doesn't touch
+    /// `mark.symbolConfiguration`'s weight (still owned by `setUnlocked(_:)`)
+    /// or its bob animation - only the background/tint changes here.
+    private func restyleMark(_ theme: HelmTheme) {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        let flat = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.4)
+        mark.contentTintColor = ink
+        markGradientLayer.colors = [flat.cgColor, accent.withAlphaComponent(0.55).cgColor]
+        mark.layer?.borderWidth = 1
+        mark.layer?.borderColor = accent.withAlphaComponent(0.4).cgColor
     }
 
 }
