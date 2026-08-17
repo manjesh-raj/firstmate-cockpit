@@ -3,9 +3,11 @@
 // Phase 3 of "Knowledge and speed" (`fm/grandline-console-command-composer`):
 // the "✨ Compose" popover a plain `.shell` tab's toolbar opens. Mirrors
 // `ShiftMenuBarController`'s popover shape (`ShiftMenuBar.swift`) - a small
-// `NSPopover` + a plain `NSViewController` content, no theme-following
-// `NSVisualEffectView` tricks, since a popover already gets AppKit's own
-// vibrant background for free.
+// `NSPopover` + a plain `NSViewController` content - but (unlike
+// `ShiftMenuBarController`'s popover, which only ever shows plain
+// system-label-colored text) this content has its own `HelmTheme`-derived
+// colors, so it needs the real live-theme treatment described below rather
+// than AppKit's own default vibrant background.
 //
 // `fm/grandline-composer-cleanup-and-polish` gave the content view its own
 // visual treatment, since the original build was a bare label/field/button
@@ -19,11 +21,38 @@
 // plain `NSTextField`), Copy/Run buttons following this app's established
 // `bezelStyle = .rounded, controlSize = .small` pill-button convention (the
 // same one Vault's "Run injected…"/"Copy Name" row buttons use), and a
-// `⌘⏎` shortcut hint next to the intent field. Theme colors are read once
-// at construction (`ThemeManager.shared.theme`), the same one-shot pattern
-// `IconTileView.configure` itself already uses - this popover is
-// `.transient` and short-lived, so it doesn't need a live theme observer
-// the way a permanent destination does.
+// `⌘⏎` shortcut hint next to the intent field.
+//
+// `fm/grandline-composer-theme-and-width` fixed two real captain-reported
+// bugs in that polish pass: (1) the popover rendered as plain, unthemed dark
+// gray regardless of the app's actual active Helm theme - the "read once at
+// construction, no live observer" comment above was simply wrong for a
+// popover that can stay open across a theme change, and worse, this view had
+// no explicit background fill at all, so it fell back to `NSPopover`'s own
+// system vibrancy (following the OS's light/dark setting, not this app's
+// in-app theme) - the same root cause `ThemeManager.swift`'s own checklist
+// warns about and the same class of bug `grandline-unified-search-fixes`
+// fixed concurrently for the `⌘K` palette. Fixed the same way every other
+// themed window in this app is: a live `ThemeManager.shared.observe`
+// registration (owned by `ConsoleComposerController`, which is itself an
+// app-lifetime property of `ConsoleController` - unobserved from
+// `ConsoleController.shutdown()`, mirroring that controller's own theme
+// token), a plain `wantsLayer`-backed root view with an explicit
+// `HelmTheme`-derived `backgroundColor` fill (never `NSVisualEffectView`,
+// per this file's AppKit gotcha #8), and `popover.appearance` forced to the
+// theme's own light/dark mode so any leftover system-semantic color resolves
+// against the in-app theme, not the OS's. (2) The popover was a fixed 380pt
+// wide regardless of the generated command's length, because `root`'s width
+// was never tied to a constraint at all - only its initial `loadView` frame
+// size, which nothing ever changed. `rootWidthConstraint` now grows to fit
+// the longest line of the generated command (measured against the code
+// block's own font), capped at `maxWidth` so it can never run off-screen,
+// floored at `minWidth` so a short command (or the empty/intent-only state)
+// doesn't leave an oversized empty box - `updateWidth`'s resulting fitting
+// size is handed to the popover explicitly (`onSizeChanged`), the same
+// "compute and set the frame explicitly" style `ShiftSearchController.
+// resizeToFit()` already uses, rather than relying on `NSPopover`'s
+// occasionally-inconsistent automatic Auto-Layout-driven resize.
 //
 // Nothing here ever runs a generated command automatically - see
 // `ConsoleCommandComposer.swift`'s header and this task's PR description for
@@ -39,6 +68,7 @@ import AppKit
 final class ConsoleComposerController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let content = ConsoleComposerViewController()
+    private var themeObservation: ThemeObservation?
 
     /// Set by `ConsoleController` to `currentTab?.terminal.send(txt:)`.
     var onRunInTerminal: ((String) -> Void)?
@@ -51,6 +81,14 @@ final class ConsoleComposerController: NSObject, NSPopoverDelegate {
         content.onRunInTerminal = { [weak self] command in
             self?.onRunInTerminal?(command)
             self?.popover.performClose(nil)
+        }
+        content.onSizeChanged = { [weak self] size in
+            self?.popover.contentSize = size
+        }
+        themeObservation = ThemeManager.shared.observe { [weak self] theme in
+            guard let self else { return }
+            self.popover.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self.content.applyTheme(theme)
         }
     }
 
@@ -70,6 +108,20 @@ final class ConsoleComposerController: NSObject, NSPopoverDelegate {
         guard popover.isShown else { return }
         popover.performClose(nil)
     }
+
+    /// Called from `ConsoleController.shutdown()`, mirroring that
+    /// controller's own `themeObservation` teardown - `ConsoleComposerController`
+    /// is a per-console (not strictly app-lifetime) property, and a host
+    /// page's `ConsoleController` can be deallocated mid-session (see
+    /// "Dedicated host pages" in AGENTS.md), so this observer needs the same
+    /// explicit unregistration or it leaks a dead closure into
+    /// `ThemeManager.observers`.
+    func shutdown() {
+        if let themeObservation {
+            ThemeManager.shared.unobserve(themeObservation)
+            self.themeObservation = nil
+        }
+    }
 }
 
 /// The popover's content: a tinted-icon header, an intent field + Generate
@@ -79,7 +131,14 @@ final class ConsoleComposerController: NSObject, NSPopoverDelegate {
 /// task's explicit scope; closing and reopening the popover always starts
 /// fresh (`reset()`).
 private final class ConsoleComposerViewController: NSViewController {
-    private let theme = ThemeManager.shared.theme
+    private var theme = ThemeManager.shared.theme
+
+    /// Popover width grows to fit a long generated command, floored/capped
+    /// so a short command doesn't leave an oversized empty box and a long
+    /// one can never grow off whatever screen it's on.
+    static let minWidth: CGFloat = 380
+    static let maxWidth: CGFloat = 640
+    private var rootWidthConstraint: NSLayoutConstraint!
 
     private let iconTile = IconTileView(size: 30, cornerRadius: 8)
     private let titleLabel = NSTextField(labelWithString: "Compose a command")
@@ -95,10 +154,18 @@ private final class ConsoleComposerViewController: NSViewController {
     private let commandStack = NSStackView()
 
     var onRunInTerminal: ((String) -> Void)?
+    /// Fires whenever the content's own fitting size may have changed (a
+    /// width recompute, or a height change from a status/command-block
+    /// toggle) - `ConsoleComposerController` forwards this straight to
+    /// `popover.contentSize`, the same explicit "compute then set" style
+    /// `ShiftSearchController.resizeToFit()` already uses.
+    var onSizeChanged: ((NSSize) -> Void)?
     private var generatedCommand: String?
+    private var statusIsError = false
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 170))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.minWidth, height: 170))
+        root.wantsLayer = true
         view = root
 
         iconTile.configure(symbol: "sparkles", tint: .violet)
@@ -179,7 +246,10 @@ private final class ConsoleComposerViewController: NSViewController {
         stack.setCustomSpacing(3, after: generateRow)
         root.addSubview(stack)
 
+        rootWidthConstraint = root.widthAnchor.constraint(equalToConstant: Self.minWidth)
+
         NSLayoutConstraint.activate([
+            rootWidthConstraint,
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
@@ -193,6 +263,8 @@ private final class ConsoleComposerViewController: NSViewController {
             codeScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
             intentField.widthAnchor.constraint(greaterThanOrEqualToConstant: 210),
         ])
+
+        applyTheme(theme)
     }
 
     /// Mirrors `ToolInstance.codeEditor`'s own monospace/bordered/rounded
@@ -230,6 +302,50 @@ private final class ConsoleComposerViewController: NSViewController {
         statusLabel.isHidden = true
         generateButton.isEnabled = true
         intentField.isEnabled = true
+        statusIsError = false
+        updateWidth(for: nil)
+    }
+
+    /// Re-themes every colored element in the popover - registered against
+    /// a live `ThemeManager.shared.observe` by `ConsoleComposerController`
+    /// (see this file's header), not just applied once at construction.
+    func applyTheme(_ theme: HelmTheme) {
+        self.theme = theme
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let muted = HelmTheme.mutedInk(theme)
+        let background = HelmTheme.nsColor(theme.backgroundHex)
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+
+        view.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        iconTile.applyTheme(theme)
+        titleLabel.textColor = ink
+        shortcutHintLabel.textColor = muted
+        statusLabel.textColor = statusIsError ? .systemRed : muted
+        codeTextView.textColor = ink
+        codeTextView.backgroundColor = background
+        codeScroll.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+    }
+
+    /// Measures the generated command's longest line against the code
+    /// block's own font and clamps the result to `[minWidth, maxWidth]` -
+    /// `nil` (no command yet, or a fresh/reset popover) always floors to
+    /// `minWidth` so a short/empty state never leaves an oversized box.
+    private func computeWidth(for command: String?) -> CGFloat {
+        guard let command, !command.isEmpty else { return Self.minWidth }
+        let font = codeTextView.font ?? .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        let longestLine = command.components(separatedBy: "\n").max(by: { $0.count < $1.count }) ?? command
+        let textWidth = (longestLine as NSString).size(withAttributes: [.font: font]).width
+        // Stack leading/trailing insets (14pt each side) + the code block's
+        // own text-container inset (8pt each side) + a little breathing room
+        // for the vertical scroller.
+        let chrome: CGFloat = (14 * 2) + (8 * 2) + 24
+        return min(max(textWidth + chrome, Self.minWidth), Self.maxWidth)
+    }
+
+    private func updateWidth(for command: String?) {
+        rootWidthConstraint.constant = computeWidth(for: command)
+        view.layoutSubtreeIfNeeded()
+        onSizeChanged?(view.fittingSize)
     }
 
     func focusIntentField() {
@@ -244,11 +360,13 @@ private final class ConsoleComposerViewController: NSViewController {
         guard !intent.isEmpty else { return }
         generatedCommand = nil
         commandStack.isHidden = true
+        statusIsError = false
         statusLabel.isHidden = false
         statusLabel.textColor = HelmTheme.mutedInk(theme)
         statusLabel.stringValue = "Generating…"
         generateButton.isEnabled = false
         intentField.isEnabled = false
+        updateWidth(for: nil)
 
         ConsoleCommandComposer.generate(intent: intent) { [weak self] result in
             guard let self else { return }
@@ -260,12 +378,15 @@ private final class ConsoleComposerViewController: NSViewController {
                 self.generatedCommand = command
                 self.codeTextView.string = command
                 self.commandStack.isHidden = false
+                self.updateWidth(for: command)
             case .failure(let error):
+                self.statusIsError = true
                 self.statusLabel.isHidden = false
                 self.statusLabel.textColor = .systemRed
                 self.statusLabel.stringValue = error.message
                 self.generatedCommand = nil
                 self.commandStack.isHidden = true
+                self.updateWidth(for: nil)
             }
         }
     }
