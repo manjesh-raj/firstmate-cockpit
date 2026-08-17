@@ -14,8 +14,9 @@
 // that code changed, only its container. Tabs 2-5 are new: Runbooks (real
 // CRUD, git-synced), Postmortems (list/display only - generation is a later
 // task), Search (real, scoped to Runbooks + Postmortems), and Command
-// Composer (explanatory "coming soon" only - the real composer UI is a
-// later, Console-focused task).
+// Composer (explanatory pointer only - the real composer UI lives in
+// Console's own "✨ Compose" toolbar button, see `ConsoleCommandComposer.swift`
+// / `ConsoleComposerPopover.swift`; this tab never duplicates it).
 //
 // Root view follows this app's own documented gotcha #8 (`AGENTS.md`): a
 // plain `NSView` with `wantsLayer`/`HelmTheme` background, not
@@ -912,15 +913,15 @@ final class DocsController: NSViewController {
         title.alignment = .center
         title.translatesAutoresizingMaskIntoConstraints = false
 
-        let body = NSTextField(wrappingLabelWithString: "Describe your intent, review the generated command, and run it - right in Console, not here. This tab is a preview of what's coming; the composer itself is a separate, Console-focused task.")
+        let body = NSTextField(wrappingLabelWithString: "The composer is live in Console, not here. Open any plain shell tab and click the \"✨ Compose\" button in its toolbar, describe your intent in plain English, review the generated command, and run it right there.")
         body.font = .systemFont(ofSize: 12.5)
         body.alignment = .center
         body.preferredMaxLayoutWidth = 420
         body.translatesAutoresizingMaskIntoConstraints = false
 
-        let pillLabel = NSTextField(labelWithString: "Coming soon")
+        let pillLabel = NSTextField(labelWithString: "Available in Console")
         let pill = NSView()
-        ToolRowLayout.pill(text: "Coming soon", colorHex: theme.ansiHex[3], into: pill, label: pillLabel)
+        ToolRowLayout.pill(text: "Available in Console", colorHex: theme.ansiHex[2], into: pill, label: pillLabel)
 
         let stack = NSStackView(views: [icon, title, body, pill])
         stack.orientation = .vertical
@@ -1066,7 +1067,7 @@ final class DocsController: NSViewController {
         composerTitle?.textColor = ink
         composerBody?.textColor = muted
         if let pill = composerPill, let label = composerPillLabel {
-            ToolRowLayout.pill(text: "Coming soon", colorHex: theme.ansiHex[3], into: pill, label: label)
+            ToolRowLayout.pill(text: "Available in Console", colorHex: theme.ansiHex[2], into: pill, label: label)
         }
 
         for stack in [runbookListStack, postmortemListStack, searchResultsStack] {
