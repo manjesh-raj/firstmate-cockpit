@@ -86,6 +86,12 @@ final class WhisperCppEngine {
         params.no_context = true
         params.single_segment = false
         params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.activeProcessorCount)))
+        // Without this, `initial_prompt` only conditions the first internal
+        // decode window (~30s) - past that, whisper's own rolling context
+        // overwrites it, so the captain's vocabulary bias silently stops
+        // applying partway through a longer recording. Carrying it forward
+        // keeps the bias in effect for every window, not just the first.
+        params.carry_initial_prompt = true
 
         // `whisper_full_params` holds `initial_prompt`/`language` as raw
         // `const char *` - the C strings backing them must stay alive for the

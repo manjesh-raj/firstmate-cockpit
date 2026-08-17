@@ -465,7 +465,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         headerRow.translatesAutoresizingMaskIntoConstraints = false
         vocabularyPanel.setHeader(headerRow)
 
-        let explainerLabel = NSTextField(wrappingLabelWithString: "Bias speech recognition toward names, acronyms, or phrases you say often - added here, they're passed to the recognizer on your next recording.")
+        let explainerLabel = NSTextField(wrappingLabelWithString: "Bias speech recognition toward names, acronyms, or phrases you say often - added here, they're used as a hint on your next recording. This is a soft nudge, not a guarantee: Apple's on-device recognizer treats each phrase individually, while the local Whisper engine (if enabled) treats the whole list as a softer style hint.")
         explainerLabel.font = .systemFont(ofSize: 11)
         explainerLabel.preferredMaxLayoutWidth = 520
         explainerLabel.translatesAutoresizingMaskIntoConstraints = false
