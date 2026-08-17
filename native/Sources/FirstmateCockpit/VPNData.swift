@@ -319,7 +319,17 @@ final class BarracudaVPNController: VPNControllable {
     let kind: VPNKind = .barracuda
 
     /// Confirmed live via `scutil --nc list` - the exact service name macOS
-    /// registers this Network Extension under.
+    /// registers this Network Extension under. `fm/grandline-hosts-vpn-flyout-redesign`
+    /// confirmed live (read-only, no VPN connected) that only ONE Barracuda
+    /// profile is currently registered as a system VPN service under this
+    /// name on the captain's machine (`pramata-prod`) - a second profile the
+    /// captain uses inside the Barracuda app itself is not reachable via
+    /// `scutil --nc` unless it's also registered that way. Multi-profile
+    /// support is out of scope here; this controller can only ever see and
+    /// drive whatever profile macOS itself has registered under
+    /// `serviceName` - documented in the Tools "VPN" panel's own copy
+    /// (`ToolInstance.buildVpnPanel`) so it doesn't silently imply it
+    /// controls "Barracuda" generically.
     static let serviceName = "Barracuda VPN"
 
     private let executor: VPNCommandExecutor
@@ -571,6 +581,18 @@ final class VPNStatusCenter {
     private(set) var snapshot = Snapshot()
     private var observers: [UUID: (Snapshot) -> Void] = [:]
 
+    /// `fm/grandline-hosts-vpn-flyout-redesign`, Part 2: a failed/unknown
+    /// toggle result used to only reach `NSLog` (see `apply(_:)` below),
+    /// which the captain never sees - a real captain-reported bug (3 real
+    /// Barracuda connect attempts, 0 succeeded, and the toggle looked "dead"
+    /// with no feedback at all). `main.swift` wires this to
+    /// `AppShellController.showToast`, the same main-window `Toast.swift`
+    /// pill every other save-confirmation/error in this app already uses -
+    /// forward-don't-own, matching `SettingsController.onFontSizeStep`'s own
+    /// convention. Always carries the real reason text `VPNToggleResult`
+    /// already has, never a bare "something went wrong."
+    var onFailure: ((String) -> Void)?
+
     private let barracudaController: VPNControllable
     private let openVPNController: VPNControllable
     private let coordinator: VPNCoordinator
@@ -675,14 +697,25 @@ final class VPNStatusCenter {
             setStatus(.disconnected, for: kind)
         case .failed(let kind, let reason):
             NSLog("[vpn] toggle failed for \(kind.displayName): \(reason)")
+            onFailure?(Self.failureMessage(kind: kind, reason: reason))
             setStatus(.unknown, for: kind)
         case .unknown(let kind, let reason):
             NSLog("[vpn] toggle result unknown for \(kind.displayName): \(reason)")
+            onFailure?(Self.failureMessage(kind: kind, reason: reason))
             setStatus(.unknown, for: kind)
         }
     }
 
     private func publish() {
         for handler in observers.values { handler(snapshot) }
+    }
+
+    /// The exact text `onFailure` receives - pulled out as a static, testable
+    /// function (not `private`) so `VPNDataSelfTest.swift` can check it names
+    /// the real VPN and carries the real reason, without ever touching
+    /// `VPNStatusCenter.shared` itself (see this file's own safety
+    /// discipline note on why that singleton is never exercised from a test).
+    static func failureMessage(kind: VPNKind, reason: String) -> String {
+        "\(kind.displayName): \(reason)"
     }
 }

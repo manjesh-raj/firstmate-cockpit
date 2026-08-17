@@ -354,6 +354,27 @@ enum VPNDataSelfTest {
             check(openVPN.connectCallCount == 0, "Coordinator: toggling one VPN off never connects the other")
         }
 
+        // MARK: VPNStatusCenter.onFailure - Part 2 of fm/grandline-hosts-vpn-flyout-redesign
+        //
+        // `VPNStatusCenter.shared` itself is never touched here (see this
+        // file's header) - `VPNStatusCenter.failureMessage(kind:reason:)` is
+        // the exact, real static function `apply(_:)` calls to build the
+        // string handed to `onFailure`, so exercising it directly proves the
+        // real message shape without ever constructing the singleton.
+        do {
+            let message = VPNStatusCenter.failureMessage(
+                kind: .barracuda,
+                reason: "scutil --nc start \"Barracuda VPN\" failed: permission denied"
+            )
+            check(message.contains("Barracuda VPN"), "onFailure message: names the VPN kind, not a bare 'something went wrong'")
+            check(message.contains("permission denied"), "onFailure message: carries the real underlying reason text")
+        }
+
+        do {
+            let message = VPNStatusCenter.failureMessage(kind: .openVPN, reason: "couldn't confirm the new state after 6 checks")
+            check(message.hasPrefix("OpenVPN:"), "onFailure message: OpenVPN failures are named too, not just Barracuda's")
+        }
+
         do {
             // A direct connect failure (not the mutual-exclusion path) still
             // reports .failed, not a false .connected.
