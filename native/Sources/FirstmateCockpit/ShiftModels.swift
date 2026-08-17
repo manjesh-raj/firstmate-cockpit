@@ -50,6 +50,18 @@ struct ShiftTask: Equatable {
     var completedAt: String?
     var notes: String?
     var subtasks: [ShiftSubtask]
+    /// Whether this task has an attached image, saved separately as a real
+    /// file under `attachments/<id>.png` in the same git-synced root (see
+    /// `ShiftStore`'s attachment methods) - this flag is what lets the task
+    /// list show a paperclip glyph without hitting the filesystem on every
+    /// render. `false` for every task file written before this field
+    /// existed - `ShiftYaml.task(from:)` defaults a missing `has_attachment`
+    /// key to `false` rather than failing to decode, since this isn't a
+    /// `Codable` type with a `CodingKeys` list (see the `fm/cockpit-fix-
+    /// host-decode-regression` gotcha in AGENTS.md for why that distinction
+    /// matters), but the same "a new field needs an explicit default on
+    /// read, not just a Swift-side one" lesson still applies here.
+    var hasAttachment: Bool
 
     /// A blank task ready for `ShiftStore.addTask` - the New Task editor
     /// (phase 2) fills fields into this rather than hand-assembling every
@@ -59,9 +71,20 @@ struct ShiftTask: Equatable {
         return ShiftTask(
             id: UUID().uuidString, title: "", description: "", status: .todo, priority: .normal,
             dueDate: nil, dueTime: nil, projectID: nil, tags: [], createdAt: iso, updatedAt: iso,
-            completedAt: nil, notes: nil, subtasks: []
+            completedAt: nil, notes: nil, subtasks: [], hasAttachment: false
         )
     }
+}
+
+/// A captain's decision about a task's image attachment, made in the task
+/// editor sheet and applied by `ShiftStore.addTask`/`updateTask`
+/// (grandline-shift-task-image-attachments) - `.unchanged` for every save
+/// that never touched the attachment well, so an ordinary title/priority
+/// edit never rewrites the image file for nothing.
+enum ShiftAttachmentChange {
+    case unchanged
+    case set(Data)
+    case removed
 }
 
 enum ShiftFollowUpStatus: String, CaseIterable {

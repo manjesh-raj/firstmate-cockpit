@@ -71,6 +71,7 @@ enum ShiftYaml {
         m[str("completed_at")] = strOpt(t.completedAt)
         m[str("notes")] = strOpt(t.notes)
         m[str("subtasks")] = .array(t.subtasks.map(toYaml))
+        m[str("has_attachment")] = .bool(t.hasAttachment)
         return .dictionary(m)
     }
 
@@ -93,7 +94,8 @@ enum ShiftYaml {
             updatedAt: reqString(dict[str("updated_at")] ?? .null),
             completedAt: optString(dict[str("completed_at")] ?? .null),
             notes: optString(dict[str("notes")] ?? .null),
-            subtasks: subtasksYaml.compactMap(subtask(from:))
+            subtasks: subtasksYaml.compactMap(subtask(from:)),
+            hasAttachment: dict[str("has_attachment")]?.bool ?? false
         )
     }
 

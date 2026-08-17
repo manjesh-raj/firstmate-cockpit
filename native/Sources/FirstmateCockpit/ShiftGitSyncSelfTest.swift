@@ -350,6 +350,82 @@ enum ShiftGitSyncSelfTest {
                   "raced-destination migration: the remote itself must not carry a nested folder either")
         }
 
+        // MARK: Real binary attachment file reaches a real disposable remote
+        // (grandline-shift-task-image-attachments) - `commitAndPushNow`'s
+        // `git add -A -- shiftSubpath` needs no special-casing for a new
+        // binary file under `attachments/`, but this proves that rather
+        // than assumes it, and confirms the pushed bytes match exactly.
+
+        do {
+            let remote = makeBareRemote(name: "remote-attachment")
+            seedRemote(remote)
+            let wt = scratch.appendingPathComponent("wt-attachment", isDirectory: true)
+            let sync = ShiftGitSync(workingTree: wt, remoteURL: remote.path, debounceInterval: 0.2, periodicPullInterval: 999_999)
+            check(sync.ensureWorkingTreeNow(), "attachment push: clone should succeed")
+
+            let fakeImageBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] + (0..<512).map { UInt8($0 % 256) })
+            let attachmentURL = sync.dataRoot.appendingPathComponent("attachments/task-attach-test.png")
+            try? fm.createDirectory(at: attachmentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fakeImageBytes.write(to: attachmentURL)
+
+            sync.markDirty()
+            check(sync.status == .localChanges, "attachment push: status should flip to .localChanges immediately after markDirty(), got \(sync.status)")
+            waitForSynced(sync)
+            check(sync.status == .synced, "attachment push: status should reach .synced once the debounced commit+push completes, got \(sync.status)")
+
+            // Not just "present in the local working tree" - clone the
+            // remote fresh and read the file back from THAT clone, so this
+            // proves the binary genuinely landed on the remote, not just on
+            // disk locally.
+            let freshClone = scratch.appendingPathComponent("fresh-after-attachment-push", isDirectory: true)
+            _ = shell("/usr/bin/git", ["clone", remote.path, freshClone.path])
+            let clonedAttachmentPath = freshClone.appendingPathComponent("GrandLineDocs/personal-tasks/attachments/task-attach-test.png")
+            check(fm.fileExists(atPath: clonedAttachmentPath.path), "attachment push: the attachment file should exist in a fresh clone of the remote")
+            let clonedBytes = try? Data(contentsOf: clonedAttachmentPath)
+            check(clonedBytes == fakeImageBytes, "attachment push: the pushed bytes should match exactly what was written locally")
+
+            // `git show <sha>:<path>` on the remote itself (not the clone)
+            // confirms the commit that reached the remote directly carries
+            // this file, matching the acceptance bar's own wording.
+            let logResult = shell("/usr/bin/git", ["--git-dir", remote.path, "log", "-1", "--format=%H"])
+            let sha = logResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let showResult = shell("/usr/bin/git", ["--git-dir", remote.path, "show", "\(sha):GrandLineDocs/personal-tasks/attachments/task-attach-test.png"])
+            check(showResult.status == 0, "attachment push: git show <sha>:<path> against the bare remote should find the attachment")
+        }
+
+        // MARK: A failed push after an attachment write still leaves the
+        // attachment safely committed locally, matching every other Shift
+        // write's failure contract - never silently lost.
+
+        do {
+            let remote = makeBareRemote(name: "remote-attachment-then-gone")
+            seedRemote(remote)
+            let wt = scratch.appendingPathComponent("wt-attachment-push-fail", isDirectory: true)
+            let sync = ShiftGitSync(workingTree: wt, remoteURL: remote.path, debounceInterval: 0.2, periodicPullInterval: 999_999)
+            check(sync.ensureWorkingTreeNow(), "attachment push failure: clone should succeed")
+
+            // Make the remote unreachable out from under an already-cloned
+            // working tree - the real "offline, or remote diverged" shape
+            // this scenario is meant to cover.
+            try? fm.removeItem(at: remote)
+
+            let attachmentBytes = Data([0x89, 0x50, 0x4E, 0x47] + [1, 2, 3, 4, 5])
+            let attachmentURL = sync.dataRoot.appendingPathComponent("attachments/will-not-push.png")
+            try? fm.createDirectory(at: attachmentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? attachmentBytes.write(to: attachmentURL)
+
+            sync.markDirty()
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if case .failed = sync.status { break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if case .failed = sync.status {} else { failures.append("attachment push failure: status should be .failed once the push can't reach the (now-gone) remote, got \(sync.status)") }
+            check(fm.fileExists(atPath: attachmentURL.path), "attachment push failure: the attachment file must still exist locally after a failed push")
+            let logAfterFailure = shell("/usr/bin/git", ["-C", wt.path, "log", "-1", "--format=%s"])
+            check(logAfterFailure.stdout.contains("file(s) updated"), "attachment push failure: the local commit should have succeeded even though the push failed")
+        }
+
         if !failures.isEmpty {
             for f in failures { FileHandle.standardError.write(Data(("FAIL: " + f + "\n").utf8)) }
         }

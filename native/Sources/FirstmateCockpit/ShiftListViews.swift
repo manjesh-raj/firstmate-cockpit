@@ -93,6 +93,13 @@ private final class ShiftTaskRowView: NSView {
     private let hoverBackground = HoverHighlightView()
     private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let titleLabel = NSTextField(labelWithString: "")
+    /// A small paperclip glyph shown next to the title when the task has an
+    /// image attachment (grandline-shift-task-image-attachments) - never a
+    /// rendered thumbnail, which would blow out this row's fixed height the
+    /// same way `fm/grandline-shift-panel-height-scroll-fix` already fixed
+    /// once for a mismatched-height bug; the real image only ever shows in
+    /// the task's own editor sheet.
+    private let attachmentIcon = NSImageView()
     private let subLabel = NSTextField(labelWithString: "")
     private let priorityPill = NSView()
     private let priorityLabel = NSTextField(labelWithString: "")
@@ -120,12 +127,26 @@ private final class ShiftTaskRowView: NSView {
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        attachmentIcon.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: "Has attachment")
+        attachmentIcon.symbolConfiguration = .init(pointSize: 10, weight: .regular)
+        attachmentIcon.setContentHuggingPriority(.required, for: .horizontal)
+        attachmentIcon.isHidden = true
+
+        let titleRow = NSStackView(views: [titleLabel, attachmentIcon])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 4
+        titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         subLabel.font = .systemFont(ofSize: 10.5)
         subLabel.lineBreakMode = .byTruncatingTail
         subLabel.maximumNumberOfLines = 1
 
-        let textStack = NSStackView(views: [titleLabel, subLabel])
+        let textStack = NSStackView(views: [titleRow, subLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
@@ -171,6 +192,8 @@ private final class ShiftTaskRowView: NSView {
 
         titleLabel.stringValue = task.title
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        attachmentIcon.isHidden = !task.hasAttachment
+        attachmentIcon.contentTintColor = HelmTheme.mutedInk(theme)
 
         var bits: [String] = []
         if let due = task.dueDate { bits.append(ShiftDateFormatting.friendly(due)) }

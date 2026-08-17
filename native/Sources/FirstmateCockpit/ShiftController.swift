@@ -1243,13 +1243,17 @@ final class ShiftController: NSViewController {
     @objc private func newProjectClicked() { presentProjectEditor() }
 
     private func presentTaskEditor(for task: ShiftTask?, defaultProjectID: String? = nil) {
-        let editor = ShiftTaskEditorController(task: task, projects: store.projects, defaultProjectID: defaultProjectID)
-        editor.onSave = { [weak self] saved in
+        let existingAttachmentData = (task?.hasAttachment ?? false) ? store.attachmentData(forTaskID: task!.id) : nil
+        let editor = ShiftTaskEditorController(
+            task: task, projects: store.projects, defaultProjectID: defaultProjectID,
+            existingAttachmentData: existingAttachmentData
+        )
+        editor.onSave = { [weak self] saved, attachmentChange in
             guard let self else { return }
             if task != nil {
-                self.store.updateTask(saved)
+                self.store.updateTask(saved, attachment: attachmentChange)
             } else {
-                self.store.addTask(saved)
+                self.store.addTask(saved, attachment: attachmentChange)
             }
             self.render()
         }
