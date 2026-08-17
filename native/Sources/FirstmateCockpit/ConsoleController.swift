@@ -110,6 +110,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// one-shot command, see `updateComposeControls`.
     private var composeButton = NSButton()
     private let composer = ConsoleComposerController()
+    /// `fm/grandline-herdr-utilization-panel` - only ever shown for a
+    /// Herdr-backed `.mirror` tab, the opposite gating of `composeButton`
+    /// above (see `updateUtilizationControls`), so the two never fight for
+    /// the same toolbar slot on the same tab.
+    private var utilizationButton = NSButton()
+    private let quotaUsage = QuotaUsageController()
     private let separator = NSView()
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
@@ -291,6 +297,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         blockViewToggleButton = makeIconButton(symbol: "rectangle.grid.1x2", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
         blockViewRefreshButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Refresh Blocks", action: #selector(refreshBlockView))
         composeButton = makeIconButton(symbol: "sparkles", tooltip: "Compose a command…", action: #selector(toggleComposer))
+        utilizationButton = makeIconButton(symbol: quotaUsageGaugeSymbol, tooltip: "Claude usage", action: #selector(toggleUtilization))
 
         // SRE Lead (design brief Part C) and block view (`fm/cockpit-block-
         // view-stage0`) are both dedicated-host-page-only affordances - the
@@ -313,8 +320,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // available on both the shared Firstmate console (its Shell tab is a
         // plain `.shell` launch too) and every dedicated host page - visibility
         // is per-tab (`updateComposeControls`), not per-console like SRE
-        // Lead/block view above.
+        // Lead/block view above. `utilizationButton` (`fm/grandline-herdr-
+        // utilization-panel`) sits in the same slot, gated the opposite way
+        // (`updateUtilizationControls`) - the two are never both visible on
+        // the same tab.
         toolViews.append(composeButton)
+        toolViews.append(utilizationButton)
         toolViews.append(logButton)
         let tools = NSStackView(views: toolViews)
         tools.orientation = .horizontal
@@ -1152,6 +1163,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateLogButton()
         updateBlockViewControls()
         updateComposeControls()
+        updateUtilizationControls()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
     }
 
@@ -1179,6 +1191,31 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     @objc private func toggleComposer() {
         guard !composeButton.isHidden else { return }
         composer.toggle(relativeTo: composeButton)
+    }
+
+    // MARK: Claude usage (`fm/grandline-herdr-utilization-panel`)
+
+    /// Only ever shown for a Herdr-backed `.mirror` tab - the opposite gating
+    /// of `updateComposeControls` above, mirrored from the same two call
+    /// sites (`select(tabID:)`, `applyTheme()`). Hidden, not merely disabled,
+    /// on every other tab kind (`.shell`, `.ssh`, a tmux `.mirror`), and
+    /// closes the popover outright when the current tab stops qualifying -
+    /// same reasoning as Compose's own doc comment.
+    private func updateUtilizationControls() {
+        let available: Bool
+        if let tab = currentTab, case .mirror(let kind, _) = tab.launch, kind == .herdr {
+            available = true
+        } else {
+            available = false
+        }
+        utilizationButton.isHidden = !available
+        if !available { quotaUsage.close() }
+        utilizationButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+    }
+
+    @objc private func toggleUtilization() {
+        guard !utilizationButton.isHidden else { return }
+        quotaUsage.toggle(relativeTo: utilizationButton)
     }
 
     // MARK: Block view (`fm/cockpit-block-view-stage0`)
@@ -1283,6 +1320,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateLogButton()
         updateBlockViewControls()
         updateComposeControls()
+        updateUtilizationControls()
 
         sreLeadButton?.applyTheme(theme)
         sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
@@ -1494,6 +1532,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             self.fontSizeObservation = nil
         }
         composer.shutdown()
+        quotaUsage.shutdown()
     }
 
     // MARK: Window title
