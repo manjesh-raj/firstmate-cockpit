@@ -226,6 +226,10 @@ final class AppShellController: NSViewController {
         // own Software checklist card instead (same catalog, same install
         // action, just relocated).
         updates.onNavigateToBootstrap = { [weak self] in self?.show(.bootstrap) }
+        // fm/grandline-overview-drop-duplicate-pr-list: Overview's own
+        // itemized "Ready to merge" list was removed as a duplicate of
+        // `.review`'s - the stat tile that's left jumps straight there.
+        overview.onNavigateToReview = { [weak self] in self?.show(.review) }
         // cockpit-settings-sudo-touchid: Settings' "Touch ID for sudo" row
         // runs `sudo av harden sudo`, which needs a real interactive `sudo`
         // prompt exactly like Bootstrap's provisioning actions - same
