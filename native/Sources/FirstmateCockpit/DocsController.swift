@@ -1025,20 +1025,16 @@ final class DocsController: NSViewController {
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        var rowViews: [NSView] = [iconTile, textStack]
-        if let onDelete = item.onDelete {
-            let deleteButton = NSButton(title: "", target: nil, action: nil)
-            deleteButton.isBordered = false
-            deleteButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
-            let sleeve = ClosureSleeve(onDelete)
-            rowSleeves.append(sleeve)
-            deleteButton.target = sleeve
-            deleteButton.action = #selector(ClosureSleeve.invoke)
-            deleteButton.setContentHuggingPriority(.required, for: .horizontal)
-            rowViews.append(deleteButton)
-        }
-
-        let row = NSStackView(views: rowViews)
+        // The delete button is pinned directly to the container's own
+        // top-right corner below, not laid out inside `row` alongside the
+        // title - a plain horizontal NSStackView left at its default
+        // `.gravityAreas` distribution doesn't stretch to fill leftover
+        // width (see AGENTS.md gotcha (10)), so a delete button placed as
+        // a trailing arranged subview of `row` used to sit immediately
+        // after the title text instead of at the card's fixed corner,
+        // drifting left/right and up/down with the title's own length and
+        // wrap (`fm/grandline-docs-runbook-delete-icon-corner`).
+        let row = NSStackView(views: [iconTile, textStack])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 10
@@ -1049,9 +1045,31 @@ final class DocsController: NSViewController {
         container.layer?.borderWidth = 1
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(row)
+
+        var rowTrailingAnchor = container.trailingAnchor
+        var rowTrailingConstant: CGFloat = -Self.docCardPadding
+
+        if let onDelete = item.onDelete {
+            let deleteButton = NSButton(title: "", target: nil, action: nil)
+            deleteButton.isBordered = false
+            deleteButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
+            let sleeve = ClosureSleeve(onDelete)
+            rowSleeves.append(sleeve)
+            deleteButton.target = sleeve
+            deleteButton.action = #selector(ClosureSleeve.invoke)
+            deleteButton.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(deleteButton)
+            NSLayoutConstraint.activate([
+                deleteButton.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.docCardPadding),
+                deleteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.docCardPadding),
+            ])
+            rowTrailingAnchor = deleteButton.leadingAnchor
+            rowTrailingConstant = -10
+        }
+
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.docCardPadding),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.docCardPadding),
+            row.trailingAnchor.constraint(equalTo: rowTrailingAnchor, constant: rowTrailingConstant),
             row.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.docCardPadding),
             container.heightAnchor.constraint(equalToConstant: Self.docCardHeight),
         ])
