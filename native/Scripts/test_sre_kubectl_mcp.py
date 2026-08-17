@@ -24,6 +24,13 @@ This file covers, on the Python side:
     up and returned verbatim; a response that never appears within the
     timeout produces a clear timeout error and cleans up the stale request
     file
+
+`fm/grandline-sre-lead-runbook-execution` added `RunbookExecutionTests`
+below, covering the second MCP tool, `run_runbook`: finding a runbook by
+title, refusing a runbook by name the moment any one step fails the exact
+same `_validate_args` check `kubectl_readonly` uses (asserting nothing is
+ever written to the bridge directory in that case), and running every step
+of an all-compliant runbook sequentially through the bridge.
 """
 
 import json
@@ -204,6 +211,186 @@ class BridgeTimeoutTests(unittest.TestCase):
 
         self.assertTrue(outcome["ok"], outcome)
         self.assertEqual(outcome["output"], "node-1   Ready")
+
+
+class RunbookExecutionTests(unittest.TestCase):
+    """`run_runbook`: lookup by title, validate-everything-before-running-
+    anything, and sequential execution through the same bridge."""
+
+    def setUp(self):
+        import tempfile
+        self._runbooks_ctx = tempfile.TemporaryDirectory()
+        self.runbooks_dir = self._runbooks_ctx.name
+        self._bridge_ctx = tempfile.TemporaryDirectory()
+        self.bridge_dir = self._bridge_ctx.name
+        self._old_runbooks_env = os.environ.get("SRE_LEAD_RUNBOOKS_DIR")
+        self._old_bridge_env = os.environ.get("SRE_LEAD_BRIDGE_DIR")
+        os.environ["SRE_LEAD_RUNBOOKS_DIR"] = self.runbooks_dir
+        os.environ["SRE_LEAD_BRIDGE_DIR"] = self.bridge_dir
+
+    def tearDown(self):
+        for key, old in (("SRE_LEAD_RUNBOOKS_DIR", self._old_runbooks_env),
+                          ("SRE_LEAD_BRIDGE_DIR", self._old_bridge_env)):
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+        self._runbooks_ctx.cleanup()
+        self._bridge_ctx.cleanup()
+
+    def _write_runbook(self, filename, content):
+        with open(os.path.join(self.runbooks_dir, filename), "w") as f:
+            f.write(content)
+
+    def _requests(self):
+        return [f for f in os.listdir(self.bridge_dir) if f.startswith("request-") and f.endswith(".json")]
+
+    def _respond_to_n_requests(self, n, output_for=lambda i: f"output-{i}"):
+        """Background thread: answers up to `n` requests in order, each with
+        `{"ok": true, "output": output_for(i)}`."""
+        def worker():
+            answered = 0
+            deadline = time.time() + 5
+            while time.time() < deadline and answered < n:
+                reqs = sorted(self._requests())
+                if reqs:
+                    request_id = reqs[0][len("request-"):-len(".json")]
+                    os.remove(os.path.join(self.bridge_dir, reqs[0]))
+                    with open(os.path.join(self.bridge_dir, f"response-{request_id}.json"), "w") as f:
+                        json.dump({"ok": True, "output": output_for(answered)}, f)
+                    answered += 1
+                time.sleep(0.05)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        return t
+
+    def test_no_runbooks_dir_env_fails_cleanly(self):
+        del os.environ["SRE_LEAD_RUNBOOKS_DIR"]
+        outcome = mcp._run_runbook("anything")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("SRE_LEAD_RUNBOOKS_DIR", outcome["error"])
+
+    def test_no_matching_runbook(self):
+        self._write_runbook("unrelated.md", "# Something else\n\n```\nkubectl get pods\n```\n")
+        outcome = mcp._run_runbook("API latency spike")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("no runbook found", outcome["error"])
+
+    def test_ambiguous_runbook_name_is_refused(self):
+        self._write_runbook("a.md", "# Database Incident - primary\n\n```\nkubectl get pods\n```\n")
+        self._write_runbook("b.md", "# Database Incident - replica\n\n```\nkubectl get pods\n```\n")
+        outcome = mcp._run_runbook("database incident")
+        self.assertFalse(outcome["ok"])
+        self.assertIn("multiple runbooks", outcome["error"])
+        self.assertEqual(self._requests(), [])
+
+    def test_runbook_with_one_disallowed_step_is_refused_by_name_with_no_steps_run(self):
+        self._write_runbook("restart-api.md", (
+            "# Restart the API\n\n"
+            "```\n"
+            "kubectl get pods -n prod\n"
+            "kubectl rollout restart deployment/api -n prod\n"
+            "kubectl get pods -n prod\n"
+            "```\n"
+        ))
+        outcome = mcp._run_runbook("Restart the API")
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome.get("refused"))
+        self.assertEqual(outcome["runbook"], "Restart the API")
+        self.assertEqual(outcome["failed_step"], 2)
+        self.assertIn("rollout", outcome["error"])
+        self.assertIn("No steps were run", outcome["error"])
+        # Not one step was ever sent to the shared terminal - including the
+        # earlier, individually-valid `kubectl get pods` step before it.
+        self.assertEqual(self._requests(), [])
+
+    def test_runbook_with_a_non_kubectl_line_is_refused(self):
+        self._write_runbook("mixed.md", (
+            "# Mixed Steps\n\n"
+            "```\n"
+            "kubectl get pods -n prod\n"
+            "rm -rf /\n"
+            "```\n"
+        ))
+        outcome = mcp._run_runbook("Mixed Steps")
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome.get("refused"))
+        self.assertIn("not a kubectl command", outcome["error"])
+        self.assertEqual(self._requests(), [])
+
+    def test_fully_compliant_runbook_runs_every_step_in_order(self):
+        self._write_runbook("api-latency-spike.md", (
+            "# API latency spike\n\n"
+            "Investigate elevated p99 latency.\n\n"
+            "```\n"
+            "kubectl get pods -n prod\n"
+            "$ kubectl describe pod api-1 -n prod\n"
+            "kubectl logs pod/api-1 -n prod --previous\n"
+            "```\n"
+        ))
+        t = self._respond_to_n_requests(3)
+        outcome = mcp._run_runbook("api latency spike")
+        t.join(timeout=5)
+
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(outcome["runbook"], "API latency spike")
+        self.assertEqual(len(outcome["steps"]), 3)
+        self.assertEqual(outcome["steps"][0]["command"], "kubectl get pods -n prod")
+        self.assertEqual(outcome["steps"][1]["command"], "kubectl describe pod api-1 -n prod")
+        self.assertEqual(outcome["steps"][2]["command"], "kubectl logs pod/api-1 -n prod --previous")
+        for i, step in enumerate(outcome["steps"]):
+            self.assertTrue(step["ok"], step)
+            self.assertEqual(step["output"], f"output-{i}")
+
+    def test_matches_runbook_by_title_not_filename(self):
+        self._write_runbook("some-internal-slug-123.md", "# Restart the API\n\n```\nkubectl get pods\n```\n")
+        found, error = mcp._find_runbook("restart the api")
+        self.assertIsNone(error)
+        self.assertEqual(found[0], "Restart the API")
+
+    def test_extract_command_lines_ignores_prose_and_comments_outside_fences(self):
+        content = (
+            "# Some Runbook\n\n"
+            "kubectl get pods\n"  # outside a fence - prose, not a step
+            "```\n"
+            "# a comment, not a command\n"
+            "\n"
+            "kubectl get pods -n prod\n"
+            "```\n"
+            "kubectl get nodes\n"  # outside a fence again
+        )
+        self.assertEqual(mcp._extract_command_lines(content), ["kubectl get pods -n prod"])
+
+    def test_execution_stops_at_first_bridge_failure(self):
+        self._write_runbook("two-steps.md", (
+            "# Two Steps\n\n"
+            "```\n"
+            "kubectl get pods -n prod\n"
+            "kubectl get nodes\n"
+            "```\n"
+        ))
+
+        def worker():
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                reqs = sorted(self._requests())
+                if reqs:
+                    request_id = reqs[0][len("request-"):-len(".json")]
+                    os.remove(os.path.join(self.bridge_dir, reqs[0]))
+                    with open(os.path.join(self.bridge_dir, f"response-{request_id}.json"), "w") as f:
+                        json.dump({"ok": False, "error": "busy"}, f)
+                    return
+                time.sleep(0.05)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        outcome = mcp._run_runbook("Two Steps")
+        t.join(timeout=5)
+
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(len(outcome["steps"]), 1)
+        self.assertFalse(outcome["steps"][0]["ok"])
 
 
 if __name__ == "__main__":

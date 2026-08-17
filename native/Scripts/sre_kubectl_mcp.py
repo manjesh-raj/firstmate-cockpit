@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
-"""SRE Lead's one MCP tool: run a read-only kubectl command in the captain's
-own already-connected terminal tab for this host.
+"""SRE Lead's MCP tools: run a read-only kubectl command (or a whole runbook
+of them) in the captain's own already-connected terminal tab for this host.
 
 Minimal MCP stdio JSON-RPC server (`initialize`, `notifications/initialized`,
-`tools/list`, `tools/call` - the whole surface one tool needs), standard
-library only, no pip install. Spawned as a subprocess of the local `claude`
-CLI (see `SRELead.swift`).
+`tools/list`, `tools/call`), standard library only, no pip install. Spawned
+as a subprocess of the local `claude` CLI (see `SRELead.swift`).
+
+**`fm/grandline-sre-lead-runbook-execution` added a second tool,
+`run_runbook`**, for the captain's conversational "run the API latency spike
+runbook" ask. It is deliberately NOT a new capability: it looks a runbook up
+by name in `GrandLineDocs/runbooks/` (via `SRE_LEAD_RUNBOOKS_DIR`, set by
+`SRELead.setUp` alongside `SRE_LEAD_BRIDGE_DIR`), extracts the kubectl
+command lines from its fenced code blocks, and validates *every single one*
+through `_validate_args` - the exact same function `kubectl_readonly` itself
+calls, not a second or looser check - before running any of them. If even
+one line fails validation (not `kubectl` at all, an unparseable line, or a
+subcommand/argument outside the allowlist), the whole runbook is refused by
+name with the failing step named and explained; nothing is executed. Only
+once every line passes does it run them sequentially through
+`_execute_via_bridge` (the same shared-terminal mechanism `kubectl_readonly`
+already uses) and return each step's result. See `_run_runbook`/
+`_validate_runbook_line`/`_extract_command_lines` below.
 
 **`fm/cockpit-sre-lead-shared-terminal` replaced this tool's whole execution
 model - read this before touching anything below.** Every earlier version
@@ -69,6 +84,7 @@ import uuid
 
 PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAME = "kubectl_readonly"
+RUNBOOK_TOOL_NAME = "run_runbook"
 
 # The entire read-only surface. Anything else - patch, apply, delete, edit,
 # replace, scale, cordon, drain, exec, cp, attach, port-forward, proxy, run,
@@ -125,24 +141,11 @@ def _bridge_dir():
     return path
 
 
-def _run_kubectl(subcommand, args, namespace):
-    error = _validate_args(subcommand, args)
-    if error:
-        return {"ok": False, "error": error}
-
-    remote = ["kubectl", subcommand]
-    if namespace:
-        if set(namespace) - _SAFE_CHARS:
-            return {"ok": False, "error": f"namespace {namespace!r} contains disallowed characters"}
-        remote += ["-n", namespace]
-    remote += args
-
-    # `shlex.quote` per token is defense in depth on top of
-    # `_validate_args`'s character-set check above, not a replacement for it:
-    # this string is typed directly into the shared interactive shell, so it
-    # still goes through real shell parsing once there.
-    remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
-
+def _execute_via_bridge(remote_cmd):
+    """Write `remote_cmd` (already validated and shell-quoted by the caller)
+    as a bridge request and poll for `SRELeadBridge`'s response - the one
+    execution mechanism both `_run_kubectl` and `_run_runbook` use, so there
+    is exactly one place that talks to the shared terminal."""
     try:
         bridge_dir = _bridge_dir()
     except RuntimeError as e:
@@ -186,6 +189,181 @@ def _run_kubectl(subcommand, args, namespace):
     return {"ok": False, "error": f"timed out after {_TIMEOUT_SECONDS}s waiting for the shared-terminal bridge to respond"}
 
 
+def _run_kubectl(subcommand, args, namespace):
+    error = _validate_args(subcommand, args)
+    if error:
+        return {"ok": False, "error": error}
+
+    remote = ["kubectl", subcommand]
+    if namespace:
+        if set(namespace) - _SAFE_CHARS:
+            return {"ok": False, "error": f"namespace {namespace!r} contains disallowed characters"}
+        remote += ["-n", namespace]
+    remote += args
+
+    # `shlex.quote` per token is defense in depth on top of
+    # `_validate_args`'s character-set check above, not a replacement for it:
+    # this string is typed directly into the shared interactive shell, so it
+    # still goes through real shell parsing once there.
+    remote_cmd = " ".join(shlex.quote(tok) for tok in remote)
+    return _execute_via_bridge(remote_cmd)
+
+
+# --- Runbook execution ("run the API latency spike runbook") ---------------
+#
+# A runbook is a markdown file under `SRE_LEAD_RUNBOOKS_DIR` (the same
+# `GrandLineDocs/runbooks/` store the Docs > Runbooks tab reads/writes - see
+# `DocsRunbookStore.swift`). Its kubectl steps are the lines inside fenced
+# code blocks (``` ... ```), one command per line, optionally prefixed with
+# `$ `. Every line must parse into a plain `kubectl <verb> <args...>` and
+# pass the exact same `_validate_args` check `kubectl_readonly` itself uses -
+# there is no second, looser allowlist here.
+
+def _title_from_markdown(content, fallback):
+    """Mirrors `DocsRunbookStore.titleFromContent` (Swift): the first
+    non-empty line's `# Heading` text, or `fallback` if there isn't one."""
+    for raw_line in content.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+        break
+    return fallback
+
+
+def _extract_command_lines(content):
+    """Every non-empty, non-comment line inside a ``` fenced code block,
+    with an optional leading `$ ` prompt stripped."""
+    lines = []
+    in_fence = False
+    for raw_line in content.split("\n"):
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence or not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("$"):
+            stripped = stripped[1:].strip()
+        if stripped:
+            lines.append(stripped)
+    return lines
+
+
+def _find_runbook(name):
+    """Look up a runbook by title, case-insensitively - an exact title match
+    if there's exactly one, else a substring match if that's unambiguous.
+    Returns ((title, slug, content), None) on success, or (None, error) on
+    failure - never a guess between two ambiguous matches."""
+    runbooks_dir = os.environ.get("SRE_LEAD_RUNBOOKS_DIR")
+    if not runbooks_dir:
+        return None, "SRE_LEAD_RUNBOOKS_DIR is not set - this script must be spawned by SRELead.swift"
+    query = (name or "").strip().lower()
+    if not query:
+        return None, "no runbook name given"
+    if not os.path.isdir(runbooks_dir):
+        return None, f"no runbooks folder found at {runbooks_dir!r}"
+
+    candidates = []
+    for entry in sorted(os.listdir(runbooks_dir)):
+        if not entry.endswith(".md"):
+            continue
+        path = os.path.join(runbooks_dir, entry)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            continue
+        slug = entry[:-len(".md")]
+        candidates.append((_title_from_markdown(content, slug), slug, content))
+
+    exact = [c for c in candidates if c[0].strip().lower() == query]
+    if len(exact) == 1:
+        return exact[0], None
+    if len(exact) > 1:
+        return None, f"multiple runbooks are titled {name!r} - be more specific"
+
+    substring = [c for c in candidates if query in c[0].strip().lower()]
+    if len(substring) == 1:
+        return substring[0], None
+    if len(substring) > 1:
+        names = ", ".join(f"'{c[0]}'" for c in substring)
+        return None, f"multiple runbooks match {name!r}: {names} - be more specific"
+    return None, f"no runbook found matching {name!r}"
+
+
+def _validate_runbook_line(line):
+    """Parse + validate one runbook command line through the exact same
+    read-only allowlist `_validate_args` enforces for a direct
+    `kubectl_readonly` call. Returns `(subcommand, args, None)` on success,
+    or `(None, None, error)` on failure - never partially valid."""
+    try:
+        tokens = shlex.split(line)
+    except ValueError as e:
+        return None, None, f"could not parse this line: {e}"
+    if not tokens or tokens[0] != "kubectl":
+        return None, None, "this line is not a kubectl command"
+    if len(tokens) < 2:
+        return None, None, "no kubectl subcommand given"
+    subcommand, args = tokens[1], tokens[2:]
+    error = _validate_args(subcommand, args)
+    if error:
+        return None, None, error
+    return subcommand, args, None
+
+
+def _run_runbook(name):
+    found, error = _find_runbook(name)
+    if error:
+        return {"ok": False, "error": error}
+    title, _slug, content = found
+
+    command_lines = _extract_command_lines(content)
+    if not command_lines:
+        return {
+            "ok": False,
+            "runbook": title,
+            "error": f"runbook '{title}' has no kubectl commands in a fenced code block - nothing to run",
+        }
+
+    # Validate every single line before running any of them - one bad line
+    # refuses the whole runbook by name, never a partial run.
+    parsed_steps = []
+    for step_num, line in enumerate(command_lines, start=1):
+        subcommand, args, line_error = _validate_runbook_line(line)
+        if line_error:
+            return {
+                "ok": False,
+                "runbook": title,
+                "refused": True,
+                "failed_step": step_num,
+                "failed_line": line,
+                "error": (
+                    f"Refusing to run runbook '{title}': step {step_num} ('{line}') is not an "
+                    f"allowed read-only kubectl command - {line_error}. No steps were run. "
+                    "Run this runbook manually via a Console tab instead."
+                ),
+            }
+        parsed_steps.append((subcommand, args))
+
+    steps = []
+    for subcommand, args in parsed_steps:
+        remote_cmd = " ".join(shlex.quote(tok) for tok in ["kubectl", subcommand] + args)
+        outcome = _execute_via_bridge(remote_cmd)
+        steps.append({"command": remote_cmd, **outcome})
+        if not outcome.get("ok"):
+            # Stop at the first execution failure (busy/timeout/interleaved
+            # input - not a validation failure, every step already passed
+            # validation above) rather than plowing ahead with a broken
+            # sequence.
+            break
+
+    return {"ok": all(s.get("ok") for s in steps), "runbook": title, "steps": steps}
+
+
 def _tool_schema():
     return {
         "name": TOOL_NAME,
@@ -223,6 +401,31 @@ def _tool_schema():
     }
 
 
+def _runbook_tool_schema():
+    return {
+        "name": RUNBOOK_TOOL_NAME,
+        "description": (
+            "Run every kubectl step of a named runbook (from Docs > Runbooks) in the "
+            "captain's own already-connected terminal tab, e.g. \"run the API latency "
+            "spike runbook\". Every step is validated against the exact same read-only "
+            "allowlist as kubectl_readonly (get/describe/logs/top/events only) BEFORE "
+            "any step runs - if even one step fails that check, the whole runbook is "
+            "refused and nothing is executed. Look the runbook up by its title, not its "
+            "filename."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The runbook's title, e.g. 'API latency spike'.",
+                },
+            },
+            "required": ["name"],
+        },
+    }
+
+
 def _reply(id_, result=None, error=None):
     msg = {"jsonrpc": "2.0", "id": id_}
     if error is not None:
@@ -255,16 +458,20 @@ def main():
         elif method == "notifications/initialized":
             pass  # no response expected for a notification
         elif method == "tools/list":
-            _reply(id_, result={"tools": [_tool_schema()]})
+            _reply(id_, result={"tools": [_tool_schema(), _runbook_tool_schema()]})
         elif method == "tools/call":
             params = req.get("params", {})
-            if params.get("name") != TOOL_NAME:
-                _reply(id_, error={"code": -32602, "message": f"unknown tool {params.get('name')!r}"})
-                continue
+            tool_name = params.get("name")
             args_in = params.get("arguments", {})
-            outcome = _run_kubectl(
-                args_in.get("subcommand", ""), args_in.get("args", []), args_in.get("namespace")
-            )
+            if tool_name == TOOL_NAME:
+                outcome = _run_kubectl(
+                    args_in.get("subcommand", ""), args_in.get("args", []), args_in.get("namespace")
+                )
+            elif tool_name == RUNBOOK_TOOL_NAME:
+                outcome = _run_runbook(args_in.get("name", ""))
+            else:
+                _reply(id_, error={"code": -32602, "message": f"unknown tool {tool_name!r}"})
+                continue
             text = json.dumps(outcome, indent=2)
             _reply(id_, result={
                 "content": [{"type": "text", "text": text}],
