@@ -69,8 +69,29 @@ private final class FakeOpenVPNDriver: OpenVPNAccessibilityDriving {
     var disconnectButtonPresent = true
     var confirmDialogAppearsOnDisconnect = false
     private(set) var pressedTitles: [String] = []
+    private(set) var launchAppCallCount = 0
+    /// How many `isAppRunning()` polls after a `launchApp()` call it takes
+    /// before `running` flips true - simulates a real app taking a moment to
+    /// start. `nil` means it never starts (the "didn't start in time" case).
+    var pollsUntilRunningAfterLaunch: Int?
+    private var pollsSinceLaunch = 0
 
-    func isAppRunning() -> Bool { running }
+    func isAppRunning() -> Bool {
+        if let target = pollsUntilRunningAfterLaunch, launchAppCallCount > 0, !running {
+            pollsSinceLaunch += 1
+            if pollsSinceLaunch >= target { running = true }
+        }
+        return running
+    }
+
+    func launchApp() {
+        launchAppCallCount += 1
+    }
+
+    private(set) var hideAppCallCount = 0
+    func hideApp() {
+        hideAppCallCount += 1
+    }
 
     func readWindowTexts() -> [String] {
         guard !textSequence.isEmpty else { return [] }
@@ -221,6 +242,56 @@ enum VPNDataSelfTest {
             let controller = OpenVPNConnectController(driver: driver, ensureAccessibilityTrust: { true })
             check(controller.connect() == .succeeded, "OpenVPN controller: connect() succeeds when the Connect button is found and the re-check confirms Securely Connected")
             check(driver.pressedTitles == ["Connect"], "OpenVPN controller: connect() presses exactly the Connect button, nothing else")
+            check(driver.hideAppCallCount == 1, "OpenVPN controller: connect() hides OpenVPN Connect's window after pressing Connect - the captain never wants to see it")
+        }
+
+        // MARK: OpenVPN controller - launches the app if it isn't running (fm/grandline-vpn-divider-and-connect-fixes)
+
+        do {
+            // Not running at connect() time, but starts up within the wait
+            // bound - connect() should launch it, wait, then proceed exactly
+            // as the already-running happy path does.
+            let driver = FakeOpenVPNDriver()
+            driver.running = false
+            driver.pollsUntilRunningAfterLaunch = 3
+            driver.textSequence = [["Disconnected", "Connect"], ["Securely Connected!", "00:00:05", "Disconnect"]]
+            var sleptCount = 0
+            let controller = OpenVPNConnectController(driver: driver, ensureAccessibilityTrust: { true }, sleep: { _ in sleptCount += 1 })
+            check(controller.connect() == .succeeded, "OpenVPN controller: connect() launches OpenVPN Connect when not running, waits, then succeeds once it starts")
+            check(driver.launchAppCallCount == 1, "OpenVPN controller: connect() calls launchApp() exactly once when the app wasn't running")
+            check(sleptCount > 0 && sleptCount < 15, "OpenVPN controller: connect() actually waited (bounded) for the app to start, not zero polls and not the full exhausted budget")
+            check(driver.pressedTitles == ["Connect"], "OpenVPN controller: connect() still only presses the Connect button once the app is up")
+        }
+
+        do {
+            // Never starts within the wait bound - connect() must fail with
+            // a clear reason, never proceed to press a button against a
+            // half-launched (or not-launched-at-all) app.
+            let driver = FakeOpenVPNDriver()
+            driver.running = false
+            driver.pollsUntilRunningAfterLaunch = nil
+            var sleptCount = 0
+            let controller = OpenVPNConnectController(driver: driver, ensureAccessibilityTrust: { true }, sleep: { _ in sleptCount += 1 })
+            guard case .failed(let reason) = controller.connect() else {
+                check(false, "OpenVPN controller: connect() reports .failed - never .succeeded/.unknown - when OpenVPN Connect never finishes starting")
+                return false
+            }
+            check(reason.contains("didn't start in time"), "OpenVPN controller: the failure reason says OpenVPN Connect didn't start in time")
+            check(driver.launchAppCallCount == 1, "OpenVPN controller: still only calls launchApp() once even though the app never starts")
+            check(driver.pressedTitles.isEmpty, "OpenVPN controller: never presses any button when the app never finished starting")
+            check(sleptCount == 15, "OpenVPN controller: exhausts the full bounded wait budget before giving up")
+        }
+
+        do {
+            // Already running at connect() time - launchApp() must never be
+            // called at all (no unnecessary relaunch/reactivation, matching
+            // the same lesson already learned for Automic Vault in this app).
+            let driver = FakeOpenVPNDriver()
+            driver.running = true
+            driver.textSequence = [["Disconnected", "Connect"], ["Securely Connected!", "00:00:05", "Disconnect"]]
+            let controller = OpenVPNConnectController(driver: driver, ensureAccessibilityTrust: { true })
+            check(controller.connect() == .succeeded, "OpenVPN controller: connect() still succeeds when the app is already running")
+            check(driver.launchAppCallCount == 0, "OpenVPN controller: never calls launchApp() when OpenVPN Connect is already running")
         }
 
         // MARK: OpenVPN controller - Connect button missing (UI changed)
@@ -251,6 +322,7 @@ enum VPNDataSelfTest {
             let controller = OpenVPNConnectController(driver: driver, ensureAccessibilityTrust: { true })
             check(controller.disconnect() == .succeeded, "OpenVPN controller: disconnect() detects and dismisses the confirmation dialog, then confirms Disconnected")
             check(driver.pressedTitles == ["Disconnect", "Disconnect"], "OpenVPN controller: disconnect() presses Disconnect twice - the main button, then the dialog's own confirm button")
+            check(driver.hideAppCallCount == 1, "OpenVPN controller: disconnect() hides OpenVPN Connect's window too, same as connect()")
         }
 
         do {
