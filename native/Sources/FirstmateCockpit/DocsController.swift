@@ -55,7 +55,7 @@ final class DocsController: NSViewController {
     /// Keeps `ClosureSleeve`/gesture-recognizer targets alive for as long as
     /// the rows they're attached to exist - reset on every full row rebuild.
     private var rowSleeves: [ClosureSleeve] = []
-    /// The compact card containers built by `buildDocRow`, one list per tab
+    /// The compact card containers built by `buildDocCard`, one list per tab
     /// so reloading one tab's list never drops the other's theming refs -
     /// kept so `applyTheme()` can re-tint their border, matching
     /// `ToolsController.cardBorderViews`'s own convention. Each list is reset
@@ -169,6 +169,14 @@ final class DocsController: NSViewController {
             self.loadDocsIfAvailable()
         }
 
+        // Re-flow the Runbooks/Postmortems grids' column count on window
+        // resize, mirroring `ToolsController.containerWidthMayHaveChanged` -
+        // the window's own resize notification, not `viewDidLayout()`, since
+        // this page is a body child of `AppShellController`, not the
+        // window's own contentViewController (the only one AppKit guarantees
+        // that hook for).
+        NotificationCenter.default.addObserver(self, selector: #selector(containerWidthMayHaveChanged), name: NSWindow.didResizeNotification, object: nil)
+
         applyTheme()
         loadDocsIfAvailable()
         showTab(.playbook)
@@ -179,6 +187,46 @@ final class DocsController: NSViewController {
         updateNavButtons()
         if activeTab == .runbooks { reloadRunbooksList() }
         if activeTab == .postmortems { reloadPostmortemsList() }
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Same reasoning as `ToolsController.viewDidAppear`: the grids'
+        // very first build happens before the view has a real width to
+        // measure, so refine it against the real width now that the view is
+        // actually on screen, rather than waiting for the first resize.
+        containerWidthMayHaveChanged()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// Real widths the Runbooks/Postmortems grids last laid themselves out
+    /// against - `containerWidthMayHaveChanged` re-flows the column count
+    /// whenever either drifts by more than a point, tracked separately since
+    /// resizing while the grid isn't visible shouldn't force a rebuild.
+    private var lastRunbookGridWidth: CGFloat = 0
+    private var lastPostmortemGridWidth: CGFloat = 0
+
+    @objc private func containerWidthMayHaveChanged(_ note: Notification? = nil) {
+        if let note, let win = note.object as? NSWindow, win !== view.window { return }
+        guard !view.isHidden else { return }
+        if activeTab == .runbooks {
+            view.layoutSubtreeIfNeeded()
+            let width = runbookListStack.frame.width
+            if width > 0, abs(width - lastRunbookGridWidth) > 1 {
+                lastRunbookGridWidth = width
+                rebuildRunbookGrid()
+            }
+        } else if activeTab == .postmortems {
+            view.layoutSubtreeIfNeeded()
+            let width = postmortemListStack.frame.width
+            if width > 0, abs(width - lastPostmortemGridWidth) > 1 {
+                lastPostmortemGridWidth = width
+                rebuildPostmortemGrid()
+            }
+        }
     }
 
     // MARK: Tab bar
@@ -480,7 +528,7 @@ final class DocsController: NSViewController {
 
         runbookListStack.orientation = .vertical
         runbookListStack.alignment = .leading
-        runbookListStack.spacing = 8
+        runbookListStack.spacing = Self.docCardSpacing
         runbookListStack.translatesAutoresizingMaskIntoConstraints = false
 
         // `FlippedView`, not a plain `NSView()` - see AGENTS.md's Docs section
@@ -502,12 +550,12 @@ final class DocsController: NSViewController {
         runbookListScroll.hasVerticalScroller = true
         runbookListScroll.drawsBackground = false
         runbookListScroll.translatesAutoresizingMaskIntoConstraints = false
-        // `>=`, not `==` - a fixed-width compact card (see `buildDocRow`) can
-        // be wider than a narrow window's visible scroll area; an exact
-        // equality there would conflict with the card's own required width
-        // constraint instead of just letting the document view grow past the
-        // viewport (scrolling horizontally in that rare case).
-        listContent.widthAnchor.constraint(greaterThanOrEqualTo: runbookListScroll.contentView.widthAnchor).isActive = true
+        // `==`, not `>=` - the grid's cards are now sized responsively to
+        // whatever width is actually available (`rebuildRunbookGrid`,
+        // matching `ToolsController.rebuildGrid`'s own approach), so there's
+        // no fixed-width card that could need the document view to grow past
+        // the viewport.
+        listContent.widthAnchor.constraint(equalTo: runbookListScroll.contentView.widthAnchor).isActive = true
 
         let listStack = runbookListContainerStack
         listStack.setViews([headerRow, runbookListScroll], in: .leading)
@@ -615,28 +663,46 @@ final class DocsController: NSViewController {
     }
 
     private func reloadRunbooksList() {
-        runbookListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        runbookRowCards.removeAll()
         let runbooks = runbookStore.listRunbooks()
         runbooksHeaderCountLabel.stringValue = "\(runbooks.count)"
-        if runbooks.isEmpty {
-            let empty = NSTextField(labelWithString: "No runbooks yet. Create one to get started.")
-            empty.textColor = HelmTheme.mutedInk(theme)
-            empty.font = .systemFont(ofSize: 12)
-            runbookListStack.addArrangedSubview(empty)
-        }
-        for runbook in runbooks {
-            let row = buildDocRow(
+        runbookGridItems = runbooks.map { runbook in
+            DocGridItem(
                 title: runbook.title,
                 subtitle: "Updated \(Self.relativeDate(runbook.modifiedAt))",
                 icon: "doc.text",
                 tint: .info,
                 onOpen: { [weak self] in self?.beginEditRunbook(runbook.id) },
-                onDelete: { [weak self] in self?.confirmDeleteRunbook(id: runbook.id, title: runbook.title) },
-                cardList: &runbookRowCards
+                onDelete: { [weak self] in self?.confirmDeleteRunbook(id: runbook.id, title: runbook.title) }
             )
-            runbookListStack.addArrangedSubview(row)
         }
+        rebuildRunbookGrid()
+    }
+
+    /// Re-flows `runbookGridItems` into a wrapping multi-column grid, sized
+    /// to whatever width `runbookListStack` actually has - the same
+    /// columns-from-container-width + `.fillEqually` approach as
+    /// `ToolsController.rebuildGrid()`, including its partial-last-row
+    /// padding fix (`fm/cockpit-tools-page-partial-row-fix`): a row with
+    /// fewer cards than a full row is padded out with invisible spacers so
+    /// `.fillEqually` always divides by the same column count and a lone
+    /// leftover card never stretches to fill the whole row.
+    private func rebuildRunbookGrid() {
+        runbookListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        runbookRowCards.removeAll()
+        if runbookGridItems.isEmpty {
+            let empty = NSTextField(labelWithString: "No runbooks yet. Create one to get started.")
+            empty.textColor = HelmTheme.mutedInk(theme)
+            empty.font = .systemFont(ofSize: 12)
+            runbookListStack.addArrangedSubview(empty)
+            applyTheme()
+            return
+        }
+        let (rows, cards) = layoutDocGrid(items: runbookGridItems, containerWidth: runbookListStack.frame.width)
+        for row in rows {
+            runbookListStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: runbookListStack.widthAnchor).isActive = true
+        }
+        runbookRowCards = cards
         applyTheme()
     }
 
@@ -743,7 +809,7 @@ final class DocsController: NSViewController {
 
         postmortemListStack.orientation = .vertical
         postmortemListStack.alignment = .leading
-        postmortemListStack.spacing = 8
+        postmortemListStack.spacing = Self.docCardSpacing
         postmortemListStack.translatesAutoresizingMaskIntoConstraints = false
 
         // `FlippedView`, not a plain `NSView()` - same top-anchoring fix as
@@ -761,9 +827,9 @@ final class DocsController: NSViewController {
         postmortemListScroll.hasVerticalScroller = true
         postmortemListScroll.drawsBackground = false
         postmortemListScroll.translatesAutoresizingMaskIntoConstraints = false
-        // `>=`, not `==` - see the matching comment on the Runbooks list's
+        // `==`, not `>=` - see the matching comment on the Runbooks list's
         // own document-view width constraint above.
-        listContent.widthAnchor.constraint(greaterThanOrEqualTo: postmortemListScroll.contentView.widthAnchor).isActive = true
+        listContent.widthAnchor.constraint(equalTo: postmortemListScroll.contentView.widthAnchor).isActive = true
 
         postmortemEmptyLabel.font = .systemFont(ofSize: 12)
         postmortemEmptyLabel.preferredMaxLayoutWidth = 420
@@ -798,26 +864,38 @@ final class DocsController: NSViewController {
     }
 
     private func reloadPostmortemsList() {
-        postmortemListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        postmortemRowCards.removeAll()
         let postmortems = runbookStore.listPostmortems()
         postmortemEmptyLabel.isHidden = !postmortems.isEmpty
         postmortemListScroll.isHidden = postmortems.isEmpty
-        for postmortem in postmortems {
-            let row = buildDocRow(
+        postmortemGridItems = postmortems.map { postmortem in
+            DocGridItem(
                 title: postmortem.title,
                 subtitle: "Updated \(Self.relativeDate(postmortem.modifiedAt))",
                 icon: "exclamationmark.triangle",
                 tint: .warn,
                 onOpen: { [weak self] in self?.showPostmortem(postmortem.id) },
-                onDelete: nil,
-                cardList: &postmortemRowCards
+                onDelete: nil
             )
-            postmortemListStack.addArrangedSubview(row)
         }
+        rebuildPostmortemGrid()
         if selectedPostmortemID == nil {
             postmortemDetailScroll.isHidden = true
         }
+        applyTheme()
+    }
+
+    /// Re-flows `postmortemGridItems` - see `rebuildRunbookGrid`'s doc
+    /// comment, which this mirrors exactly.
+    private func rebuildPostmortemGrid() {
+        postmortemListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        postmortemRowCards.removeAll()
+        guard !postmortemGridItems.isEmpty else { return }
+        let (rows, cards) = layoutDocGrid(items: postmortemGridItems, containerWidth: postmortemListStack.frame.width)
+        for row in rows {
+            postmortemListStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: postmortemListStack.widthAnchor).isActive = true
+        }
+        postmortemRowCards = cards
         applyTheme()
     }
 
@@ -842,28 +920,99 @@ final class DocsController: NSViewController {
         showPostmortem(id)
     }
 
-    // MARK: Shared row builder (Runbooks/Postmortems/Search results)
+    // MARK: Shared grid builder (Runbooks/Postmortems)
+
+    /// One card's content, independent of layout - built fresh from disk on
+    /// every `reloadRunbooksList`/`reloadPostmortemsList`, then re-laid-out
+    /// (with no disk re-read) by `rebuildRunbookGrid`/`rebuildPostmortemGrid`
+    /// on every window resize.
+    private struct DocGridItem {
+        let title: String
+        let subtitle: String
+        let icon: String
+        let tint: HelmTint
+        let onOpen: () -> Void
+        let onDelete: (() -> Void)?
+    }
+
+    private var runbookGridItems: [DocGridItem] = []
+    private var postmortemGridItems: [DocGridItem] = []
 
     /// A compact card - `IconTileView` + title + a short secondary line -
-    /// matching the Tools page's own landing-grid card treatment
-    /// (`ToolsController.toolCard`), per the captain's explicit "something
-    /// like this should be enough" reference. Deliberately a fixed, bounded
-    /// width rather than stretched to the full list width (the prior "row"
-    /// shape) - that's what actually reads as a compact card instead of an
-    /// oversized full-bleed banner.
-    private static let docCardWidth: CGFloat = 320
-    private static let docCardPadding: CGFloat = 8
+    /// laid out as a wrapping multi-column grid sized to the space actually
+    /// available, matching the Tools page's own landing-grid treatment
+    /// (`ToolsController.rebuildGrid()`) per the captain's explicit request
+    /// to use that page's layout as the reference (`fm/grandline-docs-
+    /// runbook-grid-layout`, superseding the prior single-column stacked-
+    /// list shape from `fm/grandline-docs-runbook-list-compact-fix`).
+    private static let docMinCardWidth: CGFloat = 260
+    private static let docCardSpacing: CGFloat = 14
+    private static let docCardPadding: CGFloat = 14
+    /// A fixed height for every card, tall enough to comfortably fit a
+    /// 3-line wrapped title (captain-reported: "Identifying Unhealthy /
+    /// NotReady Nodes" truncated to "...Nod…" on a single line) plus the
+    /// subtitle line - deliberately NOT content-dependent, so a short title
+    /// just leaves empty space below it rather than every card in the grid
+    /// growing/shrinking to match its own content (the same "avoid a
+    /// scrollable-item's height silently growing" lesson already applied to
+    /// this app's other lists - see AGENTS.md's Shift/Diff-tool entries).
+    private static let docCardHeight: CGFloat = 100
 
-    private func buildDocRow(title: String, subtitle: String, icon: String, tint: HelmTint, onOpen: @escaping () -> Void, onDelete: (() -> Void)?, cardList: inout [HoverHighlightView]) -> NSView {
+    /// Lays `items` out as a grid of rows, each row a `.fillEqually`
+    /// horizontal stack of cards sized to `containerWidth` - byte-for-byte
+    /// the same columns-from-width + partial-last-row-padding approach as
+    /// `ToolsController.rebuildGrid()`. Returns the built rows (to add as
+    /// arranged subviews of the caller's own vertical list stack) and the
+    /// cards themselves (for `applyTheme()`'s re-tint pass).
+    private func layoutDocGrid(items: [DocGridItem], containerWidth: CGFloat) -> (rows: [NSView], cards: [HoverHighlightView]) {
+        let width = containerWidth > 0 ? containerWidth : 860
+        let columnsPerRow = max(1, Int((width + Self.docCardSpacing) / (Self.docMinCardWidth + Self.docCardSpacing)))
+        let cardWidth = (width - Self.docCardSpacing * CGFloat(columnsPerRow - 1)) / CGFloat(columnsPerRow)
+
+        var rows: [NSView] = []
+        var cards: [HoverHighlightView] = []
+        for chunk in items.chunked(into: columnsPerRow) {
+            var views: [NSView] = chunk.map { item in
+                let card = buildDocCard(item, width: cardWidth)
+                cards.append(card)
+                return card
+            }
+            // Pad a partial last row out to `columnsPerRow` slots with
+            // invisible spacers so `.fillEqually` always divides by the same
+            // column count - otherwise a lone leftover card would stretch
+            // to fill the whole row width instead of matching a full row's
+            // card width (`fm/cockpit-tools-page-partial-row-fix`).
+            while views.count < columnsPerRow {
+                let spacer = NSView()
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                views.append(spacer)
+            }
+            let row = NSStackView(views: views)
+            row.orientation = .horizontal
+            row.spacing = Self.docCardSpacing
+            row.distribution = .fillEqually
+            row.translatesAutoresizingMaskIntoConstraints = false
+            rows.append(row)
+        }
+        return (rows, cards)
+    }
+
+    private func buildDocCard(_ item: DocGridItem, width: CGFloat) -> HoverHighlightView {
         let iconTile = IconTileView(size: 26, cornerRadius: 7)
-        iconTile.configure(symbol: icon, tint: tint, pointSize: 12)
+        iconTile.configure(symbol: item.icon, tint: item.tint, pointSize: 12)
+        iconTile.setContentHuggingPriority(.required, for: .horizontal)
 
-        let titleLabel = NSTextField(labelWithString: title)
+        let titleLabel = NSTextField(wrappingLabelWithString: item.title)
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.maximumNumberOfLines = 1
+        titleLabel.maximumNumberOfLines = 3
+        let deleteButtonWidth: CGFloat = item.onDelete != nil ? 22 : 0
+        // Card width varies with the container (see `layoutDocGrid`), so
+        // this is recomputed on every rebuild rather than a fixed guess -
+        // matching `ToolsController.toolCard`'s own reasoning for its
+        // description label.
+        titleLabel.preferredMaxLayoutWidth = max(60, width - Self.docCardPadding * 2 - 26 - 10 - deleteButtonWidth)
 
-        let subtitleLabel = NSTextField(labelWithString: subtitle)
+        let subtitleLabel = NSTextField(labelWithString: item.subtitle)
         subtitleLabel.font = .systemFont(ofSize: 10.5)
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.maximumNumberOfLines = 1
@@ -872,12 +1021,12 @@ final class DocsController: NSViewController {
         let textStack = NSStackView(views: [titleLabel, subtitleLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 3
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         var rowViews: [NSView] = [iconTile, textStack]
-        if let onDelete {
+        if let onDelete = item.onDelete {
             let deleteButton = NSButton(title: "", target: nil, action: nil)
             deleteButton.isBordered = false
             deleteButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
@@ -891,9 +1040,8 @@ final class DocsController: NSViewController {
 
         let row = NSStackView(views: rowViews)
         row.orientation = .horizontal
-        row.alignment = .centerY
+        row.alignment = .top
         row.spacing = 10
-        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let container = HoverHighlightView()
@@ -905,14 +1053,12 @@ final class DocsController: NSViewController {
             row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.docCardPadding),
             row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.docCardPadding),
             row.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.docCardPadding),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.docCardPadding),
-            container.widthAnchor.constraint(equalToConstant: Self.docCardWidth),
+            container.heightAnchor.constraint(equalToConstant: Self.docCardHeight),
         ])
-        let openSleeve = ClosureSleeve(onOpen)
+        let openSleeve = ClosureSleeve(item.onOpen)
         rowSleeves.append(openSleeve)
         let click = NSClickGestureRecognizer(target: openSleeve, action: #selector(ClosureSleeve.invoke))
         container.addGestureRecognizer(click)
-        cardList.append(container)
         return container
     }
 
