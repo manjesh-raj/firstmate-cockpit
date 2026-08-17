@@ -879,13 +879,24 @@ final class DocsController: NSViewController {
 
     private func openSearchResult(_ result: DocsKnowledgeSearchResult) {
         switch result.scope {
-        case .runbook:
-            showTab(.runbooks)
-            beginEditRunbook(result.runbook.id)
-        case .postmortem:
-            showTab(.postmortems)
-            showPostmortem(result.runbook.id)
+        case .runbook: openRunbook(id: result.runbook.id)
+        case .postmortem: openPostmortem(id: result.runbook.id)
         }
+    }
+
+    /// Entry points for the phase-4 unified `⌘K` search palette
+    /// (`UnifiedSearchController`, owned outside this page) - the same
+    /// "switch tab, then open" behavior `openSearchResult` above already
+    /// uses for the in-page Search tab, so there is exactly one "open this
+    /// runbook/postmortem" behavior regardless of entry point.
+    func openRunbook(id: String) {
+        showTab(.runbooks)
+        beginEditRunbook(id)
+    }
+
+    func openPostmortem(id: String) {
+        showTab(.postmortems)
+        showPostmortem(id)
     }
 
     // MARK: Command Composer
