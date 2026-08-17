@@ -167,7 +167,7 @@ enum ShiftStoreSelfTest {
             id: UUID().uuidString, title: "true", description: "no",
             status: .todo, priority: .normal, dueDate: nil, dueTime: nil, projectID: nil,
             tags: ["123", "yes"], createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
-            completedAt: nil, notes: nil, subtasks: []
+            completedAt: nil, notes: nil, subtasks: [], hasAttachment: false
         )
         let trickyPath = scratchRoot.appendingPathComponent("tricky.yaml").path
         try? ShiftYaml.writeList(path: trickyPath, key: "tasks", items: [ShiftYaml.toYaml(trickyTask)])
@@ -309,6 +309,46 @@ enum ShiftStoreSelfTest {
             projectIDKeyIndex != nil && projectNameKeyIndex != nil && projectIDKeyIndex! < projectNameKeyIndex!,
             "id should come before name in projects.yaml's fixed field order"
         )
+
+        // MARK: Attachments (grandline-shift-task-image-attachments) - real
+        // disk round trip, not just in-memory state, mirroring every other
+        // check in this file.
+
+        let attachmentStore = ShiftStore()
+        var attachTask = ShiftTask.fresh()
+        attachTask.title = "Task with a screenshot"
+        let fakePNGBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xDE, 0xAD, 0xBE, 0xEF])
+        attachmentStore.addTask(attachTask, attachment: .set(fakePNGBytes))
+
+        let reloadedAfterAttach = ShiftStore()
+        let attachedTask = reloadedAfterAttach.activeTasks.first { $0.id == attachTask.id }
+        check(attachedTask?.hasAttachment == true, "a task saved with .set(data) should persist hasAttachment=true across a reload")
+        check(reloadedAfterAttach.attachmentData(forTaskID: attachTask.id) == fakePNGBytes, "attachmentData should return the exact bytes that were saved")
+        let attachmentFilePath = scratchRoot.appendingPathComponent("attachments/\(attachTask.id).png").path
+        check(FileManager.default.fileExists(atPath: attachmentFilePath), "the attachment should be a real file named <task-id>.png under attachments/")
+
+        // Editing the task without touching the attachment (.unchanged)
+        // should leave the flag and the file alone.
+        var editedNoAttachmentChange = attachedTask!
+        editedNoAttachmentChange.title = "Task with a screenshot (renamed)"
+        reloadedAfterAttach.updateTask(editedNoAttachmentChange, attachment: .unchanged)
+        let afterUnrelatedEdit = ShiftStore()
+        check(afterUnrelatedEdit.activeTasks.first { $0.id == attachTask.id }?.hasAttachment == true, "an unrelated edit (.unchanged) should not clear hasAttachment")
+        check(FileManager.default.fileExists(atPath: attachmentFilePath), "an unrelated edit (.unchanged) should not delete the attachment file")
+
+        // Removing the attachment should clear both the flag and the file.
+        let removedTask = afterUnrelatedEdit.activeTasks.first { $0.id == attachTask.id }!
+        afterUnrelatedEdit.updateTask(removedTask, attachment: .removed)
+        let afterRemoval = ShiftStore()
+        check(afterRemoval.activeTasks.first { $0.id == attachTask.id }?.hasAttachment == false, "updateTask(attachment: .removed) should persist hasAttachment=false across a reload")
+        check(!FileManager.default.fileExists(atPath: attachmentFilePath), "updateTask(attachment: .removed) should delete the on-disk attachment file")
+        check(afterRemoval.attachmentData(forTaskID: attachTask.id) == nil, "attachmentData should return nil once the attachment is removed")
+
+        // A task with no attachment at all should never have a file.
+        let noAttachTask = ShiftTask.fresh()
+        afterRemoval.addTask(noAttachTask)
+        check(afterRemoval.activeTasks.first { $0.id == noAttachTask.id }?.hasAttachment == false, "a plain addTask with no attachment argument should default hasAttachment to false")
+        check(afterRemoval.attachmentData(forTaskID: noAttachTask.id) == nil, "a task with no attachment should have no attachment data to read")
 
         return report(failures)
     }

@@ -14,6 +14,7 @@
 // label - see `titleDidChange` below.
 
 import AppKit
+import UniformTypeIdentifiers
 
 final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
@@ -24,10 +25,23 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// page-redesign) - ignored when editing an existing task, which already
     /// has its own `projectID`.
     private let defaultProjectID: String?
+    /// The existing attachment's bytes, if any - fetched by the caller
+    /// (`ShiftController`, which owns the store) *before* presenting this
+    /// sheet, so this controller never touches `ShiftStore` directly. `nil`
+    /// for a brand-new task or one with no attachment.
+    private let existingAttachmentData: Data?
 
-    /// Called with the assembled task on Save. The caller (`ShiftController`)
-    /// persists it via `ShiftStore.addTask`/`updateTask`.
-    var onSave: ((ShiftTask) -> Void)?
+    /// Called with the assembled task and the captain's attachment decision
+    /// on Save. The caller (`ShiftController`) persists both via
+    /// `ShiftStore.addTask`/`updateTask`.
+    var onSave: ((ShiftTask, ShiftAttachmentChange) -> Void)?
+
+    private let attachmentWell = ShiftImageAttachmentWell()
+    private let chooseImageButton = NSButton(title: "Choose Image\u{2026}", target: nil, action: nil)
+    /// `nil` until the captain interacts with the well in this session -
+    /// `.unchanged` is reported on Save if this stays `nil`, so an ordinary
+    /// edit that never touches the attachment never rewrites the image file.
+    private var attachmentChange: ShiftAttachmentChange?
 
     private let titleField = NSTextField()
     private let detectedRow = NSStackView()
@@ -48,20 +62,22 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// index 0 is always "None"; index n+1 is `projects[n]`.
     private var projectIDs: [String?] = []
 
-    init(task: ShiftTask?, projects: [ShiftProject], defaultProjectID: String? = nil) {
+    init(task: ShiftTask?, projects: [ShiftProject], defaultProjectID: String? = nil, existingAttachmentData: Data? = nil) {
         self.editing = task
         self.projects = projects
         self.defaultProjectID = defaultProjectID
+        self.existingAttachmentData = existingAttachmentData
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 520))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 660))
         view = root
-        ThemeManager.shared.observe { [weak root] theme in
+        ThemeManager.shared.observe { [weak root, weak attachmentWell] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            attachmentWell?.applyTheme(theme)
         }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Task" : "Edit Task")
@@ -158,6 +174,24 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
         let descLabel = rowLabel("Description")
 
+        let attachmentLabel = rowLabel("Attachment")
+        attachmentWell.translatesAutoresizingMaskIntoConstraints = false
+        attachmentWell.onImageChosen = { [weak self] data in self?.attachmentChange = .set(data) }
+        attachmentWell.onRemove = { [weak self] in self?.attachmentChange = .removed }
+        if let existingAttachmentData {
+            attachmentWell.showExisting(data: existingAttachmentData)
+        }
+        chooseImageButton.target = self
+        chooseImageButton.action = #selector(chooseImageClicked)
+        chooseImageButton.bezelStyle = .rounded
+        chooseImageButton.controlSize = .small
+        let attachmentRowSpacer = NSView()
+        attachmentRowSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let attachmentRow = NSStackView(views: [attachmentLabel, attachmentRowSpacer, chooseImageButton])
+        attachmentRow.orientation = .horizontal
+        attachmentRow.distribution = .fill
+        attachmentRow.translatesAutoresizingMaskIntoConstraints = false
+
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
@@ -170,7 +204,10 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         bottom.orientation = .horizontal
         bottom.spacing = 10
 
-        let stack = NSStackView(views: [title, titleField, detectedRow, grid, descLabel, descScroll, bottom])
+        let stack = NSStackView(views: [
+            title, titleField, detectedRow, grid, descLabel, descScroll,
+            attachmentRow, attachmentWell, bottom,
+        ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -187,6 +224,8 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
             descScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             descScroll.heightAnchor.constraint(equalToConstant: 100),
+            attachmentRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            attachmentWell.widthAnchor.constraint(equalTo: stack.widthAnchor),
             bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
@@ -240,6 +279,21 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         detectedRow.isHidden = true
     }
 
+    // MARK: Attachment
+
+    @objc private func chooseImageClicked() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        guard let window = view.window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+            self?.attachmentWell.handle(image: image)
+        }
+    }
+
     // MARK: Save
 
     @objc private func save() {
@@ -266,7 +320,7 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        onSave?(task)
+        onSave?(task, attachmentChange ?? .unchanged)
         dismiss(self)
     }
 

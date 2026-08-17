@@ -788,6 +788,18 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_CONFLICT_TESTS"] == "1" {
     exit(ShiftConflictSelfTest.run() ? 0 : 1)
 }
 
+// grandline-shift-task-image-attachments: same convention, for the image
+// downscale/PNG-encode logic every attach path (file picker, drag-drop,
+// clipboard paste) funnels through - see
+// ShiftImageAttachmentWellSelfTest.swift's header. The store-level round
+// trip (hasAttachment persistence, file write/read/remove) is covered by
+// ShiftStoreSelfTest.swift; the real-remote push is covered by
+// ShiftGitSyncSelfTest.swift - both extended in place rather than
+// duplicated here.
+if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_ATTACHMENT_WELL_TESTS"] == "1" {
+    exit(ShiftImageAttachmentWellSelfTest.run() ? 0 : 1)
+}
+
 // `fm/cockpit-block-view-stage0`: same convention, for the OSC 133 parser,
 // the real-view-hierarchy render path, the reconnect-bookkeeping
 // unification, and volume - see each file's own header for what class of

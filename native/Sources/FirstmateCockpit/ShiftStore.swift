@@ -85,6 +85,15 @@ final class ShiftStore {
     private func activityPath(forMonth month: String) -> String { root.appendingPathComponent("activity/\(month).yaml").path }
     private var settingsPath: String { root.appendingPathComponent("settings.yaml").path }
 
+    /// One attachment per task (this pass's scope), named by the task's own
+    /// id so re-saving replaces rather than accumulates - never a second
+    /// file for the same id. Always `.png`: every image saved through
+    /// `ShiftImageAttachmentWell.normalizedPNGData` is already re-encoded as
+    /// PNG on the way in, regardless of the source format, so there's never
+    /// an ambiguous extension to track.
+    private var attachmentsDir: URL { root.appendingPathComponent("attachments", isDirectory: true) }
+    private func attachmentURL(forTaskID id: String) -> URL { attachmentsDir.appendingPathComponent("\(id).png") }
+
     private static func monthKey(for date: Date = Date()) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM"
@@ -187,8 +196,13 @@ final class ShiftStore {
     /// Appends a brand-new task to `active.yaml` and persists immediately.
     /// The caller is responsible for filling in `id`/`createdAt`/`updatedAt`
     /// (`ShiftTask.fresh` on the model side does this) - this is purely the
-    /// "append and write" half.
-    func addTask(_ task: ShiftTask) {
+    /// "append and write" half. `attachment` (grandline-shift-task-image-
+    /// attachments) is applied *before* the task is written, so
+    /// `active.yaml` and the on-disk attachment file/`hasAttachment` flag
+    /// never disagree even momentarily.
+    func addTask(_ task: ShiftTask, attachment: ShiftAttachmentChange = .unchanged) {
+        var task = task
+        applyAttachmentChange(attachment, taskID: task.id, task: &task)
         activeTasks.append(task)
         persistActiveTasks()
         logActivity(kind: "task_created", summary: "Created \"\(task.title)\"", targetID: task.id, now: Date())
@@ -206,11 +220,12 @@ final class ShiftStore {
     /// as a field on `ShiftTask` itself. A task getting its *first* due date
     /// isn't a "push back," so this only fires when `previous.dueDate` was
     /// already non-nil.
-    func updateTask(_ task: ShiftTask, now: Date = Date()) {
+    func updateTask(_ task: ShiftTask, attachment: ShiftAttachmentChange = .unchanged, now: Date = Date()) {
         guard let idx = activeTasks.firstIndex(where: { $0.id == task.id }) else { return }
         let previous = activeTasks[idx]
         var updated = task
         updated.updatedAt = ShiftStore.iso8601(now)
+        applyAttachmentChange(attachment, taskID: updated.id, task: &updated)
         activeTasks[idx] = updated
         persistActiveTasks()
         if let oldDue = previous.dueDate, oldDue != updated.dueDate {
@@ -359,6 +374,57 @@ final class ShiftStore {
 
     private func persistProjects() {
         try? ShiftYaml.writeList(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
+    }
+
+    // MARK: Attachments (grandline-shift-task-image-attachments)
+
+    /// Reads the raw bytes of a task's attached image, if any - `nil` when
+    /// the task has none, or (a defensive mismatch that should never happen
+    /// in practice, but costs nothing to guard) when `hasAttachment` says
+    /// `true` but the file is missing. Callers (the task editor sheet, for
+    /// showing a real thumbnail on open) are expected to already know
+    /// `hasAttachment` is `true` before calling this - this method itself
+    /// never touches `activeTasks`.
+    func attachmentData(forTaskID id: String) -> Data? {
+        try? Data(contentsOf: attachmentURL(forTaskID: id))
+    }
+
+    /// Writes (or overwrites) a task's attachment file and flips
+    /// `hasAttachment` on `task` - `task` is mutated in place by the caller
+    /// (`addTask`/`updateTask`), never persisted here directly, so the YAML
+    /// write and the binary file write land as one logical unit before
+    /// `notify()` schedules the debounced commit+push. `data` is expected to
+    /// already be normalized (downscaled, PNG-encoded) - see
+    /// `ShiftImageAttachmentWell.normalizedPNGData`; this method just writes
+    /// whatever bytes it's given.
+    private func writeAttachment(_ data: Data, taskID: String) {
+        try? FileManager.default.createDirectory(at: attachmentsDir, withIntermediateDirectories: true)
+        try? data.write(to: attachmentURL(forTaskID: taskID), options: .atomic)
+    }
+
+    /// Deletes a task's attachment file, if any - a no-op if there isn't
+    /// one. Never fails the caller: a missing file here just means there was
+    /// nothing to remove.
+    private func removeAttachmentFile(taskID: String) {
+        try? FileManager.default.removeItem(at: attachmentURL(forTaskID: taskID))
+    }
+
+    /// Applies a captain's attachment decision (from the task editor sheet)
+    /// to both the on-disk file and `task.hasAttachment`, called by
+    /// `addTask`/`updateTask` before either persists the task record - so
+    /// the two never disagree, even for the brief window between writing the
+    /// image file and writing `active.yaml`.
+    private func applyAttachmentChange(_ change: ShiftAttachmentChange, taskID: String, task: inout ShiftTask) {
+        switch change {
+        case .unchanged:
+            break
+        case .set(let data):
+            writeAttachment(data, taskID: taskID)
+            task.hasAttachment = true
+        case .removed:
+            removeAttachmentFile(taskID: taskID)
+            task.hasAttachment = false
+        }
     }
 
     /// Every mutation above already wrote its YAML file synchronously before
@@ -516,12 +582,14 @@ final class ShiftStore {
                 subtasks: [
                     ShiftSubtask(id: UUID().uuidString, title: "Update version creation", done: true),
                     ShiftSubtask(id: UUID().uuidString, title: "Fix release flow", done: false),
-                ]
+                ],
+                hasAttachment: false
             ),
             ShiftTask(
                 id: UUID().uuidString, title: "Review captain-approved mockup",
                 description: "", status: .todo, priority: .normal, dueDate: today, dueTime: nil,
-                projectID: nil, tags: [], createdAt: iso, updatedAt: iso, completedAt: nil, notes: nil, subtasks: []
+                projectID: nil, tags: [], createdAt: iso, updatedAt: iso, completedAt: nil, notes: nil, subtasks: [],
+                hasAttachment: false
             ),
         ]
         persistActiveTasks()

@@ -51,7 +51,7 @@ enum ShiftConflictSelfTest {
             try? writeTaskYaml([ShiftTask(
                 id: id, title: title, description: "", status: .todo, priority: .normal,
                 dueDate: nil, dueTime: nil, projectID: nil, tags: [], createdAt: "2026-01-01T00:00:00Z",
-                updatedAt: "2026-01-01T00:00:00Z", completedAt: nil, notes: nil, subtasks: []
+                updatedAt: "2026-01-01T00:00:00Z", completedAt: nil, notes: nil, subtasks: [], hasAttachment: false
             )], to: taskFile)
             _ = shell("/usr/bin/git", ["-C", seedDir.path, "add", "-A"])
             _ = shell("/usr/bin/git", ["-C", seedDir.path, "-c", "user.email=test@example.com", "-c", "user.name=Shift Test", "commit", "-m", "seed"])
@@ -167,7 +167,7 @@ enum ShiftConflictSelfTest {
             aTasks.append(ShiftTask(
                 id: "added-by-a", title: "Added on A", description: "", status: .todo, priority: .normal,
                 dueDate: nil, dueTime: nil, projectID: nil, tags: [], createdAt: "2026-01-02T00:00:00Z",
-                updatedAt: "2026-01-02T00:00:00Z", completedAt: nil, notes: nil, subtasks: []
+                updatedAt: "2026-01-02T00:00:00Z", completedAt: nil, notes: nil, subtasks: [], hasAttachment: false
             ))
             try? writeTaskYaml(aTasks, to: aFile)
             syncA.markDirty()
@@ -182,7 +182,7 @@ enum ShiftConflictSelfTest {
             bTasks.append(ShiftTask(
                 id: "added-by-b", title: "Added on B", description: "", status: .todo, priority: .normal,
                 dueDate: nil, dueTime: nil, projectID: nil, tags: [], createdAt: "2026-01-02T00:00:00Z",
-                updatedAt: "2026-01-02T00:00:00Z", completedAt: nil, notes: nil, subtasks: []
+                updatedAt: "2026-01-02T00:00:00Z", completedAt: nil, notes: nil, subtasks: [], hasAttachment: false
             ))
             try? writeTaskYaml(bTasks, to: bFile)
             _ = shell("/usr/bin/git", ["-C", wtB.path, "add", "-A", "--", "GrandLineDocs/personal-tasks"])
