@@ -47,14 +47,9 @@ final class ShiftController: NSViewController {
 
     private let projectsHeader = NSTextField(labelWithString: "")
     private let projectsCountBadge = NSTextField(labelWithString: "")
+    private let projectsPanel = ShiftPanelView()
     private let projectsGridContainer = NSStackView()
     private let projectsDetailContainer = NSStackView()
-    /// The Projects section's own header row ("Projects"/"Project: X" + the
-    /// count badge + "New Project" button) - hidden while a project's detail
-    /// is open (fm/cockpit-fix-shift-project-detail-fullpage), since the
-    /// detail view already has its own header and this row's "+ New Project"
-    /// action makes no sense in that context.
-    private var projectsSectionHeaderRow: NSView!
 
     // MARK: Weekly Review (phase 5, cockpit-shift-power-features)
 
@@ -479,17 +474,32 @@ final class ShiftController: NSViewController {
     /// with nested subtasks). `NSStackView` rendering (not a table) is still
     /// fine here: a captain's project count is nowhere near the scale that
     /// justified a table view for tasks/follow-ups.
+    ///
+    /// The header row + grid are wrapped in `projectsPanel`, the same
+    /// `ShiftPanelView` `taskPanel`/`followUpPanel` already use
+    /// (fm/grandline-shift-projects-panel-background) - previously this
+    /// section sat directly on the page's plain background with no
+    /// enclosing card, reading as a different kind of section next to My
+    /// Tasks/Follow-ups. `projectsDetailContainer` (the full-page project
+    /// detail) stays a sibling *outside* `projectsPanel`, not nested inside
+    /// it - it already builds its own two `ShiftPanelView`s
+    /// (`detailFormPanel`/`detailTasksPanel`, see `buildDetailChrome`), so
+    /// wrapping it in a third outer panel would double the border/background
+    /// rather than match it.
     private func buildProjectsSection() -> NSView {
         let headerRow = sectionHeaderRow(
             iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge,
             addAction: #selector(newProjectClicked), addTooltip: "New Project"
         )
-        projectsSectionHeaderRow = headerRow
 
         projectsGridContainer.orientation = .vertical
         projectsGridContainer.alignment = .leading
         projectsGridContainer.spacing = Self.projectCardSpacing
         projectsGridContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        projectsPanel.setHeader(headerRow)
+        projectsPanel.setBody(projectsGridContainer)
+        projectsPanel.translatesAutoresizingMaskIntoConstraints = false
 
         projectsDetailContainer.orientation = .vertical
         projectsDetailContainer.alignment = .leading
@@ -497,12 +507,12 @@ final class ShiftController: NSViewController {
         projectsDetailContainer.translatesAutoresizingMaskIntoConstraints = false
         buildDetailChrome()
 
-        let section = NSStackView(views: [headerRow, projectsGridContainer, projectsDetailContainer])
+        let section = NSStackView(views: [projectsPanel, projectsDetailContainer])
         section.orientation = .vertical
         section.alignment = .leading
         section.spacing = 8
         section.translatesAutoresizingMaskIntoConstraints = false
-        projectsGridContainer.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        projectsPanel.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         projectsDetailContainer.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         return section
     }
@@ -799,19 +809,20 @@ final class ShiftController: NSViewController {
     }
 
     /// Whether a project's detail is the whole page right now - `statsRow`/
-    /// `taskPanel`/`followUpPanel` and this section's own header row all
-    /// hide entirely (not just scrolled past) while true, matching how
-    /// `switchTopLevelView` already hides `dashboardContainer` in favor of
-    /// `weeklyReviewContainer` (fm/cockpit-fix-shift-project-detail-
-    /// fullpage). The top-level greeting header and the My Tasks/Weekly
-    /// Review tab row are deliberately left alone - they're app-level
-    /// navigation chrome, not dashboard content, exactly as Weekly Review's
-    /// own toggle already treats them.
+    /// `taskPanel`/`followUpPanel` and the Projects section's own panel
+    /// (header + grid) all hide entirely (not just scrolled past) while
+    /// true, matching how `switchTopLevelView` already hides
+    /// `dashboardContainer` in favor of `weeklyReviewContainer`
+    /// (fm/cockpit-fix-shift-project-detail-fullpage). The top-level
+    /// greeting header and the My Tasks/Weekly Review tab row are
+    /// deliberately left alone - they're app-level navigation chrome, not
+    /// dashboard content, exactly as Weekly Review's own toggle already
+    /// treats them.
     private func applyProjectDetailFullPage(_ isDetail: Bool) {
         statsRow.isHidden = isDetail
         taskPanel.isHidden = isDetail
         followUpPanel.isHidden = isDetail
-        projectsSectionHeaderRow.isHidden = isDetail
+        projectsPanel.isHidden = isDetail
     }
 
     private func renderProjectsSection() {
@@ -1328,6 +1339,7 @@ final class ShiftController: NSViewController {
         }
         taskPanel.applyTheme(theme)
         followUpPanel.applyTheme(theme)
+        projectsPanel.applyTheme(theme)
         tasksCountBadge.textColor = muted
         followUpsCountBadge.textColor = muted
         projectsCountBadge.textColor = muted
