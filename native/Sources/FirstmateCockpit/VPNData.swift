@@ -155,6 +155,29 @@ protocol OpenVPNAccessibilityDriving {
     /// Whether the OpenVPN Connect process is currently running at all.
     func isAppRunning() -> Bool
 
+    /// Fire-and-forget: starts OpenVPN Connect, hidden, if it isn't already
+    /// running. `fm/grandline-vpn-divider-and-connect-fixes`: confirmed live
+    /// that `connect()` used to fail immediately with "OpenVPN Connect is not
+    /// running" whenever the app genuinely wasn't running - a real, correctly
+    /// surfaced failure (not a silent no-op), but an unhelpful dead end for
+    /// the captain, who then has to go start the app themselves and retry.
+    /// Mirrors `VaultSource.ensureServiceRunning()`'s own established
+    /// background-launch convention in this same app (`open -g -a`), plus
+    /// `-j` (hidden) on top of it - the captain was explicit while this
+    /// feature was being built that they never want OpenVPN Connect's own
+    /// window materializing on screen just because Grand Line toggled the
+    /// VPN, for either direction (connect or disconnect).
+    func launchApp()
+
+    /// Best-effort: hides OpenVPN Connect if it's currently running and
+    /// visible, called after both `connect()` and `disconnect()` regardless
+    /// of outcome - a defensive second layer alongside `launchApp()`'s own
+    /// hidden launch, since a real Accessibility button-press can cause some
+    /// apps to activate/show their window as a side effect of receiving the
+    /// action, independent of how the app was originally launched. Silently
+    /// does nothing if the app isn't running.
+    func hideApp()
+
     /// Every visible string in the app's window(s) right now - title bar,
     /// status label, connected-duration readout, button titles, and any
     /// modal dialog's own text - flattened into one list, deliberately
@@ -193,6 +216,33 @@ final class RealOpenVPNAccessibilityDriver: OpenVPNAccessibilityDriving {
 
     func isAppRunning() -> Bool {
         runningApp() != nil
+    }
+
+    /// `open -j -g -a "OpenVPN Connect"` - `-g` matches `VaultSource
+    /// .ensureServiceRunning()`'s own reasoning exactly: it stops this call
+    /// from bringing OpenVPN Connect to the foreground/taking keyboard focus.
+    /// `-j` on top of that launches it hidden outright (the same mechanism as
+    /// Cmd+H) - the captain was explicit this app's own VPN toggle must never
+    /// let OpenVPN Connect's window appear on screen, for either direction.
+    /// Fire-and-forget: `open` returns almost immediately regardless of
+    /// whether the launched app has finished starting -
+    /// `OpenVPNConnectController.connect()` is what actually waits (bounded)
+    /// for `isAppRunning()` to flip true afterward.
+    func launchApp() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-j", "-g", "-a", Self.appDisplayName]
+        proc.environment = childEnvironmentDict()
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try? proc.run()
+    }
+
+    /// `NSRunningApplication.hide()` - a real, standard AppKit API (the same
+    /// action Cmd+H sends), not a window-visibility hack. Best-effort: does
+    /// nothing if the app isn't running.
+    func hideApp() {
+        runningApp()?.hide()
     }
 
     private func runningApp() -> NSRunningApplication? {
@@ -406,9 +456,21 @@ final class OpenVPNConnectController: VPNControllable {
     /// automated test run.
     private let ensureAccessibilityTrust: () -> Bool
 
-    init(driver: OpenVPNAccessibilityDriving, ensureAccessibilityTrust: @escaping () -> Bool = OpenVPNConnectController.requestRealAccessibilityTrust) {
+    /// Injectable seam over the `Thread.sleep` `waitForAppToStart()` uses
+    /// between polls - defaults to a real sleep, overridable so
+    /// `VPNDataSelfTest` can drive the full launch-wait loop (both the
+    /// "starts within the bound" and "never starts" cases) without an
+    /// automated test run actually blocking for several real seconds.
+    private let sleep: (TimeInterval) -> Void
+
+    init(
+        driver: OpenVPNAccessibilityDriving,
+        ensureAccessibilityTrust: @escaping () -> Bool = OpenVPNConnectController.requestRealAccessibilityTrust,
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) {
         self.driver = driver
         self.ensureAccessibilityTrust = ensureAccessibilityTrust
+        self.sleep = sleep
     }
 
     /// Shows the real system Accessibility permission prompt if not already
@@ -452,15 +514,46 @@ final class OpenVPNConnectController: VPNControllable {
         return parts.allSatisfy { $0.count <= 2 && Int($0) != nil }
     }
 
+    /// Bounds how long `connect()` waits for OpenVPN Connect to actually
+    /// start after `launchApp()` before giving up - a real app launch takes a
+    /// visible moment (icon bounce, window draw), so this can't be a single
+    /// immediate check the way `isAppRunning()` itself is.
+    private static let launchWaitAttempts = 15
+    private static let launchWaitDelay: TimeInterval = 0.5
+
     func connect() -> VPNActionOutcome {
         guard ensureAccessibilityTrust() else {
             return .failed("Accessibility permission is required to control OpenVPN Connect - grant it in System Settings \u{2192} Privacy & Security \u{2192} Accessibility, then try again.")
         }
-        guard driver.isAppRunning() else { return .failed("OpenVPN Connect is not running") }
+        if !driver.isAppRunning() {
+            driver.launchApp()
+            guard waitForAppToStart() else {
+                return .failed("OpenVPN Connect didn't start in time")
+            }
+        }
         guard driver.pressButton(titleContains: "Connect") else {
             return .failed("Couldn't find a Connect button in OpenVPN Connect's window")
         }
+        // Best-effort - see `hideApp()`'s own doc comment for why this is
+        // needed even on top of `launchApp()`'s hidden launch (a real
+        // Accessibility button press can activate/show the app as a side
+        // effect). Called before the re-verify poll below so the window
+        // never has time to sit visible while that poll runs.
+        driver.hideApp()
         return VPNReverify.poll(expectConnected: true) { currentStatus() }
+    }
+
+    /// Polls `driver.isAppRunning()` on a bounded schedule - the same
+    /// injectable-`sleep` shape `VPNReverify.poll` already uses (via this
+    /// controller's own `sleep` property), so `VPNDataSelfTest` can drive
+    /// this without a real `Thread.sleep`.
+    private func waitForAppToStart() -> Bool {
+        if driver.isAppRunning() { return true }
+        for _ in 0..<Self.launchWaitAttempts {
+            self.sleep(Self.launchWaitDelay)
+            if driver.isAppRunning() { return true }
+        }
+        return false
     }
 
     /// Confirmation-dialog-aware: after pressing Disconnect, OpenVPN Connect
@@ -482,6 +575,10 @@ final class OpenVPNConnectController: VPNControllable {
                 return .unknown("A confirmation dialog appeared but couldn't be dismissed")
             }
         }
+        // Same reasoning as `connect()`'s own `hideApp()` call - the captain
+        // doesn't want OpenVPN Connect's window appearing for either
+        // direction of the toggle.
+        driver.hideApp()
         return VPNReverify.poll(expectConnected: false) { currentStatus() }
     }
 }
@@ -676,6 +773,22 @@ final class VPNStatusCenter {
                 self.inFlight.remove(kind)
                 self.inFlight = []
                 self.refresh()
+                // The captain was explicit that toggling a VPN must never
+                // change what's on their screen - OpenVPN Connect's own
+                // window (`OpenVPNConnectController.hideApp()` already
+                // covers that half) or, if their OpenVPN profile happens to
+                // use browser-based SSO, a system browser OpenVPN Connect
+                // itself opens for that login (outside this driver's
+                // control - Grand Line has no hook into the SSO redirect
+                // itself, and can't suppress or automate a login flow that
+                // may genuinely need the captain's own interaction). This
+                // reclaims focus for Grand Line's own window once the
+                // toggle completes, undoing any focus OpenVPN Connect or a
+                // companion browser window took during the flow - a real
+                // SSO login page, if one appears, still needs to be visible
+                // and interactive while it's up; this only restores focus
+                // afterward, it doesn't suppress the login step itself.
+                NSApp.activate(ignoringOtherApps: true)
             }
         }
     }

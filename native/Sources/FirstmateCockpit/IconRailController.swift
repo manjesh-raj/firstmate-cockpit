@@ -332,9 +332,59 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     /// fm/grandline-sidebar-nav-polish: a hairline divider between the logo
     /// mark and the first daily-use row (Overview) - the captain noticed the
     /// mark/nav boundary had no divider while every other section boundary
-    /// (above/below the per-host block) already does. Same `NSBox(.separator)`
-    /// style as those two, for visual consistency.
-    private let dividerAboveNav = NSBox()
+    /// (above/below the per-host block) already does.
+    ///
+    /// `fm/grandline-vpn-divider-and-connect-fixes`: this used to be an
+    /// `NSBox(.separator)`, matching what every OTHER divider in this file
+    /// (`navStackDivider()`'s rows, `dividerSetupAvatar`) also used - but
+    /// `.separator`-typed `NSBox`es unconditionally draw AppKit's own system
+    /// separator color and silently IGNORE any `.fillColor` set on them
+    /// (confirmed live: setting `.fillColor = .red` on a `.separator` box
+    /// produced no visible change at all - a real, verified AppKit fact, not
+    /// an assumption). Since none of this file's dividers ever set
+    /// `.fillColor` either, every rail divider was relying purely on the
+    /// system separator color against this file's own custom dark chrome
+    /// background - measured live (a temporary bitmap-sampling probe) at
+    /// only a ~0.09 RGB delta from the background, a barely-perceptible
+    /// hairline. This is the actual root cause of the captain's "no visible
+    /// divider between Setup and the avatar" report: every rail divider was
+    /// already this faint, it just happened to be most noticeable in that
+    /// specific spot (an otherwise-blank gap with no neighboring content to
+    /// visually anchor it), unlike this divider's own neighbor (the mark) or
+    /// the inter-row dividers (framed by icon rows on both sides). Every
+    /// OTHER divider throughout this app (Settings/Bootstrap/Shift/Docs/
+    /// Review/Fleet/ToolRowLayout, etc.) is a plain layer-backed `NSView`
+    /// with an explicit `theme.chromeLineHex`-derived `layer.backgroundColor`
+    /// - genuinely visible, unlike this file's `NSBox(.separator)`s. Fixed by
+    /// switching every divider in this file (this one, `navStackDivider()`'s,
+    /// and `dividerSetupAvatar`) to that same working pattern via
+    /// `makeThemedDivider()`/`railDividers`, rather than leaving this one
+    /// divider newly bright while its siblings stay invisible.
+    private let dividerAboveNav = NSView()
+
+    /// Every hairline divider in this rail (`dividerAboveNav`, each
+    /// `navStackDivider()`-built row separator, and `dividerSetupAvatar`) is
+    /// collected here so the `ThemeManager.shared.observe` callback can give
+    /// them all a real, visible `theme.chromeLineHex` fill - see
+    /// `dividerAboveNav`'s own doc comment above for why a plain `NSBox
+    /// (.separator)` (this file's old pattern) can never be made visible via
+    /// `.fillColor` at all.
+    private var railDividers: [NSView] = []
+
+    /// Builds one themed hairline divider and registers it in `railDividers`
+    /// so it gets re-colored on every theme change - the same "plain
+    /// layer-backed `NSView`, no `NSBox`" pattern every other divider outside
+    /// this file already uses (see `dividerAboveNav`'s doc comment). Callers
+    /// still need to give it an explicit 1pt height constraint themselves,
+    /// since (unlike `NSBox(.separator)`) a plain `NSView` has no intrinsic
+    /// thickness of its own.
+    private func makeThemedDivider() -> NSView {
+        let line = NSView()
+        line.wantsLayer = true
+        line.translatesAutoresizingMaskIntoConstraints = false
+        railDividers.append(line)
+        return line
+    }
 
     /// fm/grandline-rail-setup-group: "Setup" merges the standalone Updates
     /// and Bootstrap rail entries into one entry after a captain-approved
@@ -482,9 +532,11 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
             edgeLine.widthAnchor.constraint(equalToConstant: 1),
         ])
 
-        dividerAboveNav.boxType = .separator
+        dividerAboveNav.wantsLayer = true
         dividerAboveNav.translatesAutoresizingMaskIntoConstraints = false
+        railDividers.append(dividerAboveNav)
         root.addSubview(dividerAboveNav)
+        dividerAboveNav.heightAnchor.constraint(equalToConstant: 1).isActive = true
 
         ThemeManager.shared.observe { [weak self, weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
@@ -492,6 +544,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
             self?.edgeLine.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
             self?.restyle(theme)
             self?.restyleMark(theme)
+            self?.restyleDividers(theme)
         }
 
         mark.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Manjesh Grand Line")
@@ -515,11 +568,10 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         navStack.spacing = Self.rowSpacing
         navStack.translatesAutoresizingMaskIntoConstraints = false
         func navStackDivider() {
-            let divider = NSBox()
-            divider.boxType = .separator
-            divider.translatesAutoresizingMaskIntoConstraints = false
+            let divider = makeThemedDivider()
             navStack.addArrangedSubview(divider)
             divider.widthAnchor.constraint(equalTo: navStack.widthAnchor, constant: -16).isActive = true
+            divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
         }
 
         let dailyUseDestinations = RailDestination.allCases.filter { $0.isDailyUse }
@@ -576,9 +628,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         // used here, since this divider lives directly in `root` rather than
         // inside the stack) so it reads as the same divider style, not a
         // visually distinct one.
-        let dividerSetupAvatar = NSBox()
-        dividerSetupAvatar.boxType = .separator
-        dividerSetupAvatar.translatesAutoresizingMaskIntoConstraints = false
+        let dividerSetupAvatar = makeThemedDivider()
         root.addSubview(dividerSetupAvatar)
 
         avatar.title = "M"
@@ -642,6 +692,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
             dividerSetupAvatar.bottomAnchor.constraint(equalTo: avatar.topAnchor, constant: -Self.sectionGap),
             dividerSetupAvatar.leadingAnchor.constraint(equalTo: navStack.leadingAnchor),
             dividerSetupAvatar.trailingAnchor.constraint(equalTo: navStack.trailingAnchor),
+            dividerSetupAvatar.heightAnchor.constraint(equalToConstant: 1),
 
             // The one remaining flex point: both `navStack.bottomAnchor`
             // (top-anchored from `root.topAnchor`) and
@@ -665,7 +716,26 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         // geometry probe: `mark.layer?.borderWidth` read back as 0 without
         // this line).
         restyleMark(ThemeManager.shared.theme)
+        // Same reason as `restyleMark` above: the `ThemeManager.shared.observe`
+        // registration fires synchronously at registration time, before
+        // `navStackDivider()`'s rows and `dividerSetupAvatar` exist yet - so
+        // `railDividers` only had `dividerAboveNav` in it on that first run.
+        // A second call here, after every divider in this method has been
+        // built and appended, is what actually colors all of them.
+        restyleDividers(ThemeManager.shared.theme)
         setActive(active)
+    }
+
+    /// Gives every hairline in `railDividers` a real, visible
+    /// `theme.chromeLineHex` fill - see `dividerAboveNav`'s doc comment for
+    /// why this file's dividers need this at all (a plain `NSBox(.separator)`
+    /// can never be colored via `.fillColor`, and was rendering at only a
+    /// bare ~0.09 RGB delta from this rail's own dark chrome background).
+    private func restyleDividers(_ theme: HelmTheme) {
+        let color = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
+        for divider in railDividers {
+            divider.layer?.backgroundColor = color
+        }
     }
 
     /// Builds a rail row's `NSButton`: icon above a small text label, both
