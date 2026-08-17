@@ -332,6 +332,26 @@ final class IconRailController: NSViewController {
     private let dividerAboveHosts = NSBox()
     private let dividerBelowHosts = NSBox()
 
+    /// `fm/grandline-vpn-toggle-integration`: a new "VPN" section, directly
+    /// below the HOSTS section (after its per-host icons and
+    /// `dividerBelowHosts`) - two compact toggle rows (Barracuda, OpenVPN),
+    /// each a status dot + name + a real `NSSwitch` that connects/
+    /// disconnects on click, following this rail's own established
+    /// "labeled section bracketed by hairline dividers" convention (see the
+    /// HOSTS section immediately above) rather than inventing new chrome.
+    /// The plan's own mockup drew this as wide "name ... toggle" rows
+    /// against a much wider 150px mockup rail - this rail is a real 84pt, so
+    /// `VPNToggleRowView` below uses the same icon-above-content shape every
+    /// other rail row already uses instead. `dividerBelowVpn` is what the
+    /// two-anchor-groups flexible connector (see `loadView`'s doc comment)
+    /// now anchors from, in place of `dividerBelowHosts`.
+    private let vpnSectionLabel = NSTextField(labelWithString: "VPN")
+    private let vpnSectionLabelWrapper = NSView()
+    private let vpnStack = NSStackView()
+    private let dividerBelowVpn = NSBox()
+    private var vpnRows: [VPNKind: VPNToggleRowView] = [:]
+    private var vpnStatusToken: UUID?
+
     /// fm/grandline-sidebar-nav-polish: a hairline divider between the logo
     /// mark and the first daily-use row (Overview) - the captain noticed the
     /// mark/nav boundary had no divider while every other section boundary
@@ -445,9 +465,12 @@ final class IconRailController: NSViewController {
         dividerAboveHosts.translatesAutoresizingMaskIntoConstraints = false
         dividerBelowHosts.boxType = .separator
         dividerBelowHosts.translatesAutoresizingMaskIntoConstraints = false
+        dividerBelowVpn.boxType = .separator
+        dividerBelowVpn.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(dividerAboveNav)
         root.addSubview(dividerAboveHosts)
         root.addSubview(dividerBelowHosts)
+        root.addSubview(dividerBelowVpn)
 
         hostsSectionLabel.font = .systemFont(ofSize: 9, weight: .semibold)
         hostsSectionLabel.alignment = .center
@@ -462,11 +485,41 @@ final class IconRailController: NSViewController {
             hostsSectionLabel.bottomAnchor.constraint(equalTo: hostsSectionLabelWrapper.bottomAnchor),
         ])
 
+        vpnSectionLabel.font = .systemFont(ofSize: 9, weight: .semibold)
+        vpnSectionLabel.alignment = .center
+        vpnSectionLabel.translatesAutoresizingMaskIntoConstraints = false
+        vpnSectionLabelWrapper.translatesAutoresizingMaskIntoConstraints = false
+        vpnSectionLabelWrapper.addSubview(vpnSectionLabel)
+        root.addSubview(vpnSectionLabelWrapper)
+        NSLayoutConstraint.activate([
+            vpnSectionLabel.leadingAnchor.constraint(equalTo: vpnSectionLabelWrapper.leadingAnchor),
+            vpnSectionLabel.trailingAnchor.constraint(equalTo: vpnSectionLabelWrapper.trailingAnchor),
+            vpnSectionLabel.topAnchor.constraint(equalTo: vpnSectionLabelWrapper.topAnchor),
+            vpnSectionLabel.bottomAnchor.constraint(equalTo: vpnSectionLabelWrapper.bottomAnchor),
+        ])
+
+        vpnStack.orientation = .vertical
+        vpnStack.spacing = Self.rowSpacing
+        vpnStack.translatesAutoresizingMaskIntoConstraints = false
+        for kind in VPNKind.allCases {
+            let row = VPNToggleRowView(kind: kind)
+            row.onToggle = { isOn in VPNStatusCenter.shared.toggle(kind, requestOn: isOn) }
+            vpnRows[kind] = row
+            vpnStack.addArrangedSubview(row)
+        }
+        root.addSubview(vpnStack)
+        vpnStatusToken = VPNStatusCenter.shared.observe { [weak self] snapshot in
+            self?.applyVpnSnapshot(snapshot)
+        }
+
         ThemeManager.shared.observe { [weak self, weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
             self?.edgeLine.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
             self?.hostsSectionLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.45)
+            self?.vpnSectionLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.45)
+            if let rows = self?.vpnRows.values { for row in rows { row.applyTheme(theme) } }
+            self?.applyVpnSnapshot(VPNStatusCenter.shared.snapshot)
             self?.restyle(theme)
         }
 
@@ -648,16 +701,34 @@ final class IconRailController: NSViewController {
             dividerBelowHosts.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             dividerBelowHosts.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
 
+            // VPN section (fm/grandline-vpn-toggle-integration): directly
+            // below the HOSTS section, above the flexible connector to the
+            // bottom-anchored utility group - part of the top group's own
+            // rigid, fixed chain, exactly like the HOSTS section above it.
+            vpnSectionLabelWrapper.topAnchor.constraint(equalTo: dividerBelowHosts.bottomAnchor, constant: 8),
+            vpnSectionLabelWrapper.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            vpnSectionLabelWrapper.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+
+            vpnStack.topAnchor.constraint(equalTo: vpnSectionLabelWrapper.bottomAnchor, constant: 6),
+            vpnStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 6),
+            vpnStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -6),
+
+            dividerBelowVpn.topAnchor.constraint(equalTo: vpnStack.bottomAnchor, constant: Self.sectionGap),
+            dividerBelowVpn.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            dividerBelowVpn.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
+
             // The one connector between the two groups (captain override,
             // see this method's own doc comment above): a required minimum
-            // gap, not an equality - both `dividerBelowHosts.bottomAnchor`
+            // gap, not an equality - both `dividerBelowVpn.bottomAnchor`
             // (top group, anchored from `root.topAnchor`) and
             // `toolsButton.topAnchor` (bottom group, anchored from
             // `root.bottomAnchor` via `avatar` below) are each already fully
             // determined by their own group's rigid chain, so this
             // inequality never has to resolve any actual stretch - any
-            // leftover window height just becomes extra room here.
-            dividerAboveTools.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowHosts.bottomAnchor, constant: Self.sectionGap),
+            // leftover window height just becomes extra room here. Anchored
+            // from `dividerBelowVpn` (was `dividerBelowHosts`) now that the
+            // VPN section extends the top group past the HOSTS section.
+            dividerAboveTools.topAnchor.constraint(greaterThanOrEqualTo: dividerBelowVpn.bottomAnchor, constant: Self.sectionGap),
             toolsButton.topAnchor.constraint(equalTo: dividerAboveTools.bottomAnchor, constant: Self.sectionGap),
 
             toolsButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -1273,6 +1344,147 @@ final class IconRailController: NSViewController {
         avatarGradientLayer.colors = [flat.cgColor, accent.withAlphaComponent(0.55).cgColor]
         avatar.layer?.borderWidth = avatarIsHovering ? 2 : 1.25
         avatar.layer?.borderColor = accent.withAlphaComponent(avatarIsHovering ? 0.85 : 0.4).cgColor
+    }
+
+    /// `fm/grandline-vpn-toggle-integration`: releases the `VPNStatusCenter`
+    /// observer token - `IconRailController` is an app-lifetime singleton in
+    /// practice, but every other `ThemeManager`/`VPNStatusCenter`-style
+    /// observer registration in this app follows the same "own and release
+    /// your token" convention (see `ThemeManager.swift`'s own checklist), so
+    /// this does too rather than being the one silent exception.
+    deinit {
+        if let vpnStatusToken { VPNStatusCenter.shared.unobserve(vpnStatusToken) }
+    }
+
+    /// Reflects a live `VPNStatusCenter.Snapshot` onto both rail rows -
+    /// called from the `VPNStatusCenter.shared.observe` callback whenever
+    /// either VPN's status changes, and again from the `ThemeManager`
+    /// observer (with the current snapshot) whenever the active theme
+    /// changes, since the dot color is theme-derived.
+    private func applyVpnSnapshot(_ snapshot: VPNStatusCenter.Snapshot) {
+        updateVpnRow(.barracuda, status: snapshot.barracuda)
+        updateVpnRow(.openVPN, status: snapshot.openVPN)
+    }
+
+    private func updateVpnRow(_ kind: VPNKind, status: VPNConnectionStatus) {
+        guard let row = vpnRows[kind] else { return }
+        let theme = ThemeManager.shared.theme
+        let dotHex: String
+        let isTransitioning: Bool
+        switch status {
+        case .connected:
+            dotHex = HelmTint.good.hex(in: theme)
+            isTransitioning = false
+        case .connecting, .disconnecting:
+            dotHex = HelmTint.warn.hex(in: theme)
+            isTransitioning = true
+        case .disconnected:
+            dotHex = theme.chromeLineHex
+            isTransitioning = false
+        case .unknown:
+            dotHex = HelmTint.critical.hex(in: theme)
+            isTransitioning = false
+        }
+        row.setDotColor(HelmTheme.nsColor(dotHex))
+        row.setToggleState(status.isConnected)
+        row.setEnabled(!isTransitioning)
+        row.toolTip = Self.vpnTooltip(kind: kind, status: status)
+    }
+
+    private static func vpnTooltip(kind: VPNKind, status: VPNConnectionStatus) -> String {
+        switch status {
+        case .connected(let profile, let duration):
+            var parts = ["\(kind.displayName) - Connected"]
+            if let profile { parts.append(profile) }
+            if let duration { parts.append(duration) }
+            return parts.joined(separator: " \u{00b7} ")
+        case .connecting: return "\(kind.displayName) - Connecting\u{2026}"
+        case .disconnecting: return "\(kind.displayName) - Disconnecting\u{2026}"
+        case .disconnected: return "\(kind.displayName) - Disconnected"
+        case .unknown: return "\(kind.displayName) - Unknown (couldn't confirm the last action)"
+        }
+    }
+}
+
+/// One row in the rail's VPN section (fm/grandline-vpn-toggle-integration):
+/// a small status dot, the VPN's short name, and a real `NSSwitch` that
+/// issues a connect/disconnect request on click. Deliberately compact for
+/// the rail's real 84pt width - see `IconRailController`'s own doc comment
+/// on the VPN section properties for why this differs from the plan's own
+/// wider mockup rows.
+private final class VPNToggleRowView: NSView {
+    let kind: VPNKind
+    private let dot = NSView()
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let toggle = NSSwitch()
+    var onToggle: ((Bool) -> Void)?
+
+    init(kind: VPNKind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.stringValue = kind == .barracuda ? "Barracuda" : "OpenVPN"
+        nameLabel.font = IconRailController.titleFont
+        nameLabel.alignment = .center
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        dot.wantsLayer = true
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.layer?.cornerRadius = 3
+
+        let nameRow = NSStackView(views: [dot, nameLabel])
+        nameRow.orientation = .horizontal
+        nameRow.spacing = 4
+        nameRow.alignment = .centerY
+
+        toggle.controlSize = .mini
+        toggle.target = self
+        toggle.action = #selector(toggleFlipped)
+
+        let column = NSStackView(views: [nameRow, toggle])
+        column.orientation = .vertical
+        column.alignment = .centerX
+        column.spacing = 4
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
+        NSLayoutConstraint.activate([
+            column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            column.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) not supported")
+    }
+
+    @objc private func toggleFlipped() {
+        onToggle?(toggle.state == .on)
+    }
+
+    /// Reflects a status update - setting `NSSwitch.state` directly (as
+    /// opposed to a real click) never fires `action`, so this can never
+    /// loop back into `onToggle` as a side effect of merely displaying a
+    /// status the captain didn't just request.
+    func setToggleState(_ isOn: Bool) {
+        toggle.state = isOn ? .on : .off
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        toggle.isEnabled = enabled
+    }
+
+    func setDotColor(_ color: NSColor) {
+        dot.layer?.backgroundColor = color.cgColor
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        nameLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex).withAlphaComponent(0.85)
     }
 }
 

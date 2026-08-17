@@ -39,7 +39,19 @@
 import AppKit
 
 enum ToolKind: String, CaseIterable {
-    case yaml, json, base64, jwt, timestamp, diff, cert, cron, resource
+    case yaml, json, base64, jwt, timestamp, diff, cert, cron, resource, vpn
+
+    /// `fm/grandline-vpn-toggle-integration`: unlike every other tool here,
+    /// VPN status is global singleton state (the same two real VPNs the
+    /// rail's toggles drive), not something that makes sense to duplicate
+    /// into multiple concurrent tabs the way a Diff/YAML session can - two
+    /// "VPN" tabs would just be two views onto the identical live state,
+    /// with no independent content of their own. `ToolsController.toolCardClicked`/
+    /// `duplicateTab` special-case this kind: clicking the VPN card (or
+    /// trying to duplicate its tab) reveals/focuses the existing VPN tab
+    /// instead of opening a second one - a deliberate, documented deviation
+    /// from this page's usual "New always opens another tab" rule.
+    var isSingleton: Bool { self == .vpn }
 
     var title: String {
         switch self {
@@ -52,6 +64,7 @@ enum ToolKind: String, CaseIterable {
         case .cert: return "Certificate Inspector"
         case .cron: return "Cron Next-Run Explainer"
         case .resource: return "Resource Unit Converter"
+        case .vpn: return "VPN"
         }
     }
 
@@ -69,6 +82,7 @@ enum ToolKind: String, CaseIterable {
         case .cert: return "Cert"
         case .cron: return "Cron"
         case .resource: return "Resource"
+        case .vpn: return "VPN"
         }
     }
 
@@ -83,6 +97,7 @@ enum ToolKind: String, CaseIterable {
         case .cert: return "Paste a PEM certificate to see its subject, issuer, validity, serial, and SANs."
         case .cron: return "Paste a cron expression to see what it means in plain English and its next run times."
         case .resource: return "Convert CPU millicores/cores and Kubernetes memory quantities between units."
+        case .vpn: return "Barracuda and OpenVPN status, profile, and connect/disconnect - the same VPNs the rail's toggles control."
         }
     }
 
@@ -97,6 +112,7 @@ enum ToolKind: String, CaseIterable {
         case .cert: return "checkmark.seal"
         case .cron: return "calendar.badge.clock"
         case .resource: return "gauge.with.dots.needle.50percent"
+        case .vpn: return "network"
         }
     }
 
@@ -111,6 +127,7 @@ enum ToolKind: String, CaseIterable {
         case .cert: return .good
         case .cron: return .info
         case .resource: return .warn
+        case .vpn: return .accent
         }
     }
 }
@@ -425,6 +442,14 @@ final class ToolsController: NSViewController {
 
     @objc private func toolCardClicked(_ sender: NSClickGestureRecognizer) {
         guard let raw = sender.view?.identifier?.rawValue, let kind = ToolKind(rawValue: raw) else { return }
+        // `ToolKind.isSingleton` (VPN only, as of fm/grandline-vpn-toggle-integration):
+        // reveal/focus the one already-open tab of this kind instead of
+        // opening a second one - see that property's own doc comment for
+        // why VPN status doesn't make sense duplicated across tabs.
+        if kind.isSingleton, let existing = tabs.first(where: { $0.kind == kind }) {
+            selectTab(id: existing.id)
+            return
+        }
         openNewTab(kind: kind)
     }
 
@@ -540,6 +565,9 @@ final class ToolsController: NSViewController {
 
     private func duplicateTab(id: UUID) {
         guard let src = tabs.first(where: { $0.id == id }) else { return }
+        // A singleton kind (VPN) has no independent content to duplicate
+        // into a second tab - see `ToolKind.isSingleton`'s doc comment.
+        guard !src.kind.isSingleton else { return }
         let snapshot = src.snapshotContent()
         let copy = openNewTab(kind: src.kind)
         copy.restoreContent(snapshot)

@@ -237,6 +237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         dictationHotkey.start()
 
+        // fm/grandline-vpn-toggle-integration: starts the read-only status
+        // poll only (`scutil --nc status`, or an AX window-text read) - see
+        // `VPNStatusCenter.start()`'s own doc comment for why this is always
+        // safe to run continuously. No connect/disconnect ever happens from
+        // this call; the rail's VPN toggles and the Tools "VPN" panel are
+        // both what actually calls `VPNStatusCenter.shared.toggle(_:requestOn:)`,
+        // and only in response to a real click.
+        VPNStatusCenter.shared.start()
+
         // `shiftMenuBar` is `lazy` - force it into existence now so its
         // `NSStatusItem` actually appears at launch rather than only the
         // first time something else happens to reference the property.
@@ -816,6 +825,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_HOST_STORE_TESTS"] == "1" {
 // parsing) - see VaultDataSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_VAULT_DATA_TESTS"] == "1" {
     exit(VaultDataSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-vpn-toggle-integration`: same convention, for
+// `VPNCoordinator`'s mutual-exclusion sequencing and both VPN controllers'
+// status-parsing logic against fakes - never a real `scutil` call or a real
+// OpenVPN Connect window. See VPNDataSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_VPN_DATA_TESTS"] == "1" {
+    exit(VPNDataSelfTest.run() ? 0 : 1)
 }
 
 // fm/grandline-app-lock: same convention, for `AppLockController`'s idle/
