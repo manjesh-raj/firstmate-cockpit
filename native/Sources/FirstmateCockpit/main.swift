@@ -244,6 +244,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // this call; the rail's VPN toggles and the Tools "VPN" panel are
         // both what actually calls `VPNStatusCenter.shared.toggle(_:requestOn:)`,
         // and only in response to a real click.
+        // `fm/grandline-hosts-vpn-flyout-redesign`, Part 2: a failed/unknown
+        // toggle result used to only reach `NSLog`, invisible to the
+        // captain - now surfaced as a real `Toast` on the main window
+        // (visible regardless of which destination is showing, matching
+        // `AppShellController.showToast`'s own doc comment), with the real
+        // reason text `VPNToggleResult` already carries.
+        VPNStatusCenter.shared.onFailure = { [weak self] message in
+            self?.appShell.showToast(message)
+        }
         VPNStatusCenter.shared.start()
 
         // `shiftMenuBar` is `lazy` - force it into existence now so its

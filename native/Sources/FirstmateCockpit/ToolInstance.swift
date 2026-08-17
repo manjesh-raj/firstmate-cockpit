@@ -1337,7 +1337,7 @@ final class ToolInstance: NSObject {
     /// `ToolKind.isSingleton`'s doc comment on `ToolsController.swift` for
     /// why a second concurrent VPN tab is deliberately never opened.
     private func buildVpnPanel() -> NSView {
-        let note = NSTextField(wrappingLabelWithString: "Only one VPN can be connected at a time - turning one on disconnects the other automatically.")
+        let note = NSTextField(wrappingLabelWithString: "Only one VPN can be connected at a time - turning one on disconnects the other automatically. Barracuda here only controls whichever profile is registered as a system VPN service (\(BarracudaVPNController.serviceName)) - a second Barracuda profile used only inside the Barracuda app itself isn't reachable until it's also registered as its own system VPN entry.")
         note.font = .systemFont(ofSize: 10.5)
         note.preferredMaxLayoutWidth = 640
         mutedLabels.append(note)
