@@ -96,6 +96,15 @@ final class DocsController: NSViewController {
     private let runbookCancelButton = NSButton()
     private let runbookDeleteButton = NSButton()
     private let runbookEditorTitleLabel = NSTextField(labelWithString: "")
+    /// The list-state container (header row + scrollable list) - kept as a
+    /// property so it can be hidden whenever `runbookEditorContainer` is
+    /// shown (and vice versa). Both are pinned to the same full-bleed
+    /// anchors inside `runbooksContainer`, so without this the two views
+    /// render on top of each other - see `fm/grandline-docs-runbook-editor-
+    /// overlap-fix`'s AGENTS.md note for the real captain-reported bug this
+    /// fixed (doubled title text, list content faintly visible under the
+    /// editor).
+    private let runbookListContainerStack = NSStackView()
 
     // MARK: Postmortems
 
@@ -483,7 +492,8 @@ final class DocsController: NSViewController {
         runbookListScroll.translatesAutoresizingMaskIntoConstraints = false
         listContent.widthAnchor.constraint(equalTo: runbookListScroll.contentView.widthAnchor).isActive = true
 
-        let listStack = NSStackView(views: [headerRow, runbookListScroll])
+        let listStack = runbookListContainerStack
+        listStack.setViews([headerRow, runbookListScroll], in: .leading)
         listStack.orientation = .vertical
         listStack.alignment = .leading
         listStack.spacing = 12
@@ -619,6 +629,7 @@ final class DocsController: NSViewController {
         runbookTitleField.stringValue = ""
         runbookBodyTextView.string = ""
         runbookDeleteButton.isHidden = true
+        runbookListContainerStack.isHidden = true
         runbookEditorContainer.isHidden = false
         view.window?.makeFirstResponder(runbookTitleField)
     }
@@ -631,11 +642,13 @@ final class DocsController: NSViewController {
         runbookTitleField.stringValue = runbook.title
         runbookBodyTextView.string = runbook.content
         runbookDeleteButton.isHidden = false
+        runbookListContainerStack.isHidden = true
         runbookEditorContainer.isHidden = false
     }
 
     private func cancelRunbookEditor() {
         runbookEditorContainer.isHidden = true
+        runbookListContainerStack.isHidden = false
         editingRunbookID = nil
         editingIsNew = false
     }
@@ -657,6 +670,7 @@ final class DocsController: NSViewController {
             runbookStore.updateRunbook(id: id, content: content)
         }
         runbookEditorContainer.isHidden = true
+        runbookListContainerStack.isHidden = false
         editingRunbookID = nil
         editingIsNew = false
         reloadRunbooksList()
@@ -679,6 +693,7 @@ final class DocsController: NSViewController {
         runbookStore.deleteRunbook(id: id)
         if dismissingEditor {
             runbookEditorContainer.isHidden = true
+            runbookListContainerStack.isHidden = false
             editingRunbookID = nil
         }
         reloadRunbooksList()
