@@ -60,6 +60,21 @@
 // contract between this prompt and that parser: changing one without the
 // other breaks the callout styling silently (the text still renders, just
 // as a plain paragraph).
+//
+// `fm/grandline-sre-lead-runbook-execution` added a second MCP tool,
+// `run_runbook`, for the captain's conversational "run the API latency spike
+// runbook" ask - see `sre_kubectl_mcp.py`'s module docstring and
+// `_run_runbook`/`_validate_runbook_line`/`_find_runbook` for the mechanism.
+// It is not a new capability: it looks a runbook up by title in the same
+// `GrandLineDocs/runbooks/` store phase 1 of "Knowledge and speed" built
+// (`DocsRunbookStore`), validates every one of its kubectl command lines
+// through the exact same `_validate_args` allowlist `kubectl_readonly`
+// itself enforces, and refuses the whole runbook by name - no steps run - if
+// even one line fails. This file only adds `SRE_LEAD_RUNBOOKS_DIR` to the MCP
+// config (pointing at `DocsRunbookStore().root`, the same runbooks folder the
+// Docs page reads/writes) and `mcp__sre-kubectl__run_runbook` to
+// `allowedTools`; all lookup/validation/execution logic lives in the Python
+// script, next to the allowlist it depends on.
 
 import Foundation
 
@@ -116,7 +131,9 @@ enum SRELead {
     static let persona = """
     You are the SRE Lead for this Kubernetes cluster, reporting to the captain (the human at the other end of this session).
 
-    You have exactly one tool: kubectl_readonly. It runs a read-only kubectl verb (get, describe, logs, top, or events) in the captain's own already-connected terminal tab for this host. Any other verb is rejected by the tool itself, not by you - do not try to work around it, and do not suggest destructive commands as something the captain could run manually instead. The tool can occasionally fail with a "busy" error if the captain is actively typing in that tab, or if another call is already running - just wait a moment and retry once.
+    You have two tools. kubectl_readonly runs a read-only kubectl verb (get, describe, logs, top, or events) in the captain's own already-connected terminal tab for this host. Any other verb is rejected by the tool itself, not by you - do not try to work around it, and do not suggest destructive commands as something the captain could run manually instead. The tool can occasionally fail with a "busy" error if the captain is actively typing in that tab, or if another call is already running - just wait a moment and retry once.
+
+    run_runbook runs every kubectl step of a named runbook from Docs > Runbooks (e.g. "run the API latency spike runbook") - call it with the runbook's title, not a filename or slug. It validates every step against the exact same read-only allowlist before running any of them; if the tool refuses the whole runbook, tell the captain plainly which step failed and why, and point them at running it manually via a Console tab instead - never try to run the remaining steps yourself one at a time as a workaround. If it succeeds, summarize what each step found, not just that it ran.
 
     When an investigation has genuinely independent parts (e.g. "check pod events" + "check node capacity" + "check recent logs" for one incident), delegate each part to a subagent (the Task tool) so they run in parallel, then synthesize what they found into ONE finding. The captain talks to you, not to your subagents - never relay raw tool output or a subagent's full transcript verbatim.
 
@@ -134,7 +151,7 @@ enum SRELead {
     /// The `--allowedTools` value for every `claude -p` turn - the kubectl
     /// MCP tool plus `Task`/`TodoWrite`, nothing else. Not `private`:
     /// `SRELeadRunner` needs it too.
-    static let allowedTools = "mcp__sre-kubectl__kubectl_readonly,Task,TodoWrite"
+    static let allowedTools = "mcp__sre-kubectl__kubectl_readonly,mcp__sre-kubectl__run_runbook,Task,TodoWrite"
 
     /// Prepare a fresh SRE Lead session: writes this spawn's MCP config into
     /// a private scratch directory and creates the bridge directory the MCP
@@ -159,6 +176,15 @@ enum SRELead {
             return .failure(SRELeadSetupError(message: "could not create scratch directory: \(error.localizedDescription)"))
         }
 
+        // `DocsRunbookStore().root` is the same `GrandLineDocs/runbooks/`
+        // folder the Docs page reads/writes (see that type's own header) -
+        // constructing a fresh instance here is deliberate, matching this
+        // app's established "each page/session keeps an independent copy of
+        // the same underlying store" convention (`UpdatesController`/
+        // `BootstrapController` do the same for `DependencyCatalog`), not a
+        // shared singleton.
+        let runbooksDir = DocsRunbookStore().root
+
         let mcpConfigPath = scratchDir.appendingPathComponent("mcp-config.json")
         do {
             let mcpConfig: [String: Any] = [
@@ -166,7 +192,10 @@ enum SRELead {
                     "sre-kubectl": [
                         "command": python,
                         "args": [scriptPath],
-                        "env": ["SRE_LEAD_BRIDGE_DIR": bridgeDir.path],
+                        "env": [
+                            "SRE_LEAD_BRIDGE_DIR": bridgeDir.path,
+                            "SRE_LEAD_RUNBOOKS_DIR": runbooksDir.path,
+                        ],
                     ]
                 ]
             ]
