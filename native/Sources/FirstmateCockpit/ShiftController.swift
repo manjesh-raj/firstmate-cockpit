@@ -98,6 +98,18 @@ final class ShiftController: NSViewController {
     private static let projectCardMinWidth: CGFloat = 260
     private static let projectCardSpacing: CGFloat = 12
 
+    /// Shared fixed body height for the side-by-side My Tasks/Follow-ups
+    /// panels (fm/grandline-shift-panel-height-scroll-fix). Both panels must
+    /// always be the same height as each other regardless of how much - or
+    /// how little - content either list holds; previously each scroll view
+    /// had its own independent constant (300 for tasks, 220 for follow-ups),
+    /// so the two cards never lined up once they sat side by side. A single
+    /// shared constant on both `NSScrollView`s is what makes each list
+    /// scroll internally once its content overflows, rather than the
+    /// enclosing card growing to fit - see `buildTaskSection`/
+    /// `buildFollowUpSection`.
+    private static let taskFollowUpPanelBodyHeight: CGFloat = 280
+
     init(store: ShiftStore) {
         self.store = store
         super.init(nibName: nil, bundle: nil)
@@ -433,7 +445,7 @@ final class ShiftController: NSViewController {
         taskListScroll.borderType = .noBorder
         taskListScroll.drawsBackground = false
         taskListScroll.translatesAutoresizingMaskIntoConstraints = false
-        taskListScroll.heightAnchor.constraint(equalToConstant: 300).isActive = true
+        taskListScroll.heightAnchor.constraint(equalToConstant: Self.taskFollowUpPanelBodyHeight).isActive = true
 
         taskPanel.setHeader(headerRow)
         taskPanel.setBody(taskListScroll)
@@ -453,7 +465,7 @@ final class ShiftController: NSViewController {
         followUpScroll.borderType = .noBorder
         followUpScroll.drawsBackground = false
         followUpScroll.translatesAutoresizingMaskIntoConstraints = false
-        followUpScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
+        followUpScroll.heightAnchor.constraint(equalToConstant: Self.taskFollowUpPanelBodyHeight).isActive = true
 
         followUpPanel.setHeader(headerRow)
         followUpPanel.setBody(followUpScroll)
