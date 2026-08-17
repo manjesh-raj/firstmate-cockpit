@@ -6,10 +6,12 @@
 // web app's Search pill (`#palette-open`, `.kbtn`) with its inline ⌘K badge,
 // and its theme-picker button (`#theme-btn`/`.theme-menu`).
 //
-// Search has no command-palette destination natively (no fleet/task data to
-// search), so it maps onto this app's actual equivalent (Fix 4): an
-// in-terminal find, the same action the console toolbar's own
-// magnifying-glass icon triggers (`AppShellController.activateConsoleFind`).
+// Fix 4 originally mapped this pill onto an in-terminal find (there was no
+// real global search yet); phase 4 ("Knowledge and speed") superseded that -
+// it now opens the real unified search palette (Runbooks + Postmortems, see
+// `UnifiedSearch.swift`) via `AppShellController.onSearchTapped`. Plain
+// find-in-terminal is unaffected - still reachable via the console toolbar's
+// own magnifying-glass icon and the Edit menu's `⌘F`.
 
 import AppKit
 

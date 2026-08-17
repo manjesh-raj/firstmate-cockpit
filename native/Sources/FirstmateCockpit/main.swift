@@ -36,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
     lazy var shiftMenuBar = ShiftMenuBarController(store: shiftStore)
     lazy var shiftSearch = ShiftSearchController(store: shiftStore)
+    // Phase 4 ("Knowledge and speed"): the unified `⌘K` search palette. Its
+    // own `DocsRunbookStore` instance (not `appShell`'s private one inside
+    // `DocsController`) - both read the same git-synced folder fresh on every
+    // call, so a second instance costs nothing and needs no plumbing through
+    // `AppShellController`'s constructor, mirroring how `UpdatesController`/
+    // `BootstrapController` already keep independent copies of the same
+    // underlying checks (see AGENTS.md).
+    lazy var unifiedSearch = UnifiedSearchController(store: DocsRunbookStore())
     lazy var shiftQuickCapture = ShiftQuickCaptureController(store: shiftStore)
     lazy var shiftNotifications = ShiftNotificationScheduler(store: shiftStore)
     lazy var shiftHotkey = ShiftGlobalHotkey { [weak self] in self?.shiftQuickCapture.present() }
@@ -164,6 +172,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shiftSearch.onSelectTask = { [weak self] id in self?.appShell.openShiftTask(id: id) }
         shiftSearch.onSelectFollowUp = { [weak self] id in self?.appShell.openShiftFollowUp(id: id) }
         shiftSearch.onSelectProject = { [weak self] id in self?.appShell.openShiftProject(id: id) }
+        // Phase 4 ("Knowledge and speed"): `⌘K` now opens this unified
+        // palette app-wide - both its own click (the topbar Search pill,
+        // wired below) and the main menu's `⌘K` item resolve here.
+        unifiedSearch.onSelectRunbook = { [weak self] id in self?.appShell.openDocsRunbook(id: id) }
+        unifiedSearch.onSelectPostmortem = { [weak self] id in self?.appShell.openDocsPostmortem(id: id) }
+        // The topbar Search pill's click, forwarded through `AppShellController.
+        // onSearchTapped` (see that property's own doc comment) - not
+        // `appShell.topBar.onSearchTapped` directly, since `loadView()` (run
+        // later, once `window.contentViewController = appShell` is assigned
+        // below) wires that control to call back through this property, and
+        // would silently clobber a direct assignment made before that point.
+        appShell.onSearchTapped = { [weak self] in self?.unifiedSearch.present() }
         shiftQuickCapture.onCaptured = { [weak self] in
             self?.appShell.showToast("Task captured")
         }
@@ -474,6 +494,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shiftQuickCapture.present()
     }
 
+    // MARK: Unified search (phase 4, "Knowledge and speed")
+
+    @objc func showUnifiedSearch() {
+        unifiedSearch.present()
+    }
+
     // MARK: Menu
 
     /// The main menu. Three load-bearing groups:
@@ -515,13 +541,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(ConsoleController.showFind), keyEquivalent: "f")
-        // Fix 4: ⌘K is the topbar Search control's shortcut too - both invoke
-        // the exact same in-terminal find action, targeted explicitly at the
-        // app shell (not the responder chain) so it works regardless of
-        // which destination or view currently has focus.
-        let findInTerminalItem = NSMenuItem(title: "Find in Terminal", action: #selector(AppShellController.activateConsoleFind), keyEquivalent: "k")
+        // Phase 4 ("Knowledge and speed") reassigned ⌘K from "Find in
+        // Terminal" (Fix 4's original mapping) to the real unified search
+        // palette below - plain find-in-terminal stays reachable with no
+        // shortcut here (same "menu item only, no keyEquivalent" convention
+        // as "Quick Connect" below) since the console toolbar's own
+        // magnifying-glass icon already triggers the identical action
+        // independently of any menu shortcut, and ⌘F ("Find…" above) covers
+        // the common case too.
+        let findInTerminalItem = NSMenuItem(title: "Find in Terminal", action: #selector(AppShellController.activateConsoleFind), keyEquivalent: "")
         findInTerminalItem.target = appShell
         editMenu.addItem(findInTerminalItem)
+        // Phase 4: ⌘K now opens the unified search palette (Runbooks +
+        // Postmortems - see `UnifiedSearch.swift`'s header for why terminal
+        // history isn't included yet), matching the topbar Search pill's own
+        // ⌘K badge.
+        let unifiedSearchItem = NSMenuItem(title: "Search…", action: #selector(AppDelegate.showUnifiedSearch), keyEquivalent: "k")
+        unifiedSearchItem.target = self
+        editMenu.addItem(unifiedSearchItem)
 
         // Hosts menu - the Phase 1 connection manager. New Host targets the
         // panel directly (so it works regardless of focus - the editor now

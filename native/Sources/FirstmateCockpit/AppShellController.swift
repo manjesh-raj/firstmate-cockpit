@@ -110,6 +110,12 @@ final class AppShellController: NSViewController {
         set { dictation.onShortcutChanged = newValue }
     }
 
+    /// Phase 4 ("Knowledge and speed"): the topbar Search pill's click,
+    /// forwarded to whoever owns the unified `⌘K` search palette (the app
+    /// delegate, mirroring `onPresentHostEditor`'s own forward-don't-own
+    /// convention) rather than presented here.
+    var onSearchTapped: (() -> Void)?
+
     init(
         hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
         hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
@@ -151,10 +157,15 @@ final class AppShellController: NSViewController {
         addChild(topBar)
         bodyContainer.addSubview(topBar.view)
         topBar.view.translatesAutoresizingMaskIntoConstraints = false
-        // Fix 4: the topbar Search control performs an in-terminal find
-        // (the same action the console toolbar's magnifying-glass icon
-        // triggers), not anything host-related.
-        topBar.onSearchTapped = { [weak self] in self?.activateConsoleFind() }
+        // Phase 4 ("Knowledge and speed") superseded Fix 4's original mapping
+        // here (an in-terminal find stand-in, since there was no real global
+        // search yet) - the topbar Search pill (and its `⌘K` badge) now opens
+        // the real unified search palette, forwarded to the app delegate via
+        // `onSearchTapped` (see that property's own doc comment) rather than
+        // owned by this controller. Plain find-in-terminal is unaffected -
+        // it's still reachable via the console toolbar's own magnifying-glass
+        // icon (`ConsoleController.showFind`) and the Edit menu's `⌘F`.
+        topBar.onSearchTapped = { [weak self] in self?.onSearchTapped?() }
 
         addChild(hostsPanel)
         addChild(console)
@@ -547,15 +558,17 @@ final class AppShellController: NSViewController {
         hostsPanel.focusQuickConnect()
     }
 
-    /// The topbar Search pill / its own ⌘K: invoke the exact same find
-    /// action the console toolbar's magnifying-glass icon uses, on whichever
-    /// console is actually on screen. Fix 1: if a host's dedicated page is
-    /// showing, find there rather than yanking the captain over to the
-    /// unrelated shared Firstmate console just because that's this method's
-    /// historical default - otherwise a host page's ⌘K would silently
-    /// navigate away from the session being read and search the wrong
-    /// terminal. With no host page active, the original behaviour holds:
-    /// bring Console forward (so the find bar it triggers is visible) first.
+    /// The Edit menu's "Find in Terminal" (no longer ⌘K as of phase 4 - see
+    /// main.swift's Edit menu comment; ⌘K now opens the unified search
+    /// palette instead): invoke the exact same find action the console
+    /// toolbar's magnifying-glass icon uses, on whichever console is actually
+    /// on screen. Fix 1: if a host's dedicated page is showing, find there
+    /// rather than yanking the captain over to the unrelated shared
+    /// Firstmate console just because that's this method's historical
+    /// default - otherwise this action would silently navigate away from the
+    /// session being read and search the wrong terminal. With no host page
+    /// active, the original behaviour holds: bring Console forward (so the
+    /// find bar it triggers is visible) first.
     @objc func activateConsoleFind() {
         if let activeHostID, let controller = hostConsoles[activeHostID] {
             controller.showFind()
@@ -631,6 +644,22 @@ final class AppShellController: NSViewController {
     func openShiftProject(id: String) {
         show(.shift)
         shift.openProject(id: id)
+    }
+
+    // MARK: Unified search navigation (phase 4, "Knowledge and speed")
+
+    /// The `⌘K` unified search palette's own entry point for a Runbook/
+    /// Postmortem result - switches to `.docs` first, exactly like every
+    /// other `open*(id:)` wrapper above, so the item has somewhere to open
+    /// into.
+    func openDocsRunbook(id: String) {
+        show(.docs)
+        docs.openRunbook(id: id)
+    }
+
+    func openDocsPostmortem(id: String) {
+        show(.docs)
+        docs.openPostmortem(id: id)
     }
 
     /// Fix 5: a host save closes its own (separate) editor window
