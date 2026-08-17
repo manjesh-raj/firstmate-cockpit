@@ -848,6 +848,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_POSTMORTEM_TESTS"] == "1
     exit(SRELeadPostmortemSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-console-command-composer`: same convention, for
+// `ConsoleCommandComposer.generate`'s `claude -p` invocation/parsing/fallback
+// logic - see ConsoleCommandComposerSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_CONSOLE_COMMAND_COMPOSER_TESTS"] == "1" {
+    exit(ConsoleCommandComposerSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
