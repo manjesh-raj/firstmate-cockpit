@@ -12,7 +12,8 @@
 // duplicate copy of that helper is still out of scope, per this project's
 // AGENTS.md.
 //
-// Two real GitHub CLI operations, never a hand-rolled fetch/merge/push:
+// Two real GitHub CLI operations, never a hand-rolled fetch/merge/push, for a
+// repo GitHub itself does record as a real fork:
 //   - `gh api repos/{owner}/{repo}` + `gh api repos/{owner}/{repo}/compare/...`
 //     to read the fork's real live fork/parent status and how far behind (or
 //     diverged from) upstream it is - never a cached guess.
@@ -23,7 +24,30 @@
 //     branch" on stderr - confirmed by inspecting the real `gh` binary's own
 //     embedded strings, `github.com/cli/cli/v2/pkg/cmd/repo/sync`) rather than
 //     silently overwriting real diverged work. `--force` is never passed by
-//     this file, anywhere, under any condition - see `sync(_:)` below.
+//     this file, anywhere, under any condition - see `syncFork(_:)` below.
+//
+// `fm/grandline-github-sync-manual-upstream` added a second path for a repo
+// GitHub does NOT record as a real fork but the captain still wants tracked
+// against a real upstream - `automic-vault` (a private mirror the captain
+// pushed by hand, not a GitHub-forked copy - `fork: false`, confirmed live).
+// `gh api .../compare` only works within a real GitHub fork network - a cross
+// repo compare between two repos with no recorded fork relationship 404s
+// (confirmed live: `gh api repos/manjesh-raj/automic-vault/compare/
+// manjesh-raj:main...automic-vault:main` -> 404 "Not Found", even though both
+// repos share real git history). So a repo with `manualUpstreamOwner`/`Name`
+// set (`GitHubSyncRepoConfig.manualUpstreamFullName`) goes through
+// `checkManual(_:upstreamFullName:)`/`syncManual(_:upstreamFullName:)`
+// instead - a small local scratch git clone (`localCloneDir(for:)`, never the
+// captain's own working copy of the repo) used only to run the equivalent
+// real git operations by hand: `git remote add/set-url upstream`, `git fetch`
+// both sides, `git rev-list --left-right --count` for the real ahead/behind
+// counts (the exact same semantics as `compare`'s `ahead_by`/`behind_by`,
+// just computed locally instead of via GitHub's API), then - only when
+// genuinely a clean fast-forward - `git checkout -B <branch> origin/<branch>`
+// + `git merge --ff-only upstream/<branch>` + `git push origin <branch>`.
+// `--force`/`--rebase`/`-X ours`/`-X theirs` are never used here either, for
+// the identical reason `syncFork(_:)` never uses `gh repo sync --force`: a
+// repo with real local-only commits must be refused, never overwritten.
 
 import Foundation
 
@@ -32,16 +56,37 @@ import Foundation
 struct GitHubSyncRepoConfig {
     let owner: String
     let name: String
+    /// A manual upstream declaration (`owner`/`name` of the real upstream to
+    /// track) for a repo GitHub itself doesn't record as a fork - see the
+    /// file header. `nil` for every repo where GitHub's own fork/parent
+    /// metadata is authoritative (the `checkFork`/`syncFork` path).
+    var manualUpstreamOwner: String?
+    var manualUpstreamName: String?
     var fullName: String { "\(owner)/\(name)" }
+    var manualUpstreamFullName: String? {
+        guard let owner = manualUpstreamOwner, let name = manualUpstreamName else { return nil }
+        return "\(owner)/\(name)"
+    }
+
+    init(owner: String, name: String, manualUpstreamOwner: String? = nil, manualUpstreamName: String? = nil) {
+        self.owner = owner
+        self.name = name
+        self.manualUpstreamOwner = manualUpstreamOwner
+        self.manualUpstreamName = manualUpstreamName
+    }
 }
 
 enum GitHubSyncCatalog {
     /// The captain's list of personal forks to keep current with their real
     /// upstream (`kunchenguid/*` for every one of these except
-    /// `automic-vault`, which turned out live NOT to be a fork at all - see
-    /// `GitHubSyncStatus.notAFork` and this task's PR description). Confirmed
-    /// live via `gh api repos/manjesh-raj/<repo>` before this catalog was
-    /// written, not assumed from the repo name alone.
+    /// `automic-vault`, which turned out live NOT to be a real GitHub fork -
+    /// it's a private mirror the captain pushed by hand. `automic-vault` now
+    /// declares a manual upstream (`automic-vault/automic-vault`, the real
+    /// upstream per the captain) instead of showing a permanent "Not a Fork"
+    /// - see `GitHubSyncStatus.notAFork`, `checkManual`/`syncManual`, and
+    /// this task's PR description for its real live sync state as found).
+    /// Confirmed live via `gh api repos/manjesh-raj/<repo>` before this
+    /// catalog was written, not assumed from the repo name alone.
     static let repos: [GitHubSyncRepoConfig] = [
         .init(owner: "manjesh-raj", name: "chrome-devtools-axi"),
         .init(owner: "manjesh-raj", name: "treehouse"),
@@ -49,7 +94,7 @@ enum GitHubSyncCatalog {
         .init(owner: "manjesh-raj", name: "gh-axi"),
         .init(owner: "manjesh-raj", name: "no-mistakes"),
         .init(owner: "manjesh-raj", name: "lavish-axi"),
-        .init(owner: "manjesh-raj", name: "automic-vault"),
+        .init(owner: "manjesh-raj", name: "automic-vault", manualUpstreamOwner: "automic-vault", manualUpstreamName: "automic-vault"),
         .init(owner: "manjesh-raj", name: "quota-axi"),
     ]
 }
@@ -67,8 +112,13 @@ enum GitHubSyncStatus: Equatable {
     /// `gh repo sync` will refuse a plain fast-forward here. Never synced by
     /// this app; see the file header.
     case diverged(localOnly: Int, upstreamAhead: Int)
-    /// A real, confirmed non-fork (`.fork == false`) - `automic-vault`, per
-    /// this task's live `gh api` check. Nothing to sync.
+    /// A real, confirmed non-fork (`.fork == false`) with no configured
+    /// `manualUpstreamFullName` either - nothing to sync, and no way to know
+    /// what it should track. A repo with a manual upstream configured (e.g.
+    /// `automic-vault`, see `GitHubSyncCatalog.repos`) never reaches this
+    /// case even though it's also `.fork == false` - it goes through
+    /// `checkManual`/`syncManual` instead and reports real `.inSync`/
+    /// `.behind`/`.diverged` status like any other tracked repo.
     case notAFork
     case checkFailed
     case syncing
@@ -196,6 +246,17 @@ enum GitHubSyncSource {
         return (aheadBy, behindBy)
     }
 
+    /// The one entry point the controller calls - dispatches to the manual-
+    /// upstream path (`checkManual`) when the repo declares one, otherwise the
+    /// real-fork path (`checkFork`). See the file header for why these need
+    /// to be two different mechanisms.
+    static func check(_ repo: GitHubSyncRepoConfig) -> GitHubSyncCheckOutcome {
+        if let upstream = repo.manualUpstreamFullName {
+            return checkManual(repo, upstreamFullName: upstream)
+        }
+        return checkFork(repo)
+    }
+
     /// Live check, no caching: fork/parent status via `gh api repos/{full}`,
     /// then how far behind (or diverged from) upstream via `gh api
     /// repos/{full}/compare/{owner}:{branch}...{parentOwner}:{branch}` -
@@ -205,7 +266,7 @@ enum GitHubSyncSource {
     /// itself needs `behind_by == 0` for to fast-forward safely. Confirmed
     /// live against all 8 catalog repos before writing this (see PR
     /// description) - every one of them reported `behind_by: 0`.
-    static func check(_ repo: GitHubSyncRepoConfig) -> GitHubSyncCheckOutcome {
+    private static func checkFork(_ repo: GitHubSyncRepoConfig) -> GitHubSyncCheckOutcome {
         guard let gh = resolveExecutable("gh") else {
             return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: nil, detail: "'gh' not found on PATH", log: "")
         }
@@ -243,6 +304,16 @@ enum GitHubSyncSource {
 
     // MARK: Sync
 
+    /// The one entry point the controller calls - dispatches to the manual-
+    /// upstream path (`syncManual`) when the repo declares one, otherwise the
+    /// real-fork path (`syncFork`). Same "never force" guarantee either way.
+    static func sync(_ repo: GitHubSyncRepoConfig) -> GitHubSyncSyncOutcome {
+        if let upstream = repo.manualUpstreamFullName {
+            return syncManual(repo, upstreamFullName: upstream)
+        }
+        return syncFork(repo)
+    }
+
     /// `gh repo sync {owner}/{repo}` - source defaults to the repo's real
     /// parent (no `--source` override needed, since every catalog entry's
     /// upstream is its own real GitHub-recorded parent). Fast-forward only;
@@ -250,7 +321,7 @@ enum GitHubSyncSource {
     /// `refusedDiverged`, never retried with force. See the file header for
     /// the exact refusal string this matches against, confirmed against the
     /// real `gh` binary shipped on this machine (`gh version 2.97.0`).
-    static func sync(_ repo: GitHubSyncRepoConfig) -> GitHubSyncSyncOutcome {
+    private static func syncFork(_ repo: GitHubSyncRepoConfig) -> GitHubSyncSyncOutcome {
         guard let gh = resolveExecutable("gh") else {
             return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "'gh' not found on PATH", log: "")
         }
@@ -264,5 +335,281 @@ enum GitHubSyncSource {
             ? "Refused - \(repo.fullName) has diverged from upstream with commits of its own. Left untouched; never force-synced."
             : "gh repo sync \(repo.fullName) failed"
         return GitHubSyncSyncOutcome(ok: false, refusedDiverged: refused, detail: detail, log: result.combinedLog)
+    }
+
+    // MARK: Manual upstream (repos GitHub doesn't record as a real fork)
+
+    private struct RepoDefaultBranch {
+        let branch: String
+        let log: String
+    }
+
+    /// `gh api repos/{full}`'s `default_branch` only - works regardless of
+    /// fork status, so this is used for both origin and the manual upstream.
+    private static func fetchDefaultBranch(_ fullName: String) -> RepoDefaultBranch? {
+        guard let gh = resolveExecutable("gh") else { return nil }
+        let result = run(gh, ["api", "repos/\(fullName)"])
+        guard result.status == 0, let info = parseRepoInfo(result.stdout) else { return nil }
+        return RepoDefaultBranch(branch: info.defaultBranch, log: result.combinedLog)
+    }
+
+    /// `~/Library/Application Support/FirstmateCockpit/github-sync-repos/`,
+    /// overridable via `FM_GITHUB_SYNC_CLONE_ROOT` - same env-var convention
+    /// as every other `FM_*` local-state override in this app
+    /// (`ShiftGitSync.resolveDefaultWorkingTree`'s `FM_SHIFT_GIT_CLONE_PATH`).
+    private static func defaultCloneRoot() -> URL {
+        if let override = ProcessInfo.processInfo.environment["FM_GITHUB_SYNC_CLONE_ROOT"], !override.isEmpty {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("FirstmateCockpit", isDirectory: true).appendingPathComponent("github-sync-repos", isDirectory: true)
+    }
+
+    /// A small per-repo scratch clone used only to compute real ahead/behind
+    /// counts and, when safe, perform the actual fast-forward - never the
+    /// captain's own working copy of the repo, never shown or offered as one.
+    private static func localCloneDir(for repo: GitHubSyncRepoConfig) -> URL {
+        defaultCloneRoot().appendingPathComponent("\(repo.owner)__\(repo.name)", isDirectory: true)
+    }
+
+    private struct GitResult {
+        let status: Int32
+        let stdout: String
+        let stderr: String
+        var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
+    }
+
+    /// `authenticated: true` for any operation that talks to a remote
+    /// (`clone`/`fetch`/`push`) - injects `DocsSyncSource.ghAuthToken()` as a
+    /// Basic-auth `http.extraheader` via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
+    /// `GIT_CONFIG_VALUE_0` env vars rather than a `-c` argument (so the token
+    /// never appears in `ps`'s argument listing) - the exact same mechanism
+    /// `ShiftGitSync.runGit` already established for this app's other local-
+    /// clone-based git sync (`ShiftGitSync.swift:748-759`), reused verbatim
+    /// rather than inventing a second credential path. A local/`file://`
+    /// remote (this task's own disposable-bare-repo verification) has no such
+    /// host, so the header is harmless there too - `git` simply never uses it
+    /// for a non-`https://` transport.
+    private static func runGit(_ args: [String], cwd: URL?, authenticated: Bool) -> GitResult {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        proc.arguments = args
+        if let cwd { proc.currentDirectoryURL = cwd }
+        var env = childEnvironmentDict()
+        if authenticated, let token = DocsSyncSource.ghAuthToken() {
+            let basic = Data("x-access-token:\(token)".utf8).base64EncodedString()
+            env["GIT_CONFIG_COUNT"] = "1"
+            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
+            env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic \(basic)"
+        }
+        proc.environment = env
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+            try proc.run()
+        } catch {
+            return GitResult(status: -1, stdout: "", stderr: error.localizedDescription)
+        }
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return GitResult(
+            status: proc.terminationStatus,
+            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
+    }
+
+    /// Clones `originURL` into `localCloneDir(for:)` if it isn't there yet -
+    /// a no-op on every later check/sync. Never re-clones an existing
+    /// checkout; `checkManual`/`syncManual` always re-fetch fresh instead.
+    private static func ensureManualClone(_ repo: GitHubSyncRepoConfig, originURL: String) -> (ok: Bool, log: String) {
+        let fm = FileManager.default
+        let dir = localCloneDir(for: repo)
+        if fm.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+            return (true, "")
+        }
+        try? fm.createDirectory(at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let clone = runGit(["clone", originURL, dir.path], cwd: nil, authenticated: true)
+        guard clone.status == 0 else {
+            try? fm.removeItem(at: dir)
+            return (false, clone.combinedLog.isEmpty ? "git clone failed" : clone.combinedLog)
+        }
+        return (true, clone.combinedLog)
+    }
+
+    /// Points the clone's `upstream` remote at `upstreamURL` - adds it if
+    /// missing, updates it in place if it's already there (e.g. pointing at a
+    /// stale URL from before this task).
+    private static func ensureUpstreamRemote(dir: URL, upstreamURL: String) {
+        let setURL = runGit(["remote", "set-url", "upstream", upstreamURL], cwd: dir, authenticated: false)
+        if setURL.status != 0 {
+            _ = runGit(["remote", "add", "upstream", upstreamURL], cwd: dir, authenticated: false)
+        }
+    }
+
+    private struct AheadBehindCounts {
+        /// Commits `originRef` has that `upstreamRef` doesn't - real
+        /// diverged, local-only commits. `gh repo sync`/`compare`'s
+        /// `behind_by` equivalent.
+        let localOnly: Int
+        /// Commits `upstreamRef` has that `originRef` doesn't - how far
+        /// behind upstream this repo is. `compare`'s `ahead_by` equivalent.
+        let upstreamAhead: Int
+        let log: String
+    }
+
+    /// `git rev-list --left-right --count originRef...upstreamRef` - the
+    /// exact same ahead/behind semantics `parseCompare` reads off GitHub's
+    /// own `compare` API response, just computed locally against two fetched
+    /// remote-tracking refs instead.
+    private static func aheadBehindCounts(dir: URL, originRef: String, upstreamRef: String) -> AheadBehindCounts? {
+        let result = runGit(["rev-list", "--left-right", "--count", "\(originRef)...\(upstreamRef)"], cwd: dir, authenticated: false)
+        guard result.status == 0 else { return nil }
+        let parts = result.stdout.split(whereSeparator: { $0 == "\t" || $0 == " " }).compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return AheadBehindCounts(localOnly: parts[0], upstreamAhead: parts[1], log: result.combinedLog)
+    }
+
+    /// Manual-upstream check: no GitHub-recorded fork relationship to lean on
+    /// (see the file header for why `compare` 404s here), so this maintains a
+    /// small local scratch clone instead, purely to fetch both remotes and
+    /// compute real ahead/behind counts via `git rev-list --left-right
+    /// --count` - never a cached guess, same "live check, no caching"
+    /// guarantee as `checkFork`.
+    private static func checkManual(_ repo: GitHubSyncRepoConfig, upstreamFullName: String) -> GitHubSyncCheckOutcome {
+        guard resolveExecutable("gh") != nil else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "'gh' not found on PATH", log: "")
+        }
+        guard let originInfo = fetchDefaultBranch(repo.fullName) else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "gh api repos/\(repo.fullName) failed", log: "")
+        }
+        guard let upstreamInfo = fetchDefaultBranch(upstreamFullName) else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "gh api repos/\(upstreamFullName) failed", log: originInfo.log)
+        }
+        var logParts = [originInfo.log, upstreamInfo.log]
+
+        let originURL = "https://github.com/\(repo.fullName).git"
+        let upstreamURL = "https://github.com/\(upstreamFullName).git"
+        let clone = ensureManualClone(repo, originURL: originURL)
+        logParts.append(clone.log)
+        guard clone.ok else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "Could not clone \(repo.fullName) locally: \(clone.log)", log: logParts.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        let dir = localCloneDir(for: repo)
+        ensureUpstreamRemote(dir: dir, upstreamURL: upstreamURL)
+
+        let fetchOrigin = runGit(["fetch", "origin", originInfo.branch], cwd: dir, authenticated: true)
+        logParts.append(fetchOrigin.combinedLog)
+        guard fetchOrigin.status == 0 else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "git fetch origin failed", log: logParts.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        let fetchUpstream = runGit(["fetch", "upstream", upstreamInfo.branch], cwd: dir, authenticated: true)
+        logParts.append(fetchUpstream.combinedLog)
+        guard fetchUpstream.status == 0 else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "git fetch upstream failed", log: logParts.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        guard let counts = aheadBehindCounts(dir: dir, originRef: "origin/\(originInfo.branch)", upstreamRef: "upstream/\(upstreamInfo.branch)") else {
+            return GitHubSyncCheckOutcome(status: .checkFailed, upstreamFullName: upstreamFullName, detail: "Could not compare against \(upstreamFullName)", log: logParts.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        logParts.append(counts.log)
+        let log = logParts.filter { !$0.isEmpty }.joined(separator: "\n")
+
+        if counts.localOnly > 0 {
+            return GitHubSyncCheckOutcome(
+                status: .diverged(localOnly: counts.localOnly, upstreamAhead: counts.upstreamAhead),
+                upstreamFullName: upstreamFullName,
+                detail: "Diverged - \(counts.localOnly) commit(s) unique to this fork, \(counts.upstreamAhead) behind \(upstreamFullName)",
+                log: log
+            )
+        }
+        if counts.upstreamAhead > 0 {
+            return GitHubSyncCheckOutcome(status: .behind(counts.upstreamAhead), upstreamFullName: upstreamFullName, detail: "\(counts.upstreamAhead) commit(s) behind \(upstreamFullName)", log: log)
+        }
+        return GitHubSyncCheckOutcome(status: .inSync, upstreamFullName: upstreamFullName, detail: "In sync with \(upstreamFullName)", log: log)
+    }
+
+    /// Manual-upstream sync: fetches both remotes, re-derives ahead/behind
+    /// counts fresh (never trusts a possibly-stale prior Check result for a
+    /// decision this consequential), refuses outright - no local branch
+    /// touched, no push attempted - the moment there's even one local-only
+    /// commit, and otherwise fast-forwards the local scratch clone's default
+    /// branch onto upstream's and pushes that to `origin`. `--force`,
+    /// `--rebase`, and `-X ours`/`-X theirs` are never used, full stop.
+    private static func syncManual(_ repo: GitHubSyncRepoConfig, upstreamFullName: String) -> GitHubSyncSyncOutcome {
+        guard resolveExecutable("gh") != nil else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "'gh' not found on PATH", log: "")
+        }
+        guard let originInfo = fetchDefaultBranch(repo.fullName) else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "gh api repos/\(repo.fullName) failed", log: "")
+        }
+        guard let upstreamInfo = fetchDefaultBranch(upstreamFullName) else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "gh api repos/\(upstreamFullName) failed", log: originInfo.log)
+        }
+        let originURL = "https://github.com/\(repo.fullName).git"
+        let upstreamURL = "https://github.com/\(upstreamFullName).git"
+        let clone = ensureManualClone(repo, originURL: originURL)
+        guard clone.ok else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "Could not clone \(repo.fullName) locally: \(clone.log)", log: clone.log)
+        }
+        let dir = localCloneDir(for: repo)
+        ensureUpstreamRemote(dir: dir, upstreamURL: upstreamURL)
+
+        var log: [String] = [clone.log]
+        let fetchOrigin = runGit(["fetch", "origin", originInfo.branch], cwd: dir, authenticated: true)
+        log.append(fetchOrigin.combinedLog)
+        guard fetchOrigin.status == 0 else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "git fetch origin failed", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        let fetchUpstream = runGit(["fetch", "upstream", upstreamInfo.branch], cwd: dir, authenticated: true)
+        log.append(fetchUpstream.combinedLog)
+        guard fetchUpstream.status == 0 else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "git fetch upstream failed", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+
+        guard let counts = aheadBehindCounts(dir: dir, originRef: "origin/\(originInfo.branch)", upstreamRef: "upstream/\(upstreamInfo.branch)") else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "Could not compare against \(upstreamFullName)", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        log.append(counts.log)
+        guard counts.localOnly == 0 else {
+            return GitHubSyncSyncOutcome(
+                ok: false, refusedDiverged: true,
+                detail: "Refused - \(repo.fullName) has \(counts.localOnly) commit(s) of its own that \(upstreamFullName) doesn't have. Left untouched; never force-synced.",
+                log: log.filter { !$0.isEmpty }.joined(separator: "\n")
+            )
+        }
+        guard counts.upstreamAhead > 0 else {
+            return GitHubSyncSyncOutcome(ok: true, refusedDiverged: false, detail: "Already in sync with \(upstreamFullName)", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+
+        // The scratch clone's local branch is reset to match origin's real
+        // current tip first - this clone is dedicated sync scratch space,
+        // never the captain's own working copy, so this can never discard
+        // anything the captain hasn't already pushed to `origin` themselves.
+        let checkout = runGit(["checkout", "-B", originInfo.branch, "origin/\(originInfo.branch)"], cwd: dir, authenticated: false)
+        log.append(checkout.combinedLog)
+        guard checkout.status == 0 else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "git checkout failed", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        let merge = runGit(["merge", "--ff-only", "upstream/\(upstreamInfo.branch)"], cwd: dir, authenticated: false)
+        log.append(merge.combinedLog)
+        guard merge.status == 0 else {
+            // Should be unreachable given the counts check above (both were
+            // computed moments apart against the same fetched refs), but a
+            // merge refusal is still never forced past, regardless of cause.
+            return GitHubSyncSyncOutcome(
+                ok: false, refusedDiverged: true,
+                detail: "git merge --ff-only refused - \(repo.fullName) is not a clean fast-forward of \(upstreamFullName). Left untouched.",
+                log: log.filter { !$0.isEmpty }.joined(separator: "\n")
+            )
+        }
+        let push = runGit(["push", "origin", "\(originInfo.branch):\(originInfo.branch)"], cwd: dir, authenticated: true)
+        log.append(push.combinedLog)
+        guard push.status == 0 else {
+            return GitHubSyncSyncOutcome(ok: false, refusedDiverged: false, detail: "git push origin failed", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        return GitHubSyncSyncOutcome(ok: true, refusedDiverged: false, detail: "Fast-forwarded \(repo.fullName) to \(upstreamFullName) and pushed to origin", log: log.filter { !$0.isEmpty }.joined(separator: "\n"))
     }
 }
