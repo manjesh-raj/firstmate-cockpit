@@ -88,7 +88,7 @@ final class GitHubSyncController: NSViewController {
             self?.applyTheme()
         }
 
-        let subtitle = NSTextField(wrappingLabelWithString: "Pulls the latest upstream changes into each of your personal forks - fast-forward only, via \u{201c}gh repo sync\u{201d}. A repo with commits of its own that upstream doesn\u{2019}t have is left untouched, never force-synced.")
+        let subtitle = NSTextField(wrappingLabelWithString: "Pulls the latest upstream changes into each of your personal forks - fast-forward only, via \u{201c}gh repo sync\u{201d} for a real GitHub fork, or a small local scratch clone for a repo with a manually declared upstream. A repo with commits of its own that upstream doesn\u{2019}t have is left untouched, never force-synced.")
         subtitle.font = .systemFont(ofSize: 12)
         subtitle.preferredMaxLayoutWidth = 560
         subtitle.translatesAutoresizingMaskIntoConstraints = false
