@@ -50,7 +50,10 @@ import AppKit
 /// `showSetupFlyout()`. `.automation` (fm/grandline-automation-pipeline)
 /// follows the identical convention: a third real `RailDestination` with no
 /// rail row of its own, reachable only as the Setup flyout's third entry,
-/// below Updates and Bootstrap.
+/// below Updates and Bootstrap. `.githubSync` (fm/grandline-setup-github-sync)
+/// follows the identical convention too: a fourth real `RailDestination` with
+/// no rail row of its own, reachable only as the Setup flyout's fourth entry,
+/// below Automation.
 /// `fm/grandline-avatar-menu-and-setup-guide` removed `.settings`'s own
 /// standalone rail row entirely - it is still a real `RailDestination` for
 /// switching purposes (`AppShellController.show(.settings)` is unchanged),
@@ -77,7 +80,7 @@ import AppKit
 /// live captain feedback that icon-only utility rows looked inconsistent
 /// once the rest of the rail had labels - see `labeledRailButton(for:)`.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, shift, review, tools, vault, dictation, docs, updates, bootstrap, automation, settings
+    case overview, console, hosts, shift, review, tools, vault, dictation, docs, updates, bootstrap, automation, githubSync, settings
 
     var symbol: String {
         switch self {
@@ -103,6 +106,7 @@ enum RailDestination: CaseIterable {
         case .updates: return "steeringwheel"
         case .bootstrap: return "hammer"
         case .automation: return "bolt.fill"
+        case .githubSync: return "arrow.2.squarepath"
         case .settings: return "gearshape"
         }
     }
@@ -121,6 +125,7 @@ enum RailDestination: CaseIterable {
         case .updates: return "Updates"
         case .bootstrap: return "Bootstrap"
         case .automation: return "Automation"
+        case .githubSync: return "GitHub Sync"
         case .settings: return "Settings"
         }
     }
@@ -128,7 +133,7 @@ enum RailDestination: CaseIterable {
     var isDailyUse: Bool {
         switch self {
         case .overview, .console, .hosts, .shift, .review: return true
-        case .tools, .vault, .dictation, .docs, .updates, .bootstrap, .automation, .settings: return false
+        case .tools, .vault, .dictation, .docs, .updates, .bootstrap, .automation, .githubSync, .settings: return false
         }
     }
 }
@@ -808,7 +813,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         let button = buildRailRowButton(
             title: "Setup",
             symbol: "wrench.adjustable",
-            tooltip: "Setup (Updates, Bootstrap, Automation)",
+            tooltip: "Setup (Updates, Bootstrap, Automation, GitHub Sync)",
             existingButton: setupButton
         )
         button.target = self
@@ -840,7 +845,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         popover.delegate = self
         popover.appearance = NSAppearance(named: ThemeManager.shared.theme.mode == .dark ? .darkAqua : .aqua)
         popover.contentViewController = SetupFlyoutViewController(
-            destinations: [.updates, .bootstrap, .automation],
+            destinations: [.updates, .bootstrap, .automation, .githubSync],
             onHoverChange: { _ in },
             onSelect: { [weak self] dest in
                 self?.setupPopover?.performClose(nil)
@@ -1245,7 +1250,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         // pre-existing gap in the same "does this row's own state look
         // active" class of bug the flyout-open fix addresses, fixed
         // alongside it.)
-        let setupIsActive = (activeHostID == nil && (active == .updates || active == .bootstrap || active == .automation)) || isSetupFlyoutOpen
+        let setupIsActive = (activeHostID == nil && (active == .updates || active == .bootstrap || active == .automation || active == .githubSync)) || isSetupFlyoutOpen
         let setupColor = setupIsActive ? accent : ink.withAlphaComponent(0.65)
         setupButton.contentTintColor = setupColor
         setupButton.attributedTitle = attributedRowTitle("Setup", color: setupColor)

@@ -49,6 +49,7 @@ final class AppShellController: NSViewController {
     private let updates = UpdatesController()
     private let bootstrap: BootstrapController
     private let automation: AutomationController
+    private let githubSync = GitHubSyncController()
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
@@ -179,9 +180,10 @@ final class AppShellController: NSViewController {
         addChild(updates)
         addChild(bootstrap)
         addChild(automation)
+        addChild(githubSync)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, updates.view, bootstrap.view, automation.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, updates.view, bootstrap.view, automation.view, githubSync.view, settings.view] {
             embed(destinationView)
         }
 
@@ -481,6 +483,9 @@ final class AppShellController: NSViewController {
         case .automation:
             automation.view.isHidden = false
             topBar.setTitle("Automation")
+        case .githubSync:
+            githubSync.view.isHidden = false
+            topBar.setTitle("GitHub Sync")
         case .settings:
             settings.view.isHidden = false
             topBar.setTitle("Settings")
@@ -549,6 +554,7 @@ final class AppShellController: NSViewController {
         updates.view.isHidden = true
         bootstrap.view.isHidden = true
         automation.view.isHidden = true
+        githubSync.view.isHidden = true
         settings.view.isHidden = true
         for controller in hostConsoles.values { controller.view.isHidden = true }
         activeHostID = nil
