@@ -106,7 +106,12 @@ final class UpdatesController: NSViewController {
     private var rows: [UpdateRow] = DependencyCatalog.items.map(UpdateRow.init)
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var scrollView: NSScrollView!
-    private var cardBackgrounds: [NSView] = []
+    /// Stat-tile backgrounds. These share `HelmCard`'s fill/border (via
+    /// `HelmCard.applyCardSurface`) so this page has one card surface, but
+    /// keep their own tighter radius until `HelmStatTile` lands (audit §6.3
+    /// component 4, a later phase). Real page sections are `cards` below.
+    private var statTileBackgrounds: [NSView] = []
+    private var cards: [HelmCard] = []
     private var separators: [NSView] = []
     private var categorySections: [CategorySection] = []
     private var statTiles: [StatTile] = []
@@ -168,8 +173,8 @@ final class UpdatesController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])
@@ -450,10 +455,10 @@ final class UpdatesController: NSViewController {
         return row
     }
 
-    /// Same rounded-card chrome as `card(icon:title:content:)`/`SettingsController.card`
-    /// (appended to the shared `cardBackgrounds` list so it themes identically)
-    /// but laid out as a stat tile: icon + big number on top, label beneath -
-    /// mirrors `FleetController.statTile`'s shape at a larger, page-header scale.
+    /// A stat tile: icon + big number on top, label beneath. Shares
+    /// `HelmCard`'s fill and border (`HelmCard.applyCardSurface`, applied in
+    /// `applyTheme`) so the page has one card surface, at its own tighter
+    /// radius until `HelmStatTile` unifies the three copies of this shape.
     private func statCard(icon: String, title: String) -> (container: NSView, valueLabel: NSTextField, iconView: NSImageView, titleLabel: NSTextField) {
         let iconView = NSImageView()
         iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
@@ -484,7 +489,6 @@ final class UpdatesController: NSViewController {
 
         let background = NSView()
         background.wantsLayer = true
-        background.layer?.cornerRadius = 10
         background.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -493,7 +497,7 @@ final class UpdatesController: NSViewController {
             stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 13),
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -13),
         ])
-        cardBackgrounds.append(background)
+        statTileBackgrounds.append(background)
         statTitleLabels.append(titleLabel)
         return (background, valueLabel, iconView, titleLabel)
     }
@@ -554,7 +558,7 @@ final class UpdatesController: NSViewController {
         }
     }
 
-    // MARK: Card chrome (mirrors SettingsController.card)
+    // MARK: Card chrome
 
     private func iconFor(category: String) -> String {
         switch category {
@@ -574,22 +578,11 @@ final class UpdatesController: NSViewController {
         DependencyCatalog.tint(for: category)
     }
 
-    private func card(icon: String, title: String, rows categoryRows: [UpdateRow]) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSStackView(views: [iconView, titleLabel])
-        header.orientation = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
-        header.translatesAutoresizingMaskIntoConstraints = false
-
+    /// One `HelmCard` per tool category - the shared container from
+    /// `HelmDesignSystem.swift`, replacing this file's own copy of a card
+    /// helper that was byte-for-byte identical in four controllers, plus its
+    /// own copy of the theming loop (audit §3.2).
+    private func card(icon: String, title: String, rows categoryRows: [UpdateRow]) -> HelmCard {
         var rowViews: [NSView] = []
         var sectionSeparators: [NSView] = []
         for (index, row) in categoryRows.enumerated() {
@@ -607,27 +600,12 @@ final class UpdatesController: NSViewController {
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
         for v in rowViews { v.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true }
 
-        let inner = NSStackView(views: [header, rowsStack])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 12
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        rowsStack.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 13
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
-        ])
-        cardBackgrounds.append(background)
-        categorySections.append(CategorySection(background: background, rows: categoryRows, separators: sectionSeparators))
-        return background
+        let card = HelmCard()
+        card.setHeader(symbol: icon, tint: DependencyCatalog.tint(for: title), title: title)
+        card.setBody(rowsStack, insets: HelmCard.contentInsets)
+        cards.append(card)
+        categorySections.append(CategorySection(background: card, rows: categoryRows, separators: sectionSeparators))
+        return card
     }
 
     private func separator() -> NSView {
@@ -918,10 +896,9 @@ final class UpdatesController: NSViewController {
         segmentedBackground.layer?.borderWidth = 1
         segmentedBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
         updateSegmentedAppearance()
-        for v in cardBackgrounds {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        for card in cards { card.applyTheme(theme) }
+        for v in statTileBackgrounds {
+            HelmCard.applyCardSurface(to: v, theme: theme, cornerRadius: 10)
         }
         for v in separators {
             v.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor

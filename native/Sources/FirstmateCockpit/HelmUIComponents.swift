@@ -548,7 +548,7 @@ enum ToolRowLayout {
     /// Bootstrap - is byte-for-byte unchanged) switches the row from
     /// "flat, hover-only highlight" to a clearly bounded card: a persistent
     /// `chromeBackgroundHex` fill + `chromeLineHex` border (the exact tokens
-    /// `ShiftPanelView.applyTheme` already uses for its own card look, not a
+    /// `HelmCard.applyTheme` already uses for its own card look, not a
     /// new color scheme) and roomier internal padding, for a page whose rows
     /// are the primary content rather than a dense checklist (fm/grandline-
     /// vault-row-polish). Pair with `applyTheme(cardStyle:attentionHex:)`.

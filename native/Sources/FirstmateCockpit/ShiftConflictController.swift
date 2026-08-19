@@ -153,7 +153,7 @@ final class ShiftConflictController: NSViewController {
     // MARK: Sections
 
     private func buildAutoMergeSection(theme: HelmTheme) -> NSView {
-        let panel = ShiftPanelView()
+        let panel = HelmCard()
         let header = NSTextField(labelWithString: "Merged automatically (\(conflictSet.autoMergeNotes.count))")
         header.font = ShiftFont.serif(14)
         header.textColor = HelmTheme.nsColor(theme.chromeInkHex)
@@ -171,16 +171,7 @@ final class ShiftConflictController: NSViewController {
             list.addArrangedSubview(line)
             line.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
-        let padded = NSView()
-        padded.translatesAutoresizingMaskIntoConstraints = false
-        padded.addSubview(list)
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 14),
-            list.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -14),
-            list.topAnchor.constraint(equalTo: padded.topAnchor, constant: 4),
-            list.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -12),
-        ])
-        panel.setBody(padded)
+        panel.setBody(list, insets: HelmCard.contentInsets)
         panel.applyTheme(theme)
         panel.widthAnchor.constraint(equalToConstant: 572).isActive = true
         return panel
@@ -189,7 +180,7 @@ final class ShiftConflictController: NSViewController {
     private func buildConflictSection<T: ShiftConflictRecordType>(
         title: String, conflicts: [ShiftRecordConflict<T>], theme: HelmTheme
     ) -> NSView {
-        let panel = ShiftPanelView()
+        let panel = HelmCard()
         let header = NSTextField(labelWithString: "\(title) (\(conflicts.count))")
         header.font = ShiftFont.serif(14)
         header.textColor = HelmTheme.nsColor(theme.chromeInkHex)
@@ -205,16 +196,7 @@ final class ShiftConflictController: NSViewController {
             list.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
-        let padded = NSView()
-        padded.translatesAutoresizingMaskIntoConstraints = false
-        padded.addSubview(list)
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 14),
-            list.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -14),
-            list.topAnchor.constraint(equalTo: padded.topAnchor, constant: 4),
-            list.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -12),
-        ])
-        panel.setBody(padded)
+        panel.setBody(list, insets: HelmCard.contentInsets)
         panel.applyTheme(theme)
         panel.widthAnchor.constraint(equalToConstant: 572).isActive = true
         return panel

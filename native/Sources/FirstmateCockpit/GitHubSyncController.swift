@@ -72,7 +72,7 @@ final class GitHubSyncController: NSViewController {
     private var rows: [GitHubSyncRow] = GitHubSyncCatalog.repos.map(GitHubSyncRow.init)
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var scrollView: NSScrollView!
-    private var cardBackgrounds: [NSView] = []
+    private var cards: [HelmCard] = []
     private var separators: [NSView] = []
     private var hasCheckedOnce = false
     private var isSyncingAll = false
@@ -122,8 +122,8 @@ final class GitHubSyncController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             subtitle.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -166,46 +166,17 @@ final class GitHubSyncController: NSViewController {
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    // MARK: Card chrome (mirrors AutomationController.card / SettingsController.card)
+    // MARK: Card chrome
 
-    private func card(icon: String, title: String, content: NSView) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSStackView(views: [iconView, titleLabel])
-        header.orientation = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let inner = NSStackView(views: [header, content])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 12
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 13
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
-        ])
-        cardBackgrounds.append(background)
-        return background
+    /// One `HelmCard` per page section - the shared container from
+    /// `HelmDesignSystem.swift`, replacing this file's own copy of a helper
+    /// that was byte-for-byte identical in four controllers (audit §3.2).
+    private func card(icon: String, title: String, content: NSView) -> HelmCard {
+        let card = HelmCard()
+        card.setHeader(symbol: icon, title: title)
+        card.setBody(content, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
     private func separator() -> NSView {
@@ -477,13 +448,8 @@ final class GitHubSyncController: NSViewController {
 
     private func applyTheme() {
         guard isViewLoaded else { return }
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        for v in cardBackgrounds {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        }
+        for card in cards { card.applyTheme(theme) }
         for v in separators {
             v.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
         }

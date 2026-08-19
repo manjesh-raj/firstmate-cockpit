@@ -5,7 +5,7 @@
 // redesign against a captain-supplied HTML/CSS mockup
 // (data/grandline-task-editor-redesign/reference-mockup.html) - translated
 // into this app's own dark Helm design language (HelmTheme/ShiftFont/
-// ShiftPanelView/IconTileView/HoverHighlightView), not the mockup's literal
+// HelmCard/IconTileView/HoverHighlightView), not the mockup's literal
 // light colors, matching how every other reference-mockup redesign in this
 // session has been approached.
 //

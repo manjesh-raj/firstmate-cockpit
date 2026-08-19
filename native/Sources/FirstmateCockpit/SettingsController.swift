@@ -93,16 +93,12 @@ final class SettingsController: NSViewController {
     private let notifySwitch = NSSwitch()
     private let sessionLoggingSwitch = NSSwitch()
 
-    /// Card-ish containers that need per-theme restyling, rebuilt each time
-    /// their section refreshes.
-    private var cardBackgroundViews: [NSView] = []
-
-    /// Card-header icon tiles (`IconTileView`) - re-tinted on every theme
-    /// change alongside `cardBackgroundViews`.
-    private var cardIconTiles: [IconTileView] = []
+    /// Every `HelmCard` on this page, re-themed together. The card owns its own
+    /// header icon tile and subtitle label, so neither needs a registry here.
+    private var cards: [HelmCard] = []
 
     /// Row containers using the shared `HoverHighlightView` hover helper -
-    /// re-colored on every theme change alongside `cardBackgroundViews`.
+    /// re-colored on every theme change alongside `cards`.
     private var hoverRows: [HoverHighlightView] = []
 
     /// Fix 4: kept so `viewWillAppear` can force the scroll position back to
@@ -139,8 +135,8 @@ final class SettingsController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -216,58 +212,22 @@ final class SettingsController: NSViewController {
     /// content, generously padded and given a rounded, bordered background -
     /// matching the mockup's `.card`/`.card-head` structure (icon-in-tile
     /// rather than a plain glyph, a muted subtitle under the title).
-    private func card(icon: String, tint: HelmTint, title: String, subtitle: String, content: NSView) -> NSView {
-        let tile = IconTileView()
-        tile.configure(symbol: icon, tint: tint)
-        cardIconTiles.append(tile)
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let subtitleLabel = NSTextField(labelWithString: subtitle)
-        subtitleLabel.font = .systemFont(ofSize: 11.5)
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        mutedLabel(subtitleLabel)
-
-        let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
-        titleStack.orientation = .vertical
-        titleStack.alignment = .leading
-        titleStack.spacing = 1
-        titleStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSStackView(views: [tile, titleStack])
-        header.orientation = .horizontal
-        header.spacing = 12
-        header.alignment = .centerY
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let inner = NSStackView(views: [header, content])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 14
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 14
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16),
-        ])
-        cardBackgroundViews.append(background)
-        return background
+    /// One `HelmCard` per settings section - the shared container from
+    /// `HelmDesignSystem.swift`. The icon-tile + title + subtitle header this
+    /// file used to build by hand is now that component's own structured
+    /// header, so the tile and the subtitle re-theme themselves and this file
+    /// no longer keeps registries for either (audit §6.3 component 1).
+    private func card(icon: String, tint: HelmTint, title: String, subtitle: String, content: NSView) -> HelmCard {
+        let card = HelmCard()
+        card.setHeader(symbol: icon, tint: tint, title: title, subtitle: subtitle)
+        card.setBody(content, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
-    /// Card-header subtitles (muted text below each `ch-title`), re-colored
-    /// alongside `cardBackgroundViews` on every theme change.
+    /// Muted supporting text inside a card's body, re-colored alongside
+    /// `cards` on every theme change. A card *header*'s own subtitle is the
+    /// `HelmCard`'s business, not this list's.
     private var subtitleViews: [NSTextField] = []
 
     /// Registers `label` in the shared `subtitleViews` re-theming list **and**
@@ -922,18 +882,10 @@ final class SettingsController: NSViewController {
     }
 
     private func applyTheme() {
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let muted = HelmTheme.mutedInk(theme)
         subtitleLabel.textColor = muted
-        for v in cardBackgroundViews {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        }
-        for tile in cardIconTiles {
-            tile.applyTheme(theme)
-        }
+        for card in cards { card.applyTheme(theme) }
         // Sections that rebuild rather than re-theme register a fresh label
         // every time, so drop the ones whose view is gone - same convention
         // `rebuildSecuritySection` already applies to `hoverRows`. Safe to do

@@ -80,7 +80,7 @@ final class ToolInstance: NSObject {
     // mirrors `ToolsController`'s former page-wide collections, just no
     // longer shared across every open tool.
     private var mutedLabels: [NSTextField] = []
-    private var cardBackgroundViews: [NSView] = []
+    private var cards: [HelmCard] = []
     private var editorScrollViews: [NSScrollView] = []
     private var editorTextViews: [NSTextView] = []
     private var statusLabel: NSTextField!
@@ -212,53 +212,18 @@ final class ToolInstance: NSObject {
 
     // MARK: Panel chrome (mirrors the old ToolsController.panelCard)
 
-    private func panelCard(icon: String, tint: HelmTint, title: String, subtitle: String, content: NSView) -> NSView {
-        let tile = IconTileView()
-        tile.configure(symbol: icon, tint: tint)
-        cardIconTile = tile
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-
-        let subtitleLabel = NSTextField(wrappingLabelWithString: subtitle)
-        subtitleLabel.font = .systemFont(ofSize: 11.5)
-        subtitleLabel.preferredMaxLayoutWidth = 640
-        mutedLabels.append(subtitleLabel)
-
-        let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
-        titleStack.orientation = .vertical
-        titleStack.alignment = .leading
-        titleStack.spacing = 1
-
-        let header = NSStackView(views: [tile, titleStack])
-        header.orientation = .horizontal
-        header.spacing = 12
-        header.alignment = .top
-
-        content.translatesAutoresizingMaskIntoConstraints = false
-        let inner = NSStackView(views: [header, content])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 14
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 14
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16),
-        ])
-        cardBackgroundViews.append(background)
-        return background
+    /// The tool panel's own card - one `HelmCard` from
+    /// `HelmDesignSystem.swift`, replacing this file's hand-rolled copy of the
+    /// icon-tile + title + subtitle card header (audit §6.3 component 1).
+    /// The card owns its tile and subtitle label, so neither needs a registry
+    /// here any more.
+    private func panelCard(icon: String, tint: HelmTint, title: String, subtitle: String, content: NSView) -> HelmCard {
+        let card = HelmCard()
+        card.setHeader(symbol: icon, tint: tint, title: title, subtitle: subtitle)
+        card.setBody(content, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
-
-    private var cardIconTile: IconTileView!
 
     private func sectionLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -1191,17 +1156,11 @@ final class ToolInstance: NSObject {
         self.theme = theme
         let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let bg = HelmTheme.nsColor(theme.backgroundHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
 
-        cardIconTile?.applyTheme(theme)
         for label in mutedLabels { label.textColor = muted }
-        for v in cardBackgroundViews {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        }
+        for card in cards { card.applyTheme(theme) }
         for scroll in editorScrollViews {
             scroll.layer?.backgroundColor = bg.cgColor
             scroll.layer?.borderWidth = 1
