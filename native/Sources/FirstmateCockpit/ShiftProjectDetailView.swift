@@ -164,7 +164,7 @@ extension ShiftProjectTaskListView: NSTableViewDataSource, NSTableViewDelegate {
 private final class ShiftProjectTaskRowView: NSView {
     private let hoverBackground = HoverHighlightView()
     private let chevronButton = NSButton()
-    private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let checkbox = ShiftTaskCheckBadge()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subLabel = NSTextField(labelWithString: "")
     private var onToggleExpand: (() -> Void)?
@@ -245,7 +245,22 @@ private final class ShiftProjectTaskRowView: NSView {
         chevronButton.alphaValue = hasSubtasks ? 1 : 0
         chevronButton.isEnabled = hasSubtasks
 
-        checkbox.state = task.status == .completed ? .on : .off
+        // Same overdue-wins-over-priority tint rule `ShiftTaskRowView`
+        // (`ShiftListViews.swift`) uses for the main My Tasks list, so a
+        // project's own task checklist reads consistently with it.
+        let isOverdue: Bool = {
+            guard let due = task.dueDate.flatMap(ShiftDateFormatting.date(from:)) else { return false }
+            return due < Calendar.current.startOfDay(for: Date())
+        }()
+        let priorityTint: HelmTint = {
+            switch task.priority {
+            case .high: return .critical
+            case .normal: return .info
+            case .low: return .neutral
+            }
+        }()
+        let tint: HelmTint = isOverdue ? .critical : priorityTint
+        checkbox.setChecked(task.status == .completed, tint: HelmTheme.nsColor(tint.hex(in: theme)))
 
         titleLabel.stringValue = task.title
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
@@ -271,8 +286,11 @@ private final class ShiftProjectTaskRowView: NSView {
 private final class ShiftProjectSubtaskRowView: NSView {
     private let indent = NSView()
     private let connector = NSView()
-    private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    /// Smaller than the task-level `ShiftTaskCheckBadge()` default (26pt) to
+    /// fit this row's compact 30pt height.
+    private let checkbox = ShiftTaskCheckBadge(size: 18)
     private let titleLabel = NSTextField(labelWithString: "")
+    private var isDone = false
     private var onToggle: ((Bool) -> Void)?
 
     init() {
@@ -321,13 +339,18 @@ private final class ShiftProjectSubtaskRowView: NSView {
 
     func configure(subtask: ShiftSubtask, theme: HelmTheme, onToggle: @escaping (Bool) -> Void) {
         self.onToggle = onToggle
-        checkbox.state = subtask.done ? .on : .off
+        isDone = subtask.done
+        checkbox.setChecked(subtask.done, tint: HelmTheme.nsColor(theme.accentHex))
         titleLabel.stringValue = subtask.title
         titleLabel.textColor = subtask.done ? HelmTheme.mutedInk(theme) : HelmTheme.nsColor(theme.chromeInkHex)
         connector.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.6).cgColor
     }
 
-    @objc private func checkboxClicked() { onToggle?(checkbox.state == .on) }
+    // `ShiftTaskCheckBadge` is `.momentaryChange` (image-only, no persistent
+    // toggle state of its own - see its header) so the new value has to come
+    // from the model's current value, not from reading `checkbox.state` back
+    // after the click.
+    @objc private func checkboxClicked() { onToggle?(!isDone) }
 }
 
 /// The "no subtasks yet" placeholder row shown when an expanded task has

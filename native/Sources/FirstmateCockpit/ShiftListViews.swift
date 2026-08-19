@@ -126,25 +126,31 @@ extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
 /// genuine `NSButton` with a real target/action, so click-to-toggle-complete
 /// is byte-for-byte the same behavior as before this restyle, only the
 /// drawing changed.
-private final class ShiftTaskCheckBadge: NSButton {
+// Not `private` - reused by `ShiftProjectDetailView.swift`'s own task/subtask
+// checklist rows (`fm/grandline-shift-project-detail-theming`) rather than a
+// second tinted-circle checkbox being hand-rolled there.
+final class ShiftTaskCheckBadge: NSButton {
     static let size: CGFloat = 26
 
-    init() {
+    private let diameter: CGFloat
+
+    init(size: CGFloat = ShiftTaskCheckBadge.size) {
+        diameter = size
         super.init(frame: .zero)
         title = ""
         isBordered = false
         imagePosition = .imageOnly
         setButtonType(.momentaryChange)
         wantsLayer = true
-        layer?.cornerRadius = Self.size / 2
+        layer?.cornerRadius = diameter / 2
         layer?.borderWidth = 1.5
         translatesAutoresizingMaskIntoConstraints = false
         setContentHuggingPriority(.required, for: .horizontal)
         setContentCompressionResistancePriority(.required, for: .horizontal)
         setAccessibilityRole(.checkBox)
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: Self.size),
-            heightAnchor.constraint(equalToConstant: Self.size),
+            widthAnchor.constraint(equalToConstant: diameter),
+            heightAnchor.constraint(equalToConstant: diameter),
         ])
     }
 
@@ -156,7 +162,7 @@ private final class ShiftTaskCheckBadge: NSButton {
     func setChecked(_ checked: Bool, tint: NSColor) {
         image = checked
             ? NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Completed")?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .bold))
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: diameter * 0.42, weight: .bold))
             : nil
         contentTintColor = .white
         layer?.backgroundColor = checked ? tint.cgColor : NSColor.clear.cgColor
