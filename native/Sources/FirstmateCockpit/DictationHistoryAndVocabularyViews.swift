@@ -66,8 +66,8 @@ extension DictationHistoryListView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !entries.isEmpty else {
-            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
-                ?? { let v = ShiftEmptyStateView(symbol: "waveform", text: "No dictations yet - hold the shortcut and speak."); v.identifier = Self.emptyViewID; return v }()
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
+                ?? { let v = HelmEmptyState(symbol: "waveform", body: "No dictations yet - hold the shortcut and speak."); v.identifier = Self.emptyViewID; return v }()
             empty.applyTheme(theme)
             return empty
         }

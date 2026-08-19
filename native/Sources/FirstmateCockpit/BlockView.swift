@@ -332,16 +332,18 @@ extension BlockContainerView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !blocks.isEmpty else {
-            let label = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? NSTextField)
+            // Was a bare `NSTextField` - one of the four §3.2 called out. This
+            // is a table's empty cell, exactly the shape `HelmEmptyState`'s
+            // `.compact` size (and every Shift list) already uses.
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
                 ?? {
-                    let l = NSTextField(labelWithString: "")
-                    l.identifier = Self.emptyViewID
-                    return l
+                    let v = HelmEmptyState(symbol: "terminal",
+                                           body: "No commands parsed yet. Run something, then click Refresh.")
+                    v.identifier = Self.emptyViewID
+                    return v
                 }()
-            label.stringValue = "No commands parsed yet. Run something, then click Refresh."
-            label.font = .systemFont(ofSize: 12)
-            label.textColor = HelmTheme.mutedInk(theme)
-            return label
+            empty.applyTheme(theme)
+            return empty
         }
 
         let rowView = (tableView.makeView(withIdentifier: Self.rowViewID, owner: nil) as? BlockRowView)

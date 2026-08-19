@@ -120,9 +120,9 @@ extension ShiftProjectTaskListView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !rows.isEmpty else {
-            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
                 ?? {
-                    let v = ShiftEmptyStateView(symbol: "checklist", text: "No tasks in this project yet.\nAdd one to start tracking work here.")
+                    let v = HelmEmptyState(symbol: "checklist", body: "No tasks in this project yet.\nAdd one to start tracking work here.")
                     v.identifier = Self.emptyViewID
                     return v
                 }()

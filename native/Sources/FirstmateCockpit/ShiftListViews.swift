@@ -114,8 +114,8 @@ extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !tasks.isEmpty else {
-            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
-                ?? { let v = ShiftEmptyStateView(symbol: "checklist", text: "Nothing on your plate. Enjoy it."); v.identifier = Self.emptyViewID; return v }()
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
+                ?? { let v = HelmEmptyState(symbol: "checklist", body: "Nothing on your plate. Enjoy it."); v.identifier = Self.emptyViewID; return v }()
             empty.applyTheme(theme)
             return empty
         }
@@ -389,8 +389,8 @@ extension ShiftFollowUpListView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !items.isEmpty else {
-            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? ShiftEmptyStateView)
-                ?? { let v = ShiftEmptyStateView(symbol: "bell", text: "No follow-ups pending."); v.identifier = Self.emptyViewID; return v }()
+            let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
+                ?? { let v = HelmEmptyState(symbol: "bell", body: "No follow-ups pending."); v.identifier = Self.emptyViewID; return v }()
             empty.applyTheme(theme)
             return empty
         }

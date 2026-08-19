@@ -279,7 +279,7 @@ final class ReviewController: NSViewController {
         }
 
         rowContainers.removeAll()
-        emptyStateParts.removeAll()
+        emptyStates.removeAll()
 
         onOpenPRCountChanged?(prs.count)
 
@@ -327,33 +327,23 @@ final class ReviewController: NSViewController {
         }
     }
 
+    /// One `HelmEmptyState` - the app's shared empty state
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 5). This page's own copy
+    /// was the odd one out among the six the audit found: **left-aligned, with
+    /// no icon at all**, on a radius-9 container, while every other list in the
+    /// app centred an icon over its copy. Since this page shows the same PR
+    /// domain Overview summarises, it now renders identically to Overview's
+    /// (§6.4: "share Overview's section chrome and empty-state treatment").
     private func emptyStateView(title: String, body: String) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        let bodyLabel = NSTextField(labelWithString: body)
-        bodyLabel.font = .systemFont(ofSize: 11)
-        let stack = NSStackView(views: [titleLabel, bodyLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 9
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-        ])
-        emptyStateParts.append((container, titleLabel, bodyLabel))
-        return container
+        let empty = HelmEmptyState(symbol: "checkmark.seal", title: title, body: body,
+                                   size: .standard, boxed: true)
+        emptyStates.append(empty)
+        return empty
     }
 
-    private var emptyStateParts: [(NSView, NSTextField, NSTextField)] = []
+    /// Rebuilt with the forge sections on every render; each state themes
+    /// itself, so this only exists to reach the live ones from `applyTheme`.
+    private var emptyStates: [HelmEmptyState] = []
 
     /// One compact row: title, "repo · PR #N" subtitle, a checks pill, and
     /// Review (always) + Merge (only for a task-tracked PR) - the identical
@@ -516,13 +506,7 @@ final class ReviewController: NSViewController {
         loadingContainer.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
         loadingLabel.textColor = muted
 
-        for (container, titleLabel, bodyLabel) in emptyStateParts {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
-            titleLabel.textColor = ink
-            bodyLabel.textColor = muted
-        }
+        for empty in emptyStates { empty.applyTheme(theme) }
         for container in rowContainers {
             container.layer?.backgroundColor = surface.cgColor
             container.layer?.borderWidth = 1

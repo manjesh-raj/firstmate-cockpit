@@ -14,8 +14,9 @@
 // of them all doing "card title". None of that variation encoded a product
 // decision - navigating Bootstrap -> Shift changed both the card translucency
 // and the page gutter at once for no reason. This file is §6.2 (tokens) plus
-// §6.3 components 1 (`HelmCard`, phase 1), 3 (`HelmButton`, phase 2) and 2
-// (`HelmAccentRow`, phase 3) of that report.
+// §6.3 components 1 (`HelmCard`, phase 1), 3 (`HelmButton`, phase 2), 2
+// (`HelmAccentRow`, phase 3) and 4/5/6 (`HelmStatTile`, `HelmEmptyState`,
+// `HelmSegmentedTabs`, phase 4) of that report.
 //
 // **Nothing here is a new design decision.** Every number below is one of the
 // values already in the codebase, promoted to be the single one. `HelmCard`'s
@@ -787,19 +788,15 @@ final class HelmButton: NSButton {
 
     /// A tinted label, contrast-corrected against the surface it lands on -
     /// `nil` when no tint was asked for, so the caller falls back to ink.
+    ///
+    /// Thin wrapper over `HelmContrast.legibleTintedText`, which Phase 4
+    /// promoted out of here so `HelmStatTile` could colour a tinted metric
+    /// the same way rather than re-deriving it (two of the three stat-tile
+    /// copies it replaced set a metric label to the raw hue - the §5.7
+    /// mistake).
     private static func label(tint: HelmTint?, over surface: NSColor, theme: HelmTheme) -> NSColor? {
         guard let tint else { return nil }
-        let hue = HelmTheme.nsColor(tint.hex(in: theme))
-        if HelmContrast.ratio(hue, surface) >= HelmContrast.textTarget { return hue }
-        // Blend toward the theme's ink by the smallest step that clears the
-        // floor - the same technique as `HelmContrast.tintedSurface`, applied
-        // to a label over an already-known opaque fill.
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        for step in stride(from: 0.1, through: 1.0, by: 0.1) {
-            guard let blended = hue.blended(withFraction: CGFloat(step), of: ink) else { break }
-            if HelmContrast.ratio(blended, surface) >= HelmContrast.textTarget { return blended }
-        }
-        return legible(ink, over: surface)
+        return HelmContrast.legibleTintedText(tintHex: tint.hex(in: theme), over: surface, theme: theme)
     }
 
     private func restyle() {
@@ -1298,5 +1295,619 @@ final class HelmAccentRow: NSView {
             cardRadius: card.layer?.cornerRadius ?? 0,
             cardBorderColor: card.layer?.borderColor.map { NSColor(cgColor: $0) ?? .clear }
         )
+    }
+}
+
+// MARK: - HelmStatTile
+
+/// The app's one stat tile: a glyph, one big number, a caption underneath -
+/// optionally tinted, optionally clickable.
+///
+/// **Why this exists.** The audit (§3.2 "Stat tile") measured three copies of
+/// this shape, differing in every dimension that isn't the idea itself:
+///
+/// | Page | Value font | Padding | Fill | Height |
+/// | --- | --- | --- | --- | --- |
+/// | Overview | mono 15 semibold | 10 / 8 | `surface @ 1.00` | 50pt |
+/// | Shift | `ShiftFont.mono(19, .semibold)` | 12 / 10 | `surface @ 1.00` | 56pt |
+/// | Updates | mono 19 **bold** | 15 / 13 | `surface @ 0.60` | 67pt |
+///
+/// Shift turned out to have a **fourth** copy - `reviewStatTile`, byte-identical
+/// to its own `statTile` and carrying a doc comment explaining that it existed
+/// only because the two rows shared one theming array and "whichever rebuilds
+/// last wins". A tile that themes itself removes the reason that copy existed.
+///
+/// **Nothing here is a new design.** The proportions are Shift's, which §6.3
+/// named as the model (12/10 padding, 56pt, a 19pt metric); the click support
+/// is Overview's (`FleetController`'s "ready to merge" tile jumps to `.review`);
+/// the fill is `HelmCard.applyCardSurface`, which Phase 1 made public
+/// specifically so tiles could stop being a fourth fill recipe.
+///
+/// **It themes itself** (like `HelmCard` and `HelmButton`): call `applyTheme`
+/// from the page's `ThemeManager.shared.observe` closure. Do not add it to a
+/// page-level `stashedTileParts`-style registry - those arrays are exactly
+/// what forced Shift's duplicate.
+final class HelmStatTile: NSView {
+    /// Shift's proportions, which §6.3 picked as the model.
+    static let height: CGFloat = 56
+    private static let insetH: CGFloat = HelmMetrics.s3
+    private static let insetV: CGFloat = 10
+    /// The one metric size. Was 15 (Overview) / 19 (Shift) / 19 bold (Updates).
+    private static let metricSize: CGFloat = 19
+    /// The caption size. Was 9.5 (Overview, Shift) / 10.5 medium (Updates).
+    private static let captionSize: CGFloat = 10.5
+
+    private let iconView = NSImageView()
+    private let valueLabel = NSTextField(labelWithString: "")
+    private let captionLabel = NSTextField(labelWithString: "")
+
+    /// Drives the metric's colour only. Left `nil` for the ordinary case (the
+    /// number reads in ink); set where the number itself carries a signal -
+    /// Shift's "overdue", Updates' "up to date" / "updates available".
+    ///
+    /// Contrast-corrected via `HelmContrast.legibleTintedText`, never painted
+    /// as the raw hue: two of the three copies this replaced set the value
+    /// label straight to `tint.hex(in: theme)`, which is the §5.7 "a hue is
+    /// safe as a fill, not automatically as text" mistake. In `solarized-dark`
+    /// the raw green measures 2.71:1 against this tile's own fill.
+    private(set) var tint: HelmTint?
+
+    /// Set to make the whole tile clickable. Nil leaves it a plain readout -
+    /// and, as with `HelmAccentRow.hover`, that is also why there is no hover
+    /// highlight on a tile that does nothing.
+    var onClick: (() -> Void)?
+
+    init(symbol: String, value: String = "", caption: String, tint: HelmTint? = nil) {
+        self.tint = tint
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: caption)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        valueLabel.stringValue = value
+        valueLabel.font = HelmType.metric(Self.metricSize)
+        valueLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.maximumNumberOfLines = 1
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        captionLabel.stringValue = caption
+        captionLabel.font = .systemFont(ofSize: Self.captionSize, weight: .medium)
+        captionLabel.lineBreakMode = .byTruncatingTail
+        captionLabel.maximumNumberOfLines = 1
+        captionLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let topRow = NSStackView(views: [iconView, valueLabel])
+        topRow.orientation = .horizontal
+        topRow.spacing = 6
+        topRow.alignment = .firstBaseline
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [topRow, captionLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.insetH),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -Self.insetH),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: Self.insetV),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -Self.insetV),
+            heightAnchor.constraint(equalToConstant: Self.height),
+        ])
+
+        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(tileClicked)))
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    @objc private func tileClicked() { onClick?() }
+
+    /// The number. Set as often as the data changes - the tile keeps its own
+    /// font and colour, so a page only ever writes the string.
+    var value: String {
+        get { valueLabel.stringValue }
+        set { valueLabel.stringValue = newValue }
+    }
+
+    var caption: String {
+        get { captionLabel.stringValue }
+        set { captionLabel.stringValue = newValue }
+    }
+
+    /// Re-tints the metric. For a tile whose signal changes with the data
+    /// rather than being fixed at construction.
+    func setTint(_ tint: HelmTint?, theme: HelmTheme) {
+        self.tint = tint
+        applyTheme(theme)
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        HelmCard.applyCardSurface(to: self, theme: theme, cornerRadius: HelmMetrics.rRow)
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let metricColor = tint.map {
+            HelmContrast.legibleTintedText(tintHex: $0.hex(in: theme), over: surface, theme: theme)
+        } ?? ink
+        valueLabel.textColor = metricColor
+        // The glyph tracks the metric, so a tinted tile reads as one signal
+        // rather than a coloured number beside an ink icon. `nonTextTarget`
+        // (3:1) is the right bar for a glyph, not the text one - the same
+        // split `IconTileView` already makes.
+        iconView.contentTintColor = metricColor.withAlphaComponent(0.85)
+        captionLabel.textColor = HelmTheme.mutedInk(theme)
+    }
+
+    // MARK: Probe / self-test surface
+
+    struct Geometry {
+        let tileFrame: NSRect
+        let cornerRadius: CGFloat
+        let fill: NSColor?
+        let borderWidth: CGFloat
+        let metricFont: NSFont?
+        let metricColor: NSColor?
+        let captionFont: NSFont?
+        let captionColor: NSColor?
+        let clickable: Bool
+    }
+
+    func debugGeometry() -> Geometry {
+        layoutSubtreeIfNeeded()
+        return Geometry(tileFrame: frame,
+                        cornerRadius: layer?.cornerRadius ?? 0,
+                        fill: layer?.backgroundColor.map { NSColor(cgColor: $0) ?? .clear },
+                        borderWidth: layer?.borderWidth ?? 0,
+                        metricFont: valueLabel.font,
+                        metricColor: valueLabel.textColor,
+                        captionFont: captionLabel.font,
+                        captionColor: captionLabel.textColor,
+                        clickable: onClick != nil)
+    }
+}
+
+// MARK: - HelmEmptyState
+
+/// The app's one "nothing here yet" placeholder: a glyph, an optional title,
+/// body copy, and an optional action.
+///
+/// **Why this exists.** The audit (§3.2 "Empty state") found **six**
+/// treatments for one job, including one that was left-aligned with no icon at
+/// all (`ReviewController`) and four that were a bare `NSTextField` with no
+/// container, no icon and no padding - which is what made Vault's empty panels
+/// collapse to 0pt-tall header-only slabs (§5.5).
+///
+/// **Nothing here is a new design.** This is `ShiftEmptyStateView` - the one
+/// §3.2 called "the good one", and the API every table-backed list in the app
+/// already calls - widened with `DocsController`'s Playbook empty state
+/// (§3.2's "most complete one": a 40pt glyph, a real title, and an action
+/// button). `ShiftEmptyStateView` is **gone**: this is that class, renamed and
+/// generalised, exactly as `ShiftPanelView` became `HelmCard` in Phase 1, so
+/// there is one empty state rather than two under different names.
+///
+/// Two sizes, no other knobs:
+/// - `.compact` - a 22pt glyph and body copy, for an empty list *inside* an
+///   already-titled card. `ShiftEmptyStateView`'s exact proportions; a title
+///   here would just restate the card header immediately above it.
+/// - `.standard` - a 40pt glyph, a title, body copy, and room for an action.
+///   `DocsController`'s proportions, for an empty state that is the whole page.
+///
+/// The `boxed` flag adds `HelmCard`'s own fill and border, for the two callers
+/// (Overview, Review) whose empty state sits directly on the page background
+/// with no card around it and needs a container of its own to read as an
+/// object.
+final class HelmEmptyState: NSView {
+    enum Size {
+        case compact
+        case standard
+
+        var glyphPointSize: CGFloat { self == .compact ? 22 : 40 }
+        var glyphWeight: NSFont.Weight { self == .compact ? .regular : .light }
+        var spacing: CGFloat { self == .compact ? HelmMetrics.s2 : 10 }
+        /// A `.compact` state fills whatever cell it is handed and centres in
+        /// it; a `.standard` one owns real vertical rhythm of its own.
+        var verticalPadding: CGFloat { self == .compact ? HelmMetrics.s2 : 22 }
+    }
+
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let bodyLabel = NSTextField(labelWithString: "")
+    private let stack: NSStackView
+    private let size: Size
+    private let boxed: Bool
+    private let accessory: NSView?
+
+    /// - Parameters:
+    ///   - symbol: the SF Symbol. Confirm a symbol actually resolves before
+    ///     shipping it - `NSImage(systemSymbolName:)` returns nil silently
+    ///     (the "anchor" isn't-a-symbol bug Phase 0 fixed).
+    ///   - title: `.standard`'s headline. Ignored (and hidden) when nil.
+    ///   - body: the explanation. Always present - it is the one thing every
+    ///     one of the six treatments this replaced actually had.
+    ///   - boxed: wrap in `HelmCard`'s fill/border, for a state sitting
+    ///     straight on the page background.
+    ///   - accessory: a caller-owned action view under the body - Docs' "Sync
+    ///     Now" `HelmButton` beside its progress spinner. Deliberately a view
+    ///     slot rather than a `(title, closure)` pair: the app's one empty
+    ///     state with an action already owns a button *and* a spinner it
+    ///     enables/disables around its own async work, so a component-owned
+    ///     button would have taken behaviour away rather than sharing it.
+    init(symbol: String,
+         title: String? = nil,
+         body: String,
+         size: Size = .compact,
+         boxed: Bool = false,
+         accessory: NSView? = nil) {
+        self.size = size
+        self.boxed = boxed
+        self.accessory = accessory
+
+        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title ?? body)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size.glyphPointSize,
+                                                                 weight: size.glyphWeight))
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.font = size == .compact ? HelmType.rowTitle() : HelmType.sectionTitle()
+        titleLabel.alignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.stringValue = title ?? ""
+        titleLabel.isHidden = (title?.isEmpty ?? true)
+
+        bodyLabel.font = HelmType.caption()
+        bodyLabel.alignment = .center
+        bodyLabel.lineBreakMode = .byWordWrapping
+        bodyLabel.maximumNumberOfLines = 0
+        bodyLabel.stringValue = body
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        var views: [NSView] = [iconView, titleLabel, bodyLabel]
+        if let accessory {
+            accessory.translatesAutoresizingMaskIntoConstraints = false
+            views.append(accessory)
+        }
+
+        stack = NSStackView(views: views)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = size.spacing
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        if accessory != nil { stack.setCustomSpacing(HelmMetrics.s4, after: bodyLabel) }
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            // Inequalities, not a width tie: this view is used both as a
+            // reused `NSTableView` cell (whose height the table decides) and
+            // as a page-filling container.
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: HelmMetrics.s3),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -HelmMetrics.s3),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: size.verticalPadding),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -size.verticalPadding),
+        ])
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    /// Rewrites the copy on an already-built instance - for a reused table
+    /// cell, or a state whose text depends on live data.
+    func setText(title: String? = nil, body: String) {
+        titleLabel.stringValue = title ?? ""
+        titleLabel.isHidden = (title?.isEmpty ?? true)
+        bodyLabel.stringValue = body
+        needsLayout = true
+    }
+
+    /// A wrapping `NSTextField` inside a centre-aligned stack whose own
+    /// leading/trailing constraints are *inequalities* has no width Auto
+    /// Layout is obliged to give it, so a long single-line string collapses to
+    /// a few characters per line - "No saved secrets yet. Use ..." rendering
+    /// as "No / sa". Inherited verbatim from `ShiftEmptyStateView`, where this
+    /// was a real, fixed bug: every pre-existing caller happened to pass short
+    /// or explicitly `\n`-broken copy, which hid it. Handing the label the real
+    /// available width each pass is a no-op for text that already fits.
+    override func layout() {
+        super.layout()
+        let cap: CGFloat = size == .compact ? .greatestFiniteMagnitude : 360
+        let available = min(bounds.width - 2 * HelmMetrics.s3, cap)
+        if available > 0, bodyLabel.preferredMaxLayoutWidth != available {
+            bodyLabel.preferredMaxLayoutWidth = available
+            bodyLabel.invalidateIntrinsicContentSize()
+        }
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        let muted = HelmTheme.mutedInk(theme)
+        iconView.contentTintColor = muted
+        // A `.compact` state is one muted line under a card header, so its
+        // title (when it has one) stays muted too; a `.standard` state is the
+        // whole page, and its headline carries the weight.
+        titleLabel.textColor = size == .compact ? muted : HelmTheme.nsColor(theme.chromeInkHex)
+        bodyLabel.textColor = muted
+        // A caller-owned accessory is a `HelmButton`/spinner the caller
+        // already themes (a `HelmButton` themes itself), so nothing here
+        // reaches into it.
+        if boxed {
+            HelmCard.applyCardSurface(to: self, theme: theme, cornerRadius: HelmMetrics.rRow)
+        }
+    }
+
+    // MARK: Probe / self-test surface
+
+    struct Geometry {
+        let frame: NSRect
+        let glyphFrame: NSRect
+        let titleVisible: Bool
+        let titleFont: NSFont?
+        let bodyFont: NSFont?
+        let bodyColor: NSColor?
+        let bodyFrame: NSRect
+        let hasAccessory: Bool
+        let boxed: Bool
+        let cornerRadius: CGFloat
+    }
+
+    func debugGeometry() -> Geometry {
+        layoutSubtreeIfNeeded()
+        return Geometry(frame: frame,
+                        glyphFrame: iconView.convert(iconView.bounds, to: self),
+                        titleVisible: !titleLabel.isHidden,
+                        titleFont: titleLabel.font,
+                        bodyFont: bodyLabel.font,
+                        bodyColor: bodyLabel.textColor,
+                        bodyFrame: bodyLabel.convert(bodyLabel.bounds, to: self),
+                        hasAccessory: accessory != nil,
+                        boxed: boxed,
+                        cornerRadius: layer?.cornerRadius ?? 0)
+    }
+}
+
+// MARK: - HelmSegmentedTabs
+
+/// The app's one sub-navigation control: labelled pills inside a bordered
+/// capsule, for switching between a fixed few views inside one destination.
+///
+/// **Why this exists.** The audit (§3.2 "Sub-navigation") found four
+/// treatments, and the interesting part of the finding was that two of them -
+/// Shift's segmented capsule and Docs' bare pills - were **already identical
+/// code** for the pill itself (label 12pt medium, radius 7, insets 10/6,
+/// `HoverHighlightView`, accent wash when active). Only the wrapper differed,
+/// so one recipe rendered as two different-looking controls a rail click
+/// apart. Updates' filter segments were a third near-copy at radius 6 in a
+/// radius-8 container.
+///
+/// **Nothing here is a new design.** This is `ShiftController.buildTabRow`
+/// (§6.3's named model) promoted: its pill, its capsule, its 3pt inset, its
+/// accent-wash active state.
+///
+/// **`TabChipView` is deliberately not folded in.** Console's and Tools' tab
+/// strips are closable, user-created, dynamic chips - "manage a set of tabs",
+/// not "switch between a fixed few views". Per the audit's own framing those
+/// are different concepts, and they stay separate.
+///
+/// **It themes itself**: call `applyTheme` from the page's
+/// `ThemeManager.shared.observe` closure, and `select(_:)` when the active
+/// view changes.
+final class HelmSegmentedTabs: NSView {
+    /// `.standard` is Shift's own geometry - a 12pt label at 10/6 insets.
+    /// `.compact` is Updates' denser filter row, which sits in a toolbar
+    /// beside a search field rather than under a page title.
+    enum Size {
+        case compact
+        case standard
+
+        var labelSize: CGFloat { self == .compact ? 11.5 : 12 }
+        var pillInsetH: CGFloat { self == .compact ? HelmMetrics.s3 : 10 }
+        var pillInsetV: CGFloat { self == .compact ? 5 : 6 }
+        var capsuleInset: CGFloat { self == .compact ? 2 : 3 }
+        var pillRadius: CGFloat { self == .compact ? HelmMetrics.rChip : 7 }
+        var capsuleRadius: CGFloat { self == .compact ? HelmMetrics.rControl : 9 }
+        var spacing: CGFloat { self == .compact ? 2 : 3 }
+    }
+
+    /// The capsule's own translucency - the value both implementations this
+    /// replaced already used. Named because the active pill's label contrast has
+    /// to be measured through it (see `applyTheme`).
+    static let capsuleAlpha: CGFloat = 0.6
+
+    /// One tab. `id` is the caller's own identifier for the view it switches
+    /// to - a `DocsTab`, a filter mode, a top-level Shift view - so a page
+    /// keeps its existing enum rather than being handed indices back.
+    struct Item {
+        let id: String
+        let title: String
+        init(id: String, title: String) {
+            self.id = id
+            self.title = title
+        }
+    }
+
+    private struct Pill {
+        let id: String
+        let container: HoverHighlightView
+        let label: NSTextField
+    }
+
+    private let capsule = NSView()
+    private var pills: [Pill] = []
+    private let size: Size
+    private var selectedID: String
+
+    /// Fires with the selected item's `id`. The component does **not** switch
+    /// anything itself - the page's own existing switch logic stays where it
+    /// is, exactly as before the migration.
+    var onSelect: ((String) -> Void)?
+
+    init(items: [Item], selected: String? = nil, size: Size = .standard) {
+        self.size = size
+        self.selectedID = selected ?? items.first?.id ?? ""
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        var pillViews: [NSView] = []
+        for item in items {
+            let container = HoverHighlightView()
+            container.cornerRadius = size.pillRadius
+            container.translatesAutoresizingMaskIntoConstraints = false
+            container.identifier = NSUserInterfaceItemIdentifier(item.id)
+
+            let label = NSTextField(labelWithString: item.title)
+            label.font = .systemFont(ofSize: size.labelSize, weight: .medium)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: size.pillInsetH),
+                label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -size.pillInsetH),
+                label.topAnchor.constraint(equalTo: container.topAnchor, constant: size.pillInsetV),
+                label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -size.pillInsetV),
+            ])
+            container.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(pillClicked(_:))))
+            pills.append(Pill(id: item.id, container: container, label: label))
+            pillViews.append(container)
+        }
+
+        let row = NSStackView(views: pillViews)
+        row.orientation = .horizontal
+        row.spacing = size.spacing
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        capsule.wantsLayer = true
+        capsule.layer?.cornerRadius = size.capsuleRadius
+        capsule.translatesAutoresizingMaskIntoConstraints = false
+        capsule.addSubview(row)
+        addSubview(capsule)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: capsule.leadingAnchor, constant: size.capsuleInset),
+            row.trailingAnchor.constraint(equalTo: capsule.trailingAnchor, constant: -size.capsuleInset),
+            row.topAnchor.constraint(equalTo: capsule.topAnchor, constant: size.capsuleInset),
+            row.bottomAnchor.constraint(equalTo: capsule.bottomAnchor, constant: -size.capsuleInset),
+
+            capsule.leadingAnchor.constraint(equalTo: leadingAnchor),
+            capsule.trailingAnchor.constraint(equalTo: trailingAnchor),
+            capsule.topAnchor.constraint(equalTo: topAnchor),
+            capsule.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        // Nothing sets a hugging priority here on purpose: this view has no
+        // intrinsic content size, so `setContentHuggingPriority` would be a
+        // no-op (AGENTS.md gotcha (12)). The capsule stays at its pills' width
+        // because the chain above - label insets -> pill -> row -> capsule ->
+        // self - is all required equalities, so its width is already fully
+        // determined. A caller that wants it to stretch has to say so with its
+        // own constraint.
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    @objc private func pillClicked(_ sender: NSClickGestureRecognizer) {
+        guard let id = sender.view?.identifier?.rawValue else { return }
+        // Repaint immediately, then hand the id up: a page that re-themes on
+        // switch would repaint anyway, but one that doesn't still gets the
+        // right active pill.
+        select(id)
+        onSelect?(id)
+    }
+
+    /// Moves the active pill without firing `onSelect` - for a page whose
+    /// view changed from somewhere else (a menu item, the search palette).
+    func select(_ id: String) {
+        selectedID = id
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    var selected: String { selectedID }
+
+    /// Rewrites one pill's label - for a tab carrying a live count.
+    func setTitle(_ title: String, forID id: String) {
+        pills.first { $0.id == id }?.label.stringValue = title
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        let muted = HelmTheme.mutedInk(theme)
+        // The capsule is the *container*, one step back from a card: a
+        // translucent surface with the same border alpha the two capsule
+        // implementations this replaced already used.
+        capsule.layer?.backgroundColor = surface.withAlphaComponent(Self.capsuleAlpha).cgColor
+        capsule.layer?.borderWidth = 1
+        capsule.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+
+        let activeWash = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
+        // What the active pill's label *actually* lands on: the accent wash
+        // composited over the capsule, which is itself translucent over
+        // whichever surface the capsule was placed on. Both candidates are
+        // scored, exactly as `HelmContrast.tintedSurface` does for a chip - a
+        // capsule under a page title sits on `backgroundHex`, one in a toolbar
+        // card on `chromeBackgroundHex`, and this control cannot know which.
+        //
+        // Composited with `HelmContrast.mix`, deliberately not
+        // `NSColor.blended(withFraction:of:)`: `blended` converts both operands
+        // into a common *calibrated* RGB space before mixing, so its result
+        // drifts from the straight-sRGB composite that alpha blending actually
+        // performs (and that `HelmContrast.ratio` then measures). The gap is
+        // small but real - it left the active label reading 4.39 in
+        // `gruvbox-light` while the correction believed it had cleared 4.5.
+        let washAlpha = Double(activeWash.alphaComponent)
+        let accentRGB = HelmContrast.components(accent)
+        let surfaceRGB = HelmContrast.components(surface)
+        let activeFills = [theme.chromeBackgroundHex, theme.backgroundHex].map { behindHex -> NSColor in
+            let behind = HelmContrast.components(HelmTheme.nsColor(behindHex))
+            let capsuleFill = HelmContrast.mix(surfaceRGB, behind, Double(Self.capsuleAlpha))
+            return HelmContrast.color(HelmContrast.mix(accentRGB, capsuleFill, washAlpha))
+        }
+        // The accent as *text*: corrected, never the raw hue. Both copies this
+        // replaced painted `label.textColor = accent` directly - the §5.7
+        // mistake, and it measures below the floor in several palettes.
+        let activeInk = HelmContrast.legibleTintedText(tintHex: theme.accentHex,
+                                                      overAnyOf: activeFills, theme: theme)
+        for pill in pills {
+            let isActive = pill.id == selectedID
+            pill.container.normalColor = isActive ? activeWash : .clear
+            pill.container.hoverColor = isActive ? activeWash : line.withAlphaComponent(0.25)
+            pill.label.textColor = isActive ? activeInk : muted
+            pill.label.font = .systemFont(ofSize: size.labelSize, weight: isActive ? .semibold : .medium)
+        }
+    }
+
+    // MARK: Probe / self-test surface
+
+    struct Geometry {
+        let capsuleRadius: CGFloat
+        let capsuleBorderWidth: CGFloat
+        let capsuleFill: NSColor?
+        let pillCount: Int
+        let pillRadii: [CGFloat]
+        let activeID: String
+        let activeFill: NSColor?
+        let activeInk: NSColor?
+        let inactiveInk: NSColor?
+        let labelPointSizes: [CGFloat]
+    }
+
+    func debugGeometry() -> Geometry {
+        layoutSubtreeIfNeeded()
+        let active = pills.first { $0.id == selectedID }
+        let inactive = pills.first { $0.id != selectedID }
+        return Geometry(capsuleRadius: capsule.layer?.cornerRadius ?? 0,
+                        capsuleBorderWidth: capsule.layer?.borderWidth ?? 0,
+                        capsuleFill: capsule.layer?.backgroundColor.map { NSColor(cgColor: $0) ?? .clear },
+                        pillCount: pills.count,
+                        pillRadii: pills.map { $0.container.cornerRadius },
+                        activeID: selectedID,
+                        activeFill: active?.container.normalColor,
+                        activeInk: active?.label.textColor,
+                        inactiveInk: inactive?.label.textColor,
+                        labelPointSizes: pills.compactMap { $0.label.font?.pointSize })
     }
 }

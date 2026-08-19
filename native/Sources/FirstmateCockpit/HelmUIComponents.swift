@@ -292,6 +292,50 @@ enum HelmContrast {
                              washAlpha: washSteps.last ?? 0.04)
     }
 
+    /// A tint hue used as **text** on an already-known opaque fill, corrected
+    /// to clear `textTarget` by the smallest blend toward the theme's own ink.
+    ///
+    /// The counterpart to `tintedSurface` for the case where the fill is
+    /// already decided and only the label can move - a `HelmButton`'s tinted
+    /// label, a `HelmStatTile`'s tinted metric. Blending toward `chromeInkHex`
+    /// rather than toward black/white (which is what `HelmButton.legible`
+    /// does) preserves as much of the hue as the floor allows, so an "overdue"
+    /// number still reads red rather than collapsing to near-ink.
+    ///
+    /// Promoted here in Phase 4 from `HelmButton`'s own private copy: two of
+    /// the three stat-tile implementations this phase replaced set their value
+    /// label to `HelmTheme.nsColor(tint.hex(in: theme))` directly, which is
+    /// exactly the §5.7 "a hue is safe as a fill, not automatically as text"
+    /// mistake, so the correction had to be reachable from more than one
+    /// component.
+    static func legibleTintedText(tintHex: String, over surface: NSColor, theme: HelmTheme) -> NSColor {
+        legibleTintedText(tintHex: tintHex, overAnyOf: [surface], theme: theme)
+    }
+
+    /// The same, for a component that does not know which of several fills its
+    /// label will land on and has to clear the floor on all of them - the way
+    /// `tintedSurface` already satisfies both `chromeBackgroundHex` and
+    /// `backgroundHex`. `HelmSegmentedTabs`' active pill needs this: its wash
+    /// composites over a *translucent* capsule, so the real fill differs
+    /// depending on whether the capsule sits on a card or the bare page.
+    static func legibleTintedText(tintHex: String, overAnyOf surfaces: [NSColor], theme: HelmTheme) -> NSColor {
+        let hue = HelmTheme.nsColor(tintHex)
+        func clearsAll(_ color: NSColor) -> Bool {
+            surfaces.allSatisfy { ratio(color, $0) >= textTarget }
+        }
+        if clearsAll(hue) { return hue }
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        for step in stride(from: 0.05, through: 1.0, by: 0.05) {
+            guard let blended = hue.blended(withFraction: CGFloat(step), of: ink) else { break }
+            if clearsAll(blended) { return blended }
+        }
+        // Even pure ink may not clear the floor against an unusual fill; fall
+        // back to the black/white correction against the worst surface, which
+        // always can.
+        let worst = surfaces.min { ratio(ink, $0) < ratio(ink, $1) } ?? (surfaces.first ?? .white)
+        return HelmButton.legible(ink, over: worst)
+    }
+
     /// Smallest `t` in `[0, 1]` such that `mix(toward, from, t)` clears
     /// `target` against **every** candidate background, or `1` if none does.
     private static func smallestBlend(from: (Double, Double, Double),

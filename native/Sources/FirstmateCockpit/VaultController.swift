@@ -467,13 +467,13 @@ final class VaultController: NSViewController {
     /// which is why an empty Secrets / Verified Launchers panel collapsed to a
     /// header-only slab - measured live at `bodyH=0` for both, exactly the
     /// state a fresh machine (or a machine where `av list` returns nothing)
-    /// shows (audit §5.5). `ShiftEmptyStateView` is this app's existing
-    /// centered icon + wrapping copy empty state, already used by Shift, the
-    /// command library, Dictation and the project detail page; giving it a
-    /// real height is what makes the panel actually occupy space. Sized and
-    /// wired exactly like `ShiftController`'s own call sites.
+    /// shows (audit §5.5). `HelmEmptyState` is the app's one centered icon +
+    /// wrapping copy empty state (`HelmDesignSystem.swift`, audit §6.3
+    /// component 5 - the class this call site used to know as
+    /// `ShiftEmptyStateView`, before Phase 4 promoted it); giving it a real
+    /// height is what makes the panel actually occupy space.
     private func addEmptyState(to stack: NSStackView, symbol: String, text: String) {
-        let empty = ShiftEmptyStateView(symbol: symbol, text: text)
+        let empty = HelmEmptyState(symbol: symbol, body: text)
         empty.applyTheme(theme)
         empty.translatesAutoresizingMaskIntoConstraints = false
         empty.heightAnchor.constraint(equalToConstant: 90).isActive = true

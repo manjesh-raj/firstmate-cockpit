@@ -31,7 +31,10 @@ final class ShiftController: NSViewController {
     private let syncPill = NSView()
     private let syncPillLabel = NSTextField(labelWithString: "")
     private let statsRow = NSStackView()
-    private var stashedTileParts: [(container: NSView, valueLabel: NSTextField, nameLabel: NSTextField, tint: HelmTint)] = []
+    /// Live dashboard stat tiles. Each themes itself; this list only exists so
+    /// `applyTheme` can reach the ones currently built (the row is rebuilt from
+    /// scratch on every render).
+    private var statTiles: [HelmStatTile] = []
 
     private let taskListView = ShiftTaskListView()
     private let taskListScroll = NSScrollView()
@@ -59,12 +62,11 @@ final class ShiftController: NSViewController {
     /// consolidated destination (the captain's phase-1 decision, restated in
     /// AGENTS.md) while still giving Weekly Review "its own view" rather than
     /// squeezing it into the daily dashboard.
-    private enum ShiftTopLevelView { case dashboard, weeklyReview, commandLibrary }
+    /// `String`-backed so it can be the id `HelmSegmentedTabs` hands back -
+    /// the shared component deals in caller-owned ids rather than indices, so a
+    /// page keeps its own enum.
+    private enum ShiftTopLevelView: String { case dashboard, weeklyReview, commandLibrary }
     private var topLevelView: ShiftTopLevelView = .dashboard
-    private let dashboardTab = HoverHighlightView()
-    private let dashboardTabLabel = NSTextField(labelWithString: "My Tasks")
-    private let reviewTab = HoverHighlightView()
-    private let reviewTabLabel = NSTextField(labelWithString: "Weekly Review")
     private let dashboardContainer = NSStackView()
     private let weeklyReviewContainer = NSStackView()
 
@@ -77,14 +79,16 @@ final class ShiftController: NSViewController {
     /// `AppShellController`'s init chain the way the shared `ShiftStore` is.
     private let commandLibraryStore = CommandLibraryStore()
     private lazy var commandLibraryView = CommandLibraryPageView(store: commandLibraryStore)
-    private let commandsTab = HoverHighlightView()
-    private let commandsTabLabel = NSTextField(labelWithString: "DevOps Commands")
-    /// Wraps the three tab pills in one bordered/tinted segmented-control
-    /// look (mockup: the tab row sits inside its own rounded, bordered
-    /// group) instead of three loose pills floating in space - the same
-    /// `segmentedBackground` idiom `UpdatesController`'s All/Needs Attention
-    /// filter already established.
-    private let tabsBackground = NSView()
+    /// The three-way My Tasks / Weekly Review / DevOps Commands switcher, built
+    /// from the app's shared `HelmSegmentedTabs` (`HelmDesignSystem.swift`,
+    /// audit §6.3 component 6). This page's own capsule was the model the
+    /// component adopted, so it renders as before; what changed is that Docs'
+    /// and Updates' near-identical copies now render the same way too.
+    private let tabs = HelmSegmentedTabs(items: [
+        .init(id: ShiftTopLevelView.dashboard.rawValue, title: "My Tasks"),
+        .init(id: ShiftTopLevelView.weeklyReview.rawValue, title: "Weekly Review"),
+        .init(id: ShiftTopLevelView.commandLibrary.rawValue, title: "DevOps Commands"),
+    ], selected: ShiftTopLevelView.dashboard.rawValue)
 
     /// Phase 2 (fm/grandline-devops-command-library-phase2) - forward-don't-
     /// own, same convention as every other page's `onRunCommand`/`onRun`:
@@ -95,7 +99,8 @@ final class ShiftController: NSViewController {
     private let reviewGreeting = NSTextField(labelWithString: "")
     private let reviewSubtitle = NSTextField(labelWithString: "What got done, what got pushed back, what's coming.")
     private let reviewStatsRow = NSStackView()
-    private var reviewStashedTileParts: [(container: NSView, valueLabel: NSTextField, nameLabel: NSTextField, tint: HelmTint)] = []
+    /// The same, for Weekly Review's own independently-rebuilt row.
+    private var reviewStatTiles: [HelmStatTile] = []
     private let reviewPushedBackPanel = HelmCard()
     private let reviewPushedBackHeader = NSTextField(labelWithString: "Pushed back repeatedly")
     private let reviewPushedBackStack = NSStackView()
@@ -387,43 +392,17 @@ final class ShiftController: NSViewController {
         statsRow.translatesAutoresizingMaskIntoConstraints = false
     }
 
-    private func statTile(icon: String, value: String, label: String, tint: HelmTint = .neutral) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = ShiftFont.mono(19, weight: .semibold)
-
-        let nameLabel = NSTextField(labelWithString: label)
-        nameLabel.font = .systemFont(ofSize: 9.5)
-
-        let topRow = NSStackView(views: [iconView, valueLabel])
-        topRow.orientation = .horizontal
-        topRow.spacing = 5
-        topRow.alignment = .firstBaseline
-
-        let stack = NSStackView(views: [topRow, nameLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            container.heightAnchor.constraint(equalToConstant: 56),
-        ])
-        stashedTileParts.append((container, valueLabel, nameLabel, tint))
-        return container
+    /// One `HelmStatTile` - the app's shared stat tile
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 4). This page's own copy
+    /// was the model the component adopted (12/10 padding, a 19pt metric, a
+    /// 56pt tile); what changed in the migration is that the tint now reaches
+    /// the metric through `HelmContrast.legibleTintedText` rather than as the
+    /// raw hue, which measured below the text floor in several palettes
+    /// (audit §5.7).
+    private func statTile(icon: String, value: String, label: String, tint: HelmTint? = nil) -> NSView {
+        let tile = HelmStatTile(symbol: icon, value: value, caption: label, tint: tint)
+        statTiles.append(tile)
+        return tile
     }
 
     /// A panel header row: icon + serif title + a small muted monospace
@@ -552,59 +531,21 @@ final class ShiftController: NSViewController {
 
     // MARK: Weekly Review
 
-    /// The mockup's `.shift-nav .item` tab look, as three clickable
-    /// `HoverHighlightView`s rather than an `NSSegmentedControl` - the same
-    /// custom-pill-control convention the Updates page's All/Needs-attention
-    /// filter already established (see AGENTS.md's Tools section). Wrapped
-    /// in `tabsBackground` so the three read as one unified segmented
-    /// control (mockup: a bordered, tinted group), not three pills loose on
-    /// the page background.
     private func buildTabRow() -> NSView {
-        let dashboardRow = tabItem(dashboardTab, label: dashboardTabLabel, action: #selector(dashboardTabClicked))
-        let reviewRow = tabItem(reviewTab, label: reviewTabLabel, action: #selector(reviewTabClicked))
-        let commandsRow = tabItem(commandsTab, label: commandsTabLabel, action: #selector(commandsTabClicked))
-        let row = NSStackView(views: [dashboardRow, reviewRow, commandsRow])
-        row.orientation = .horizontal
-        row.spacing = 3
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        tabsBackground.wantsLayer = true
-        tabsBackground.layer?.cornerRadius = 9
-        tabsBackground.translatesAutoresizingMaskIntoConstraints = false
-        tabsBackground.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: tabsBackground.leadingAnchor, constant: 3),
-            row.trailingAnchor.constraint(equalTo: tabsBackground.trailingAnchor, constant: -3),
-            row.topAnchor.constraint(equalTo: tabsBackground.topAnchor, constant: 3),
-            row.bottomAnchor.constraint(equalTo: tabsBackground.bottomAnchor, constant: -3),
-        ])
-        tabsBackground.setContentHuggingPriority(.required, for: .horizontal)
-        return tabsBackground
+        tabs.onSelect = { [weak self] id in
+            guard let self, let view = ShiftTopLevelView(rawValue: id) else { return }
+            self.switchTopLevelView(view)
+        }
+        return tabs
     }
-
-    private func tabItem(_ container: HoverHighlightView, label: NSTextField, action: Selector) -> NSView {
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        container.cornerRadius = 7
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
-        ])
-        let click = NSClickGestureRecognizer(target: self, action: action)
-        container.addGestureRecognizer(click)
-        return container
-    }
-
-    @objc private func dashboardTabClicked() { switchTopLevelView(.dashboard) }
-    @objc private func reviewTabClicked() { switchTopLevelView(.weeklyReview) }
-    @objc private func commandsTabClicked() { switchTopLevelView(.commandLibrary) }
 
     private func switchTopLevelView(_ view: ShiftTopLevelView) {
         topLevelView = view
+        // Keeps the active pill right when the view was changed from somewhere
+        // other than a pill click - the Shift menu, the search palette,
+        // `showWeeklyReview()`/`showDashboard()`. A no-op on a real pill click,
+        // which has already moved it.
+        tabs.select(view.rawValue)
         dashboardContainer.isHidden = view != .dashboard
         weeklyReviewContainer.isHidden = view != .weeklyReview
         commandLibraryView.view.isHidden = view != .commandLibrary
@@ -667,7 +608,7 @@ final class ShiftController: NSViewController {
             reviewStatsRow.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
-        reviewStashedTileParts.removeAll()
+        reviewStatTiles.removeAll()
         reviewStatsRow.addArrangedSubview(reviewStatTile(icon: "checkmark.circle", value: "\(summary.completedCount)", label: "completed this week"))
         reviewStatsRow.addArrangedSubview(reviewStatTile(icon: "arrow.uturn.backward", value: "\(summary.pushedBack.count)", label: "pushed back 2+ times", tint: .warn))
         reviewStatsRow.addArrangedSubview(reviewStatTile(icon: "calendar", value: "\(summary.upcomingCount)", label: "coming up next week"))
@@ -677,7 +618,7 @@ final class ShiftController: NSViewController {
             v.removeFromSuperview()
         }
         if summary.pushedBack.isEmpty {
-            let empty = ShiftEmptyStateView(symbol: "checkmark.seal", text: "Nothing's been pushed back more than once.")
+            let empty = HelmEmptyState(symbol: "checkmark.seal", body: "Nothing's been pushed back more than once.")
             empty.applyTheme(theme)
             empty.translatesAutoresizingMaskIntoConstraints = false
             empty.heightAnchor.constraint(equalToConstant: 90).isActive = true
@@ -693,48 +634,18 @@ final class ShiftController: NSViewController {
         applyTheme()
     }
 
-    /// Duplicates `statTile`'s layout rather than sharing its `stashedTileParts`
-    /// array - the dashboard and Weekly Review stat rows are rebuilt
-    /// independently (only one is ever visible), and sharing one array would
-    /// mean whichever rebuilds last wins the next `applyTheme()` pass for
-    /// both.
-    private func reviewStatTile(icon: String, value: String, label: String, tint: HelmTint = .neutral) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = ShiftFont.mono(19, weight: .semibold)
-
-        let nameLabel = NSTextField(labelWithString: label)
-        nameLabel.font = .systemFont(ofSize: 9.5)
-
-        let topRow = NSStackView(views: [iconView, valueLabel])
-        topRow.orientation = .horizontal
-        topRow.spacing = 5
-        topRow.alignment = .firstBaseline
-
-        let stack = NSStackView(views: [topRow, nameLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            container.heightAnchor.constraint(equalToConstant: 56),
-        ])
-        reviewStashedTileParts.append((container, valueLabel, nameLabel, tint))
-        return container
+    /// The Weekly Review stat row. This used to be `reviewStatTile`, a
+    /// byte-for-byte duplicate of `statTile` above whose own doc comment
+    /// explained that it existed only because the two rows shared one theming
+    /// array, so "whichever rebuilds last wins the next `applyTheme()` pass for
+    /// both". A `HelmStatTile` themes itself, so that reason is gone and both
+    /// rows now build the same tile - the only thing they still keep apart is
+    /// which list of live tiles `applyTheme` hands the theme to, since the two
+    /// rows are rebuilt independently.
+    private func reviewStatTile(icon: String, value: String, label: String, tint: HelmTint? = nil) -> NSView {
+        let tile = HelmStatTile(symbol: icon, value: value, caption: label, tint: tint)
+        reviewStatTiles.append(tile)
+        return tile
     }
 
     private func reviewPushedBackRow(_ item: ShiftPushedBackItem) -> NSView {
@@ -910,7 +821,7 @@ final class ShiftController: NSViewController {
             statsRow.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
-        stashedTileParts.removeAll()
+        statTiles.removeAll()
         statsRow.addArrangedSubview(statTile(icon: "sun.max", value: "\(tasksToday)", label: "tasks today"))
         statsRow.addArrangedSubview(statTile(icon: "bell", value: "\(followUps)", label: "follow-ups"))
         statsRow.addArrangedSubview(statTile(icon: "exclamationmark.triangle", value: "\(overdue)", label: "overdue", tint: .critical))
@@ -934,7 +845,7 @@ final class ShiftController: NSViewController {
             // never accumulate across repeated rebuilds - `rebuildProjectsGrid`
             // removes the view from its superview each time but never tears
             // down constraints, which would otherwise pile up duplicates.
-            let empty = ShiftEmptyStateView(symbol: "shippingbox", text: "No projects yet.\nCreate one to start tracking tasks against it.")
+            let empty = HelmEmptyState(symbol: "shippingbox", body: "No projects yet.\nCreate one to start tracking tasks against it.")
             empty.applyTheme(theme)
             empty.translatesAutoresizingMaskIntoConstraints = false
             empty.heightAnchor.constraint(equalToConstant: 110).isActive = true
@@ -1412,7 +1323,6 @@ final class ShiftController: NSViewController {
     private func applyTheme() {
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let muted = HelmTheme.mutedInk(theme)
 
@@ -1423,13 +1333,7 @@ final class ShiftController: NSViewController {
         projectsHeader.textColor = ink
         detailTasksHeader.textColor = ink
 
-        for (container, valueLabel, nameLabel, tint) in stashedTileParts {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-            valueLabel.textColor = tint == .neutral ? ink : HelmTheme.nsColor(tint.hex(in: theme))
-            nameLabel.textColor = muted
-        }
+        for tile in statTiles { tile.applyTheme(theme) }
         taskPanel.applyTheme(theme)
         followUpPanel.applyTheme(theme)
         projectsPanel.applyTheme(theme)
@@ -1460,33 +1364,13 @@ final class ShiftController: NSViewController {
         }
         detailTaskListView.applyTheme(theme)
 
-        let accent = HelmTheme.nsColor(theme.accentHex)
-        let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
-        tabsBackground.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-        tabsBackground.layer?.borderWidth = 1
-        tabsBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        for (container, label, isActive) in [
-            (dashboardTab, dashboardTabLabel, topLevelView == .dashboard),
-            (reviewTab, reviewTabLabel, topLevelView == .weeklyReview),
-            (commandsTab, commandsTabLabel, topLevelView == .commandLibrary),
-        ] {
-            container.normalColor = isActive ? accentTint : .clear
-            container.hoverColor = isActive ? accentTint : line.withAlphaComponent(0.25)
-            label.textColor = isActive ? accent : muted
-            label.font = .systemFont(ofSize: 12, weight: isActive ? .semibold : .medium)
-        }
+        tabs.applyTheme(theme)
         commandLibraryView.applyTheme(theme)
 
         reviewGreeting.textColor = ink
         reviewSubtitle.textColor = muted
         reviewPushedBackHeader.textColor = ink
-        for (container, valueLabel, nameLabel, tint) in reviewStashedTileParts {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-            valueLabel.textColor = tint == .neutral ? ink : HelmTheme.nsColor(tint.hex(in: theme))
-            nameLabel.textColor = muted
-        }
+        for tile in reviewStatTiles { tile.applyTheme(theme) }
         reviewPushedBackPanel.applyTheme(theme)
     }
 }

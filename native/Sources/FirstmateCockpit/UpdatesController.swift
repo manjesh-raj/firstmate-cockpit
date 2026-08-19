@@ -93,39 +93,31 @@ final class UpdatesController: NSViewController {
         let separators: [NSView]
     }
 
-    private enum StatSemantic { case neutral, success, warning }
-
-    private struct StatTile {
-        let valueLabel: NSTextField
-        let iconView: NSImageView
-        let semantic: StatSemantic
-    }
-
-    private enum ToolFilterMode { case all, needsAttention }
+    /// `String`-backed so it can be the id `HelmSegmentedTabs` hands back - the
+    /// shared component deals in caller-owned ids rather than indices.
+    private enum ToolFilterMode: String { case all, needsAttention }
 
     private var rows: [UpdateRow] = DependencyCatalog.items.map(UpdateRow.init)
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var scrollView: NSScrollView!
-    /// Stat-tile backgrounds. These share `HelmCard`'s fill/border (via
-    /// `HelmCard.applyCardSurface`) so this page has one card surface, but
-    /// keep their own tighter radius until `HelmStatTile` lands (audit §6.3
-    /// component 4, a later phase). Real page sections are `cards` below.
-    private var statTileBackgrounds: [NSView] = []
     private var cards: [HelmCard] = []
     private var separators: [NSView] = []
     private var categorySections: [CategorySection] = []
-    private var statTiles: [StatTile] = []
+    /// The summary strip's four tiles. Each themes itself; this list is what
+    /// `renderStats` writes the numbers into and `applyTheme` hands the theme to.
+    private var statTiles: [HelmStatTile] = []
     private let searchField = NSSearchField()
     private var filterMode: ToolFilterMode = .all
-    /// The two "All / Needs attention" segments (mockup's `.segmented`),
-    /// built as plain clickable views rather than `NSSegmentedControl` to
-    /// match how this codebase already builds custom pill controls
-    /// (`checkAllPill`, `SettingsController`'s theme/session cards).
-    private let allSegment = NSView()
-    private let allSegmentLabel = NSTextField(labelWithString: "All")
-    private let needsAttentionSegment = NSView()
-    private let needsAttentionSegmentLabel = NSTextField(labelWithString: "Needs Attention")
-    private let segmentedBackground = NSView()
+    /// The All / Needs Attention filter, now the app's shared
+    /// `HelmSegmentedTabs` (`HelmDesignSystem.swift`, audit §6.3 component 6) at
+    /// its `.compact` size - this control sits in a toolbar beside a search
+    /// field rather than under a page title, which is what `.compact` exists
+    /// for. It was a third near-copy of Shift's and Docs' pill recipe, at
+    /// radius 6 in a radius-8 container.
+    private let filterTabs = HelmSegmentedTabs(items: [
+        .init(id: ToolFilterMode.all.rawValue, title: "All"),
+        .init(id: ToolFilterMode.needsAttention.rawValue, title: "Needs Attention"),
+    ], selected: ToolFilterMode.all.rawValue, size: .compact)
     /// Set by `AppShellController` (mirrors `BootstrapController.onRunCommand`'s
     /// closure-injection pattern) so a `.notInstalled` row's action can select
     /// the Bootstrap rail destination without this controller knowing
@@ -260,45 +252,11 @@ final class UpdatesController: NSViewController {
     /// the live search field, and the Refresh action (swapped for a progress
     /// bar+label while a check-all is running) pinned to the trailing edge.
     private func buildToolbarRow() -> NSView {
-        allSegmentLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
-        needsAttentionSegmentLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
-        for (segment, label, mode): (NSView, NSTextField, ToolFilterMode) in [
-            (allSegment, allSegmentLabel, .all),
-            (needsAttentionSegment, needsAttentionSegmentLabel, .needsAttention),
-        ] {
-            segment.wantsLayer = true
-            segment.layer?.cornerRadius = 6
-            segment.translatesAutoresizingMaskIntoConstraints = false
-            label.translatesAutoresizingMaskIntoConstraints = false
-            segment.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: segment.leadingAnchor, constant: 12),
-                label.trailingAnchor.constraint(equalTo: segment.trailingAnchor, constant: -12),
-                label.topAnchor.constraint(equalTo: segment.topAnchor, constant: 5),
-                label.bottomAnchor.constraint(equalTo: segment.bottomAnchor, constant: -5),
-            ])
-            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(segmentTapped(_:)))
-            segment.addGestureRecognizer(recognizer)
-            segment.identifier = NSUserInterfaceItemIdentifier(mode == .all ? "all" : "needsAttention")
+        filterTabs.onSelect = { [weak self] id in
+            guard let self else { return }
+            self.filterMode = ToolFilterMode(rawValue: id) ?? .all
+            self.applyFilter()
         }
-
-        let segmentsStack = NSStackView(views: [allSegment, needsAttentionSegment])
-        segmentsStack.orientation = .horizontal
-        segmentsStack.spacing = 2
-        segmentsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        segmentedBackground.wantsLayer = true
-        segmentedBackground.layer?.cornerRadius = 8
-        segmentedBackground.translatesAutoresizingMaskIntoConstraints = false
-        segmentedBackground.addSubview(segmentsStack)
-        NSLayoutConstraint.activate([
-            segmentsStack.leadingAnchor.constraint(equalTo: segmentedBackground.leadingAnchor, constant: 2),
-            segmentsStack.trailingAnchor.constraint(equalTo: segmentedBackground.trailingAnchor, constant: -2),
-            segmentsStack.topAnchor.constraint(equalTo: segmentedBackground.topAnchor, constant: 2),
-            segmentsStack.bottomAnchor.constraint(equalTo: segmentedBackground.bottomAnchor, constant: -2),
-        ])
-        segmentedBackground.setContentHuggingPriority(.required, for: .horizontal)
-        segmentedBackground.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         searchField.placeholderString = "Filter tools\u{2026}"
         searchField.delegate = self
@@ -357,36 +315,14 @@ final class UpdatesController: NSViewController {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let row = NSStackView(views: [
-            segmentedBackground, searchField, spacer,
+            filterTabs, searchField, spacer,
             checkAllProgressLabel, checkAllProgressBar, checkAllPill,
         ])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
-        updateSegmentedAppearance()
         return row
-    }
-
-    @objc private func segmentTapped(_ sender: NSClickGestureRecognizer) {
-        guard let id = sender.view?.identifier?.rawValue else { return }
-        filterMode = id == "needsAttention" ? .needsAttention : .all
-        updateSegmentedAppearance()
-        applyFilter()
-    }
-
-    private func updateSegmentedAppearance() {
-        let activeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        let muted = HelmTheme.mutedInk(theme)
-        for (segment, label, mode): (NSView, NSTextField, ToolFilterMode) in [
-            (allSegment, allSegmentLabel, .all),
-            (needsAttentionSegment, needsAttentionSegmentLabel, .needsAttention),
-        ] {
-            let isActive = filterMode == mode
-            segment.layer?.backgroundColor = isActive ? activeBg.cgColor : NSColor.clear.cgColor
-            label.textColor = isActive ? ink : muted
-        }
     }
 
     @objc private func checkAllTapped() { checkAll() }
@@ -434,20 +370,23 @@ final class UpdatesController: NSViewController {
 
     // MARK: Stats strip
 
+    /// The four-tile summary strip, built from the app's shared `HelmStatTile`
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 4). This page's own copy
+    /// was the loudest of the three the audit measured - a 19pt **bold** metric
+    /// at 15/13 padding on a `surface @ 0.60` fill, 67pt tall against Overview's
+    /// 50 - for the same job. Two behaviours are unchanged: the per-tile
+    /// neutral/success/warning signal (now a `HelmTint`, and contrast-corrected
+    /// rather than painted as the raw hue - audit §5.7), and `renderStats`
+    /// writing only the numbers.
     private func buildStatsRow() -> NSView {
-        let installed = statCard(icon: "shippingbox", title: "Tools Installed")
-        let upToDate = statCard(icon: "checkmark.circle", title: "Up to Date")
-        let updatesAvailable = statCard(icon: "arrow.up.circle", title: "Updates Available")
-        let lastChecked = statCard(icon: "clock", title: "Last Checked")
-
         statTiles = [
-            StatTile(valueLabel: installed.valueLabel, iconView: installed.iconView, semantic: .neutral),
-            StatTile(valueLabel: upToDate.valueLabel, iconView: upToDate.iconView, semantic: .success),
-            StatTile(valueLabel: updatesAvailable.valueLabel, iconView: updatesAvailable.iconView, semantic: .warning),
-            StatTile(valueLabel: lastChecked.valueLabel, iconView: lastChecked.iconView, semantic: .neutral),
+            HelmStatTile(symbol: "shippingbox", value: "0", caption: "Tools Installed"),
+            HelmStatTile(symbol: "checkmark.circle", value: "0", caption: "Up to Date", tint: .good),
+            HelmStatTile(symbol: "arrow.up.circle", value: "0", caption: "Updates Available", tint: .warn),
+            HelmStatTile(symbol: "clock", value: "0", caption: "Last Checked"),
         ]
 
-        let row = NSStackView(views: [installed.container, upToDate.container, updatesAvailable.container, lastChecked.container])
+        let row = NSStackView(views: statTiles)
         row.orientation = .horizontal
         row.distribution = .fillEqually
         row.spacing = 12
@@ -455,64 +394,16 @@ final class UpdatesController: NSViewController {
         return row
     }
 
-    /// A stat tile: icon + big number on top, label beneath. Shares
-    /// `HelmCard`'s fill and border (`HelmCard.applyCardSurface`, applied in
-    /// `applyTheme`) so the page has one card surface, at its own tighter
-    /// radius until `HelmStatTile` unifies the three copies of this shape.
-    private func statCard(icon: String, title: String) -> (container: NSView, valueLabel: NSTextField, iconView: NSImageView, titleLabel: NSTextField) {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let valueLabel = NSTextField(labelWithString: "0")
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 19, weight: .bold)
-        valueLabel.lineBreakMode = .byTruncatingTail
-        valueLabel.maximumNumberOfLines = 1
-        valueLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let topRow = NSStackView(views: [iconView, valueLabel])
-        topRow.orientation = .horizontal
-        topRow.spacing = 6
-        topRow.alignment = .firstBaseline
-        topRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [topRow, titleLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 15),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -15),
-            stack.topAnchor.constraint(equalTo: background.topAnchor, constant: 13),
-            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -13),
-        ])
-        statTileBackgrounds.append(background)
-        statTitleLabels.append(titleLabel)
-        return (background, valueLabel, iconView, titleLabel)
-    }
-
-    private var statTitleLabels: [NSTextField] = []
 
     private func renderStats() {
         let total = rows.count
         let upToDate = rows.filter { $0.status == .upToDate }.count
         let needsUpdate = rows.filter { $0.status == .updateAvailable || $0.status == .notInstalled }.count
         guard statTiles.count == 4 else { return }
-        statTiles[0].valueLabel.stringValue = "\(total)"
-        statTiles[1].valueLabel.stringValue = "\(upToDate)"
-        statTiles[2].valueLabel.stringValue = "\(needsUpdate)"
-        statTiles[3].valueLabel.stringValue = relativeLastChecked()
+        statTiles[0].value = "\(total)"
+        statTiles[1].value = "\(upToDate)"
+        statTiles[2].value = "\(needsUpdate)"
+        statTiles[3].value = relativeLastChecked()
     }
 
     private func relativeLastChecked() -> String {
@@ -878,7 +769,6 @@ final class UpdatesController: NSViewController {
 
     private func applyTheme() {
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
         checkAllPill.layer?.backgroundColor = accent.cgColor
@@ -889,30 +779,12 @@ final class UpdatesController: NSViewController {
         checkAllIcon.contentTintColor = onAccent
         checkAllLabel.textColor = onAccent
         checkAllProgressLabel.textColor = HelmTheme.mutedInk(theme)
-        segmentedBackground.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-        segmentedBackground.layer?.borderWidth = 1
-        segmentedBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        updateSegmentedAppearance()
+        filterTabs.applyTheme(theme)
         for card in cards { card.applyTheme(theme) }
-        for v in statTileBackgrounds {
-            HelmCard.applyCardSurface(to: v, theme: theme, cornerRadius: 10)
-        }
         for v in separators {
             v.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
         }
-        for label in statTitleLabels {
-            label.textColor = HelmTheme.mutedInk(theme)
-        }
-        for tile in statTiles {
-            let color: NSColor
-            switch tile.semantic {
-            case .neutral: color = HelmTheme.nsColor(theme.chromeInkHex)
-            case .success: color = HelmTheme.nsColor(theme.ansiHex[2])
-            case .warning: color = HelmTheme.nsColor(theme.ansiHex[3])
-            }
-            tile.valueLabel.textColor = color
-            tile.iconView.contentTintColor = color.withAlphaComponent(0.85)
-        }
+        for tile in statTiles { tile.applyTheme(theme) }
         searchField.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
         for row in rows { applyThemeToRow(row) }
     }

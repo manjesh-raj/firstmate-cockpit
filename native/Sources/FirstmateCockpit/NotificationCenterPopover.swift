@@ -253,7 +253,11 @@ private final class NotificationPanelViewController: NSViewController {
 
     private let titleLabel = NSTextField(labelWithString: "Notifications")
     private let markAllReadLabel = NSTextField(labelWithString: "Mark all read")
-    private let emptyStateLabel = NSTextField(wrappingLabelWithString: "You're all caught up.")
+    /// Was a bare wrapping `NSTextField` - one of the four §3.2 called out.
+    /// This panel is 340pt wide, so `.compact` is the right size; the glyph and
+    /// the centred copy now match every other empty list in the app.
+    private let emptyState = HelmEmptyState(symbol: "checkmark.circle",
+                                            body: "You're all caught up.")
     private let rowsStack = NSStackView()
     private let separator = NSView()
 
@@ -284,9 +288,7 @@ private final class NotificationPanelViewController: NSViewController {
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
 
-        emptyStateLabel.font = .systemFont(ofSize: 11.5)
-        emptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
-        emptyStateLabel.alignment = .center
+        emptyState.heightAnchor.constraint(equalToConstant: 96).isActive = true
 
         rowsStack.orientation = .vertical
         rowsStack.alignment = .leading
@@ -296,7 +298,7 @@ private final class NotificationPanelViewController: NSViewController {
         rowsStack.spacing = 8
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [headerRow, separator, emptyStateLabel, rowsStack])
+        let stack = NSStackView(views: [headerRow, separator, emptyState, rowsStack])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 0
@@ -314,8 +316,8 @@ private final class NotificationPanelViewController: NSViewController {
             headerRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 14),
             headerRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14),
             separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            emptyStateLabel.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 14),
-            emptyStateLabel.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14),
+            emptyState.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 14),
+            emptyState.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14),
             rowsStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         // The header row sits directly against the top edge; give it its
@@ -338,7 +340,7 @@ private final class NotificationPanelViewController: NSViewController {
             view.removeFromSuperview()
         }
         let entries = GrandLineNotificationCenter.shared.entries
-        emptyStateLabel.isHidden = !entries.isEmpty
+        emptyState.isHidden = !entries.isEmpty
         markAllReadLabel.isHidden = !entries.contains { $0.kind == .informational }
         for entry in entries {
             let row = Self.makeRow(for: entry, theme: theme)
@@ -373,7 +375,6 @@ private final class NotificationPanelViewController: NSViewController {
     func applyTheme(_ theme: HelmTheme) {
         self.theme = theme
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let accent = HelmTheme.nsColor(theme.accentHex)
 
@@ -381,7 +382,7 @@ private final class NotificationPanelViewController: NSViewController {
         titleLabel.textColor = ink
         markAllReadLabel.textColor = accent
         separator.layer?.backgroundColor = line.cgColor
-        emptyStateLabel.textColor = muted
+        emptyState.applyTheme(theme)
         for case let row as HelmAccentRow in rowsStack.arrangedSubviews {
             row.applyTheme(theme)
         }
