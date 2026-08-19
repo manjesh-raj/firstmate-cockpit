@@ -26,15 +26,25 @@ final class PortForwardingController: NSViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
+    /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    private let mutedLabels = MutedInkLabels()
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 420))
         view = root
-        // Theme-audit task: force this sheet's own appearance so its
-        // system-semantic colors (`.tertiaryLabelColor`) resolve against the
+        // Theme-audit task: force this sheet's own appearance so any
+        // system-semantic color still in its subtree resolves against the
         // active Helm theme's mode instead of whatever the OS happens to be
-        // set to.
-        ThemeManager.shared.observe { [weak root] theme in
+        // set to. Its own muted text no longer relies on that - it goes
+        // through `mutedLabels` (audit §5.3), which is theme-aware rather
+        // than merely light/dark-correct.
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.mutedLabels.apply(theme)
+            self?.rowsStack.arrangedSubviews
+                .compactMap { $0 as? PortForwardRuleRowView }
+                .forEach { $0.applyTheme(theme) }
         }
 
         let title = NSTextField(labelWithString: "Port Forwarding")
@@ -45,7 +55,7 @@ final class PortForwardingController: NSViewController {
             + "service to the remote host. Dynamic (-D) opens a SOCKS proxy on the listen port."
         )
         caption.font = .systemFont(ofSize: 11)
-        caption.textColor = .tertiaryLabelColor
+        mutedLabels.add(caption)
         caption.translatesAutoresizingMaskIntoConstraints = false
 
         rowsStack.orientation = .vertical
@@ -187,7 +197,7 @@ private final class PortForwardRuleRowView: NSView {
         configure(listenField, placeholder: "listen port", value: String(rule.listenPort), width: 74)
         configure(destHostField, placeholder: "dest host", value: rule.destHost, width: 110)
         configure(destPortField, placeholder: "dest port", value: String(rule.destPort), width: 64)
-        arrow.textColor = .tertiaryLabelColor
+        applyTheme(ThemeManager.shared.theme)
 
         removeButton.isBordered = false
         removeButton.image = NSImage(systemSymbolName: "minus.circle", accessibilityDescription: "Remove")
@@ -209,6 +219,13 @@ private final class PortForwardRuleRowView: NSView {
         ])
 
         applyDynamicVisibility()
+    }
+
+    /// The row's own muted arrow glyph, re-derived from the active theme -
+    /// it used to be `.tertiaryLabelColor`, a fixed system grey that is both
+    /// off-palette and below the contrast floor in every theme (audit §5.3).
+    func applyTheme(_ theme: HelmTheme) {
+        arrow.textColor = HelmTheme.mutedInk(theme)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

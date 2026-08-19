@@ -145,6 +145,24 @@ final class ShiftEmptyStateView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
+    /// A wrapping `NSTextField` inside a centre-aligned stack whose own
+    /// leading/trailing constraints are *inequalities* has no width Auto
+    /// Layout is obliged to give it, so a long single-line string collapses
+    /// to a few characters per line and then truncates at
+    /// `maximumNumberOfLines` - "No saved secrets yet. Use ..." rendered as
+    /// "No / sa". Every pre-existing caller happened to pass short or
+    /// explicitly `\n`-broken copy, which hid it. Handing the label the real
+    /// available width each layout pass is the standard fix, and is a no-op
+    /// for text that already fits on one line.
+    override func layout() {
+        super.layout()
+        let available = bounds.width - 24
+        if available > 0, label.preferredMaxLayoutWidth != available {
+            label.preferredMaxLayoutWidth = available
+            label.invalidateIntrinsicContentSize()
+        }
+    }
+
     func applyTheme(_ theme: HelmTheme) {
         let muted = HelmTheme.mutedInk(theme)
         iconView.contentTintColor = muted

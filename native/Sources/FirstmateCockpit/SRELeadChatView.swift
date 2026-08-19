@@ -254,10 +254,23 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     /// EXECUTIVE SUMMARY / ROOT CAUSE section headings without adopting any
     /// of its structured fields (severity/downtime/confidence) this app's
     /// persona doesn't produce.
-    private func sectionLabel(_ text: String, colorHex: String) -> NSTextField {
+    /// `onWash` is the `backgroundTintAlpha` of the `accentCard` this label
+    /// sits inside. It has to be passed in, because a tint hue drawn as text
+    /// on a wash of *itself* is exactly the pairing that fails the 4.5:1
+    /// floor - the audit measured that shape failing in 44 of 72 real
+    /// theme/hue pairs for the shared status pill, and this was the one
+    /// remaining place in the app still doing it (§5.7's "one outlier to
+    /// fix"). `HelmContrast.tintedSurface` keeps the hue and nudges the label
+    /// toward the theme's own ink only as far as the floor needs; passing a
+    /// single-element `washSteps` pins the *card's* own fill, so this changes
+    /// the label colour and nothing else.
+    private func sectionLabel(_ text: String, colorHex: String, onWash washAlpha: CGFloat) -> NSTextField {
+        let resolved = HelmContrast.tintedSurface(tintHex: colorHex, theme: theme,
+                                                  target: HelmContrast.textTarget,
+                                                  washSteps: [washAlpha])
         let label = NSTextField(labelWithString: "")
         label.attributedStringValue = NSAttributedString(string: text.uppercased(), attributes: [
-            .foregroundColor: HelmTheme.nsColor(colorHex),
+            .foregroundColor: resolved.foreground,
             .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
             .kern: 0.6,
         ])
@@ -267,7 +280,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
 
     private func userBlock(for text: String) -> NSView {
         let colorHex = theme.accentHex
-        let label = sectionLabel("You", colorHex: colorHex)
+        let label = sectionLabel("You", colorHex: colorHex, onWash: 0.1)
 
         let body = NSTextField(wrappingLabelWithString: text)
         body.font = .systemFont(ofSize: 12.5, weight: .medium)
@@ -321,7 +334,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
 
     private func errorBlock(for text: String) -> NSView {
         let colorHex = HelmTint.critical.hex(in: theme)
-        let label = sectionLabel("Error", colorHex: colorHex)
+        let label = sectionLabel("Error", colorHex: colorHex, onWash: 0.1)
 
         let body = NSTextField(wrappingLabelWithString: text)
         body.font = .systemFont(ofSize: 12.5)
@@ -553,7 +566,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         let tint: HelmTint = kind == .finding ? .accent : .good
         let colorHex = tint.hex(in: theme)
 
-        let label = sectionLabel(kind.label, colorHex: colorHex)
+        let label = sectionLabel(kind.label, colorHex: colorHex, onWash: 0.08)
         let body = wrappingLabel(attributedInline(runs))
 
         let inner = NSStackView(views: [label, body])

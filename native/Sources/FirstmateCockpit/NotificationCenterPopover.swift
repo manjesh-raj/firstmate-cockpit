@@ -545,7 +545,7 @@ private final class NotificationRowView: NSView {
             ]
         )
         bodyLabel.textColor = ink
-        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: theme), into: chip, label: chipLabel)
+        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: theme), into: chip, label: chipLabel, theme: theme)
 
         accentBar.layer?.backgroundColor = tintColor.cgColor
 

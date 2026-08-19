@@ -970,6 +970,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_NOTIFICATION_CENTER_SRE_LEAD_TEST
     exit(NotificationCenterSRELeadSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-design-audit-phase0`: WCAG contrast floors for the shared
+// pill, icon tiles and `HelmTheme.mutedInk`, across every real palette - see
+// HelmContrastSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_CONTRAST_TESTS"] == "1" {
+    exit(HelmContrastSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

@@ -30,6 +30,10 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
 
     // MARK: Layout
 
+    /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
+    /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    private let mutedLabels = MutedInkLabels()
+
     override func loadView() {
         // Theme-audit task: this was `NSVisualEffectView(.sidebar,
         // .behindWindow)`, the same material/blending pair that rendered an
@@ -42,9 +46,17 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 520))
         root.wantsLayer = true
         view = root
-        ThemeManager.shared.observe { [weak root] theme in
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+            self?.mutedLabels.apply(theme)
+            // Every row cell now carries `HelmTheme`-derived colours (audit
+            // §5.3) and `HelmTableRowView` paints a theme-accent selection
+            // (§5.2), and neither re-derives itself - so the list has to be
+            // rebuilt on a theme change rather than relying on system
+            // semantic colours re-resolving against the forced appearance.
+            // `reloadData` preserves the selected row indexes.
+            self?.table.reloadData()
         }
 
         let title = NSTextField(labelWithString: "SSH Keys")
@@ -61,14 +73,19 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
             "Private key material and passphrases are stored in the macOS Keychain, gated by Touch ID."
         )
         caption.font = .systemFont(ofSize: 11)
-        caption.textColor = .tertiaryLabelColor
+        mutedLabels.add(caption)
         caption.translatesAutoresizingMaskIntoConstraints = false
 
         table.headerView = nil
         table.style = .sourceList
         table.rowHeight = 46
         table.backgroundColor = .clear
-        table.selectionHighlightStyle = .regular
+        // Selection rendering is ours, not AppKit's: `.sourceList` +
+        // `.regular` installs `NSTableRowSidebarSelectionView`, which draws
+        // from the *system* accent rather than the active `HelmTheme` (audit
+        // §5.2). `.none` stops that; `HelmTableRowView` paints the theme's
+        // own accent instead - see `tableView(_:rowViewForRow:)` below.
+        table.selectionHighlightStyle = .none
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -172,6 +189,15 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
     // MARK: NSTableView
 
     func numberOfRows(in tableView: NSTableView) -> Int { store.keys.count }
+
+    /// Theme-derived selected-row background - see `HelmTableRowView`.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("helmRow")
+        let view = (tableView.makeView(withIdentifier: id, owner: self) as? HelmTableRowView) ?? HelmTableRowView()
+        view.identifier = id
+        view.accentHex = ThemeManager.shared.theme.accentHex
+        return view
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("KeyRow")
@@ -302,7 +328,7 @@ final class KeyRowView: NSTableCellView {
         title.translatesAutoresizingMaskIntoConstraints = false
 
         subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
+        subtitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         subtitle.lineBreakMode = .byTruncatingTail
         subtitle.translatesAutoresizingMaskIntoConstraints = false
 

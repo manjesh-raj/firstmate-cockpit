@@ -679,7 +679,7 @@ final class CommandLibraryPageView: NSObject {
         detailContentContainer.isHidden = false
 
         detailNameLabel.stringValue = command.name
-        ToolRowLayout.pill(text: command.risk.displayName, colorHex: command.risk.tint.hex(in: theme), into: detailRiskPill, label: detailRiskPillLabel)
+        ToolRowLayout.pill(text: command.risk.displayName, colorHex: command.risk.tint.hex(in: theme), into: detailRiskPill, label: detailRiskPillLabel, theme: theme)
 
         var metaParts = [command.description]
         var location = command.category.isEmpty ? "" : CommandLibraryCategory.info(for: command.category).displayName

@@ -162,7 +162,14 @@ final class SettingsController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            // AGENTS.md gotcha #4: pin the document view to the *clip*
+            // view, never the outer scroll view. With "Show scroll bars:
+            // Always" (the default with a mouse attached) a non-overlay
+            // vertical scroller reserves a real ~15pt track that narrows the
+            // clip view without narrowing `scroll`'s own frame, so pinning to
+            // `scroll.widthAnchor` renders the content's trailing edge
+            // underneath that track.
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
         scrollView = scroll
 
@@ -221,7 +228,7 @@ final class SettingsController: NSViewController {
         let subtitleLabel = NSTextField(labelWithString: subtitle)
         subtitleLabel.font = .systemFont(ofSize: 11.5)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleViews.append(subtitleLabel)
+        mutedLabel(subtitleLabel)
 
         let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
         titleStack.orientation = .vertical
@@ -263,10 +270,32 @@ final class SettingsController: NSViewController {
     /// alongside `cardBackgroundViews` on every theme change.
     private var subtitleViews: [NSTextField] = []
 
+    /// Registers `label` in the shared `subtitleViews` re-theming list **and**
+    /// tints it for the current theme right away.
+    ///
+    /// Both halves matter. Registering alone is not enough: sections that
+    /// rebuild rather than re-theme (`rebuildSecuritySection`,
+    /// `refreshSessions`) create fresh labels without necessarily re-running
+    /// `applyTheme()`, so a label that was only registered would render in
+    /// the default `.labelColor` until the next theme change. Tinting alone
+    /// is not enough either, since it would then go stale on that change.
+    ///
+    /// This replaced `.secondaryLabelColor` at every muted-text site in this
+    /// file - a fixed system grey knows nothing about which of the 12 Helm
+    /// palettes is active, so it is both off-palette and (for the tertiary
+    /// variant) below the 4.5:1 contrast floor in every one of them
+    /// (audit §5.3).
+    @discardableResult
+    private func mutedLabel(_ label: NSTextField) -> NSTextField {
+        subtitleViews.append(label)
+        label.textColor = HelmTheme.mutedInk(theme)
+        return label
+    }
+
     private func rowLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: 12)
-        l.textColor = .secondaryLabelColor
+        mutedLabel(l)
         return l
     }
 
@@ -275,7 +304,7 @@ final class SettingsController: NSViewController {
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         let descLabel = NSTextField(wrappingLabelWithString: desc)
         descLabel.font = .systemFont(ofSize: 11)
-        descLabel.textColor = .secondaryLabelColor
+        mutedLabel(descLabel)
         descLabel.preferredMaxLayoutWidth = 360
 
         let textStack = NSStackView(views: [titleLabel, descLabel])
@@ -337,7 +366,7 @@ final class SettingsController: NSViewController {
 
         let desc = NSTextField(wrappingLabelWithString: "The tmux target the console's Mirror tab attaches to. Detect lists every discovered session below - click one to select it.")
         desc.font = .systemFont(ofSize: 11)
-        desc.textColor = .secondaryLabelColor
+        mutedLabel(desc)
         desc.preferredMaxLayoutWidth = 520
 
         configure(mirrorTargetField, placeholder: "firstmate")
@@ -352,7 +381,7 @@ final class SettingsController: NSViewController {
         mirrorTargetField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         sessionsStatusLabel.font = .systemFont(ofSize: 11)
-        sessionsStatusLabel.textColor = .secondaryLabelColor
+        mutedLabel(sessionsStatusLabel)
 
         sessionsStack.orientation = .vertical
         sessionsStack.alignment = .leading
@@ -439,7 +468,7 @@ final class SettingsController: NSViewController {
         if !s.path.isEmpty { subBits.append(s.path) }
         let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
         subLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        subLabel.textColor = .secondaryLabelColor
+        mutedLabel(subLabel)
         subLabel.lineBreakMode = .byTruncatingMiddle
 
         let textStack = NSStackView(views: [titleRow, subLabel])
@@ -509,7 +538,7 @@ final class SettingsController: NSViewController {
     private func buildAppearanceSection() -> NSView {
         let desc = NSTextField(wrappingLabelWithString: "A curated set of light and dark instrument-panel palettes, each contrast-verified to WCAG AA.")
         desc.font = .systemFont(ofSize: 11)
-        desc.textColor = .secondaryLabelColor
+        mutedLabel(desc)
         desc.preferredMaxLayoutWidth = 520
 
         appearanceContainer.orientation = .vertical
@@ -792,11 +821,11 @@ final class SettingsController: NSViewController {
     private func buildBackupSection() -> NSView {
         let desc = NSTextField(wrappingLabelWithString: "Write everything this app knows locally - saved hosts, snippets, and the preferences above - to a single file, or bring one in from another machine. SSH private keys never leave the Keychain; a restored host referencing a key not on this machine needs that key re-added from the Keys screen.")
         desc.font = .systemFont(ofSize: 11)
-        desc.textColor = .secondaryLabelColor
+        mutedLabel(desc)
         desc.preferredMaxLayoutWidth = 520
 
         backupStatusLabel.font = .systemFont(ofSize: 11)
-        backupStatusLabel.textColor = .secondaryLabelColor
+        mutedLabel(backupStatusLabel)
 
         let exportButton = NSButton(title: "Export\u{2026}", target: self, action: #selector(exportBackupClicked))
         exportButton.bezelStyle = .rounded
@@ -905,6 +934,12 @@ final class SettingsController: NSViewController {
         for tile in cardIconTiles {
             tile.applyTheme(theme)
         }
+        // Sections that rebuild rather than re-theme register a fresh label
+        // every time, so drop the ones whose view is gone - same convention
+        // `rebuildSecuritySection` already applies to `hoverRows`. Safe to do
+        // here rather than at each rebuild site because `mutedLabel` tints a
+        // label at creation too, so anything dropped early is still correct.
+        subtitleViews.removeAll { $0.superview == nil }
         for label in subtitleViews {
             label.textColor = muted
         }

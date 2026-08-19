@@ -104,19 +104,84 @@ struct HelmTheme {
     /// blending `chromeInkHex` looks fine in the dark palettes at much lower
     /// opacity, but the same opacity can silently drop below WCAG AA (4.5:1)
     /// in the light ones - that's exactly how the Overview dashboard's PR
-    /// text and timestamps went near-invisible. 0.7 is the measured floor:
-    /// checked against every theme's `backgroundHex` and `chromeBackgroundHex`
-    /// (the two surfaces text actually sits on), the worst case across the
-    /// original 8 palettes was ~5.06:1 (Paper), comfortably clear of 4.5:1.
-    /// Not re-verified against the 10 sourced-family themes added in
-    /// cockpit-theme-overhaul - several of those (e.g. Solarized Dark, down
-    /// to ~3.1:1) sit below this floor at a flat 0.7, since their own
-    /// `chromeInkHex`/background pairs are naturally lower-contrast than
-    /// Helm's hand-picked tones. Out of scope for that task; a future pass
-    /// touching muted text should re-measure per-theme rather than assume
-    /// this constant still holds everywhere.
+    /// text and timestamps went near-invisible.
+    ///
+    /// 0.7 was the measured floor **for the original 8 palettes only**, and
+    /// the doc comment here used to say so and leave it. The full-app UI
+    /// audit re-measured it against all 12 (`fm/grandline-design-audit-phase0`,
+    /// audit §7 item 7) and found a flat 0.7 genuinely fails five of the ten
+    /// sourced-family themes - solarized-dark 3.14, catppuccin-latte 3.47,
+    /// tokyo-night-light 3.75, rose-pine-dawn 4.04, gruvbox-light 4.37 -
+    /// because those palettes' own `chromeInkHex`/background pairs are
+    /// naturally lower-contrast than Helm's hand-picked tones.
+    ///
+    /// So this is no longer one flat constant. `baseMutedAlpha` (0.7) is the
+    /// starting point and the **look** every theme that can afford it keeps
+    /// byte for byte; a theme that cannot is raised - by the smallest amount
+    /// that clears 4.5:1 against the *worse* of the two surfaces real text
+    /// sits on (`chromeBackgroundHex` and `backgroundHex`), never further.
+    /// Raising the constant globally instead would have washed out the seven
+    /// themes that already clear it comfortably (helm-dark measures 8.36) for
+    /// no reason. Contrast rises monotonically with alpha here - more alpha
+    /// means less of the background showing through - so a plain bisection
+    /// finds the minimum directly. Covered by `HelmContrastSelfTest`
+    /// (`FM_RUN_CONTRAST_TESTS=1`), which fails if any theme drops below the
+    /// floor the next time a palette is added or a token retuned.
+    static let baseMutedAlpha: CGFloat = 0.7
+
+    private static let mutedAlphaCache = MutedAlphaCache()
+
     static func mutedInk(_ theme: HelmTheme) -> NSColor {
-        nsColor(theme.chromeInkHex).withAlphaComponent(0.7)
+        nsColor(theme.chromeInkHex).withAlphaComponent(mutedAlpha(for: theme))
+    }
+
+    /// The alpha `mutedInk` actually uses for `theme` - exposed so the
+    /// contrast self-test can report it, and so a probe can confirm a given
+    /// theme was or was not raised.
+    static func mutedAlpha(for theme: HelmTheme) -> CGFloat {
+        if let cached = mutedAlphaCache.value(for: theme.id) { return cached }
+        let resolved = computeMutedAlpha(for: theme)
+        mutedAlphaCache.store(resolved, for: theme.id)
+        return resolved
+    }
+
+    private static func computeMutedAlpha(for theme: HelmTheme) -> CGFloat {
+        let ink = HelmContrast.components(nsColor(theme.chromeInkHex))
+        let surfaces = [theme.chromeBackgroundHex, theme.backgroundHex].map {
+            HelmContrast.components(nsColor($0))
+        }
+        func clears(_ alpha: CGFloat) -> Bool {
+            surfaces.allSatisfy { surface in
+                HelmContrast.ratio(HelmContrast.mix(ink, surface, Double(alpha)), surface) >= HelmContrast.textTarget
+            }
+        }
+        if clears(baseMutedAlpha) { return baseMutedAlpha }
+        // Even fully opaque ink cannot separate from this palette's own
+        // surface (no palette shipped today is in this state) - use the most
+        // legible value available rather than staying at the failing default.
+        if !clears(1) { return 1 }
+        var lo = Double(baseMutedAlpha), hi = 1.0
+        for _ in 0..<24 {
+            let mid = (lo + hi) / 2
+            if clears(CGFloat(mid)) { hi = mid } else { lo = mid }
+        }
+        return CGFloat(hi)
+    }
+
+    /// Tiny thread-safe memo - `mutedInk` is called for effectively every
+    /// muted label on every re-theme, and the bisection above, while cheap,
+    /// has no reason to run more than once per palette.
+    private final class MutedAlphaCache {
+        private var storage: [String: CGFloat] = [:]
+        private let lock = NSLock()
+        func value(for id: String) -> CGFloat? {
+            lock.lock(); defer { lock.unlock() }
+            return storage[id]
+        }
+        func store(_ value: CGFloat, for id: String) {
+            lock.lock(); defer { lock.unlock() }
+            storage[id] = value
+        }
     }
 
     // MARK: The two original, hand-pinned Helm palettes

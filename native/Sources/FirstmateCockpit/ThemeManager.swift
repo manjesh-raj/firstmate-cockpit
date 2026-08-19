@@ -46,6 +46,32 @@ import AppKit
 //      just once in `loadView` - `observe` calls the closure immediately on
 //      registration *and* on every later change, so as long as the same
 //      code path handles both there is nothing else to do for live updates.
+//   4. **Populate anything that closure iterates BEFORE registering it, or
+//      end `loadView` with an explicit `applyTheme(ThemeManager.shared.
+//      theme)`.** `observe` firing synchronously at registration is the
+//      point of rule 3, but it is also a trap: a closure that loops over a
+//      collection (`sectionLabels`, `railDividers`, a `cardBackgrounds`
+//      registry) sees that collection EMPTY on the first firing whenever the
+//      views are built further down the same `loadView`. The loop is a
+//      silent no-op, those views keep whatever color they were constructed
+//      with (usually a system semantic color, which is both off-palette and
+//      often the wrong side of light/dark), and then the whole thing
+//      self-heals on the next unrelated theme switch - so a theme-sweep
+//      verification pass cannot catch it, only a first-load measurement can.
+//      This has now been confirmed THREE times in this codebase and is the
+//      single most repeated bug class here:
+//        - `IconRailController.restyleMark` (needed a second `restyle` call
+//          at the end of `loadView`, since `mark`'s layer did not exist yet);
+//        - `IconRailController.restyleDividers` (`railDividers` held exactly
+//          one of its twelve dividers on the first synchronous run);
+//        - `ShiftTaskEditorController` (`sectionLabels` empty, so the four
+//          DETAILS/TAGS/DESCRIPTION/ATTACHMENT kickers rendered in
+//          `.labelColor` - *brighter* than the body text they label - until
+//          any theme switch fixed them; audit §5.1,
+//          `fm/grandline-design-audit-phase0`).
+//      The re-apply is one line and costs nothing, so prefer it by default
+//      in any `loadView` whose theme closure touches a collection or a view
+//      built after the `observe` call.
 
 /// An opaque handle to a live `ThemeManager.observe` registration, returned
 /// so a caller whose lifetime is shorter than the app's (cockpit-native-

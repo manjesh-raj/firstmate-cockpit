@@ -239,7 +239,14 @@ final class AutomationController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            // AGENTS.md gotcha #4: pin the document view to the *clip*
+            // view, never the outer scroll view. With "Show scroll bars:
+            // Always" (the default with a mouse attached) a non-overlay
+            // vertical scroller reserves a real ~15pt track that narrows the
+            // clip view without narrowing `scroll`'s own frame, so pinning to
+            // `scroll.widthAnchor` renders the content's trailing edge
+            // underneath that track.
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
         scrollView = scroll
 

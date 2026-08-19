@@ -314,7 +314,7 @@ private final class ShiftTaskRowView: NSView {
         metaLabel.stringValue = bits.joined(separator: " \u{00B7} ")
         metaLabel.textColor = HelmTheme.mutedInk(theme)
 
-        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel)
+        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel, theme: theme)
 
         accentBar.layer?.backgroundColor = tintColor.cgColor
         card.normalColor = cardFill
@@ -578,7 +578,7 @@ private final class ShiftFollowUpRowView: NSView {
             case .low: return ("Low", .neutral)
             }
         }()
-        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel)
+        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel, theme: theme)
 
         accentBar.layer?.backgroundColor = tintColor.cgColor
         card.normalColor = cardFill

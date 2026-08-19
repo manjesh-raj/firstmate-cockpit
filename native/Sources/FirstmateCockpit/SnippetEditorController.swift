@@ -25,15 +25,22 @@ final class SnippetEditorController: NSViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
+    /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    private let mutedLabels = MutedInkLabels()
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 320))
         view = root
-        // Theme-audit task: force this sheet's own appearance so its
-        // system-semantic colors (`.secondaryLabelColor`, `.tertiaryLabelColor`)
-        // resolve against the active Helm theme's mode instead of whatever
-        // the OS happens to be set to.
-        ThemeManager.shared.observe { [weak root] theme in
+        // Theme-audit task: force this sheet's own appearance so any
+        // system-semantic color still in its subtree resolves against the
+        // active Helm theme's mode instead of whatever the OS happens to be
+        // set to. Its own muted text no longer relies on that - it goes
+        // through `mutedLabels` (audit §5.3), which is theme-aware rather
+        // than merely light/dark-correct.
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.mutedLabels.apply(theme)
         }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Snippet" : "Edit Snippet")
@@ -45,7 +52,7 @@ final class SnippetEditorController: NSViewController {
 
         let commandLabel = NSTextField(labelWithString: "Command")
         commandLabel.font = .systemFont(ofSize: 12)
-        commandLabel.textColor = .secondaryLabelColor
+        mutedLabels.add(commandLabel)
 
         commandView.string = editing?.command ?? ""
         commandView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -62,7 +69,7 @@ final class SnippetEditorController: NSViewController {
             + "A snippet can also be set as a host's startup snippet in the host editor."
         )
         caption.font = .systemFont(ofSize: 11)
-        caption.textColor = .tertiaryLabelColor
+        mutedLabels.add(caption)
         caption.translatesAutoresizingMaskIntoConstraints = false
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
