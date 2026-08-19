@@ -61,7 +61,7 @@ final class CommandLibraryPageView: NSObject {
 
     private let detailPanel = NSView()
     private let detailStack = NSStackView()
-    private let emptyDetailState = ShiftEmptyStateView(symbol: "terminal", text: "Pick a command from the list\nto see its details here.")
+    private let emptyDetailState = HelmEmptyState(symbol: "terminal", body: "Pick a command from the list\nto see its details here.")
 
     // Detail pane's live views (built once, mutated per-selection - see
     // `renderDetail(for:)`).

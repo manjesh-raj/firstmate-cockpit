@@ -37,7 +37,9 @@ final class DocsController: NSViewController {
 
     static let liveSiteURL = URL(string: "https://manjesh-raj.github.io/devops-playbook/")!
 
-    private enum DocsTab: Int, CaseIterable {
+    /// `String`-backed so it can be the id `HelmSegmentedTabs` hands back - the
+    /// shared component deals in caller-owned ids rather than indices.
+    private enum DocsTab: String, CaseIterable {
         case playbook, runbooks, postmortems
 
         var title: String {
@@ -50,8 +52,17 @@ final class DocsController: NSViewController {
     }
 
     private var activeTab: DocsTab = .playbook
-    private var tabPills: [DocsTab: HoverHighlightView] = [:]
-    private var tabLabels: [DocsTab: NSTextField] = [:]
+    /// The tab switcher, now the app's shared `HelmSegmentedTabs`
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 6). This page used to
+    /// build **bare pills** on a 44pt divider bar - and the audit's finding was
+    /// that the pill construction here and Shift's segmented capsule were
+    /// already byte-for-byte identical code (12pt medium label, radius 7, 10/6
+    /// insets, accent wash when active); only the wrapper differed, so one
+    /// recipe rendered as two different-looking controls a rail click apart.
+    /// Adopting the capsule is §6.4's own recommended direction for this page.
+    private let tabs = HelmSegmentedTabs(items: DocsTab.allCases.map {
+        .init(id: $0.rawValue, title: $0.title)
+    }, selected: DocsTab.playbook.rawValue)
     /// Keeps `ClosureSleeve`/gesture-recognizer targets alive for as long as
     /// the rows they're attached to exist - reset on every full row rebuild.
     private var rowSleeves: [ClosureSleeve] = []
@@ -75,9 +86,7 @@ final class DocsController: NSViewController {
     private let openLiveButton = HelmButton(title: "", variant: .secondary, symbol: "arrow.up.forward.square")
     private let toolbarDivider = NSView()
     private let emptyStateContainer = NSView()
-    private let emptyIcon = NSImageView()
-    private let emptyTitleLabel = NSTextField(labelWithString: "Docs not synced yet")
-    private let emptyBodyLabel = NSTextField(wrappingLabelWithString: "The DevOps Playbook hasn't been synced to this Mac yet. Sync it once to browse it here, fully offline afterward.")
+    private var playbookEmptyState: HelmEmptyState?
     private let syncButton = HelmButton(title: "", variant: .primary)
     private let syncSpinner = NSProgressIndicator()
     private var isSyncing = false
@@ -120,7 +129,12 @@ final class DocsController: NSViewController {
     private let postmortemListStack = NSStackView()
     private let postmortemDetailScroll = NSScrollView()
     private let postmortemDetailTextView = NSTextView()
-    private let postmortemEmptyLabel = NSTextField(wrappingLabelWithString: "No postmortems yet. These will appear here once SRE Lead's \u{201c}Generate Postmortem\u{201d} step is built - a later task.")
+    private let postmortemEmptyState = HelmEmptyState(
+        symbol: "doc.text.magnifyingglass",
+        body: "No postmortems yet. Generate one from an SRE Lead investigation and it will appear here.")
+    /// Only built while the runbook grid is genuinely empty, so it is optional
+    /// rather than a stored instance.
+    private var runbookGridEmptyState: HelmEmptyState?
     private var selectedPostmortemID: String?
 
     private var theme: HelmTheme = ThemeManager.shared.theme
@@ -242,35 +256,11 @@ final class DocsController: NSViewController {
         bar.addSubview(divider)
         self.tabBarDivider = divider
 
-        var items: [NSView] = []
-        for tab in DocsTab.allCases {
-            let pill = HoverHighlightView()
-            let label = NSTextField(labelWithString: tab.title)
-            label.font = .systemFont(ofSize: 12, weight: .medium)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            pill.cornerRadius = 7
-            pill.translatesAutoresizingMaskIntoConstraints = false
-            pill.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 10),
-                label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -10),
-                label.topAnchor.constraint(equalTo: pill.topAnchor, constant: 6),
-                label.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -6),
-            ])
-            let sleeve = ClosureSleeve { [weak self] in self?.showTab(tab) }
-            rowSleeves.append(sleeve)
-            let click = NSClickGestureRecognizer(target: sleeve, action: #selector(ClosureSleeve.invoke))
-            pill.addGestureRecognizer(click)
-            tabPills[tab] = pill
-            tabLabels[tab] = label
-            items.append(pill)
+        tabs.onSelect = { [weak self] id in
+            guard let self, let tab = DocsTab(rawValue: id) else { return }
+            self.showTab(tab)
         }
-
-        let row = NSStackView(views: items)
-        row.orientation = .horizontal
-        row.spacing = 6
-        row.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(row)
+        bar.addSubview(tabs)
 
         NSLayoutConstraint.activate([
             bar.heightAnchor.constraint(equalToConstant: 44),
@@ -278,8 +268,8 @@ final class DocsController: NSViewController {
             divider.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
             divider.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
             divider.heightAnchor.constraint(equalToConstant: 1),
-            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 12),
-            row.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: -1),
+            tabs.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 12),
+            tabs.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: -1),
         ])
 
         // `bar`'s own top/leading/trailing anchors are constrained against
@@ -300,6 +290,10 @@ final class DocsController: NSViewController {
 
     private func showTab(_ tab: DocsTab) {
         activeTab = tab
+        // A no-op on a real pill click (which has already moved it), needed for
+        // `openRunbook(id:)`/`openPostmortem(id:)` and the ⌘K palette, which
+        // reach a tab without one.
+        tabs.select(tab.rawValue)
         playbookContainer.isHidden = tab != .playbook
         runbooksContainer.isHidden = tab != .runbooks
         postmortemsContainer.isHidden = tab != .postmortems
@@ -408,20 +402,14 @@ final class DocsController: NSViewController {
         forwardButton.isEnabled = webView.canGoForward
     }
 
+    /// The Playbook's own empty state, now the app's shared `HelmEmptyState`
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 5). This state was §3.2's
+    /// "most complete one" and is what the shared component's `.standard` size
+    /// *is* - a 40pt glyph over a real title, body copy and an action. The
+    /// action row stays caller-owned, so "Sync Now" is still the same
+    /// `HelmButton` this page enables/disables around its own async sync, with
+    /// the same spinner beside it.
     private func buildEmptyState() {
-        emptyIcon.image = NSImage(systemSymbolName: "book.closed", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 34, weight: .light))
-        emptyIcon.translatesAutoresizingMaskIntoConstraints = false
-
-        emptyTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        emptyTitleLabel.alignment = .center
-        emptyTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        emptyBodyLabel.font = .systemFont(ofSize: 12)
-        emptyBodyLabel.alignment = .center
-        emptyBodyLabel.preferredMaxLayoutWidth = 360
-        emptyBodyLabel.translatesAutoresizingMaskIntoConstraints = false
-
         syncButton.title = "Sync Now"
         syncButton.controlSize = .regular
         syncButton.target = self
@@ -440,18 +428,18 @@ final class DocsController: NSViewController {
         actionRow.alignment = .centerY
         actionRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [emptyIcon, emptyTitleLabel, emptyBodyLabel, actionRow])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.setCustomSpacing(16, after: emptyBodyLabel)
-
-        emptyStateContainer.addSubview(stack)
+        let empty = HelmEmptyState(symbol: "book.closed",
+                                   title: "Docs not synced yet",
+                                   body: "The DevOps Playbook hasn't been synced to this Mac yet. Sync it once to browse it here, fully offline afterward.",
+                                   size: .standard,
+                                   accessory: actionRow)
+        playbookEmptyState = empty
+        emptyStateContainer.addSubview(empty)
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: emptyStateContainer.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: emptyStateContainer.centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: emptyStateContainer.widthAnchor, constant: -80),
+            empty.leadingAnchor.constraint(equalTo: emptyStateContainer.leadingAnchor),
+            empty.trailingAnchor.constraint(equalTo: emptyStateContainer.trailingAnchor),
+            empty.topAnchor.constraint(equalTo: emptyStateContainer.topAnchor),
+            empty.bottomAnchor.constraint(equalTo: emptyStateContainer.bottomAnchor),
         ])
     }
 
@@ -677,13 +665,20 @@ final class DocsController: NSViewController {
         runbookListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         runbookRowCards.removeAll()
         if runbookGridItems.isEmpty {
-            let empty = NSTextField(labelWithString: "No runbooks yet. Create one to get started.")
-            empty.textColor = HelmTheme.mutedInk(theme)
-            empty.font = .systemFont(ofSize: 12)
+            // Was a bare left-aligned `NSTextField` with no icon and no
+            // container - one of the four §3.2 called out. This grid is the
+            // whole tab body, so it gets the real treatment rather than a
+            // sentence floating at the top-left.
+            let empty = HelmEmptyState(symbol: "list.bullet.rectangle",
+                                       body: "No runbooks yet. Create one to get started.")
+            empty.heightAnchor.constraint(equalToConstant: 110).isActive = true
+            runbookGridEmptyState = empty
             runbookListStack.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: runbookListStack.widthAnchor).isActive = true
             applyTheme()
             return
         }
+        runbookGridEmptyState = nil
         let (rows, cards) = layoutDocGrid(items: runbookGridItems, containerWidth: runbookListStack.frame.width)
         for row in rows {
             runbookListStack.addArrangedSubview(row)
@@ -818,9 +813,7 @@ final class DocsController: NSViewController {
         // own document-view width constraint above.
         listContent.widthAnchor.constraint(equalTo: postmortemListScroll.contentView.widthAnchor).isActive = true
 
-        postmortemEmptyLabel.font = .systemFont(ofSize: 12)
-        postmortemEmptyLabel.preferredMaxLayoutWidth = 420
-        postmortemEmptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        postmortemEmptyState.heightAnchor.constraint(equalToConstant: 110).isActive = true
 
         postmortemDetailTextView.isEditable = false
         postmortemDetailTextView.isRichText = false
@@ -832,7 +825,7 @@ final class DocsController: NSViewController {
         postmortemDetailScroll.translatesAutoresizingMaskIntoConstraints = false
         postmortemDetailScroll.isHidden = true
 
-        let stack = NSStackView(views: [header, postmortemEmptyLabel, postmortemListScroll, postmortemDetailScroll])
+        let stack = NSStackView(views: [header, postmortemEmptyState, postmortemListScroll, postmortemDetailScroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -852,7 +845,7 @@ final class DocsController: NSViewController {
 
     private func reloadPostmortemsList() {
         let postmortems = runbookStore.listPostmortems()
-        postmortemEmptyLabel.isHidden = !postmortems.isEmpty
+        postmortemEmptyState.isHidden = !postmortems.isEmpty
         postmortemListScroll.isHidden = postmortems.isEmpty
         postmortemGridItems = postmortems.map { postmortem in
             DocGridItem(
@@ -1078,7 +1071,6 @@ final class DocsController: NSViewController {
         let muted = HelmTheme.mutedInk(theme)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        let accent = HelmTheme.nsColor(theme.accentHex)
 
         for container in [playbookContainer, runbooksContainer, postmortemsContainer] {
             container.wantsLayer = true
@@ -1090,29 +1082,20 @@ final class DocsController: NSViewController {
         docsTitleLabel?.textColor = ink
         // The three toolbar glyphs are `HelmButton(.quiet)` now and own their
         // own tint, re-derived from the theme by the button itself.
-        emptyIcon.contentTintColor = muted
-        emptyTitleLabel.textColor = ink
-        emptyBodyLabel.textColor = muted
+        playbookEmptyState?.applyTheme(theme)
         emptyStateContainer.wantsLayer = true
         emptyStateContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         toolbarDivider.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
         tabBarDivider?.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
 
-        let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
-        for tab in DocsTab.allCases {
-            guard let pill = tabPills[tab], let label = tabLabels[tab] else { continue }
-            let isActive = tab == activeTab
-            pill.normalColor = isActive ? accentTint : .clear
-            pill.hoverColor = isActive ? accentTint : line.withAlphaComponent(0.25)
-            label.textColor = isActive ? accent : muted
-            label.font = .systemFont(ofSize: 12, weight: isActive ? .semibold : .medium)
-        }
+        tabs.applyTheme(theme)
 
         runbooksHeaderCountLabel.textColor = muted
         runbookEditorTitleLabel.textColor = ink
         runbookBodyTextView.textColor = ink
         runbookBodyTextView.backgroundColor = surface
-        postmortemEmptyLabel.textColor = muted
+        postmortemEmptyState.applyTheme(theme)
+        runbookGridEmptyState?.applyTheme(theme)
         postmortemDetailTextView.textColor = ink
         postmortemDetailTextView.backgroundColor = surface
 

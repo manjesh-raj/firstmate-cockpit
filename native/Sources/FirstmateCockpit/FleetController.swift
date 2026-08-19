@@ -271,64 +271,33 @@ final class FleetController: NSViewController {
         return loadingContainer
     }
 
-    /// `onClick`, when set, wires a plain `NSClickGestureRecognizer` on the
-    /// tile's container - no nested real control, so no hit-testing hazard
-    /// (matching `SettingsController`'s theme/session cards and
-    /// `ShiftProjectViews`' project cards, the same clickable-plain-view
-    /// pattern used throughout this app). fm/grandline-overview-drop-
-    /// duplicate-pr-list: this is how the "ready to merge" stat tile jumps
-    /// straight to `.review`'s full list, after removing this page's own
-    /// duplicate itemized copy of it.
-    private func statTile(icon: String, value: String, label: String, onClick: Selector? = nil) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10
-        container.translatesAutoresizingMaskIntoConstraints = false
+    /// One `HelmStatTile` - the app's shared stat tile
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 4). This page's own copy
+    /// was one of three (four, counting Shift's duplicate) differing in metric
+    /// size, padding, fill opacity and height for the same "one big number and
+    /// a caption" job; its click support is what the shared component adopted.
+    ///
+    /// `onClick` is a plain closure on the tile - no nested real control, so no
+    /// hit-testing hazard (matching `SettingsController`'s theme/session cards
+    /// and `ShiftProjectViews`' project cards, the same clickable-plain-view
+    /// pattern used throughout this app). fm/grandline-overview-drop-duplicate-
+    /// pr-list: this is how the "ready to merge" tile jumps straight to
+    /// `.review`'s full list, after removing this page's own duplicate
+    /// itemized copy of it.
+    private func statTile(icon: String, value: String, label: String, onClick: (() -> Void)? = nil) -> NSView {
+        let tile = HelmStatTile(symbol: icon, value: value, caption: label)
         if let onClick {
-            container.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: onClick))
-            container.toolTip = "View in Review"
+            tile.onClick = onClick
+            tile.toolTip = "View in Review"
         }
-
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: label)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let valueLabel = NSTextField(labelWithString: value)
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
-        valueLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let nameLabel = NSTextField(labelWithString: label)
-        nameLabel.font = .systemFont(ofSize: 9.5)
-        nameLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let topRow = NSStackView(views: [iconView, valueLabel])
-        topRow.orientation = .horizontal
-        topRow.spacing = 5
-        topRow.alignment = .firstBaseline
-        topRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [topRow, nameLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
-            container.heightAnchor.constraint(equalToConstant: 50),
-        ])
-        stashedTileParts.append((container, iconView, valueLabel, nameLabel))
-        return container
+        statTiles.append(tile)
+        return tile
     }
 
-    /// Stat-tile subviews needing per-theme restyling, kept alongside the
-    /// containers built each refresh (the row is rebuilt from scratch every
-    /// time, so this list is cleared and repopulated in `rebuildStats`).
-    private var stashedTileParts: [(NSView, NSImageView, NSTextField, NSTextField)] = []
+    /// Rebuilt from scratch on every refresh, so this list is cleared and
+    /// repopulated in `rebuildStats`. Each tile themes itself; this only exists
+    /// so `applyTheme` can hand every live tile the new theme.
+    private var statTiles: [HelmStatTile] = []
 
     /// One `HelmCard` per section - the shared container from
     /// `HelmDesignSystem.swift`. This used to be a bare header-row-over-stack
@@ -407,7 +376,7 @@ final class FleetController: NSViewController {
         }
 
         accentRows.removeAll()
-        emptyStateLabels.removeAll()
+        emptyStates.removeAll()
 
         let working = snapshot.tasks.filter { $0.status == "working" }
         let needs = snapshot.tasks.filter { $0.status == "needs_decision" || $0.status == "blocked" }
@@ -467,7 +436,7 @@ final class FleetController: NSViewController {
             statsRow.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
-        stashedTileParts.removeAll()
+        statTiles.removeAll()
 
         let watcherLabel: String
         switch snapshot.watcher.status {
@@ -477,7 +446,7 @@ final class FleetController: NSViewController {
         }
 
         statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(working)", label: "working"))
-        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", onClick: #selector(readyToMergeTileClicked)))
+        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", onClick: { [weak self] in self?.onNavigateToReview?() }))
         statsRow.addArrangedSubview(statTile(icon: "line.3.horizontal", value: "\(snapshot.queuedCount)", label: "queued"))
         statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(snapshot.doneCount)", label: "done today"))
         statsRow.addArrangedSubview(statTile(icon: "shippingbox", value: "\(snapshot.projectsCount)", label: "projects"))
@@ -500,40 +469,21 @@ final class FleetController: NSViewController {
         }
     }
 
+    /// One `HelmEmptyState` - the app's shared empty state
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 5). `boxed: true` because
+    /// this page's list sits directly on the page background with no card around
+    /// it, so the empty state needs a container of its own to read as an object;
+    /// that container is now `HelmCard`'s own fill and border rather than this
+    /// page's third border alpha (§4.2 measured two on one page).
     private func emptyStateView(icon: String, title: String, body: String) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 24, weight: .light))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-
-        let bodyLabel = NSTextField(wrappingLabelWithString: body)
-        bodyLabel.font = .systemFont(ofSize: 11.5)
-        bodyLabel.preferredMaxLayoutWidth = 420
-
-        let stack = NSStackView(views: [iconView, titleLabel, bodyLabel])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 10
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -22),
-        ])
-        emptyStateLabels.append((container, iconView, titleLabel, bodyLabel))
-        return container
+        let empty = HelmEmptyState(symbol: icon, title: title, body: body, size: .standard, boxed: true)
+        emptyStates.append(empty)
+        return empty
     }
 
-    private var emptyStateLabels: [(NSView, NSImageView, NSTextField, NSTextField)] = []
+    /// Rebuilt with the lists on every render; each state themes itself, so this
+    /// only exists to reach the live ones from `applyTheme`.
+    private var emptyStates: [HelmEmptyState] = []
 
     /// One "In flight" row, built from the app's shared `HelmAccentRow`
     /// (`HelmDesignSystem.swift`, audit §6.3 component 2). The audit (§4.2)
@@ -585,10 +535,6 @@ final class FleetController: NSViewController {
 
     // MARK: Actions
 
-    @objc private func readyToMergeTileClicked() {
-        onNavigateToReview?()
-    }
-
     // MARK: Theme
 
     private func applyTheme() {
@@ -619,22 +565,8 @@ final class FleetController: NSViewController {
         bannerTitle.textColor = ink
         bannerBody.textColor = muted
 
-        for (container, iconView, valueLabel, nameLabel) in stashedTileParts {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-            iconView.contentTintColor = ink.withAlphaComponent(0.65)
-            valueLabel.textColor = ink
-            nameLabel.textColor = muted
-        }
-        for (container, iconView, titleLabel, bodyLabel) in emptyStateLabels {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
-            iconView.contentTintColor = ink.withAlphaComponent(0.4)
-            titleLabel.textColor = ink
-            bodyLabel.textColor = muted
-        }
+        for tile in statTiles { tile.applyTheme(theme) }
+        for empty in emptyStates { empty.applyTheme(theme) }
         // Each row owns its own tint-derived chrome; it only needs the new
         // theme handed to it.
         for row in accentRows { row.applyTheme(theme) }

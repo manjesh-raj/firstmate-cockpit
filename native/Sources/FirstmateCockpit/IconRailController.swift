@@ -1469,11 +1469,15 @@ private final class HostsFlyoutViewController: NSViewController {
         var textLabels: [NSTextField] = []
 
         if hosts.isEmpty {
-            let empty = NSTextField(labelWithString: "No saved hosts yet")
-            empty.font = .systemFont(ofSize: 12)
-            empty.translatesAutoresizingMaskIntoConstraints = false
+            // Was a bare `NSTextField` - one of the four §3.2 called out. At
+            // this flyout's 200pt width there is no room for the `.standard`
+            // treatment, but `.compact` (a 22pt glyph over centred copy) fits
+            // and is the same shape every empty list in the app now shows.
+            let empty = HelmEmptyState(symbol: "server.rack",
+                                       body: "No saved hosts yet.\nAdd one from Manage Hosts & Keys.")
+            empty.applyTheme(ThemeManager.shared.theme)
             empty.widthAnchor.constraint(equalToConstant: Self.rowWidth).isActive = true
-            textLabels.append(empty)
+            empty.heightAnchor.constraint(equalToConstant: 96).isActive = true
             stack.addArrangedSubview(empty)
         }
 

@@ -62,6 +62,9 @@ enum HelmContrastSelfTest {
         checkAccentRowRecipe(&ok)
         checkNoHandRolledKickers(&ok)
         checkStatusColumnAligned(&ok)
+        checkStatTileRecipe(&ok)
+        checkEmptyStateRecipe(&ok)
+        checkSegmentedTabsRecipe(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -486,6 +489,175 @@ enum HelmContrastSelfTest {
                 print("  OK width \(Int(width)): pill x constant at \(fmt(Double(xs.first ?? 0)))")
             }
         }
+    }
+
+    // MARK: 9. One stat-tile recipe (audit §3.2 "Stat tile", §6.3 #4, Phase 4)
+
+    /// Every `HelmStatTile` renders one recipe in every theme - one height, one
+    /// radius, one metric size, one caption size, `HelmCard`'s own fill and
+    /// border - and, the part that is a real defect rather than inconsistency,
+    /// **a tinted metric clears the text floor against the tile's own fill**.
+    /// Two of the three copies this replaced set the value label straight to
+    /// `HelmTheme.nsColor(tint.hex(in: theme))`, which is §5.7's "a hue is safe
+    /// as a fill, not automatically as text" mistake: Solarized Dark's green
+    /// measures 2.71:1 that way.
+    private static func checkStatTileRecipe(_ ok: inout Bool) {
+        print("\n-- stat tiles (one recipe + legible tinted metric, all themes) --")
+        var worst = (ratio: Double.greatestFiniteMagnitude, label: "")
+        for theme in HelmTheme.allThemes {
+            for tint in [nil, HelmTint.good, .warn, .critical, .accent, .info, .violet] as [HelmTint?] {
+                let tile = HelmStatTile(symbol: "checkmark.circle", value: "12", caption: "a caption", tint: tint)
+                tile.applyTheme(theme)
+                tile.widthAnchor.constraint(equalToConstant: 180).isActive = true
+                let g = tile.debugGeometry()
+                var problems: [String] = []
+                if abs(g.tileFrame.height - HelmStatTile.height) > 0.01 {
+                    problems.append("height \(g.tileFrame.height)")
+                }
+                if abs(g.cornerRadius - HelmMetrics.rRow) > 0.01 { problems.append("radius \(g.cornerRadius)") }
+                if abs(g.borderWidth - 1) > 0.01 { problems.append("border width \(g.borderWidth)") }
+                if g.metricFont?.pointSize != 19 { problems.append("metric size \(String(describing: g.metricFont?.pointSize))") }
+                if g.captionFont?.pointSize != 10.5 { problems.append("caption size \(String(describing: g.captionFont?.pointSize))") }
+                // The fill is `HelmCard`'s, so a tile and a card on one page can
+                // never drift into two surfaces again. The alpha check matters
+                // as much as the hue: Updates' copy was the same colour at
+                // `@ 0.60`, which is a different *rendered* surface.
+                if let fill = g.fill {
+                    if HelmContrast.ratio(fill, HelmTheme.nsColor(theme.chromeBackgroundHex)) > 1.01 {
+                        problems.append("fill is not the card surface")
+                    }
+                    if abs(fill.alphaComponent - 1) > 0.01 {
+                        problems.append("fill alpha \(fmt(Double(fill.alphaComponent)))")
+                    }
+                }
+                if let metric = g.metricColor, let fill = g.fill {
+                    let r = HelmContrast.ratio(metric, fill)
+                    if r < worst.ratio { worst = (r, "\(theme.id) \(String(describing: tint))") }
+                    if r < HelmContrast.textTarget - 0.01 { problems.append("metric contrast \(fmt(r))") }
+                }
+                if let caption = g.captionColor,
+                   HelmContrast.ratio(caption, HelmTheme.mutedInk(theme)) > 1.01 {
+                    problems.append("caption not mutedInk")
+                }
+                if !problems.isEmpty {
+                    print("  FAIL \(theme.id) \(String(describing: tint)): \(problems.joined(separator: ", "))")
+                    ok = false
+                }
+            }
+        }
+        print("  OK - \(Int(HelmStatTile.height))pt / radius \(Int(HelmMetrics.rRow)) / metric 19 / caption 10.5, card surface, worst metric contrast \(fmt(worst.ratio)) (\(worst.label))")
+    }
+
+    // MARK: 10. One empty-state recipe (audit §3.2 "Empty state", §6.3 #5, Phase 4)
+
+    /// Both `HelmEmptyState` sizes render one recipe: a real glyph (four of the
+    /// six treatments this replaced had none, and one of those made Vault's
+    /// panels collapse to `bodyH=0` - §5.5), body copy in `mutedInk` with a real
+    /// non-zero width (the `preferredMaxLayoutWidth` trap this class inherited a
+    /// fix for), and a title only where one was asked for.
+    private static func checkEmptyStateRecipe(_ ok: inout Bool) {
+        print("\n-- empty states (one recipe, both sizes, all themes) --")
+        for theme in HelmTheme.allThemes {
+            for size in [HelmEmptyState.Size.compact, .standard] {
+                for boxed in [false, true] {
+                    let empty = HelmEmptyState(symbol: "tray",
+                                               title: size == .standard ? "Nothing here" : nil,
+                                               body: "A single-line explanation long enough to need a real width to lay out in.",
+                                               size: size,
+                                               boxed: boxed)
+                    empty.applyTheme(theme)
+                    // A realistic container, so `layout()` has a width to hand
+                    // the wrapping label.
+                    let host = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 160))
+                    host.addSubview(empty)
+                    NSLayoutConstraint.activate([
+                        empty.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                        empty.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                        empty.topAnchor.constraint(equalTo: host.topAnchor),
+                        empty.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+                    ])
+                    host.layoutSubtreeIfNeeded()
+                    let g = empty.debugGeometry()
+                    var problems: [String] = []
+                    if g.glyphFrame.width < 1 { problems.append("no glyph") }
+                    if g.titleVisible != (size == .standard) { problems.append("title visible \(g.titleVisible)") }
+                    if g.bodyFont?.pointSize != HelmType.caption().pointSize {
+                        problems.append("body size \(String(describing: g.bodyFont?.pointSize))")
+                    }
+                    if let bodyColor = g.bodyColor,
+                       HelmContrast.ratio(bodyColor, HelmTheme.mutedInk(theme)) > 1.01 {
+                        problems.append("body not mutedInk")
+                    }
+                    // The trap: a wrapping label in a centre-aligned stack with
+                    // inequality side constraints collapses to a few characters
+                    // per line unless handed a real width.
+                    if g.bodyFrame.width < 100 { problems.append("body width \(fmt(Double(g.bodyFrame.width)))") }
+                    if boxed && abs(g.cornerRadius - HelmMetrics.rRow) > 0.01 {
+                        problems.append("boxed radius \(g.cornerRadius)")
+                    }
+                    if !problems.isEmpty {
+                        print("  FAIL \(theme.id) \(size) boxed=\(boxed): \(problems.joined(separator: ", "))")
+                        ok = false
+                    }
+                }
+            }
+        }
+        print("  OK - glyph + body in mutedInk at a real width, title only when asked, boxed radius \(Int(HelmMetrics.rRow))")
+    }
+
+    // MARK: 11. One sub-navigation recipe (audit §3.2, §6.3 #6, Phase 4)
+
+    /// Every `HelmSegmentedTabs` is pills in a bordered capsule, and the active
+    /// pill's label clears the text floor **against the wash it actually sits
+    /// on**. Both copies this replaced painted `label.textColor = accent`
+    /// directly over an accent wash - the same §5.7 mistake as the stat tiles.
+    private static func checkSegmentedTabsRecipe(_ ok: inout Bool) {
+        print("\n-- segmented tabs (one recipe + legible active label, all themes) --")
+        var worst = (ratio: Double.greatestFiniteMagnitude, label: "")
+        for theme in HelmTheme.allThemes {
+            for size in [HelmSegmentedTabs.Size.standard, .compact] {
+                let tabs = HelmSegmentedTabs(items: [.init(id: "a", title: "First"),
+                                                     .init(id: "b", title: "Second"),
+                                                     .init(id: "c", title: "Third")],
+                                             selected: "b", size: size)
+                tabs.applyTheme(theme)
+                let g = tabs.debugGeometry()
+                var problems: [String] = []
+                if g.pillCount != 3 { problems.append("pill count \(g.pillCount)") }
+                if g.activeID != "b" { problems.append("active \(g.activeID)") }
+                if abs(g.capsuleBorderWidth - 1) > 0.01 { problems.append("no capsule border") }
+                if abs(g.capsuleRadius - size.capsuleRadius) > 0.01 { problems.append("capsule radius \(g.capsuleRadius)") }
+                if g.pillRadii.contains(where: { abs($0 - size.pillRadius) > 0.01 }) {
+                    problems.append("pill radii \(g.pillRadii)")
+                }
+                if Set(g.labelPointSizes).count != 1 { problems.append("label sizes \(g.labelPointSizes)") }
+                // The active label lands on the accent wash composited over the
+                // capsule's own fill, which itself sits over one of the two page
+                // surfaces - score the worse.
+                if let activeInk = g.activeInk, let wash = g.activeFill {
+                    for behindHex in [theme.chromeBackgroundHex, theme.backgroundHex] {
+                        let capsule = HelmContrast.mix(
+                            HelmContrast.components(HelmTheme.nsColor(theme.chromeBackgroundHex)),
+                            HelmContrast.components(HelmTheme.nsColor(behindHex)),
+                            Double(HelmSegmentedTabs.capsuleAlpha))
+                        let fill = HelmContrast.mix(HelmContrast.components(wash), capsule,
+                                                    Double(wash.alphaComponent))
+                        let r = HelmContrast.ratio(HelmContrast.components(activeInk), fill)
+                        if r < worst.ratio { worst = (r, "\(theme.id) \(size)") }
+                        if r < HelmContrast.textTarget - 0.01 { problems.append("active label contrast \(fmt(r))") }
+                    }
+                }
+                if let inactiveInk = g.inactiveInk,
+                   HelmContrast.ratio(inactiveInk, HelmTheme.mutedInk(theme)) > 1.01 {
+                    problems.append("inactive label not mutedInk")
+                }
+                if !problems.isEmpty {
+                    print("  FAIL \(theme.id) \(size): \(problems.joined(separator: ", "))")
+                    ok = false
+                }
+            }
+        }
+        print("  OK - bordered capsule, one pill radius / label size per size, inactive in mutedInk, worst active label contrast \(fmt(worst.ratio)) (\(worst.label))")
     }
 
     // MARK: Helpers
