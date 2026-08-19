@@ -132,6 +132,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private let sreLeadPane = NSView()
     private let sreLeadPaneSeparator = NSView()
     private let sreLeadHeader = NSView()
+    /// Separates the header bar from the body below it - needed once the
+    /// pane's body switched from `backgroundHex` to `chromeBackgroundHex`
+    /// (matching the header's own long-standing fill) so the two don't read
+    /// as one indistinguishable block (`fm/grandline-sre-lead-polish`).
+    private let sreLeadHeaderDivider = NSView()
     private let sreLeadHeaderLabel = NSTextField(labelWithString: "SRE Lead")
     /// "Generate Postmortem" (`fm/grandline-sre-lead-postmortem`) - hidden
     /// until `updateGeneratePostmortemButton()` sees a real assistant reply
@@ -838,6 +843,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadHeader.wantsLayer = true
         sreLeadPane.addSubview(sreLeadHeader)
 
+        sreLeadHeaderDivider.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadHeaderDivider.wantsLayer = true
+        sreLeadPane.addSubview(sreLeadHeaderDivider)
+
         sreLeadHeaderLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         sreLeadHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
         sreLeadHeader.addSubview(sreLeadHeaderLabel)
@@ -858,12 +867,21 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             sreLeadPaneSeparator.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
             sreLeadPaneSeparator.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
             sreLeadPaneSeparator.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
-            sreLeadPaneSeparator.widthAnchor.constraint(equalToConstant: 1),
+            // Widened from the original 1pt and re-tinted with the theme's
+            // accent color (was `chromeLineHex`) so the terminal/pane
+            // boundary reads as a deliberate, unmissable seam in every Helm
+            // theme, not a hairline easy to miss (`fm/grandline-sre-lead-polish`).
+            sreLeadPaneSeparator.widthAnchor.constraint(equalToConstant: 3),
 
             sreLeadHeader.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
             sreLeadHeader.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
             sreLeadHeader.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
             sreLeadHeader.heightAnchor.constraint(equalToConstant: 32),
+
+            sreLeadHeaderDivider.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
+            sreLeadHeaderDivider.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            sreLeadHeaderDivider.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            sreLeadHeaderDivider.heightAnchor.constraint(equalToConstant: 1),
 
             sreLeadHeaderLabel.leadingAnchor.constraint(equalTo: sreLeadHeader.leadingAnchor, constant: 12),
             sreLeadHeaderLabel.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
@@ -901,7 +919,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         NSLayoutConstraint.activate([
             sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
             sreLeadEmptyStateView.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
-            sreLeadEmptyStateView.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            sreLeadEmptyStateView.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
             sreLeadEmptyStateView.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
 
             sreLeadEmptyStateLabel.leadingAnchor.constraint(equalTo: sreLeadEmptyStateView.leadingAnchor, constant: 20),
@@ -923,13 +941,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             default: break
             }
         }
-    }
-
-    /// Whether any tab on this page has SRE Lead state at all (started,
-    /// running, or failed-with-a-visible-error) - used to decide whether the
-    /// shared pane should stay open after tearing one tab's session down.
-    private func anySRELeadTabHasState() -> Bool {
-        tabs.contains { $0.sreLead != nil }
     }
 
     /// The toolbar pill's click action - operates on `currentTab`, never a
@@ -983,7 +994,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
         state.phase = .starting
         updateSRELeadControls()
-        setSRELeadPaneOpen(true)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self, weak tab] in
             let result = SRELead.setUp()
@@ -1093,15 +1103,27 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// shared empty state otherwise - never another tab's chat. Every other
     /// tab's chat is hidden, the same "hide, don't rebuild" convention this
     /// app uses everywhere else.
+    ///
+    /// This is also the single place that decides whether the pane is open
+    /// at all: it tracks the *currently selected* tab's own `sreLead` state,
+    /// not "does any tab on this page have SRE Lead state" - a fresh or
+    /// duplicated tab with no `sreLead` state must show a fully closed pane
+    /// (no pane, not even the empty state), regardless of what a sibling tab
+    /// is doing. Called from every place that changes which tab is selected
+    /// or changes that tab's own SRE Lead phase (`updateSRELeadControls`),
+    /// plus directly wherever a tab's own state changes without also
+    /// touching the currently-selected tab's controls.
     private func updateSRELeadPaneContent() {
         guard let current = currentTab else {
             sreLeadEmptyStateView.isHidden = true
+            setSRELeadPaneOpen(false)
             return
         }
         for tab in tabs {
             tab.sreLead?.chatView?.isHidden = (tab !== current)
         }
         sreLeadEmptyStateView.isHidden = (current.sreLead?.chatView != nil)
+        setSRELeadPaneOpen(current.sreLead != nil)
     }
 
     /// The pane header's "Generate Postmortem" button is only ever shown
@@ -1149,10 +1171,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Tears down `tab`'s own SRE Lead session (bridge, in-flight `claude`
     /// process, scratch dir) and removes its chat - never another tab's.
     /// Called from the pill's toggle-off click and, unconditionally, from
-    /// `closeTab` for whichever tab is being closed. If no other tab on this
-    /// page has SRE Lead state afterward, the shared pane collapses closed -
-    /// matching the old single-tab-per-page behavior; if a sibling tab still
-    /// has a live session, the pane stays open so it isn't disturbed.
+    /// `closeTab` for whichever tab is being closed. Whether the shared pane
+    /// ends up open or closed is decided entirely by `updateSRELeadControls`/
+    /// `updateSRELeadPaneContent` off the *currently selected* tab's own
+    /// state (see that method's doc comment) - tearing down a background
+    /// tab's session never touches the pane a captain is actually looking
+    /// at, and tearing down the current tab's own session closes the pane
+    /// immediately since its `sreLead` is now `nil`.
     private func tearDownSRELead(for tab: TabModel) {
         guard let state = tab.sreLead else { return }
         state.tearDownSession()
@@ -1162,9 +1187,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if tab === currentTab {
             sreLeadGeneratePostmortemButton.isEnabled = true
             updateSRELeadControls()
-        }
-        if !anySRELeadTabHasState() {
-            setSRELeadPaneOpen(false)
         }
     }
 
@@ -1184,7 +1206,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         NSLayoutConstraint.activate([
             chat.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
             chat.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
-            chat.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            chat.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
             chat.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
         ])
         chat.applyTheme(theme)
@@ -1475,12 +1497,30 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateComposeControls()
         updateUtilizationControls()
 
-        sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        sreLeadPaneSeparator.layer?.backgroundColor = line.cgColor
+        // The pane is a distinct surface/card, not a continuation of the
+        // terminal - filled with `chromeBackgroundHex` (this app's "surface"
+        // token) instead of `backgroundHex` (the terminal's own token),
+        // fixing a captain-reported "melds into the terminal" report
+        // (`fm/grandline-sre-lead-polish`). Checked live across all 12
+        // `HelmTheme.allThemes`: `chromeBackgroundHex` differs from
+        // `backgroundHex` in 9 of them, but is numerically IDENTICAL in
+        // `gruvbox-light`/`tokyo-night-dark`/`tokyo-night-light` - so the
+        // fill alone can't be the only thing carrying this distinction. The
+        // widened, `accentHex`-tinted `sreLeadPaneSeparator` below is what
+        // makes the boundary unmistakable in every theme regardless of
+        // whether the two fills happen to match, since every theme's accent
+        // is a deliberately bold, saturated color far from either
+        // background/chrome-background shade - never rely on the fill pair
+        // alone to prove this distinction in a future change here.
+        let paneBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        sreLeadPane.layer?.backgroundColor = paneBg.cgColor
+        sreLeadPaneSeparator.layer?.backgroundColor = accent.cgColor
         sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
+        sreLeadHeaderDivider.layer?.backgroundColor = line.cgColor
         sreLeadHeaderLabel.textColor = ink
         sreLeadGeneratePostmortemButton.contentTintColor = ink
-        sreLeadEmptyStateView.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        sreLeadEmptyStateView.layer?.backgroundColor = paneBg.cgColor
         sreLeadEmptyStateLabel.textColor = HelmTheme.mutedInk(theme)
         // Every started tab's own chat, not just the current one - each is a
         // real, independent view that needs to stay in sync with the active
