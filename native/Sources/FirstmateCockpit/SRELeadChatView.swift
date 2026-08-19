@@ -209,94 +209,40 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// Shared "colored left accent bar + content" card, the one visual unit
-    /// every role below (user question, Finding/Recommendation callouts,
-    /// error) builds on - a colored bar reads clearly against every theme
-    /// regardless of whether a given theme's surface tokens happen to be
-    /// close together (see `HelmTheme.swift`'s own documented case where
-    /// `chromeBackgroundHex`/`backgroundHex` coincide in a few themes), so
-    /// the bar - not a background tint alone - is what actually guarantees
-    /// the card reads as distinct. `backgroundTintAlpha` adds a very light
-    /// wash of the same color for extra warmth; it is deliberately subtle so
-    /// it never competes with the bar for "what color is this."
-    private func accentCard(colorHex: String, backgroundTintAlpha: CGFloat, content: NSView) -> NSView {
-        let bar = NSView()
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = HelmTheme.nsColor(colorHex).cgColor
-        bar.layer?.cornerRadius = 1.5
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.widthAnchor.constraint(equalToConstant: 3).isActive = true
-
-        let panel = NSView()
-        panel.wantsLayer = true
-        panel.layer?.cornerRadius = 10
-        panel.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(backgroundTintAlpha).cgColor
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        content.translatesAutoresizingMaskIntoConstraints = false
-        panel.addSubview(bar)
-        panel.addSubview(content)
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: panel.topAnchor),
-            bar.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
-
-            content.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 12),
-            content.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -12),
-            content.topAnchor.constraint(equalTo: panel.topAnchor, constant: 10),
-            content.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
-        ])
-        return panel
-    }
-
-    /// A small bold, letter-spaced, uppercase section label in `colorHex` -
-    /// the "FINDING" / "RECOMMENDED NEXT ACTION" / "ERROR" heading style used
-    /// throughout the cards below, echoing the reference mockup's
-    /// EXECUTIVE SUMMARY / ROOT CAUSE section headings without adopting any
-    /// of its structured fields (severity/downtime/confidence) this app's
-    /// persona doesn't produce.
-    /// `onWash` is the `backgroundTintAlpha` of the `accentCard` this label
-    /// sits inside. It has to be passed in, because a tint hue drawn as text
-    /// on a wash of *itself* is exactly the pairing that fails the 4.5:1
-    /// floor - the audit measured that shape failing in 44 of 72 real
-    /// theme/hue pairs for the shared status pill, and this was the one
-    /// remaining place in the app still doing it (§5.7's "one outlier to
-    /// fix"). `HelmContrast.tintedSurface` keeps the hue and nudges the label
-    /// toward the theme's own ink only as far as the floor needs; passing a
-    /// single-element `washSteps` pins the *card's* own fill, so this changes
-    /// the label colour and nothing else.
-    private func sectionLabel(_ text: String, colorHex: String, onWash washAlpha: CGFloat) -> NSTextField {
-        let resolved = HelmContrast.tintedSurface(tintHex: colorHex, theme: theme,
-                                                  target: HelmContrast.textTarget,
-                                                  washSteps: [washAlpha])
-        let label = NSTextField(labelWithString: "")
-        label.attributedStringValue = NSAttributedString(string: text.uppercased(), attributes: [
-            .foregroundColor: resolved.foreground,
-            .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
-            .kern: 0.6,
-        ])
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
+    /// One accent card in this pane - a question, an error, a Finding or a
+    /// Recommended next action - built from the app's shared `HelmAccentRow`
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 2).
+    ///
+    /// This pane used to hand-roll its own version of that card and was the
+    /// audit's named outlier (§3.2, §4.3): a tint-washed panel with **no
+    /// border**, whose section label was coloured from the tint hue rather
+    /// than `mutedInk`. The visible consequence was that an SRE Lead
+    /// "Finding" and a Notification "PR Ready" - both meaning *here is a
+    /// coloured, kickered finding* - did not read as the same kind of object.
+    /// They now are the same object: same bar, same badge, same kicker
+    /// typography and colour, same card fill and tinted border.
+    ///
+    /// `hover: false` because these cards are transcript content, not
+    /// controls - a hover highlight on something that does nothing is a lie.
+    /// The card is nested inside `assistantBlock`'s own container, which
+    /// shares its fill; the tinted border and the accent bar are what
+    /// separate them, exactly as a notification row separates from the
+    /// notification panel behind it (both `chromeBackgroundHex`).
+    private func accentRow(kicker: String, tint: HelmTint, badgeSymbol: String, content: NSView) -> NSView {
+        let row = HelmAccentRow(contentView: content, hover: false)
+        row.configure(HelmAccentRow.Content(tint: tint, kicker: kicker, badgeSymbol: badgeSymbol),
+                      theme: theme)
+        return row
     }
 
     private func userBlock(for text: String) -> NSView {
-        let colorHex = theme.accentHex
-        let label = sectionLabel("You", colorHex: colorHex, onWash: 0.1)
-
         let body = NSTextField(wrappingLabelWithString: text)
         body.font = .systemFont(ofSize: 12.5, weight: .medium)
         body.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         body.isSelectable = true
         body.lineBreakMode = .byWordWrapping
         body.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [label, body])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        body.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
-        return accentCard(colorHex: colorHex, backgroundTintAlpha: 0.1, content: stack)
+        return accentRow(kicker: "You", tint: .accent, badgeSymbol: "person.fill", content: body)
     }
 
     /// A short internal status line ("SRE Lead is ready...", "Thinking...")
@@ -333,24 +279,14 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     }
 
     private func errorBlock(for text: String) -> NSView {
-        let colorHex = HelmTint.critical.hex(in: theme)
-        let label = sectionLabel("Error", colorHex: colorHex, onWash: 0.1)
-
         let body = NSTextField(wrappingLabelWithString: text)
         body.font = .systemFont(ofSize: 12.5)
         body.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         body.isSelectable = true
         body.lineBreakMode = .byWordWrapping
         body.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [label, body])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        body.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
-        return accentCard(colorHex: colorHex, backgroundTintAlpha: 0.1, content: stack)
+        return accentRow(kicker: "Error", tint: .critical,
+                         badgeSymbol: "exclamationmark.triangle.fill", content: body)
     }
 
     // MARK: Markdown rendering (assistant messages only)
@@ -564,19 +500,9 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     /// `HelmTint`, never a literal color.
     private func calloutView(kind: SRELeadCalloutKind, runs: [SRELeadInlineRun]) -> NSView {
         let tint: HelmTint = kind == .finding ? .accent : .good
-        let colorHex = tint.hex(in: theme)
-
-        let label = sectionLabel(kind.label, colorHex: colorHex, onWash: 0.08)
-        let body = wrappingLabel(attributedInline(runs))
-
-        let inner = NSStackView(views: [label, body])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 6
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        body.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        return accentCard(colorHex: colorHex, backgroundTintAlpha: 0.08, content: inner)
+        let symbol = kind == .finding ? "magnifyingglass" : "arrow.right.circle.fill"
+        return accentRow(kicker: kind.label, tint: tint, badgeSymbol: symbol,
+                         content: wrappingLabel(attributedInline(runs)))
     }
 
     @objc private func submit() {

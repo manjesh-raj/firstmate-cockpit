@@ -59,6 +59,9 @@ enum HelmContrastSelfTest {
         checkNoSystemTextColors(&ok)
         checkButtonVariants(&ok)
         checkNoStockBezels(&ok)
+        checkAccentRowRecipe(&ok)
+        checkNoHandRolledKickers(&ok)
+        checkStatusColumnAligned(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -332,6 +335,156 @@ enum HelmContrastSelfTest {
             for o in offenders { print("  FAIL \(o)") }
             print("  \(offenders.count) stock-bezel site(s) - use HelmButton instead")
             ok = false
+        }
+    }
+
+    // MARK: 7. One accent-row recipe (audit §3.2, §6.3 component 2, Phase 3)
+
+    /// Every `HelmAccentRow` renders the same recipe in every theme: the bar
+    /// at one weight and position, the badge at one size, the kicker at one
+    /// font/kern **in `mutedInk`, never the hue**, and the card at one radius
+    /// with a `tint @ 0.4` border. This is the invariant the four
+    /// pre-Phase-3 copies each broke differently - `SRELeadChatView`'s worst,
+    /// with no border and a hue-coloured kicker.
+    private static func checkAccentRowRecipe(_ ok: inout Bool) {
+        print("\n-- accent rows (one recipe, all themes) --")
+        for theme in HelmTheme.allThemes {
+            for (name, _) in hues.prefix(3) {
+                let tint: HelmTint = name == "red" ? .critical : (name == "green" ? .good : .warn)
+                // The two structural variants both callers use.
+                for placement in [HelmAccentRow.ChipPlacement.trailing, .belowBody] {
+                    let row = HelmAccentRow(chipPlacement: placement)
+                    row.configure(HelmAccentRow.Content(tint: tint,
+                                                        kicker: "Kicker",
+                                                        title: "A representative row title",
+                                                        meta: "a meta line",
+                                                        badgeSymbol: "bell.fill",
+                                                        chipText: "Chip"),
+                                  theme: theme)
+                    // Give it a realistic width so the geometry resolves.
+                    row.widthAnchor.constraint(equalToConstant: 420).isActive = true
+                    let g = row.debugGeometry()
+                    let muted = HelmTheme.mutedInk(theme)
+                    var problems: [String] = []
+                    if abs(g.barFrame.width - 3) > 0.01 { problems.append("bar width \(g.barFrame.width)") }
+                    if g.badgeFrame.map({ abs($0.width - HelmMetrics.tileSmall) > 0.01 }) ?? true {
+                        problems.append("badge size \(String(describing: g.badgeFrame?.width))")
+                    }
+                    if abs(g.cardRadius - HelmMetrics.rRow) > 0.01 { problems.append("radius \(g.cardRadius)") }
+                    if g.kickerFont?.pointSize != HelmType.kicker().pointSize { problems.append("kicker font") }
+                    if (g.kickerKern ?? 0) != HelmType.kickerKern { problems.append("kicker kern \(String(describing: g.kickerKern))") }
+                    // The rule: a tint hue is safe as a fill or a bar, never
+                    // automatically as text. The kicker is `mutedInk`.
+                    if let kc = g.kickerColor, HelmContrast.ratio(kc, muted) > 1.01 {
+                        problems.append("kicker not mutedInk")
+                    }
+                    if !g.chipVisible { problems.append("chip missing") }
+                    if g.cardBorderColor == nil { problems.append("no card border") }
+                    if !problems.isEmpty {
+                        print("  FAIL \(theme.id) \(name) \(placement): \(problems.joined(separator: ", "))")
+                        ok = false
+                    }
+                }
+            }
+        }
+        print("  OK - bar 3pt, badge \(Int(HelmMetrics.tileSmall))pt, radius \(Int(HelmMetrics.rRow)), kicker in mutedInk, tinted border, in all \(HelmTheme.allThemes.count) themes")
+    }
+
+    /// A kicker built by hand is how the app ended up with three kern values
+    /// for one label, and with `SRELeadChatView` colouring its kicker from
+    /// the raw tint hue - the exact "hue as text" mistake §5.7 is about. Every
+    /// kicker goes through `HelmType.kicker()`/`kickerKern`, so a stray
+    /// `.kern:` outside the design system fails here.
+    private static func checkNoHandRolledKickers(_ ok: inout Bool) {
+        print("\n-- kickers (must come from HelmType) --")
+        let sourcesDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil),
+              files.contains(where: { $0.lastPathComponent == "HelmTheme.swift" }) else {
+            print("  SKIP - sources not present next to this binary (\(sourcesDir.path))")
+            return
+        }
+        var offenders: [String] = []
+        for file in files where file.pathExtension == "swift" {
+            if ["HelmContrastSelfTest.swift", "HelmDesignSystem.swift"].contains(file.lastPathComponent) { continue }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("//") { continue }
+                guard trimmed.contains(".kern:") else { continue }
+                // The token itself is fine wherever it appears.
+                if trimmed.contains("HelmType.kickerKern") { continue }
+                offenders.append("\(file.lastPathComponent):\(n + 1) \(trimmed)")
+            }
+        }
+        if offenders.isEmpty {
+            print("  OK - no hand-rolled kern outside HelmType")
+        } else {
+            for o in offenders { print("  FAIL \(o)") }
+            print("  \(offenders.count) hand-rolled kicker(s) - use HelmType.kickerAttributes")
+            ok = false
+        }
+    }
+
+    // MARK: 8. The status column stays a column (audit §5.4)
+
+    /// The shared checklist row's status pill used to sit immediately after
+    /// the name label, so it tracked the name's length: measured at a 64pt
+    /// spread over five real Updates rows, forming a ragged diagonal instead
+    /// of a column. `ToolRowLayout`'s fixed name column fixed it; this keeps
+    /// it fixed, at three widths so the proportional column is exercised
+    /// rather than one lucky size.
+    private static func checkStatusColumnAligned(_ ok: inout Bool) {
+        print("\n-- status column (audit §5.4) --")
+        let theme = ThemeManager.shared.theme
+        // Deliberately mismatched name lengths *and* action sets - both are
+        // what used to move the pill.
+        let fixtures: [(String, [String])] = [
+            ("gh-axi", ["Check"]),
+            ("chrome-devtools-axi", ["Check", "Update"]),
+            ("gh (GitHub CLI)", ["Check"]),
+            ("DevOps Playbook", ["Check", "Install in Bootstrap \u{2192}"]),
+        ]
+        for width in [760.0, 1064.0, 1400.0] as [CGFloat] {
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 400))
+            host.translatesAutoresizingMaskIntoConstraints = false
+            let stack = NSStackView()
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(stack)
+            NSLayoutConstraint.activate([
+                host.widthAnchor.constraint(equalToConstant: width),
+                stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                stack.topAnchor.constraint(equalTo: host.topAnchor),
+            ])
+            var pills: [(NSView, NSView)] = []
+            for (name, buttons) in fixtures {
+                let v = ToolRowLayout.Views(
+                    iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+                    detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+                    pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+                    detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+                    logContainer: NSView(), rowContainer: HoverHighlightView())
+                ToolRowLayout.pill(text: "Up to Date", colorHex: theme.accentHex,
+                                   into: v.pill, label: v.pillLabel, theme: theme)
+                let row = ToolRowLayout.build(
+                    v, iconSymbol: "shippingbox", tint: .info, name: name,
+                    trailingViews: buttons.map { HelmButton(title: $0, variant: .secondary, size: .small) },
+                    identifier: name)
+                stack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                pills.append((v.pill, v.rowContainer))
+            }
+            host.layoutSubtreeIfNeeded()
+            let xs = pills.map { $0.0.convert($0.0.bounds, to: $0.1).minX }
+            let spread = (xs.max() ?? 0) - (xs.min() ?? 0)
+            if spread > 0.5 {
+                print("  FAIL width \(Int(width)): pill x spread \(fmt(Double(spread)))pt - status column is not a column")
+                ok = false
+            } else {
+                print("  OK width \(Int(width)): pill x constant at \(fmt(Double(xs.first ?? 0)))")
+            }
         }
     }
 

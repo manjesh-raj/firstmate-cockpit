@@ -511,7 +511,7 @@ final class VaultController: NSViewController {
             iconSymbol: "key.fill",
             tint: .good,
             name: secret.name,
-            trailingViews: [views.pill, runButton, copyButton],
+            trailingViews: [runButton, copyButton],
             identifier: "secret:\(secret.name)",
             showDetails: false,
             cardStyle: true
@@ -550,7 +550,6 @@ final class VaultController: NSViewController {
             iconSymbol: "checkmark.shield",
             tint: isHardened ? .good : .warn,
             name: tool.name,
-            trailingViews: [views.pill],
             identifier: "tool:\(tool.name)",
             showDetails: false,
             cardStyle: true

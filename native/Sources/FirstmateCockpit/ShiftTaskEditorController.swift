@@ -619,9 +619,12 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
     private func sectionLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: "")
+        // The one kicker in the app (`HelmType.kicker()` + `kickerKern`,
+        // audit §6.2) rather than this sheet's own font/kern pair - the
+        // colour still arrives from `applyTheme` below, via `sectionLabels`.
         label.attributedStringValue = NSAttributedString(string: text.uppercased(), attributes: [
-            .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-            .kern: 0.7,
+            .font: HelmType.kicker(),
+            .kern: HelmType.kickerKern,
         ])
         label.translatesAutoresizingMaskIntoConstraints = false
         sectionLabels.append(label)

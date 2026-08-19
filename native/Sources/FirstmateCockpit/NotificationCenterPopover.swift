@@ -292,7 +292,7 @@ private final class NotificationPanelViewController: NSViewController {
         rowsStack.alignment = .leading
         // Cards are now separated by visible gaps (each has its own border/
         // fill), not a hairline divider baked into each row - see
-        // `NotificationRowView`.
+        // `HelmAccentRow`.
         rowsStack.spacing = 8
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
 
@@ -341,7 +341,7 @@ private final class NotificationPanelViewController: NSViewController {
         emptyStateLabel.isHidden = !entries.isEmpty
         markAllReadLabel.isHidden = !entries.contains { $0.kind == .informational }
         for entry in entries {
-            let row = NotificationRowView(entry: entry)
+            let row = Self.makeRow(for: entry, theme: theme)
             row.translatesAutoresizingMaskIntoConstraints = false
             row.onClick = { [weak self] in
                 entry.navigate()
@@ -382,9 +382,34 @@ private final class NotificationPanelViewController: NSViewController {
         markAllReadLabel.textColor = accent
         separator.layer?.backgroundColor = line.cgColor
         emptyStateLabel.textColor = muted
-        for case let row as NotificationRowView in rowsStack.arrangedSubviews {
+        for case let row as HelmAccentRow in rowsStack.arrangedSubviews {
             row.applyTheme(theme)
         }
+    }
+
+    /// One notification row, built from the app's shared accent row.
+    ///
+    /// This row *is* `HelmAccentRow`'s source: the component
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 2) is the recipe that
+    /// used to live here, promoted so Shift's task and follow-up lists, SRE
+    /// Lead's findings and Overview's "In flight" rows could stop
+    /// re-implementing it. What is left here is the part that is genuinely
+    /// about notifications: which glyph and kicker a given source gets
+    /// (`NotificationRowPresentation`), and what the chip says.
+    ///
+    /// `.belowBody` because this panel is narrow (`Self.width`) - too narrow
+    /// for a chip beside wrapping body text.
+    static func makeRow(for entry: AppNotification, theme: HelmTheme) -> HelmAccentRow {
+        let presentation = NotificationRowPresentation(for: entry)
+        let row = HelmAccentRow(chipPlacement: .belowBody)
+        row.configure(HelmAccentRow.Content(tint: entry.tint,
+                                            kicker: presentation.kicker,
+                                            title: entry.title,
+                                            badgeSymbol: presentation.icon,
+                                            chipText: entry.subtext,
+                                            titleWraps: true),
+                      theme: theme)
+        return row
     }
 }
 
@@ -437,122 +462,4 @@ private struct NotificationRowPresentation {
     }
 }
 
-/// One notification row, restyled (`fm/grandline-notification-row-redesign`)
-/// as its own bordered card - a colored left accent bar, a small round icon
-/// badge, a bold uppercase kicker, the body message, and a trailing chip
-/// carrying the entry's source/clear-rule text - translating the captain's
-/// Slack-RCA-claims reference image into this app's own theme tokens rather
-/// than copying its literal palette. `card` mirrors `ToolRowLayout`'s
-/// `cardStyle` fill/border idiom; the trailing chip reuses `ToolRowLayout.
-/// pill` directly. Still wrapped in the same click-to-navigate contract as
-/// before this task.
-private final class NotificationRowView: NSView {
-    private let card = HoverHighlightView()
-    private let accentBar = NSView()
-    private let badge = IconTileView(size: 26, cornerRadius: 13)
-    private let kickerLabel = NSTextField(labelWithString: "")
-    private let bodyLabel = NSTextField(wrappingLabelWithString: "")
-    private let chip = NSView()
-    private let chipLabel = NSTextField(labelWithString: "")
-    private let tint: HelmTint
-    private let subtext: String
-    private let presentation: NotificationRowPresentation
 
-    var onClick: (() -> Void)?
-
-    init(entry: AppNotification) {
-        self.tint = entry.tint
-        self.subtext = entry.subtext
-        self.presentation = NotificationRowPresentation(for: entry)
-        super.init(frame: .zero)
-
-        card.cornerRadius = 10
-        card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
-
-        accentBar.wantsLayer = true
-        accentBar.layer?.cornerRadius = 1.5
-        accentBar.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(accentBar)
-
-        badge.configure(symbol: presentation.icon, tint: tint, pointSize: 11)
-
-        kickerLabel.translatesAutoresizingMaskIntoConstraints = false
-        kickerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        bodyLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-        bodyLabel.stringValue = entry.title
-        bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: ThemeManager.shared.theme), into: chip, label: chipLabel)
-        chip.setContentHuggingPriority(.required, for: .horizontal)
-        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let textColumn = NSStackView(views: [kickerLabel, bodyLabel, chip])
-        textColumn.orientation = .vertical
-        textColumn.alignment = .leading
-        textColumn.spacing = 4
-        textColumn.setCustomSpacing(6, after: bodyLabel)
-        textColumn.translatesAutoresizingMaskIntoConstraints = false
-
-        card.addSubview(badge)
-        card.addSubview(textColumn)
-
-        NSLayoutConstraint.activate([
-            card.leadingAnchor.constraint(equalTo: leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor),
-            card.topAnchor.constraint(equalTo: topAnchor),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            // Inset 2pt from the top/bottom so the bar never clips past the
-            // card's own rounded corners at this radius.
-            accentBar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 2),
-            accentBar.widthAnchor.constraint(equalToConstant: 3),
-            accentBar.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
-            accentBar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
-
-            badge.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 12),
-            badge.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-
-            textColumn.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
-            textColumn.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            textColumn.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            textColumn.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-        ])
-
-        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked)))
-        applyTheme(ThemeManager.shared.theme)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    @objc private func clicked() { onClick?() }
-
-    func applyTheme(_ theme: HelmTheme) {
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        let muted = HelmTheme.mutedInk(theme)
-        let tintColor = HelmTheme.nsColor(tint.hex(in: theme))
-
-        badge.applyTheme(theme)
-
-        kickerLabel.attributedStringValue = NSAttributedString(
-            string: presentation.kicker.uppercased(),
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-                .kern: 0.9,
-                .foregroundColor: muted,
-            ]
-        )
-        bodyLabel.textColor = ink
-        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: theme), into: chip, label: chipLabel, theme: theme)
-
-        accentBar.layer?.backgroundColor = tintColor.cgColor
-
-        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        card.normalColor = cardFill
-        card.hoverColor = cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = tintColor.withAlphaComponent(0.4).cgColor
-    }
-}

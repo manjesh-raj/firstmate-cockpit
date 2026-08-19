@@ -145,7 +145,7 @@ final class MutedInkLabels {
 /// **So: any new component that puts a tint hue on a wash of itself must route
 /// through `tintedSurface` below rather than setting both colors to the raw
 /// hue.** `ToolRowLayout.pill` and `IconTileView.applyTheme` both do.
-/// `NotificationRowView` already gets this right a different way - its kicker
+/// `HelmAccentRow` already gets this right a different way - its kicker
 /// is `HelmTheme.mutedInk`, never the tint. `SRELeadChatView.sectionLabel`
 /// was the app's one remaining violation (a tint-coloured label on its own
 /// `accentCard`'s tint wash) and now routes through here too, pinning the
@@ -494,9 +494,8 @@ enum ToolRowLayout {
 
     /// Adds (idempotently, based on `bar`'s current superview) a colored
     /// left accent strip flush against `container`'s leading edge - the
-    /// same colored-strip idiom `NotificationRowView`/`ShiftTaskRowView`
-    /// use to flag "this one needs a look" (`NotificationCenterPopover.
-    /// swift`). Exposed as a standalone helper, not baked only into
+    /// same colored-strip idiom `HelmAccentRow` uses to flag "this one needs
+    /// a look" (`HelmDesignSystem.swift`). Exposed as a standalone helper, not baked only into
     /// `Views.rowContainer`, so a page with its own bespoke small container
     /// - `AutomationController`'s software-checklist chips, which don't use
     /// `ToolRowLayout` at all - can reuse the exact same visual idiom
@@ -530,6 +529,47 @@ enum ToolRowLayout {
         }
     }
 
+    /// The share of a row's width the name/detail column takes (audit §5.4).
+    ///
+    /// **Why a column at all.** The status pill used to sit immediately after
+    /// the name label, so it tracked the name's length and the pills formed a
+    /// ragged diagonal down a list rather than a column - measured live at a
+    /// 64pt spread across five real Updates rows (and 50pt across the real
+    /// page's thirteen). A fixed name column is the only formulation that
+    /// pins the status column's x *regardless of what a given caller puts in
+    /// `trailingViews`*: measuring back from the trailing edge cannot work,
+    /// because one row's actions are "Check" and another's are "Check" plus
+    /// "Install in Bootstrap ->".
+    ///
+    /// Proportional rather than a constant so a wider window still shows more
+    /// of a long detail line ("Installed 2.97.0 - could not reach Homebrew
+    /// for the latest version" is a real one), clamped so it degrades sanely
+    /// at either extreme. At the ~1056pt row this app's pages actually use it
+    /// resolves to ~443pt, comfortably more than the longest real detail.
+    static let nameColumnFraction: CGFloat = 0.42
+    static let nameColumnMinWidth: CGFloat = 200
+    static let nameColumnMaxWidth: CGFloat = 520
+
+    /// Holds a nested `NSStackView` tight to its own content.
+    ///
+    /// **This is not the same thing as `setContentHuggingPriority`**, and the
+    /// difference is what caused §5.4. Content hugging only constrains a view
+    /// against its *intrinsic content size*, and an `NSStackView` has none
+    /// (`NSView.noIntrinsicMetric` on both axes) - its size comes from
+    /// constraints to its arranged subviews. So `setContentHuggingPriority(
+    /// .required, ...)` on a nested stack is a **no-op**, and a parent stack
+    /// at `.fill` distribution happily picks that nested stack as the view to
+    /// stretch even though its children are all `.required`. Measured live:
+    /// the trailing stack absorbed 919pt of a 1056pt row while the text stack
+    /// it was supposed to yield to stayed at its natural 69pt.
+    /// `NSStackView.setHuggingPriority(_:for:)` is the API that actually
+    /// holds a stack to its content, so it is what every nested stack here
+    /// uses. Related to, but distinct from, AGENTS.md gotcha #10.
+    private static func columnHugging(_ stack: NSStackView) {
+        stack.setHuggingPriority(.required, for: .horizontal)
+        stack.setClippingResistancePriority(.required, for: .horizontal)
+    }
+
     /// Assembles `views` into one row and returns the top-level view to place
     /// in a stack. `trailingViews` (e.g. a status pill plus Check/Update/
     /// Install buttons or a spinner) are inserted into `views.trailingStack`
@@ -552,12 +592,21 @@ enum ToolRowLayout {
     /// new color scheme) and roomier internal padding, for a page whose rows
     /// are the primary content rather than a dense checklist (fm/grandline-
     /// vault-row-polish). Pair with `applyTheme(cardStyle:attentionHex:)`.
+    ///
+    /// **Columns (audit §5.4).** The row is a real three-column table: a
+    /// fixed-width name column, then the status column (`statusViews` -
+    /// `views.pill` by default, plus any spinner/progress label that replaces
+    /// it while a check runs), then flexible space, then the actions
+    /// (`trailingViews`) and the chevron pinned to the trailing edge. The
+    /// name column is what makes the status column's x constant down a list;
+    /// see `nameColumnFraction`.
     static func build(
         _ views: Views,
         iconSymbol: String,
         tint: HelmTint,
         name: String,
-        trailingViews: [NSView],
+        statusViews: [NSView]? = nil,
+        trailingViews: [NSView] = [],
         detailsTarget: AnyObject? = nil,
         detailsAction: Selector? = nil,
         identifier: String,
@@ -581,26 +630,48 @@ enum ToolRowLayout {
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 2
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        // Stack-level priorities, not content-level - see `columnHugging`.
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+
+        // The status column: the pill, plus whatever replaces it while a
+        // check runs (a spinner and its label). Its own hugging is set with
+        // `setHuggingPriority`, NSStackView's own API - see `columnHugging`.
+        let statusColumn = NSStackView(views: statusViews ?? [views.pill])
+        statusColumn.orientation = .horizontal
+        statusColumn.alignment = .centerY
+        statusColumn.spacing = 8
+        statusColumn.distribution = .fill
+        statusColumn.translatesAutoresizingMaskIntoConstraints = false
+        columnHugging(statusColumn)
+        for v in statusColumn.arrangedSubviews {
+            v.setContentHuggingPriority(.required, for: .horizontal)
+            v.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
 
         views.trailingStack.orientation = .horizontal
         views.trailingStack.spacing = 8
         views.trailingStack.alignment = .centerY
+        views.trailingStack.distribution = .fill
         views.trailingStack.translatesAutoresizingMaskIntoConstraints = false
-        // NSStackView's own horizontal hugging priority defaults lower than
-        // any arranged-subview priority set on its children, so without this
-        // the stack itself (not `textStack`) can end up absorbing `topRow`'s
-        // slack width - leaving the chevron short of the trailing edge.
-        views.trailingStack.setContentHuggingPriority(.required, for: .horizontal)
-        views.trailingStack.setContentCompressionResistancePriority(.required, for: .horizontal)
+        columnHugging(views.trailingStack)
         for v in trailingViews {
             v.setContentHuggingPriority(.required, for: .horizontal)
             v.setContentCompressionResistancePriority(.required, for: .horizontal)
             views.trailingStack.addArrangedSubview(v)
         }
 
-        var topRowViews: [NSView] = [views.iconTile, textStack, views.trailingStack]
+        // The one view in the row with no width of its own, so it is the one
+        // `topRow`'s `.fill` distribution can stretch - which is what keeps
+        // the actions and the chevron pinned to the trailing edge while the
+        // status column stays put in its own column.
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        var topRowViews: [NSView] = [views.iconTile, textStack, statusColumn, spacer, views.trailingStack]
         if showDetails {
             views.detailsButton.title = ""
             views.detailsButton.isBordered = false
@@ -627,6 +698,19 @@ enum ToolRowLayout {
         // pinned to the trailing edge.
         topRow.distribution = .fill
         topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // The fixed name column - the whole point of §5.4's fix. Proportional
+        // rather than a constant so a wider window still shows more of a long
+        // detail line, clamped at both ends, and at `.defaultHigh + 1` so a
+        // genuinely too-narrow row breaks *this* rather than overflowing.
+        let nameWidth = textStack.widthAnchor.constraint(equalTo: topRow.widthAnchor,
+                                                         multiplier: nameColumnFraction)
+        nameWidth.priority = NSLayoutConstraint.Priority(rawValue: NSLayoutConstraint.Priority.defaultHigh.rawValue + 1)
+        NSLayoutConstraint.activate([
+            nameWidth,
+            textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: nameColumnMinWidth),
+            textStack.widthAnchor.constraint(lessThanOrEqualToConstant: nameColumnMaxWidth),
+        ])
 
         var columnViews: [NSView] = [topRow]
         if showDetails {

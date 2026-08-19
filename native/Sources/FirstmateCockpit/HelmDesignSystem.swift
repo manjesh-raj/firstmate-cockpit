@@ -1,7 +1,8 @@
 // Manjesh Grand Line - native macOS app.
 //
-// The app's design system: shared metric/type tokens plus the one card
-// container every page's sections are built out of.
+// The app's design system: shared metric/type tokens, the one card container
+// every page's sections are built out of, the one button, and the one
+// accent-carrying row.
 //
 // **Why this file exists.** The full-app UI audit
 // (`data/grandline-full-ui-audit/report.md`) measured what a couple of dozen
@@ -12,8 +13,9 @@
 // (18 / 20 / 28pt) and eighteen distinct `systemFont` point sizes with three
 // of them all doing "card title". None of that variation encoded a product
 // decision - navigating Bootstrap -> Shift changed both the card translucency
-// and the page gutter at once for no reason. This file is §6.2 (tokens) and
-// §6.3 component 1 (`HelmCard`) of that report's phase 1.
+// and the page gutter at once for no reason. This file is §6.2 (tokens) plus
+// §6.3 components 1 (`HelmCard`, phase 1), 3 (`HelmButton`, phase 2) and 2
+// (`HelmAccentRow`, phase 3) of that report.
 //
 // **Nothing here is a new design decision.** Every number below is one of the
 // values already in the codebase, promoted to be the single one. `HelmCard`'s
@@ -52,6 +54,11 @@ enum HelmMetrics {
     static let rControl: CGFloat = 8
     static let rCard: CGFloat = 12
     static let rPanel: CGFloat = 12
+    /// A row card nested *inside* a card - one step tighter than `rCard`, so
+    /// the two radii read as a hierarchy rather than competing. 10 is the
+    /// value all four accent-row copies already shared before `HelmAccentRow`
+    /// (audit §3.2); this is the token for it.
+    static let rRow: CGFloat = 10
 
     /// The one page content gutter - the leading/trailing inset from a
     /// destination's scroll clip view to its content column.
@@ -112,9 +119,10 @@ enum HelmType {
     /// The small uppercase label above a row's body text.
     ///
     /// Kerning is a string attribute, not a font property - pair this with
-    /// `kickerKern` (see `kickerAttributes`). Adoption of a single kicker
-    /// belongs with `HelmAccentRow` (audit §6.3 component 2, a later phase);
-    /// the existing four copies still carry their own 0.6 / 0.7 / 0.9 kern.
+    /// `kickerKern` (see `kickerAttributes`). This is now the app's only
+    /// kicker: Phase 3 replaced the four hand-rolled copies that each carried
+    /// their own 0.6 / 0.7 / 0.9 kern, and `HelmContrastSelfTest.
+    /// checkNoHandRolledKickers` fails the build on a new one.
     static func kicker() -> NSFont { .systemFont(ofSize: 10, weight: .bold) }
 
     /// The tracking a kicker is set with.
@@ -912,5 +920,383 @@ final class HelmPopUpButton: NSPopUpButton {
         s.width += 10
         s.height = max(s.height, 24)
         return s
+    }
+}
+
+// MARK: - HelmAccentRow
+
+/// The app's one "accent-carrying row": a coloured left accent bar, a tinted
+/// round badge (or a caller-owned leading control), a kern'd uppercase kicker,
+/// a body line, an optional meta line, and a tinted chip - on a card whose
+/// border is a wash of the same hue.
+///
+/// **Why this exists.** The audit (§3.2, "Accent-bar card with an uppercase
+/// kicker") found **four independent copies** of this one idea. All four
+/// agreed on the 3pt bar at radius 1.5 and the radius-10 card, and disagreed
+/// on everything else: three separate kicker constructions at three kern
+/// values (0.9 / 0.7 / 0.6), two badge treatments, and one outlier
+/// (`SRELeadChatView.accentCard`) with no border at all whose kicker was
+/// coloured from the tint hue rather than `mutedInk`. A fifth surface,
+/// Overview's "In flight" rows, had the badge and the chip but neither the
+/// bar nor the kicker. The visible consequence: an SRE Lead "Finding" and a
+/// Notification "PR Ready" - both meaning *here is a coloured, kickered
+/// finding* - did not read as the same kind of object.
+///
+/// **Nothing here is a new design.** This is `NotificationRowView`
+/// (`NotificationCenterPopover.swift`), which the audit called "the only
+/// place in the app where the whole recipe is correct at once" and which the
+/// captain singled out as the template, promoted and parameterised. Its
+/// geometry, its `HoverHighlightView` card, its `tint @ 0.4` border, its
+/// 26pt circular `IconTileView` badge and its `ToolRowLayout.pill` chip are
+/// carried over unchanged; the row is now built once here instead of five
+/// times across four files.
+///
+/// **The one rule that matters when extending this**: the kicker is
+/// `HelmTheme.mutedInk`, never the tint hue. A `HelmTint` hue is safe as a
+/// *fill* or a *bar* and is not automatically safe as *text* - see
+/// `HelmContrast`'s doc comment and audit §5.7. That is why the tint reaches
+/// the bar, the badge and the chip here and never the kicker, and it is
+/// checked by `HelmContrastSelfTest.checkNoHandRolledKickers`.
+///
+/// **Not merged with `ToolRowLayout`**, deliberately: that is a dense
+/// checklist row (fixed name/status columns, action buttons, a disclosure
+/// chevron and an expandable log) and this is an alert/task card. They share
+/// the primitives that carry the visual language - `ToolRowLayout.pill`,
+/// `IconTileView`, `ToolRowLayout.attachAccentBar`'s idiom, `HelmType` - and
+/// nothing else, because their layouts genuinely differ.
+final class HelmAccentRow: NSView {
+
+    /// Where the chip sits. `.trailing` is a wide list row (Shift's task and
+    /// follow-up lists, Overview's "In flight"); `.belowBody` is the
+    /// notification panel, which is 340pt wide and has no room for a chip
+    /// beside wrapping body text. Bar weight and position, badge size, kicker
+    /// typography and chip style are identical either way.
+    enum ChipPlacement { case trailing, belowBody }
+
+    /// Everything that varies per row. Structure - chip placement, whether
+    /// there is a leading control, whether the body is text or a caller-owned
+    /// view - is fixed at `init`, so a reused `NSTableView` cell can be
+    /// re-pointed at a different record by calling `configure` alone.
+    struct Content {
+        /// Drives the accent bar, the badge and the card border: the row's
+        /// single "what kind of thing is this" signal.
+        var tint: HelmTint
+        /// Rendered uppercase and kern'd in `mutedInk`. Never tinted.
+        var kicker: String
+        /// The row's headline. Ignored when the row was built with a
+        /// caller-owned `contentView`.
+        var title: String = ""
+        /// A second, quieter line under the title. Hidden when nil/empty.
+        var meta: String? = nil
+        /// The badge glyph. Ignored when the row was built with a
+        /// `leadingControl`; when both are absent, the row has no badge.
+        var badgeSymbol: String? = nil
+        /// A small glyph beside the title - Shift's "has an attachment"
+        /// paperclip. Hidden when nil.
+        var titleAccessorySymbol: String? = nil
+        /// The chip's text. Hidden when nil.
+        var chipText: String? = nil
+        /// Defaults to `tint`. Set it only where the chip carries a
+        /// *different* signal from the bar - a Shift follow-up's bar reads
+        /// done/pending while its chip reads priority.
+        var chipTint: HelmTint? = nil
+        /// A wide row truncates its title to one line; a narrow one wraps.
+        var titleWraps: Bool = false
+    }
+
+    // MARK: Geometry - `NotificationRowView`'s, promoted
+
+    private static let barWidth: CGFloat = 3
+    private static let barRadius: CGFloat = 1.5
+    /// The bar is inset from the card's top and bottom so it never clips past
+    /// the card's own rounded corners at `HelmMetrics.rRow`.
+    private static let barVerticalInset: CGFloat = 10
+    private static let barLeadingInset: CGFloat = 2
+    private static let contentLeading: CGFloat = 12
+    private static let contentTrailing: CGFloat = 14
+    private static let contentVertical: CGFloat = 12
+    /// The vertical rhythm inside the body column - 4 in the notification
+    /// panel and 3 in the two Shift lists as shipped, unified to 4.
+    private static let bodySpacing: CGFloat = 4
+
+    /// The card border is a wash of the row's own hue. It carries real load
+    /// rather than decoration: it is the only thing separating a row from its
+    /// container in the three themes where `chromeBackgroundHex ==
+    /// backgroundHex`, exactly as for `HelmCard`.
+    static let borderAlpha: CGFloat = 0.4
+
+    // MARK: Views
+
+    private let card = HoverHighlightView()
+    private let accentBar = NSView()
+    private let badge: IconTileView?
+    private let leadingControl: NSView?
+    private let kickerLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let titleAccessory = NSImageView()
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let customContent: NSView?
+    private let chip = NSView()
+    private let chipLabel = NSTextField(labelWithString: "")
+
+    private let chipPlacement: ChipPlacement
+    private let hoverEnabled: Bool
+    private var content: Content?
+
+    /// Set to make the whole row clickable. Left nil for a row whose
+    /// interaction lives elsewhere (a table's own double-click, a nested
+    /// control) - which is also why `hover` is a separate argument: a hover
+    /// highlight on a row that does nothing is a lie.
+    var onClick: (() -> Void)?
+
+    /// - Parameters:
+    ///   - chipPlacement: see `ChipPlacement`.
+    ///   - leadingControl: a caller-owned control in the badge's place -
+    ///     Shift's task rows put their completion checkbox here. When set,
+    ///     `Content.badgeSymbol` is ignored.
+    ///   - contentView: a caller-owned body in place of the title/meta labels
+    ///     - SRE Lead's rendered-markdown block stack. The kicker, bar, badge
+    ///     and card still come from this row.
+    ///   - hover: whether the card highlights under the cursor.
+    init(chipPlacement: ChipPlacement = .trailing,
+         leadingControl: NSView? = nil,
+         contentView: NSView? = nil,
+         hover: Bool = true) {
+        self.chipPlacement = chipPlacement
+        self.leadingControl = leadingControl
+        self.customContent = contentView
+        self.hoverEnabled = hover
+        self.badge = leadingControl == nil
+            ? IconTileView(size: HelmMetrics.tileSmall, cornerRadius: HelmMetrics.tileSmall / 2)
+            : nil
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        buildLayout()
+        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(rowClicked)))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    private func buildLayout() {
+        card.cornerRadius = HelmMetrics.rRow
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+
+        accentBar.wantsLayer = true
+        accentBar.layer?.cornerRadius = Self.barRadius
+        accentBar.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(accentBar)
+
+        kickerLabel.translatesAutoresizingMaskIntoConstraints = false
+        kickerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        titleLabel.font = HelmType.rowTitle()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        titleAccessory.symbolConfiguration = .init(pointSize: 10, weight: .regular)
+        titleAccessory.setContentHuggingPriority(.required, for: .horizontal)
+        titleAccessory.setContentCompressionResistancePriority(.required, for: .horizontal)
+        titleAccessory.isHidden = true
+
+        metaLabel.font = HelmType.caption()
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.maximumNumberOfLines = 1
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        chip.setContentHuggingPriority(.required, for: .horizontal)
+        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let titleRow = NSStackView(views: [titleLabel, titleAccessory])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = HelmMetrics.s1
+        titleRow.distribution = .fill
+        // `setContentHuggingPriority`/`setContentCompressionResistancePriority`
+        // are **no-ops on an NSStackView** - they constrain a view against its
+        // intrinsic content size, and a stack has none. The stack-level
+        // equivalents are `setHuggingPriority`/`setClippingResistancePriority`,
+        // and using the wrong pair here is what let a long title push the
+        // whole row wider than its card instead of truncating (caught in a
+        // real render, and the same root cause as audit §5.4 - see
+        // `ToolRowLayout.columnHugging`).
+        titleRow.setHuggingPriority(.defaultLow, for: .horizontal)
+        titleRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
+
+        // The body column. `customContent` replaces the title/meta pair but
+        // never the kicker - that is what makes an SRE Lead finding and a
+        // notification read as the same kind of object.
+        var bodyViews: [NSView] = [kickerLabel]
+        let bodyContent: NSView
+        if let customContent {
+            customContent.translatesAutoresizingMaskIntoConstraints = false
+            bodyContent = customContent
+            bodyViews.append(customContent)
+        } else {
+            bodyContent = metaLabel
+            bodyViews.append(titleRow)
+            bodyViews.append(metaLabel)
+        }
+        if chipPlacement == .belowBody { bodyViews.append(chip) }
+
+        let textStack = NSStackView(views: bodyViews)
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = Self.bodySpacing
+        if chipPlacement == .belowBody { textStack.setCustomSpacing(6, after: bodyContent) }
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        // Stack-level priorities, not content-level - see `titleRow` above.
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+
+        var rowViews: [NSView] = []
+        if let leading = leadingControl ?? badge {
+            leading.setContentHuggingPriority(.required, for: .horizontal)
+            leading.setContentCompressionResistancePriority(.required, for: .horizontal)
+            rowViews.append(leading)
+        }
+        rowViews.append(textStack)
+        if chipPlacement == .trailing { rowViews.append(chip) }
+
+        let row = NSStackView(views: rowViews)
+        row.orientation = .horizontal
+        // A `.belowBody` row's badge sits beside the *first* line rather than
+        // the middle of a wrapping paragraph.
+        row.alignment = chipPlacement == .belowBody ? .top : .centerY
+        row.spacing = 10
+        // AGENTS.md gotcha #10: the default `.gravityAreas` distribution
+        // honours no hugging priority, so the chip would drift with the
+        // title's length instead of sitting at the row's trailing edge.
+        row.distribution = .fill
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            accentBar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: Self.barLeadingInset),
+            accentBar.widthAnchor.constraint(equalToConstant: Self.barWidth),
+            accentBar.topAnchor.constraint(equalTo: card.topAnchor, constant: Self.barVerticalInset),
+            accentBar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -Self.barVerticalInset),
+
+            row.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: Self.contentLeading),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -Self.contentTrailing),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: Self.contentVertical),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -Self.contentVertical),
+        ])
+
+        if let customContent {
+            // A caller-owned body has to be told it may use the whole column,
+            // or a wrapping label inside it collapses to a few characters per
+            // line - `ShiftEmptyStateView`'s documented trap.
+            customContent.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+        }
+    }
+
+    @objc private func rowClicked() { onClick?() }
+
+    // MARK: Content
+
+    func configure(_ content: Content, theme: HelmTheme) {
+        self.content = content
+
+        if let badge {
+            badge.isHidden = content.badgeSymbol == nil
+            if let symbol = content.badgeSymbol {
+                badge.configure(symbol: symbol, tint: content.tint, pointSize: 11)
+            }
+        }
+
+        titleLabel.stringValue = content.title
+        titleLabel.maximumNumberOfLines = content.titleWraps ? 0 : 1
+        titleLabel.lineBreakMode = content.titleWraps ? .byWordWrapping : .byTruncatingTail
+
+        if let symbol = content.titleAccessorySymbol {
+            titleAccessory.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            titleAccessory.isHidden = false
+        } else {
+            titleAccessory.isHidden = true
+        }
+
+        metaLabel.stringValue = content.meta ?? ""
+        metaLabel.isHidden = (content.meta?.isEmpty ?? true)
+
+        chip.isHidden = content.chipText == nil
+        applyTheme(theme)
+    }
+
+    /// Re-resolves every colour against `theme`. Safe to call repeatedly: it
+    /// re-reads the last `configure`d content rather than caching colours.
+    func applyTheme(_ theme: HelmTheme) {
+        guard let content else { return }
+        let tintColor = HelmTheme.nsColor(content.tint.hex(in: theme))
+
+        badge?.applyTheme(theme)
+
+        kickerLabel.attributedStringValue = NSAttributedString(
+            string: content.kicker.uppercased(),
+            // `mutedInk`, never the hue - see this class's doc comment.
+            attributes: HelmType.kickerAttributes(color: HelmTheme.mutedInk(theme))
+        )
+        titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        metaLabel.textColor = HelmTheme.mutedInk(theme)
+        titleAccessory.contentTintColor = HelmTheme.mutedInk(theme)
+
+        if let chipText = content.chipText {
+            ToolRowLayout.pill(text: chipText,
+                               colorHex: (content.chipTint ?? content.tint).hex(in: theme),
+                               into: chip, label: chipLabel, theme: theme)
+        }
+
+        accentBar.layer?.backgroundColor = tintColor.cgColor
+
+        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        card.normalColor = cardFill
+        card.hoverColor = hoverEnabled
+            ? (cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill)
+            : cardFill
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = tintColor.withAlphaComponent(Self.borderAlpha).cgColor
+    }
+
+    // MARK: Probe / self-test surface
+
+    /// Real, resolved geometry and colours for a live row, so a probe or a
+    /// self-test can assert that every migrated call site renders the same
+    /// recipe rather than eyeballing a screenshot.
+    struct Geometry {
+        let barFrame: NSRect
+        let barColor: NSColor?
+        let badgeFrame: NSRect?
+        let kickerFont: NSFont?
+        let kickerKern: CGFloat?
+        let kickerColor: NSColor?
+        let chipVisible: Bool
+        let chipFrame: NSRect
+        let cardRadius: CGFloat
+        let cardBorderColor: NSColor?
+    }
+
+    func debugGeometry() -> Geometry {
+        layoutSubtreeIfNeeded()
+        let attrs = kickerLabel.attributedStringValue.length > 0
+            ? kickerLabel.attributedStringValue.attributes(at: 0, effectiveRange: nil)
+            : [:]
+        return Geometry(
+            barFrame: accentBar.convert(accentBar.bounds, to: self),
+            barColor: accentBar.layer?.backgroundColor.map { NSColor(cgColor: $0) ?? .clear },
+            badgeFrame: badge.map { $0.convert($0.bounds, to: self) },
+            kickerFont: attrs[.font] as? NSFont,
+            kickerKern: (attrs[.kern] as? NSNumber).map { CGFloat($0.doubleValue) },
+            kickerColor: attrs[.foregroundColor] as? NSColor,
+            chipVisible: !chip.isHidden,
+            chipFrame: chip.convert(chip.bounds, to: self),
+            cardRadius: card.layer?.cornerRadius ?? 0,
+            cardBorderColor: card.layer?.borderColor.map { NSColor(cgColor: $0) ?? .clear }
+        )
     }
 }
