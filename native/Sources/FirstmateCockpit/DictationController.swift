@@ -11,7 +11,7 @@
 // originally-planned phases are now complete).
 // Follows the same "hide, don't rebuild" body-child convention every other
 // destination uses (`AppShellController`), and the same Settings-styled card
-// layout `VaultController`/`ShiftPanelView` already established rather than
+// layout `VaultController`/`HelmCard` already established rather than
 // inventing new visual language.
 //
 // Status is read fresh from `DictationPermissions` on every `viewWillAppear`
@@ -36,23 +36,23 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let refreshButton = NSButton()
 
-    private let statusPanel = ShiftPanelView()
+    private let statusPanel = HelmCard()
     private let statusIconTile = IconTileView(size: 40, cornerRadius: 10)
     private let statusTitleLabel = NSTextField(labelWithString: "")
     private let statusDetailLabel = NSTextField(wrappingLabelWithString: "")
     private let statusActionButton = NSButton()
 
-    private let shortcutPanel = ShiftPanelView()
+    private let shortcutPanel = HelmCard()
     private let shortcutRecorder: DictationShortcutRecorderView
     private let shortcutResetButton = NSButton()
     private let shortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
 
-    private let cleanupPanel = ShiftPanelView()
+    private let cleanupPanel = HelmCard()
     private let cleanupSwitch = NSSwitch()
     private let cleanupTitleLabel = NSTextField(labelWithString: "")
     private let cleanupDetailLabel = NSTextField(wrappingLabelWithString: "")
 
-    private let localWhisperPanel = ShiftPanelView()
+    private let localWhisperPanel = HelmCard()
     private let localWhisperSwitch = NSSwitch()
     private let localWhisperTitleLabel = NSTextField(labelWithString: "")
     private let localWhisperDetailLabel = NSTextField(wrappingLabelWithString: "")
@@ -61,13 +61,13 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let modelProgressBar = NSProgressIndicator()
     private var modelState: WhisperModelState = .notDownloaded
 
-    private let vocabularyPanel = ShiftPanelView()
+    private let vocabularyPanel = HelmCard()
     private let vocabularyCountLabel = NSTextField(labelWithString: "")
     private let vocabularyChipFlow = ChipFlowView()
     private let vocabularyInputField = NSTextField()
     private let vocabularyAddButton = NSButton()
 
-    private let historyPanel = ShiftPanelView()
+    private let historyPanel = HelmCard()
     private let historyCountLabel = NSTextField(labelWithString: "")
     private let historyListView = DictationHistoryListView()
     private let historyListScroll = NSScrollView()
@@ -128,8 +128,8 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
-            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             statusPanel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -249,7 +249,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
 
     private func buildStatusSection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Status")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         sectionLabel.translatesAutoresizingMaskIntoConstraints = false
         statusPanel.setHeader(sectionLabel)
 
@@ -281,13 +281,13 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         row.spacing = 14
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        statusPanel.setBody(paddedBody(row))
+        statusPanel.setBody(row, insets: HelmCard.contentInsets)
         return statusPanel
     }
 
     private func buildShortcutSection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Shortcut")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         sectionLabel.translatesAutoresizingMaskIntoConstraints = false
         shortcutPanel.setHeader(sectionLabel)
 
@@ -328,13 +328,13 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         row.spacing = 14
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        shortcutPanel.setBody(paddedBody(row))
+        shortcutPanel.setBody(row, insets: HelmCard.contentInsets)
         return shortcutPanel
     }
 
     private func buildCleanupSection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Cleanup")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         sectionLabel.translatesAutoresizingMaskIntoConstraints = false
         cleanupPanel.setHeader(sectionLabel)
 
@@ -368,7 +368,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         row.spacing = 14
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        cleanupPanel.setBody(paddedBody(row))
+        cleanupPanel.setBody(row, insets: HelmCard.contentInsets)
         return cleanupPanel
     }
 
@@ -381,7 +381,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     /// setup step the Cleanup toggle doesn't.
     private func buildLocalWhisperSection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Local Whisper Engine")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         sectionLabel.translatesAutoresizingMaskIntoConstraints = false
         localWhisperPanel.setHeader(sectionLabel)
 
@@ -451,13 +451,13 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             modelRow.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
 
-        localWhisperPanel.setBody(paddedBody(column))
+        localWhisperPanel.setBody(column, insets: HelmCard.contentInsets)
         return localWhisperPanel
     }
 
     private func buildVocabularySection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Words I use often")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         vocabularyCountLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .medium)
         let headerRow = NSStackView(views: [sectionLabel, vocabularyCountLabel])
         headerRow.orientation = .horizontal
@@ -499,13 +499,13 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             addRow.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
 
-        vocabularyPanel.setBody(paddedBody(column))
+        vocabularyPanel.setBody(column, insets: HelmCard.contentInsets)
         return vocabularyPanel
     }
 
     private func buildHistorySection() -> NSView {
         let sectionLabel = NSTextField(labelWithString: "Recent Dictations")
-        sectionLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sectionLabel.font = HelmType.sectionTitle()
         historyCountLabel.font = .monospacedSystemFont(ofSize: 10.5, weight: .medium)
         let headerRow = NSStackView(views: [sectionLabel, historyCountLabel])
         headerRow.orientation = .horizontal
@@ -523,23 +523,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
 
         historyPanel.setBody(historyListScroll)
         return historyPanel
-    }
-
-    /// `ShiftPanelView.setBody` (unlike `setHeader`) has no `insets` param -
-    /// wraps `content` in a plain padded container so both card bodies get
-    /// the same breathing room as the header row.
-    private func paddedBody(_ content: NSView) -> NSView {
-        let wrapper = NSView()
-        wrapper.translatesAutoresizingMaskIntoConstraints = false
-        content.translatesAutoresizingMaskIntoConstraints = false
-        wrapper.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 16),
-            content.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -16),
-            content.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 16),
-            content.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -16),
-        ])
-        return wrapper
     }
 
     private func buildFootnote() {

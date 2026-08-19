@@ -44,6 +44,9 @@ final class FleetController: NSViewController {
     private let loadingSpinner = NSProgressIndicator()
     private let loadingLabel = NSTextField(labelWithString: "Loading fleet data\u{2026}")
     private var inFlightSectionView: NSView!
+    /// Every `HelmCard` on this page, re-themed together. Replaces this
+    /// file's own copy of the card theming loop (audit §3.2).
+    private var cards: [HelmCard] = []
     private var hasLoadedOnce = false
 
     private var theme: HelmTheme = ThemeManager.shared.theme
@@ -105,8 +108,8 @@ final class FleetController: NSViewController {
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
-            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             loadingSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -169,7 +172,7 @@ final class FleetController: NSViewController {
     // MARK: Building the static chrome
 
     private func buildHeader() -> NSView {
-        greetingLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        greetingLabel.font = HelmType.pageTitle()
         greetingLabel.translatesAutoresizingMaskIntoConstraints = false
 
         subtitleLabel.font = .systemFont(ofSize: 12)
@@ -327,34 +330,25 @@ final class FleetController: NSViewController {
     /// time, so this list is cleared and repopulated in `rebuildStats`).
     private var stashedTileParts: [(NSView, NSImageView, NSTextField, NSTextField)] = []
 
-    private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> NSView {
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        header.font = .systemFont(ofSize: 14, weight: .semibold)
+    /// One `HelmCard` per section - the shared container from
+    /// `HelmDesignSystem.swift`. This used to be a bare header-row-over-stack
+    /// with no chrome at all, near-identical to `ReviewController`'s copy and
+    /// differing from it only in one stack spacing (audit §3.2). The caller
+    /// keeps its own title label, since it rewrites the text with a live
+    /// count; the card owns that label's font and colour.
+    private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> HelmCard {
         header.stringValue = title
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerRow = NSStackView(views: [icon, header])
-        headerRow.orientation = .horizontal
-        headerRow.spacing = 8
-        headerRow.alignment = .firstBaseline
-        headerRow.translatesAutoresizingMaskIntoConstraints = false
 
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let section = NSStackView(views: [headerRow, stack])
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 8
-        section.translatesAutoresizingMaskIntoConstraints = false
-        stack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        return section
+        let card = HelmCard()
+        card.setHeader(symbol: iconSymbol, titleLabel: header)
+        card.setBody(stack, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
     // MARK: Refresh
@@ -647,6 +641,7 @@ final class FleetController: NSViewController {
 
     private func applyTheme() {
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        for card in cards { card.applyTheme(theme) }
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -671,8 +666,6 @@ final class FleetController: NSViewController {
         bannerView.layer?.backgroundColor = bannerColor.withAlphaComponent(0.12).cgColor
         bannerTitle.textColor = ink
         bannerBody.textColor = muted
-
-        inFlightHeader.textColor = ink
 
         for (container, iconView, valueLabel, nameLabel) in stashedTileParts {
             container.layer?.backgroundColor = surface.cgColor

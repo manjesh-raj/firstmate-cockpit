@@ -174,7 +174,7 @@ final class AutomationController: NSViewController {
     private let progressSummaryLabel = NSTextField(wrappingLabelWithString: "")
     private let stepperStack = NSStackView()
     private var stepContentBoxes: [NSView] = []
-    private var cardBackgroundViews: [NSView] = []
+    private var cards: [HelmCard] = []
     /// A drifted step (`.failed`/`.waitingForCaptain`) gets the notification-
     /// card-style left accent bar (`fm/grandline-setup-attention-row-style`)
     /// - tracked alongside which theme-derived hex it should show, since a
@@ -219,8 +219,8 @@ final class AutomationController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             subtitle.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -267,46 +267,19 @@ final class AutomationController: NSViewController {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    // MARK: Card chrome (mirrors BootstrapController.card / SettingsController.card)
+    // MARK: Card chrome
 
-    private func card(icon: String, title: String, content: NSView) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSStackView(views: [iconView, titleLabel])
-        header.orientation = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let inner = NSStackView(views: [header, content])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 12
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 13
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
-        ])
-        cardBackgroundViews.append(background)
-        return background
+    /// One `HelmCard` per page section - the shared container from
+    /// `HelmDesignSystem.swift`. This used to be a byte-for-byte copy of
+    /// `BootstrapController.card` / `GitHubSyncController.card` (audit §3.2:
+    /// three identical copies differing only in a registry variable name),
+    /// plus its own copy of the theming loop.
+    private func card(icon: String, title: String, content: NSView) -> HelmCard {
+        let card = HelmCard()
+        card.setHeader(symbol: icon, title: title)
+        card.setBody(content, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
     // MARK: Run Automation
@@ -899,13 +872,8 @@ final class AutomationController: NSViewController {
 
     private func applyTheme() {
         guard isViewLoaded else { return }
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        for v in cardBackgroundViews {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        }
+        for card in cards { card.applyTheme(theme) }
         for v in stepContentBoxes {
             v.layer?.backgroundColor = line.withAlphaComponent(0.08).cgColor
             v.layer?.borderWidth = 1

@@ -37,17 +37,17 @@ final class ShiftController: NSViewController {
     private let taskListScroll = NSScrollView()
     private let tasksHeader = NSTextField(labelWithString: "")
     private let tasksCountBadge = NSTextField(labelWithString: "")
-    private let taskPanel = ShiftPanelView()
+    private let taskPanel = HelmCard()
 
     private let followUpListView = ShiftFollowUpListView()
     private let followUpScroll = NSScrollView()
     private let followUpsHeader = NSTextField(labelWithString: "")
     private let followUpsCountBadge = NSTextField(labelWithString: "")
-    private let followUpPanel = ShiftPanelView()
+    private let followUpPanel = HelmCard()
 
     private let projectsHeader = NSTextField(labelWithString: "")
     private let projectsCountBadge = NSTextField(labelWithString: "")
-    private let projectsPanel = ShiftPanelView()
+    private let projectsPanel = HelmCard()
     private let projectsGridContainer = NSStackView()
     private let projectsDetailContainer = NSStackView()
 
@@ -96,7 +96,7 @@ final class ShiftController: NSViewController {
     private let reviewSubtitle = NSTextField(labelWithString: "What got done, what got pushed back, what's coming.")
     private let reviewStatsRow = NSStackView()
     private var reviewStashedTileParts: [(container: NSView, valueLabel: NSTextField, nameLabel: NSTextField, tint: HelmTint)] = []
-    private let reviewPushedBackPanel = ShiftPanelView()
+    private let reviewPushedBackPanel = HelmCard()
     private let reviewPushedBackHeader = NSTextField(labelWithString: "Pushed back repeatedly")
     private let reviewPushedBackStack = NSStackView()
 
@@ -203,8 +203,8 @@ final class ShiftController: NSViewController {
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
-            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             dashboardContainer.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -509,13 +509,13 @@ final class ShiftController: NSViewController {
     /// justified a table view for tasks/follow-ups.
     ///
     /// The header row + grid are wrapped in `projectsPanel`, the same
-    /// `ShiftPanelView` `taskPanel`/`followUpPanel` already use
+    /// `HelmCard` `taskPanel`/`followUpPanel` already use
     /// (fm/grandline-shift-projects-panel-background) - previously this
     /// section sat directly on the page's plain background with no
     /// enclosing card, reading as a different kind of section next to My
     /// Tasks/Follow-ups. `projectsDetailContainer` (the full-page project
     /// detail) stays a sibling *outside* `projectsPanel`, not nested inside
-    /// it - it already builds its own two `ShiftPanelView`s
+    /// it - it already builds its own two `HelmCard`s
     /// (`detailFormPanel`/`detailTasksPanel`, see `buildDetailChrome`), so
     /// wrapping it in a third outer panel would double the border/background
     /// rather than match it.
@@ -998,7 +998,7 @@ final class ShiftController: NSViewController {
     private let detailMetaLabel = NSTextField(labelWithString: "")
     private let detailDescriptionLabel = NSTextField(wrappingLabelWithString: "")
 
-    private let detailFormPanel = ShiftPanelView()
+    private let detailFormPanel = HelmCard()
     private let detailNameField = NSTextField()
     private let detailDescriptionField = NSTextField()
     private let detailStatusPopup = NSPopUpButton()
@@ -1006,7 +1006,7 @@ final class ShiftController: NSViewController {
     private let detailDueDateField = NSTextField()
     private let detailSaveButton = NSButton(title: "Save", target: nil, action: nil)
 
-    private let detailTasksPanel = ShiftPanelView()
+    private let detailTasksPanel = HelmCard()
     private let detailTasksHeader = NSTextField(labelWithString: "Tasks")
     private let detailTasksCountBadge = NSTextField(labelWithString: "")
     private let detailTaskListView = ShiftProjectTaskListView()

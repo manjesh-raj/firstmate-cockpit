@@ -86,18 +86,18 @@ final class VaultController: NSViewController {
     private let attentionLabel = NSTextField(wrappingLabelWithString: "")
     private let attentionIcon = NSImageView()
 
-    private let secretsPanel = ShiftPanelView()
+    private let secretsPanel = HelmCard()
     private let secretsStack = NSStackView()
     private let secretsCountBadge = NSTextField(labelWithString: "0")
     private let addSecretButton = NSButton()
 
-    private let toolsPanel = ShiftPanelView()
+    private let toolsPanel = HelmCard()
     private let toolsStack = NSStackView()
     private let toolsCountBadge = NSTextField(labelWithString: "0")
 
     // "Backup the recipe, not the values" (fm/grandline-vault-recipe-backup) -
     // see VaultRecipe.swift/VaultRecipeGit.swift for what's recorded and why.
-    private let recipePanel = ShiftPanelView()
+    private let recipePanel = HelmCard()
     private let recipeDetailLabel = NSTextField(wrappingLabelWithString: "")
     private let exportRecipeButton = NSButton()
     private let checkBackupButton = NSButton()
@@ -155,8 +155,8 @@ final class VaultController: NSViewController {
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
-            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            contentStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
             attentionBanner.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -312,7 +312,7 @@ final class VaultController: NSViewController {
         buttonsRow.alignment = .centerY
 
         let titleLabel = NSTextField(labelWithString: "Recipe Backup")
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.font = HelmType.sectionTitle()
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let header = NSStackView(views: [titleLabel, spacer, buttonsRow])
@@ -327,31 +327,17 @@ final class VaultController: NSViewController {
         setRecipeLabelColor(.info)
         recipeDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // `ShiftPanelView.setBody` pins its argument flush to the body
-        // container's edges with zero inset - callers with more than a
-        // single full-bleed view (a list stack whose own rows carry their
-        // own inset) are expected to pad themselves. Matches
-        // ShiftConflictController's established padded-body convention
-        // (14 leading/trailing, 4 top, 12 bottom - the same left inset as
-        // this panel's own header) rather than a one-off value.
-        let paddedBody = NSView()
-        paddedBody.translatesAutoresizingMaskIntoConstraints = false
-        paddedBody.addSubview(recipeDetailLabel)
-        NSLayoutConstraint.activate([
-            recipeDetailLabel.leadingAnchor.constraint(equalTo: paddedBody.leadingAnchor, constant: 14),
-            recipeDetailLabel.trailingAnchor.constraint(equalTo: paddedBody.trailingAnchor, constant: -14),
-            recipeDetailLabel.topAnchor.constraint(equalTo: paddedBody.topAnchor, constant: 4),
-            recipeDetailLabel.bottomAnchor.constraint(equalTo: paddedBody.bottomAnchor, constant: -12),
-        ])
-
         recipePanel.setHeader(header)
-        recipePanel.setBody(paddedBody)
+        // `HelmCard.setBody` defaults to flush, for a full-bleed list whose
+        // own rows carry their inset. Real content passes the one shared card
+        // body padding instead of a hand-rolled wrapper view.
+        recipePanel.setBody(recipeDetailLabel, insets: HelmCard.contentInsets)
         return recipePanel
     }
 
     private func sectionHeaderRow(title: String, badge: NSTextField, trailing: NSView?) -> NSView {
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.font = HelmType.sectionTitle()
         badge.translatesAutoresizingMaskIntoConstraints = false
 
         let spacer = NSView()

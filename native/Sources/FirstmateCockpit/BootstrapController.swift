@@ -227,7 +227,7 @@ final class BootstrapController: NSViewController {
     /// actually exits, not just that it was started.
     var onRunCommandTracked: ((String, String, @escaping (Bool) -> Void) -> Void)?
 
-    private var cardBackgroundViews: [NSView] = []
+    private var cards: [HelmCard] = []
     private var scrollView: NSScrollView!
 
     // MARK: Dotfiles state (Part A + B)
@@ -376,7 +376,7 @@ final class BootstrapController: NSViewController {
         setupStack.orientation = .vertical
         setupStack.alignment = .leading
         setupStack.spacing = 8
-        let fullSetupCard = card(icon: "checkmark.seal", title: "Run full setup", content: buildFullSetupSection())
+        let fullSetupCard = buildFullSetupCard()
 
         homeSectionContent = buildHomeSection()
 
@@ -441,8 +441,8 @@ final class BootstrapController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: HelmMetrics.pageGutter),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             header.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -516,46 +516,17 @@ final class BootstrapController: NSViewController {
         return subtitleLabel
     }
 
-    // MARK: Card chrome (mirrors SettingsController.card)
+    // MARK: Card chrome
 
-    private func card(icon: String, title: String, content: NSView) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSStackView(views: [iconView, titleLabel])
-        header.orientation = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let inner = NSStackView(views: [header, content])
-        inner.orientation = .vertical
-        inner.alignment = .leading
-        inner.spacing = 12
-        inner.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
-
-        let background = NSView()
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 13
-        background.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(inner)
-        NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            inner.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            inner.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            inner.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -14),
-        ])
-        cardBackgroundViews.append(background)
-        return background
+    /// One `HelmCard` per page section - the shared container from
+    /// `HelmDesignSystem.swift`, replacing this file's own copy of a helper
+    /// that was byte-for-byte identical in four controllers (audit §3.2).
+    private func card(icon: String, title: String, content: NSView) -> HelmCard {
+        let card = HelmCard()
+        card.setHeader(symbol: icon, title: title)
+        card.setBody(content, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
     // MARK: Firstmate home
@@ -692,22 +663,16 @@ final class BootstrapController: NSViewController {
         return "Runs Firstmate home, dotfiles & machine config, agent instructions, then software in order."
     }
 
-    private func buildFullSetupSection() -> NSView {
-        let tile = IconTileView()
-        tile.configure(symbol: "checkmark.seal", tint: .accent)
-
-        let titleLabel = NSTextField(labelWithString: "Run full setup")
-        titleLabel.font = .systemFont(ofSize: 14.5, weight: .bold)
-
-        fullSetupSubtitleLabel.font = .systemFont(ofSize: 11.5)
-        fullSetupSubtitleLabel.preferredMaxLayoutWidth = 320
+    /// The "Run full setup" card. Its progress track and run button live in the
+    /// card header's own trailing actions slot, and the live progress line is
+    /// the header's subtitle - so the section is titled once, by the card,
+    /// rather than the card header and an inner bar row both saying "Run full
+    /// setup" with their own icon tile each (which is what the pre-`HelmCard`
+    /// hand-rolled header and this bar did between them).
+    private func buildFullSetupCard() -> HelmCard {
+        fullSetupSubtitleLabel.preferredMaxLayoutWidth = 420
         fullSetupSubtitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         fullSetupSubtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let textStack = NSStackView(views: [titleLabel, fullSetupSubtitleLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
 
         progressTrack.wantsLayer = true
         progressTrack.layer?.cornerRadius = 2.5
@@ -726,26 +691,20 @@ final class BootstrapController: NSViewController {
             progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
             progressFillWidthConstraint!,
         ])
-        progressTrack.setContentHuggingPriority(.required, for: .horizontal)
 
         runFullSetupButton.title = "Run full setup"
         runFullSetupButton.bezelStyle = .rounded
         runFullSetupButton.target = self
         runFullSetupButton.action = #selector(runFullSetupClicked)
-        runFullSetupButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let barRow = NSStackView(views: [tile, textStack, progressTrack, runFullSetupButton])
-        barRow.orientation = .horizontal
-        barRow.alignment = .centerY
-        barRow.spacing = 12
-
-        let section = NSStackView(views: [barRow, setupStack])
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 12
-        barRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        setupStack.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        return section
+        let card = HelmCard()
+        card.setHeader(symbol: "checkmark.seal",
+                       titleLabel: NSTextField(labelWithString: "Run full setup"),
+                       subtitleLabel: fullSetupSubtitleLabel,
+                       actions: [progressTrack, runFullSetupButton])
+        card.setBody(setupStack, insets: HelmCard.contentInsets)
+        cards.append(card)
+        return card
     }
 
     private func rebuildSetupSection() {
@@ -2458,15 +2417,10 @@ final class BootstrapController: NSViewController {
 
     private func applyTheme() {
         guard isViewLoaded else { return }
-        let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
         currentPathLabel.textColor = HelmTheme.mutedInk(theme)
-        for v in cardBackgroundViews {
-            v.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
-            v.layer?.borderWidth = 1
-            v.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
-        }
+        for card in cards { card.applyTheme(theme) }
         for v in stepContentBackgrounds {
             v.layer?.backgroundColor = line.withAlphaComponent(0.08).cgColor
             v.layer?.borderWidth = 1

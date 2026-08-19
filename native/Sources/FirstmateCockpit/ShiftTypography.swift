@@ -31,81 +31,11 @@ enum ShiftFont {
     }
 }
 
-/// A bordered, rounded panel wrapping a header row and body content with a
-/// divider between them - the mockup's `.panel`/`.panel-head`. Reused by
-/// every Shift section (Tasks, Follow-ups) instead of each hand-rolling its
-/// own background/border, the same "one shared piece, every caller reuses
-/// it" convention `ToolRowLayout`/`IconTileView` already established
-/// elsewhere in this app.
-final class ShiftPanelView: NSView {
-    let headerContainer = NSView()
-    private let divider = NSView()
-    let bodyContainer = NSView()
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 12
-        translatesAutoresizingMaskIntoConstraints = false
-
-        divider.wantsLayer = true
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        headerContainer.translatesAutoresizingMaskIntoConstraints = false
-        bodyContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(headerContainer)
-        addSubview(divider)
-        addSubview(bodyContainer)
-        NSLayoutConstraint.activate([
-            headerContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            headerContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            headerContainer.topAnchor.constraint(equalTo: topAnchor),
-
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            divider.topAnchor.constraint(equalTo: headerContainer.bottomAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 1),
-
-            bodyContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            bodyContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            bodyContainer.topAnchor.constraint(equalTo: divider.bottomAnchor),
-            bodyContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    func setHeader(_ view: NSView, insets: NSEdgeInsets = NSEdgeInsets(top: 11, left: 14, bottom: 11, right: 12)) {
-        headerContainer.subviews.forEach { $0.removeFromSuperview() }
-        view.translatesAutoresizingMaskIntoConstraints = false
-        headerContainer.addSubview(view)
-        NSLayoutConstraint.activate([
-            view.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: insets.left),
-            view.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -insets.right),
-            view.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: insets.top),
-            view.bottomAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -insets.bottom),
-        ])
-    }
-
-    func setBody(_ view: NSView) {
-        bodyContainer.subviews.forEach { $0.removeFromSuperview() }
-        view.translatesAutoresizingMaskIntoConstraints = false
-        bodyContainer.addSubview(view)
-        NSLayoutConstraint.activate([
-            view.leadingAnchor.constraint(equalTo: bodyContainer.leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: bodyContainer.trailingAnchor),
-            view.topAnchor.constraint(equalTo: bodyContainer.topAnchor),
-            view.bottomAnchor.constraint(equalTo: bodyContainer.bottomAnchor),
-        ])
-    }
-
-    func applyTheme(_ theme: HelmTheme) {
-        layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.6).cgColor
-        divider.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
-    }
-}
+/// `ShiftPanelView` used to live here - the bordered/rounded header + divider
+/// + body panel Shift, Vault and Dictation all shared. It is now `HelmCard`
+/// in `HelmDesignSystem.swift`, where it is the app's single card container
+/// rather than one of five (full-app UI audit §6.3 component 1). Nothing
+/// about the look changed in that move.
 
 /// A centered "nothing here yet" placeholder - an icon over proportionate
 /// copy, matching the rest of the mockup's considered-empty-state look
