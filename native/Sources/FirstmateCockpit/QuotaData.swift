@@ -23,8 +23,13 @@
 import Foundation
 
 /// One usage window from `quota-axi`'s `windows[]` array - only the fields
-/// this popover shows (`percentUsed`, `resetsAt`, `pace.status`). Anything
-/// else in the raw JSON (per-model windows, credits) is ignored.
+/// this popover shows (the real JSON key is `percentRemaining`; `percentUsed`
+/// here is `100 - percentRemaining`, converted once at the parse boundary -
+/// see `QuotaSource.parse`'s comment - since the popover's own UI is written
+/// in terms of "used", plus `resetsAt`, `pace.status`). Anything else in the
+/// raw JSON (per-model windows like `"id": "model:fable"`, credits like
+/// `"id": "extra_usage"`) is ignored by `parse`'s `switch id` falling
+/// through its `default: continue`.
 struct QuotaWindow: Equatable {
     enum Kind: Equatable {
         case session
@@ -143,9 +148,19 @@ enum QuotaSource {
         var session: QuotaWindow?
         var weekly: QuotaWindow?
         for entry in windows {
+            // The real `quota-axi` output carries `percentRemaining`, not
+            // `percentUsed` - confirmed live: a `windows[]` entry looks like
+            // `{"id": "five_hour", "percentRemaining": 93, ...}`. There is
+            // no `percentUsed` key at all in the real output; the popover's
+            // own UI (bar fill width, the 80%/90% warning thresholds) is
+            // written in terms of "used," so the conversion happens once,
+            // right here at the parse boundary, rather than threading a
+            // "remaining" semantic through code that assumes "used"
+            // everywhere else.
             guard let id = entry["id"] as? String,
-                  let percentUsed = entry["percentUsed"] as? Double
+                  let percentRemaining = entry["percentRemaining"] as? Double
             else { continue }
+            let percentUsed = 100 - percentRemaining
             let resetsAt = (entry["resetsAt"] as? String).flatMap { parseResetsAt($0) }
             let paceStatus = QuotaWindow.PaceStatus(rawValue: (entry["pace"] as? [String: Any])?["status"] as? String)
             switch id {
