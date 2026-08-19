@@ -9,6 +9,33 @@
 // `DiffResultView.swift`'s header for the full measured writeup. An
 // `NSTableView` only builds row views for what's actually visible, so this
 // stays fast regardless of how many months of tasks accumulate.
+//
+// `fm/grandline-shift-task-row-cards` restyled both row views as bordered
+// cards, translating the Notification Center's own card treatment
+// (`NotificationRowView` in `NotificationCenterPopover.swift`, `fm/grandline-
+// notification-row-redesign`) onto this list - the captain liked that look
+// and asked for it here too. Same visual language (a colored left accent
+// bar, a small round icon badge, a bold uppercase kicker label, body text, a
+// trailing chip reusing `ToolRowLayout.pill`), but this is still a plain
+// `NSView` row inside the same `NSTableView` above, not a second rendering
+// mechanism - only the row's internal content changed. Task rows: accent
+// bar/badge tint is the task's priority, or `.critical` when the task is
+// overdue (a stronger signal than priority alone); the badge is a real
+// interactive checkbox-alike (`ShiftTaskCheckBadge`), styled as an icon tile
+// but still a genuine `NSButton` so click-to-toggle is unchanged; kicker is
+// the task's project name (or a generic fallback); the chip is the
+// priority pill. Follow-up rows: accent/badge tint is done/pending status
+// (a `.good`/`.warn` split, orthogonal to priority so it doesn't just repeat
+// the chip); kicker is the status text; the chip is the priority pill -
+// double-click/right-click/Snooze are all unchanged, since only the badge's
+// *icon* changed, never its lack of a click target (follow-ups never had an
+// inline toggle - Done/Reopen/Snooze stay context-menu/double-click only).
+// Both rows grew taller to fit three lines of text plus card padding -
+// `heightOfRow` below was updated to match; `ShiftController`'s shared
+// `taskFollowUpPanelBodyHeight` (the fixed scroll clip both panels share)
+// was deliberately left alone, since a card list showing ~3-4 rows before
+// scrolling reads fine at that height, matching the Notification Center's
+// own panel.
 
 import AppKit
 
@@ -40,12 +67,16 @@ final class ShiftTaskListView: NSObject {
         tableView.gridStyleMask = []
         tableView.intercellSpacing = NSSize(width: 0, height: 4)
         tableView.autoresizingMask = [.width]
-        tableView.rowHeight = 44
+        tableView.rowHeight = Self.rowHeight
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(rowDoubleClicked)
     }
+
+    /// Three text lines (kicker/title/meta) plus card padding - see the file
+    /// header for the card redesign this replaced a flat 44pt row with.
+    static let rowHeight: CGFloat = 74
 
     @objc private func rowDoubleClicked() {
         let row = tableView.clickedRow
@@ -69,7 +100,7 @@ extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { max(tasks.count, 1) }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        tasks.isEmpty ? 120 : 44
+        tasks.isEmpty ? 120 : Self.rowHeight
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -89,9 +120,57 @@ extension ShiftTaskListView: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
+/// A real, clickable checkbox styled as a small round tinted tile (the
+/// notification card's own "icon in a badge" idiom, `IconTileView`'s circular
+/// cousin) rather than a bare system checkbox floating on its own - still a
+/// genuine `NSButton` with a real target/action, so click-to-toggle-complete
+/// is byte-for-byte the same behavior as before this restyle, only the
+/// drawing changed.
+private final class ShiftTaskCheckBadge: NSButton {
+    static let size: CGFloat = 26
+
+    init() {
+        super.init(frame: .zero)
+        title = ""
+        isBordered = false
+        imagePosition = .imageOnly
+        setButtonType(.momentaryChange)
+        wantsLayer = true
+        layer?.cornerRadius = Self.size / 2
+        layer?.borderWidth = 1.5
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+        setAccessibilityRole(.checkBox)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Self.size),
+            heightAnchor.constraint(equalToConstant: Self.size),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    /// `tint` drives both the outline (unchecked) and the fill (checked) -
+    /// the same single accent color that also drives this row's own accent
+    /// bar, mirroring `NotificationRowView`'s badge/accent-bar pairing.
+    func setChecked(_ checked: Bool, tint: NSColor) {
+        image = checked
+            ? NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Completed")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .bold))
+            : nil
+        contentTintColor = .white
+        layer?.backgroundColor = checked ? tint.cgColor : NSColor.clear.cgColor
+        layer?.borderColor = tint.cgColor
+        setAccessibilityValue(checked)
+        toolTip = checked ? "Mark incomplete" : "Mark complete"
+    }
+}
+
 private final class ShiftTaskRowView: NSView {
-    private let hoverBackground = HoverHighlightView()
-    private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let card = HoverHighlightView()
+    private let accentBar = NSView()
+    private let checkBadge = ShiftTaskCheckBadge()
+    private let kickerLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     /// A small paperclip glyph shown next to the title when the task has an
     /// image attachment (grandline-shift-task-image-attachments) - never a
@@ -100,29 +179,35 @@ private final class ShiftTaskRowView: NSView {
     /// once for a mismatched-height bug; the real image only ever shows in
     /// the task's own editor sheet.
     private let attachmentIcon = NSImageView()
-    private let subLabel = NSTextField(labelWithString: "")
-    private let priorityPill = NSView()
-    private let priorityLabel = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let chip = NSView()
+    private let chipLabel = NSTextField(labelWithString: "")
     private var onToggle: (() -> Void)?
 
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        hoverBackground.cornerRadius = 6
-        hoverBackground.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hoverBackground)
+        card.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
         NSLayoutConstraint.activate([
-            hoverBackground.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            hoverBackground.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            hoverBackground.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            hoverBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            card.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
         ])
 
-        checkbox.target = self
-        checkbox.action = #selector(checkboxClicked)
-        checkbox.translatesAutoresizingMaskIntoConstraints = false
-        checkbox.setContentHuggingPriority(.required, for: .horizontal)
+        accentBar.wantsLayer = true
+        accentBar.layer?.cornerRadius = 1.5
+        accentBar.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(accentBar)
+
+        checkBadge.target = self
+        checkBadge.action = #selector(checkboxClicked)
+
+        kickerLabel.translatesAutoresizingMaskIntoConstraints = false
+        kickerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -142,43 +227,37 @@ private final class ShiftTaskRowView: NSView {
         titleRow.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titleRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.lineBreakMode = .byTruncatingTail
-        subLabel.maximumNumberOfLines = 1
+        metaLabel.font = .systemFont(ofSize: 10.5)
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.maximumNumberOfLines = 1
 
-        let textStack = NSStackView(views: [titleRow, subLabel])
+        let textStack = NSStackView(views: [kickerLabel, titleRow, metaLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 3
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        priorityLabel.font = ShiftFont.mono(10, weight: .semibold)
-        priorityLabel.translatesAutoresizingMaskIntoConstraints = false
-        priorityPill.wantsLayer = true
-        priorityPill.layer?.cornerRadius = 8
-        priorityPill.translatesAutoresizingMaskIntoConstraints = false
-        priorityPill.addSubview(priorityLabel)
-        NSLayoutConstraint.activate([
-            priorityLabel.leadingAnchor.constraint(equalTo: priorityPill.leadingAnchor, constant: 7),
-            priorityLabel.trailingAnchor.constraint(equalTo: priorityPill.trailingAnchor, constant: -7),
-            priorityLabel.topAnchor.constraint(equalTo: priorityPill.topAnchor, constant: 2),
-            priorityLabel.bottomAnchor.constraint(equalTo: priorityPill.bottomAnchor, constant: -2),
-        ])
-        priorityPill.setContentHuggingPriority(.required, for: .horizontal)
-        priorityPill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        chip.setContentHuggingPriority(.required, for: .horizontal)
+        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let row = NSStackView(views: [checkbox, textStack, priorityPill])
+        let row = NSStackView(views: [checkBadge, textStack, chip])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = 10
         row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
-        hoverBackground.addSubview(row)
+        card.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: hoverBackground.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: hoverBackground.trailingAnchor, constant: -6),
-            row.centerYAnchor.constraint(equalTo: hoverBackground.centerYAnchor),
+            accentBar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 2),
+            accentBar.widthAnchor.constraint(equalToConstant: 3),
+            accentBar.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            accentBar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+
+            row.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
         ])
     }
 
@@ -186,9 +265,34 @@ private final class ShiftTaskRowView: NSView {
 
     func configure(task: ShiftTask, project: ShiftProject?, theme: HelmTheme, onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
-        hoverBackground.normalColor = .clear
-        hoverBackground.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.16)
-        checkbox.state = task.status == .completed ? .on : .off
+        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+
+        let isOverdue: Bool = {
+            guard let due = task.dueDate.flatMap(ShiftDateFormatting.date(from:)) else { return false }
+            return due < Calendar.current.startOfDay(for: Date())
+        }()
+        let (priorityText, priorityTint): (String, HelmTint) = {
+            switch task.priority {
+            case .high: return ("High", .critical)
+            case .normal: return ("Normal", .info)
+            case .low: return ("Low", .neutral)
+            }
+        }()
+        // Overdue is a stronger, more urgent signal than priority alone -
+        // it wins the accent bar/badge tint when both are present.
+        let tint: HelmTint = isOverdue ? .critical : priorityTint
+        let tintColor = HelmTheme.nsColor(tint.hex(in: theme))
+
+        checkBadge.setChecked(task.status == .completed, tint: tintColor)
+
+        kickerLabel.attributedStringValue = NSAttributedString(
+            string: (project?.name ?? "Task").uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .kern: 0.7,
+                .foregroundColor: HelmTheme.mutedInk(theme),
+            ]
+        )
 
         titleLabel.stringValue = task.title
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
@@ -197,25 +301,20 @@ private final class ShiftTaskRowView: NSView {
 
         var bits: [String] = []
         if let due = task.dueDate { bits.append(ShiftDateFormatting.friendly(due)) }
-        if let project { bits.append(project.name) }
         if !task.subtasks.isEmpty {
             let done = task.subtasks.filter(\.done).count
             bits.append("\(done)/\(task.subtasks.count) subtasks")
         }
-        subLabel.stringValue = bits.joined(separator: " \u{00B7} ")
-        subLabel.textColor = HelmTheme.mutedInk(theme)
+        metaLabel.stringValue = bits.joined(separator: " \u{00B7} ")
+        metaLabel.textColor = HelmTheme.mutedInk(theme)
 
-        let (text, tint): (String, HelmTint) = {
-            switch task.priority {
-            case .high: return ("High", .critical)
-            case .normal: return ("Normal", .info)
-            case .low: return ("Low", .neutral)
-            }
-        }()
-        priorityLabel.stringValue = text
-        let color = HelmTheme.nsColor(tint.hex(in: theme))
-        priorityLabel.textColor = color
-        priorityPill.layer?.backgroundColor = color.withAlphaComponent(0.15).cgColor
+        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel)
+
+        accentBar.layer?.backgroundColor = tintColor.cgColor
+        card.normalColor = cardFill
+        card.hoverColor = cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = tintColor.withAlphaComponent(0.4).cgColor
     }
 
     @objc private func checkboxClicked() { onToggle?() }
@@ -259,13 +358,18 @@ final class ShiftFollowUpListView: NSObject {
         tableView.gridStyleMask = []
         tableView.intercellSpacing = NSSize(width: 0, height: 4)
         tableView.autoresizingMask = [.width]
-        tableView.rowHeight = 40
+        tableView.rowHeight = Self.rowHeight
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(rowDoubleClicked)
         tableView.menu = rowMenu()
     }
+
+    /// Matches `ShiftTaskListView.rowHeight` - both lists share the same card
+    /// treatment, so their rows are the same height for a consistent
+    /// side-by-side look (`fm/grandline-shift-side-by-side-composer-height`).
+    static let rowHeight: CGFloat = ShiftTaskListView.rowHeight
 
     func setItems(_ items: [ShiftFollowUp]) {
         self.items = items
@@ -339,7 +443,7 @@ extension ShiftFollowUpListView: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { max(items.count, 1) }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        items.isEmpty ? 110 : 40
+        items.isEmpty ? 110 : Self.rowHeight
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -356,108 +460,125 @@ extension ShiftFollowUpListView: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
+/// Card treatment identical in spirit to `ShiftTaskRowView` (see the file
+/// header), but the two orthogonal signals swap roles: follow-ups have no
+/// inline toggle (Done/Reopen/Snooze stay context-menu/double-click only,
+/// unchanged), so the accent bar/badge here read done/pending status - a
+/// stronger "does this still need me" glance than priority alone - while
+/// priority moves into the trailing chip.
 private final class ShiftFollowUpRowView: NSView {
-    private let hoverBackground = HoverHighlightView()
-    private let dot = NSView()
+    private let card = HoverHighlightView()
+    private let accentBar = NSView()
+    private let badge = IconTileView(size: 26, cornerRadius: 13)
+    private let kickerLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
-    private let subLabel = NSTextField(labelWithString: "")
-    private let statusPill = NSView()
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let chip = NSView()
+    private let chipLabel = NSTextField(labelWithString: "")
 
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        hoverBackground.cornerRadius = 6
-        hoverBackground.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hoverBackground)
+        card.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
         NSLayoutConstraint.activate([
-            hoverBackground.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            hoverBackground.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            hoverBackground.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            hoverBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            card.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
         ])
 
-        dot.wantsLayer = true
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-        ])
-        dot.setContentHuggingPriority(.required, for: .horizontal)
+        accentBar.wantsLayer = true
+        accentBar.layer?.cornerRadius = 1.5
+        accentBar.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(accentBar)
+
+        kickerLabel.translatesAutoresizingMaskIntoConstraints = false
+        kickerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.lineBreakMode = .byTruncatingTail
-        subLabel.maximumNumberOfLines = 1
+        metaLabel.font = .systemFont(ofSize: 10.5)
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.maximumNumberOfLines = 1
 
-        let textStack = NSStackView(views: [titleLabel, subLabel])
+        let textStack = NSStackView(views: [kickerLabel, titleLabel, metaLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 3
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        statusLabel.font = ShiftFont.mono(10, weight: .semibold)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.wantsLayer = true
-        statusPill.layer?.cornerRadius = 8
-        statusPill.translatesAutoresizingMaskIntoConstraints = false
-        statusPill.addSubview(statusLabel)
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: statusPill.leadingAnchor, constant: 7),
-            statusLabel.trailingAnchor.constraint(equalTo: statusPill.trailingAnchor, constant: -7),
-            statusLabel.topAnchor.constraint(equalTo: statusPill.topAnchor, constant: 2),
-            statusLabel.bottomAnchor.constraint(equalTo: statusPill.bottomAnchor, constant: -2),
-        ])
-        statusPill.setContentHuggingPriority(.required, for: .horizontal)
-        statusPill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        chip.setContentHuggingPriority(.required, for: .horizontal)
+        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let row = NSStackView(views: [dot, textStack, statusPill])
+        let row = NSStackView(views: [badge, textStack, chip])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
         row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
-        hoverBackground.addSubview(row)
+        card.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: hoverBackground.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: hoverBackground.trailingAnchor, constant: -6),
-            row.centerYAnchor.constraint(equalTo: hoverBackground.centerYAnchor),
+            accentBar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 2),
+            accentBar.widthAnchor.constraint(equalToConstant: 3),
+            accentBar.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            accentBar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+
+            row.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     func configure(item: ShiftFollowUp, theme: HelmTheme) {
-        hoverBackground.normalColor = .clear
-        hoverBackground.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.16)
+        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let statusTint: HelmTint = item.status == .done ? .good : .warn
+        let tintColor = HelmTheme.nsColor(statusTint.hex(in: theme))
+
+        badge.configure(symbol: item.status == .done ? "checkmark" : "bell.fill", tint: statusTint, pointSize: 11)
+        badge.applyTheme(theme)
+
+        kickerLabel.attributedStringValue = NSAttributedString(
+            string: (item.status == .done ? "Done" : "Pending").uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .kern: 0.7,
+                .foregroundColor: HelmTheme.mutedInk(theme),
+            ]
+        )
+
         titleLabel.stringValue = item.title
         titleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
 
         var bits: [String] = []
         if let at = item.followUpAt { bits.append(ShiftDateFormatting.friendly(at, time: item.followUpTime)) }
-        subLabel.stringValue = bits.joined(separator: " \u{00B7} ")
-        subLabel.textColor = HelmTheme.mutedInk(theme)
+        metaLabel.stringValue = bits.joined(separator: " \u{00B7} ")
+        metaLabel.textColor = HelmTheme.mutedInk(theme)
 
-        let priorityTint: HelmTint = {
+        let (priorityText, priorityTint): (String, HelmTint) = {
             switch item.priority {
-            case .high: return .critical
-            case .normal: return .info
-            case .low: return .neutral
+            case .high: return ("High", .critical)
+            case .normal: return ("Normal", .info)
+            case .low: return ("Low", .neutral)
             }
         }()
-        dot.layer?.cornerRadius = 4
-        dot.layer?.backgroundColor = HelmTheme.nsColor(priorityTint.hex(in: theme)).cgColor
+        ToolRowLayout.pill(text: priorityText, colorHex: priorityTint.hex(in: theme), into: chip, label: chipLabel)
 
-        let statusTint: HelmTint = item.status == .done ? .good : .warn
-        statusLabel.stringValue = item.status == .done ? "Done" : "Pending"
-        let color = HelmTheme.nsColor(statusTint.hex(in: theme))
-        statusLabel.textColor = color
-        statusPill.layer?.backgroundColor = color.withAlphaComponent(0.15).cgColor
+        accentBar.layer?.backgroundColor = tintColor.cgColor
+        card.normalColor = cardFill
+        card.hoverColor = cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = tintColor.withAlphaComponent(0.4).cgColor
     }
 }
 
