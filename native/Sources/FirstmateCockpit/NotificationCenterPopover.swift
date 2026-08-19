@@ -61,8 +61,15 @@ final class NotificationBellButton: NSButton {
             badgeLabel.bottomAnchor.constraint(equalTo: badgeContainer.bottomAnchor, constant: -1),
             badgeContainer.heightAnchor.constraint(equalToConstant: 16),
             badgeContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
-            badgeContainer.topAnchor.constraint(equalTo: topAnchor, constant: -5),
-            badgeContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: 5),
+            // Only a small (2pt) protrusion past the button's own corner -
+            // the bar gives this button just 9pt of headroom above it and
+            // 10pt of gap to the neighboring theme button (TopBarController's
+            // own `height`/spacing constants), so a badge overlapping 5pt on
+            // each side (the original value) ate most of both margins at
+            // once and read as crowded/misaligned. See the rail's own
+            // `attachBadge` history in AGENTS.md for the same class of fix.
+            badgeContainer.topAnchor.constraint(equalTo: topAnchor, constant: -2),
+            badgeContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: 2),
         ])
     }
 
