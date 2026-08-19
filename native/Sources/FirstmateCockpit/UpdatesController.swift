@@ -945,7 +945,19 @@ final class UpdatesController: NSViewController {
 
     private func applyThemeToRow(_ row: UpdateRow) {
         let failed = row.status == .checkFailed || row.status == .updateFailed
-        ToolRowLayout.applyTheme(row.toolRowViews, theme: theme, detailFailed: failed)
+        // Reuses `showsUpdateButton` - the exact predicate already driving
+        // the "Needs Attention" filter segment above - as "this row is
+        // worth a card/accent-bar treatment," and `pillVisuals` for its
+        // color, rather than inventing a second notion of "needs attention"
+        // (`fm/grandline-setup-attention-row-style`). A healthy row
+        // (`.upToDate`, `.unknown`, or a busy `.checking`/`.updating`) keeps
+        // the exact flat/compact look it always has.
+        let needsAttention = row.status.showsUpdateButton
+        let attentionHex = needsAttention ? pillVisuals(row.status).1 : nil
+        ToolRowLayout.applyTheme(
+            row.toolRowViews, theme: theme, detailFailed: failed,
+            cardStyle: needsAttention, attentionHex: attentionHex, accentBar: needsAttention
+        )
         row.progressLabel.textColor = HelmTheme.mutedInk(theme)
         // `.isBordered = false` buttons don't pick up a text color from
         // `contentTintColor` (that only tints an image) - an attributed
