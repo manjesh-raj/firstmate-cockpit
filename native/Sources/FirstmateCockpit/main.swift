@@ -794,6 +794,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_SHIFT_STORE_TESTS"] == "1" {
     exit(ShiftStoreSelfTest.run() ? 0 : 1)
 }
 
+// fm/grandline-devops-command-library: same convention, for the DevOps
+// Command Library's parameter detection/substitution/search/favorites - see
+// CommandLibraryStoreSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_COMMAND_LIBRARY_TESTS"] == "1" {
+    exit(CommandLibraryStoreSelfTest.run() ? 0 : 1)
+}
+
 // cockpit-shift-create-edit: same convention, for `ShiftDateParser`'s
 // natural-language date/time detection - see `ShiftDateParserSelfTest.swift`'s
 // header.
