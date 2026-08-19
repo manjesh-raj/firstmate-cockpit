@@ -234,11 +234,20 @@ enum SRELead {
         return dir
     }
 
+    /// Test-only seam, same convention as `DictationCleanup.claudePathOverrideForTests`/
+    /// `SRELeadPostmortem.claudePathOverrideForTests`/`ConsoleCommandComposer.
+    /// claudePathOverrideForTests`: `SRELeadPerTabSelfTest` points this at a
+    /// disposable fake-`claude` script so a real per-tab SRE Lead round trip
+    /// (start, ask, tear down) can be driven end to end with no real
+    /// network/auth dependency. `nil` in production.
+    static var claudePathOverrideForTests: String?
+
     /// Find the `claude` binary the same way `TmuxMirror.resolveTmux()` finds
     /// `tmux` - a Finder-launched GUI app inherits a minimal PATH. Not
     /// `private`: `SRELeadRunner` resolves this once per session too.
     static func resolveClaude() -> String? {
-        resolveExecutable(name: "claude", commonPaths: ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"])
+        claudePathOverrideForTests
+            ?? resolveExecutable(name: "claude", commonPaths: ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"])
     }
 
     private static func resolvePython3() -> String? {

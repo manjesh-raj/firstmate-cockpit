@@ -120,20 +120,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
 
-    /// Set by `connectSSHIfNeeded` for a dedicated host page - the one
-    /// interactive ssh tab the captain used to log all the way into this
-    /// host, and the only tab `SRELeadBridge` is ever allowed to inject
-    /// commands into (`fm/cockpit-sre-lead-shared-terminal`). Weak: if that
-    /// tab is ever closed, the bridge should fail clearly ("tab no longer
-    /// available") rather than guess at a different one.
-    private weak var primarySSHTab: TabModel?
-
-    private enum SRELeadPhase { case notStarted, starting, ready, failed }
-    private var sreLeadPhase: SRELeadPhase = .notStarted
-    private var sreLeadSession: SRELeadSession?
-    private var sreLeadBridge: SRELeadBridge?
-    private var sreLeadRunner: SRELeadRunner?
-    private var sreLeadChat: SRELeadChatView?
+    /// `fm/grandline-sre-lead-per-tab`: SRE Lead's own state (session,
+    /// bridge, runner, chat, phase) lives on each `TabModel.sreLead`, not
+    /// here - see `SRELeadTabState.swift`'s header. `ConsoleController` only
+    /// owns the shared chrome: the pill, the pane, and the header - every
+    /// started tab's chat is added as a hidden sibling inside `sreLeadPane`
+    /// and shown/hidden to match whichever tab is currently selected
+    /// (`updateSRELeadPaneContent`).
     private var sreLeadButton: SRELeadStatusPill?
 
     private let sreLeadPane = NSView()
@@ -142,9 +135,16 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private let sreLeadHeaderLabel = NSTextField(labelWithString: "SRE Lead")
     /// "Generate Postmortem" (`fm/grandline-sre-lead-postmortem`) - hidden
     /// until `updateGeneratePostmortemButton()` sees a real assistant reply
-    /// in the pane (see `SRELeadChatView.hasRealExchange`), so it never
-    /// appears over an empty/just-opened session.
+    /// in the current tab's chat (see `SRELeadChatView.hasRealExchange`), so
+    /// it never appears over an empty/just-opened session.
     private let sreLeadGeneratePostmortemButton = NSButton()
+    /// Shown inside `sreLeadPane` whenever the currently selected tab has no
+    /// `sreLead` state yet - "started, running, or not-yet-started, never
+    /// another tab's" (design doc). Lets a captain start SRE Lead for
+    /// whichever tab is on screen without reaching for the toolbar pill.
+    private let sreLeadEmptyStateView = NSView()
+    private let sreLeadEmptyStateLabel = NSTextField(wrappingLabelWithString: "SRE Lead hasn't been started for this tab yet.")
+    private let sreLeadEmptyStateButton = NSButton()
     /// Only ever created on demand (`generatePostmortemClicked`) - a fresh
     /// `DocsRunbookStore()` shares `DocsRunbookGitSync.shared`'s singleton
     /// clone/queue exactly like `DocsController`'s own instance does (see
@@ -152,6 +152,12 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private lazy var docsRunbookStore = DocsRunbookStore()
     private var sreLeadPaneWidthConstraint: NSLayoutConstraint!
     private let sreLeadPaneWidth: CGFloat = 380
+
+    /// Captain-specified cap (task brief): at most this many tabs on one
+    /// host page may have SRE Lead running (`.starting`/`.ready`)
+    /// simultaneously. Attempting to start a 6th shows a clear alert instead
+    /// of silently queuing or silently refusing.
+    private let sreLeadMaxConcurrent = 5
 
     /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5), then Settings > General's
     /// "Log sessions by default" toggle: when set, every newly started tab
@@ -672,12 +678,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     func connectSSHIfNeeded(label: String, args: [String], accentHex: String?, keyID: UUID?, startupSnippetID: UUID?, blockViewOptIn: Bool = false) {
         guard tabs.isEmpty else { return }
         openSSH(label: label, args: args, accentHex: accentHex, keyID: keyID, startupSnippetID: startupSnippetID, blockViewOptIn: blockViewOptIn)
-        // The tab `openSSH` just appended is this page's one primary
-        // interactive tab (`tabs` was empty a moment ago) - the only tab
-        // `SRELeadBridge` will ever inject commands into. A later ⌘D on this
-        // tab can create a second ssh tab, but `primarySSHTab` deliberately
-        // keeps pointing at this first one rather than guessing between them.
-        primarySSHTab = tabs.first
+        // `fm/grandline-sre-lead-per-tab`: no `primarySSHTab` to set anymore -
+        // SRE Lead is per-tab now (`TabModel.sreLead`), started explicitly by
+        // the captain for whichever tab they're looking at, never pinned to
+        // "the first ssh tab this page ever opened".
     }
 
     /// Re-focus whichever tab is already current, without touching the tab
@@ -815,7 +819,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
     }
 
-    // MARK: SRE Lead (design brief: Part B session lifecycle + Part C pane)
+    // MARK: SRE Lead (`fm/grandline-sre-lead-per-tab`: per-tab state on
+    // `TabModel.sreLead` - see `SRELeadTabState.swift`'s header. This
+    // section owns only the shared chrome: the pill, the pane, the header,
+    // and the empty state - every method below operates on a specific
+    // `TabModel`, never a page-level phase.
 
     private func buildSRELeadPane() {
         sreLeadPane.translatesAutoresizingMaskIntoConstraints = false
@@ -865,68 +873,139 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             sreLeadGeneratePostmortemButton.widthAnchor.constraint(equalToConstant: 22),
             sreLeadGeneratePostmortemButton.heightAnchor.constraint(equalToConstant: 22),
         ])
+
+        buildSRELeadEmptyState()
     }
 
-    /// The toolbar pill's click action. Dedups exactly like
-    /// `connectSSHIfNeeded`'s `tabs.isEmpty` guard dedups a host reconnect:
-    /// a click while a spawn is already in flight (`.starting`) is ignored
-    /// rather than racing a second `SRELead.setUp`.
+    private func buildSRELeadEmptyState() {
+        sreLeadEmptyStateView.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadEmptyStateView.wantsLayer = true
+        sreLeadEmptyStateView.isHidden = true
+        sreLeadPane.addSubview(sreLeadEmptyStateView)
+
+        sreLeadEmptyStateLabel.font = .systemFont(ofSize: 12)
+        sreLeadEmptyStateLabel.alignment = .center
+        sreLeadEmptyStateLabel.lineBreakMode = .byWordWrapping
+        sreLeadEmptyStateLabel.maximumNumberOfLines = 0
+        sreLeadEmptyStateLabel.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadEmptyStateView.addSubview(sreLeadEmptyStateLabel)
+
+        sreLeadEmptyStateButton.title = "Start SRE Lead for This Tab"
+        sreLeadEmptyStateButton.bezelStyle = .rounded
+        sreLeadEmptyStateButton.controlSize = .small
+        sreLeadEmptyStateButton.target = self
+        sreLeadEmptyStateButton.action = #selector(startSRELeadForCurrentTabClicked)
+        sreLeadEmptyStateButton.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadEmptyStateView.addSubview(sreLeadEmptyStateButton)
+
+        NSLayoutConstraint.activate([
+            sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            sreLeadEmptyStateView.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            sreLeadEmptyStateView.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
+            sreLeadEmptyStateView.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+
+            sreLeadEmptyStateLabel.leadingAnchor.constraint(equalTo: sreLeadEmptyStateView.leadingAnchor, constant: 20),
+            sreLeadEmptyStateLabel.trailingAnchor.constraint(equalTo: sreLeadEmptyStateView.trailingAnchor, constant: -20),
+            sreLeadEmptyStateLabel.centerYAnchor.constraint(equalTo: sreLeadEmptyStateView.centerYAnchor, constant: -16),
+
+            sreLeadEmptyStateButton.centerXAnchor.constraint(equalTo: sreLeadEmptyStateView.centerXAnchor),
+            sreLeadEmptyStateButton.topAnchor.constraint(equalTo: sreLeadEmptyStateLabel.bottomAnchor, constant: 12),
+        ])
+    }
+
+    /// How many tabs on this page currently have SRE Lead actively running
+    /// (`.starting` or `.ready` - not `.notStarted`/`.failed`, neither of
+    /// which holds a live bridge/process). Backs the 5-tab cap.
+    private func activeSRELeadTabCount() -> Int {
+        tabs.reduce(into: 0) { count, tab in
+            switch tab.sreLead?.phase {
+            case .some(.starting), .some(.ready): count += 1
+            default: break
+            }
+        }
+    }
+
+    /// Whether any tab on this page has SRE Lead state at all (started,
+    /// running, or failed-with-a-visible-error) - used to decide whether the
+    /// shared pane should stay open after tearing one tab's session down.
+    private func anySRELeadTabHasState() -> Bool {
+        tabs.contains { $0.sreLead != nil }
+    }
+
+    /// The toolbar pill's click action - operates on `currentTab`, never a
+    /// page-level phase (`fm/grandline-sre-lead-per-tab`). Dedups exactly
+    /// like `connectSSHIfNeeded`'s `tabs.isEmpty` guard dedups a host
+    /// reconnect: a click while a spawn is already in flight (`.starting`)
+    /// is ignored rather than racing a second `SRELead.setUp` for this tab.
     @objc private func toggleSRELead() {
-        switch sreLeadPhase {
+        guard let tab = currentTab else { return }
+        switch tab.sreLead?.phase ?? .notStarted {
         case .starting:
             return
         case .ready:
-            tearDownSRELead()
+            tearDownSRELead(for: tab)
         case .notStarted, .failed:
-            startSRELead()
+            startSRELead(for: tab)
         }
     }
 
-    private func startSRELead() {
-        guard let targetTab = primarySSHTab else {
-            sreLeadPhase = .failed
-            sreLeadButton?.setState(.failed)
-            sreLeadButton?.applyTheme(theme)
-            showSRELeadError("No connected interactive tab for this host yet - connect first, then try SRE Lead again.")
+    /// The pane's own empty-state "Start SRE Lead for This Tab" button -
+    /// the second entry point into `startSRELead(for:)` alongside the
+    /// toolbar pill, so a captain who switches to a not-yet-started tab
+    /// while the pane is already open (showing another tab's transcript)
+    /// doesn't have to reach for the toolbar.
+    @objc private func startSRELeadForCurrentTabClicked() {
+        guard let tab = currentTab, (tab.sreLead?.phase ?? .notStarted) != .starting else { return }
+        startSRELead(for: tab)
+    }
+
+    /// Starts a brand-new, fully independent SRE Lead investigation for
+    /// `tab` - its own `SRELeadSession`/`SRELeadBridge` (bridge target is
+    /// `tab` itself, never any other tab's terminal) /`SRELeadRunner`, and
+    /// its own chat view. Refuses to start a 6th concurrent session on this
+    /// page (`sreLeadMaxConcurrent`) with a clear alert rather than silently
+    /// queuing or silently refusing.
+    private func startSRELead(for tab: TabModel) {
+        if activeSRELeadTabCount() >= sreLeadMaxConcurrent {
+            showSRELeadCapReachedAlert()
             return
         }
+
+        let state = tab.sreLead ?? SRELeadTabState()
+        tab.sreLead = state
+
         guard let claude = SRELead.resolveClaude() else {
-            sreLeadPhase = .failed
-            sreLeadButton?.setState(.failed)
-            sreLeadButton?.applyTheme(theme)
-            showSRELeadError("claude CLI not found on PATH.")
+            state.phase = .failed
+            updateSRELeadControls()
+            showSRELeadError("claude CLI not found on PATH.", in: tab)
             return
         }
-        sreLeadPhase = .starting
-        sreLeadButton?.setState(.starting)
-        sreLeadButton?.applyTheme(theme)
+
+        state.phase = .starting
+        updateSRELeadControls()
         setSRELeadPaneOpen(true)
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak tab] in
             let result = SRELead.setUp()
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, let tab, let state = tab.sreLead else { return }
                 switch result {
                 case .success(let session):
-                    self.sreLeadSession = session
-                    self.sreLeadBridge = SRELeadBridge(bridgeDir: session.bridgeDir, target: targetTab)
-                    self.sreLeadBridge?.start()
-                    self.sreLeadRunner = SRELeadRunner(session: session, claude: claude)
-                    let chat = self.sreLeadChat ?? self.makeSRELeadChat()
-                    self.sreLeadChat = chat
+                    state.session = session
+                    state.bridge = SRELeadBridge(bridgeDir: session.bridgeDir, target: tab)
+                    state.bridge?.start()
+                    state.runner = SRELeadRunner(session: session, claude: claude)
+                    let chat = state.chatView ?? self.makeSRELeadChat(for: tab)
+                    state.chatView = chat
                     chat.clearMessages()
                     chat.append(SRELeadMessage(role: .status, text: "SRE Lead is ready. Ask a question about this cluster below."))
                     chat.setInputEnabled(true)
-                    self.sreLeadPhase = .ready
-                    self.sreLeadButton?.setState(.ready)
-                    self.sreLeadButton?.applyTheme(self.theme)
-                    self.updateGeneratePostmortemButton()
+                    state.phase = .ready
+                    self.updateSRELeadControls()
                 case .failure(let error):
-                    self.sreLeadPhase = .failed
-                    self.sreLeadButton?.setState(.failed)
-                    self.sreLeadButton?.applyTheme(self.theme)
-                    self.showSRELeadError(error.message)
-                    self.updateGeneratePostmortemButton()
+                    state.phase = .failed
+                    self.updateSRELeadControls()
+                    self.showSRELeadError(error.message, in: tab)
                 }
             }
         }
@@ -935,12 +1014,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// The chat view's input submits here - the native equivalent of the
     /// old tmux pane's "just type into the terminal" entry point, now with a
     /// real input field instead of the captain having to click into a raw
-    /// `claude` TUI first.
-    private func handleSRELeadSubmit(_ text: String) {
-        guard let runner = sreLeadRunner, let chat = sreLeadChat else { return }
+    /// `claude` TUI first. Scoped to `tab`'s own runner/chat, so two tabs'
+    /// turns can never cross-talk.
+    private func handleSRELeadSubmit(_ text: String, in tab: TabModel) {
+        guard let state = tab.sreLead, let runner = state.runner, let chat = state.chatView else { return }
         chat.append(SRELeadMessage(role: .user, text: text))
         chat.setInputEnabled(false)
-        runner.ask(text) { [weak self, weak chat] result in
+        runner.ask(text) { [weak self, weak chat, weak tab] result in
             guard let chat else { return }
             switch result {
             case .success(let reply):
@@ -949,40 +1029,105 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 chat.append(SRELeadMessage(role: .error, text: error.message))
             }
             chat.setInputEnabled(true)
-            if let self, let window = self.view.window, window.firstResponder !== chat {
-                window.makeFirstResponder(chat)
-            }
+            // Only steal first responder back if the captain is still
+            // looking at this same tab - a reply landing for a background
+            // tab must never yank focus away from whatever is on screen.
+            guard let self, let tab, tab === self.currentTab,
+                  let window = self.view.window, window.firstResponder !== chat else { return }
+            window.makeFirstResponder(chat)
         }
     }
 
-    private func showSRELeadError(_ message: String) {
-        let chat = sreLeadChat ?? makeSRELeadChat()
-        sreLeadChat = chat
+    private func showSRELeadError(_ message: String, in tab: TabModel) {
+        let state = tab.sreLead ?? SRELeadTabState()
+        tab.sreLead = state
+        let chat = state.chatView ?? makeSRELeadChat(for: tab)
+        state.chatView = chat
         chat.append(SRELeadMessage(role: .error, text: message))
+        if tab === currentTab { updateSRELeadPaneContent() }
     }
 
-    /// The pane header's "Generate Postmortem" button is only ever shown once
-    /// there's a real assistant reply to summarize (`SRELeadChatView.hasRealExchange`)
-    /// - wired to fire on every `append`/`clearMessages` via `chat.onMessagesChanged`
-    /// (see `makeSRELeadChat`), and called directly after `startSRELead`'s own
-    /// session-open/session-fail transitions since those don't append through
-    /// the normal submit path.
+    /// One alert for the 5-tab cap (task brief: "a clear, non-crashing
+    /// message telling the captain to stop one of the other 5 first, rather
+    /// than silently queuing or silently refusing").
+    private func showSRELeadCapReachedAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "SRE Lead limit reached"
+        alert.informativeText = "Up to \(sreLeadMaxConcurrent) tabs on this host page can run SRE Lead at the same time. Stop SRE Lead on another tab before starting a new one."
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    /// Refreshes the pill, the pane's visible content, the Generate
+    /// Postmortem button, and the pill's tooltip - all four always derived
+    /// from `currentTab`, called from every place that changes which tab is
+    /// selected or changes that tab's own SRE Lead phase.
+    private func updateSRELeadControls() {
+        guard let tab = currentTab else { return }
+        let phase = tab.sreLead?.phase ?? .notStarted
+        sreLeadButton?.setState(phase)
+        sreLeadButton?.applyTheme(theme)
+        updateSRELeadPaneContent()
+        updateGeneratePostmortemButton()
+        updateSRELeadButtonTooltip(for: tab)
+    }
+
+    /// Explains the pill's disabled-in-spirit cap state up front, rather
+    /// than only after an attempt bounces off the alert above.
+    private func updateSRELeadButtonTooltip(for tab: TabModel) {
+        let phase = tab.sreLead?.phase ?? .notStarted
+        if (phase == .notStarted || phase == .failed), activeSRELeadTabCount() >= sreLeadMaxConcurrent {
+            sreLeadButton?.toolTip = "SRE Lead limit reached (\(sreLeadMaxConcurrent) tabs) - stop SRE Lead on another tab first."
+        } else {
+            sreLeadButton?.toolTip = "Toggle the SRE Lead investigation pane"
+        }
+    }
+
+    /// Shows whichever tab is currently selected inside `sreLeadPane`: its
+    /// own chat (started/starting/failed-with-error) if it has one, or the
+    /// shared empty state otherwise - never another tab's chat. Every other
+    /// tab's chat is hidden, the same "hide, don't rebuild" convention this
+    /// app uses everywhere else.
+    private func updateSRELeadPaneContent() {
+        guard let current = currentTab else {
+            sreLeadEmptyStateView.isHidden = true
+            return
+        }
+        for tab in tabs {
+            tab.sreLead?.chatView?.isHidden = (tab !== current)
+        }
+        sreLeadEmptyStateView.isHidden = (current.sreLead?.chatView != nil)
+    }
+
+    /// The pane header's "Generate Postmortem" button is only ever shown
+    /// once the *current* tab's chat has a real assistant reply to
+    /// summarize (`SRELeadChatView.hasRealExchange`) - wired to fire on
+    /// every `append`/`clearMessages` via `chat.onMessagesChanged` (see
+    /// `makeSRELeadChat`), and called directly after `startSRELead`'s own
+    /// session-open/session-fail transitions since those don't append
+    /// through the normal submit path.
     private func updateGeneratePostmortemButton() {
-        sreLeadGeneratePostmortemButton.isHidden = !(sreLeadChat?.hasRealExchange ?? false)
+        sreLeadGeneratePostmortemButton.isHidden = !(currentTab?.sreLead?.chatView?.hasRealExchange ?? false)
     }
 
-    /// "Generate Postmortem": summarizes the pane's own investigation
-    /// transcript into a structured markdown document via one non-
-    /// interactive `claude -p` call (`SRELeadPostmortem.generate`), then
+    /// "Generate Postmortem": summarizes the *current* tab's own
+    /// investigation transcript into a structured markdown document via one
+    /// non-interactive `claude -p` call (`SRELeadPostmortem.generate`), then
     /// saves it into the same Docs → Postmortems store phase 1 built
     /// (`DocsRunbookStore.createPostmortem`). A failure here only ever
-    /// appends an error message to the pane's existing chat feed - the
+    /// appends an error message to that tab's own chat feed - the
     /// investigation transcript itself is never touched, so the captain can
     /// retry with nothing lost.
     @objc private func generatePostmortemClicked() {
-        guard let chat = sreLeadChat, chat.hasRealExchange, sreLeadGeneratePostmortemButton.isEnabled else { return }
+        guard let tab = currentTab, let chat = tab.sreLead?.chatView, chat.hasRealExchange,
+              sreLeadGeneratePostmortemButton.isEnabled else { return }
         let transcript = chat.transcriptForPostmortem
-        let hostLabel = primarySSHTab?.name ?? "this host"
+        let hostLabel = tab.name
 
         sreLeadGeneratePostmortemButton.isEnabled = false
         chat.append(SRELeadMessage(role: .status, text: "Generating postmortem\u{2026}"))
@@ -1001,32 +1146,39 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
     }
 
-    /// Toggle-close (design brief Part B): kill any in-flight `claude -p`
-    /// turn and remove every scratch file `SRELead.setUp` wrote, exactly
-    /// like `cleanupSSHKeyTempFile` does for a regular tab - nothing
-    /// lingers. A later toggle-open starts a genuinely fresh session rather
-    /// than reattaching to anything (there is nothing to reattach to -
-    /// `claude -p` processes are one-shot per turn).
-    private func tearDownSRELead() {
-        sreLeadBridge?.stop()
-        sreLeadBridge = nil
-        sreLeadRunner?.cancel()
-        sreLeadRunner = nil
-        sreLeadChat?.clearMessages()
-        sreLeadSession?.tearDown()
-        sreLeadSession = nil
-        sreLeadPhase = .notStarted
-        sreLeadButton?.setState(.notStarted)
-        sreLeadButton?.applyTheme(theme)
-        sreLeadGeneratePostmortemButton.isEnabled = true
-        updateGeneratePostmortemButton()
-        setSRELeadPaneOpen(false)
+    /// Tears down `tab`'s own SRE Lead session (bridge, in-flight `claude`
+    /// process, scratch dir) and removes its chat - never another tab's.
+    /// Called from the pill's toggle-off click and, unconditionally, from
+    /// `closeTab` for whichever tab is being closed. If no other tab on this
+    /// page has SRE Lead state afterward, the shared pane collapses closed -
+    /// matching the old single-tab-per-page behavior; if a sibling tab still
+    /// has a live session, the pane stays open so it isn't disturbed.
+    private func tearDownSRELead(for tab: TabModel) {
+        guard let state = tab.sreLead else { return }
+        state.tearDownSession()
+        state.chatView?.removeFromSuperview()
+        tab.sreLead = nil
+
+        if tab === currentTab {
+            sreLeadGeneratePostmortemButton.isEnabled = true
+            updateSRELeadControls()
+        }
+        if !anySRELeadTabHasState() {
+            setSRELeadPaneOpen(false)
+        }
     }
 
-    private func makeSRELeadChat() -> SRELeadChatView {
+    private func makeSRELeadChat(for tab: TabModel) -> SRELeadChatView {
         let chat = SRELeadChatView(frame: .zero)
-        chat.onSubmit = { [weak self] text in self?.handleSRELeadSubmit(text) }
-        chat.onMessagesChanged = { [weak self] in self?.updateGeneratePostmortemButton() }
+        chat.isHidden = true
+        chat.onSubmit = { [weak self, weak tab] text in
+            guard let self, let tab else { return }
+            self.handleSRELeadSubmit(text, in: tab)
+        }
+        chat.onMessagesChanged = { [weak self, weak tab] in
+            guard let self, let tab, tab === self.currentTab else { return }
+            self.updateGeneratePostmortemButton()
+        }
         chat.setInputEnabled(false)
         sreLeadPane.addSubview(chat)
         NSLayoutConstraint.activate([
@@ -1076,15 +1228,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[idx]
 
-        // Finding 11 (cockpit-audit-core): `shutdown()` already tears SRE
-        // Lead down when the whole page goes away, but closing just this one
-        // dependent tab (the host page's `primarySSHTab`) left the pane
-        // sitting in a stale "ready" state with its chat input still
-        // enabled - the bridge only discovered the tab was gone the next
-        // time a question was asked, surfacing a runtime error instead of
-        // the pane immediately reflecting disconnection.
-        if tab === primarySSHTab, sreLeadPhase != .notStarted {
-            tearDownSRELead()
+        // Finding 11 (cockpit-audit-core), generalized by `fm/grandline-sre-
+        // lead-per-tab`: `shutdown()` already tears every tab's SRE Lead
+        // down when the whole page goes away, but closing just one tab used
+        // to only special-case the page's single `primarySSHTab` - now that
+        // SRE Lead is per-tab, *any* closed tab with its own SRE Lead state
+        // tears down unconditionally, never a sibling tab's.
+        if tab.sreLead != nil {
+            tearDownSRELead(for: tab)
         }
 
         tab.isClosing = true
@@ -1109,6 +1260,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             } else {
                 currentTab = nil
                 refreshTabBar()
+                updateSRELeadPaneContent()
             }
             return
         }
@@ -1164,6 +1316,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateBlockViewControls()
         updateComposeControls()
         updateUtilizationControls()
+        updateSRELeadControls()
         if focus { view.window?.makeFirstResponder(tab.terminal) }
     }
 
@@ -1322,13 +1475,20 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateComposeControls()
         updateUtilizationControls()
 
-        sreLeadButton?.applyTheme(theme)
         sreLeadPane.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         sreLeadPaneSeparator.layer?.backgroundColor = line.cgColor
         sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
         sreLeadHeaderLabel.textColor = ink
         sreLeadGeneratePostmortemButton.contentTintColor = ink
-        sreLeadChat?.applyTheme(theme)
+        sreLeadEmptyStateView.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        sreLeadEmptyStateLabel.textColor = HelmTheme.mutedInk(theme)
+        // Every started tab's own chat, not just the current one - each is a
+        // real, independent view that needs to stay in sync with the active
+        // theme whether or not it happens to be the one currently visible.
+        for tab in tabs { tab.sreLead?.chatView?.applyTheme(theme) }
+        // Re-applies `sreLeadButton`'s theme + refreshes the pane/postmortem
+        // button/tooltip for whichever tab is current.
+        updateSRELeadControls()
     }
 
     private func styleChips() {
@@ -1512,17 +1672,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             cleanupSSHKeyTempFile(tab)
             tab.terminal.stopLogging()
         }
-        // Host-page disconnect (design brief Part B) - tear down the SRE
-        // Lead session the same way `tearDownSRELead()` does, just without
-        // the pane-close animation since this whole page may be on its way
-        // out already (a deleted host's page via
+        // Host-page disconnect (design brief Part B) - tear down every
+        // tab's own SRE Lead session (`fm/grandline-sre-lead-per-tab`: each
+        // tab has its own now, not one page-level session) the same way
+        // `tearDownSRELead(for:)` does, just without the pane-close
+        // animation/UI refresh since this whole page may be on its way out
+        // already (a deleted host's page via
         // `AppShellController.removeHostConsole`).
-        sreLeadBridge?.stop()
-        sreLeadBridge = nil
-        sreLeadRunner?.cancel()
-        sreLeadRunner = nil
-        sreLeadSession?.tearDown()
-        sreLeadSession = nil
+        for tab in tabs {
+            tab.sreLead?.tearDownSession()
+            tab.sreLead = nil
+        }
         if let themeObservation {
             ThemeManager.shared.unobserve(themeObservation)
             self.themeObservation = nil
@@ -1687,5 +1847,70 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     func debugCurrentTerminalOutput() -> String? {
         guard let terminal = currentTab?.terminal.terminal else { return nil }
         return String(data: terminal.getBufferAsData(), encoding: .utf8)
+    }
+
+    // MARK: Test support (`fm/grandline-sre-lead-per-tab`)
+    //
+    // `SRELeadPerTabSelfTest` needs to drive this controller's *real*
+    // per-tab SRE Lead machinery - `startSRELead(for:)`/`handleSRELeadSubmit`/
+    // `tearDownSRELead(for:)`/`closeTab` themselves, not reimplementations of
+    // them - to prove the state genuinely lives per-tab (independent phases,
+    // no cross-talk between two tabs' chats, per-tab teardown on close, the
+    // 5-tab cap). No production code calls any of these.
+
+    /// Starts SRE Lead for the tab at `id`, exactly like clicking the
+    /// toolbar pill while that tab is current - but without needing to
+    /// actually select it first, so a test can start it on several tabs in
+    /// any order.
+    func debugStartSRELead(forTabID id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        startSRELead(for: tab)
+    }
+
+    /// Tears SRE Lead down for the tab at `id`, exactly like clicking the
+    /// pill while that tab is current and ready.
+    func debugTearDownSRELead(forTabID id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        tearDownSRELead(for: tab)
+    }
+
+    /// Closes a tab by id - the same `closeTab(id:)` a chip's "×"/⌘W drives.
+    func debugCloseTab(id: UUID) { closeTab(id: id) }
+
+    func debugSRELeadPhase(forTabID id: UUID) -> SRELeadStatusPill.State? {
+        tabs.first(where: { $0.id == id })?.sreLead?.phase
+    }
+
+    /// Submits `question` into the tab at `id`'s own SRE Lead chat, exactly
+    /// like the captain typing into that tab's input field and pressing
+    /// Return - drives the real `handleSRELeadSubmit(_:in:)`, so a fake
+    /// `claude` script (`SRELead.claudePathOverrideForTests`) is what
+    /// actually answers it.
+    func debugAskSRELead(forTabID id: UUID, question: String) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        handleSRELeadSubmit(question, in: tab)
+    }
+
+    /// The exact text of every message currently in the tab at `id`'s own
+    /// SRE Lead chat - `nil` if that tab has no chat yet.
+    func debugSRELeadChatTexts(forTabID id: UUID) -> [String]? {
+        tabs.first(where: { $0.id == id })?.sreLead?.chatView?.debugMessageTexts()
+    }
+
+    /// How many tabs on this page currently have SRE Lead actively running -
+    /// the same count `startSRELead(for:)` checks against `sreLeadMaxConcurrent`.
+    func debugActiveSRELeadCount() -> Int { activeSRELeadTabCount() }
+
+    /// Whether the shared pane is currently visible (non-zero width) - never
+    /// which tab's content it shows, since `updateSRELeadPaneContent()`
+    /// already has its own dedicated debug surface below.
+    func debugSRELeadPaneOpen() -> Bool { sreLeadPaneWidthConstraint.constant > 0 }
+
+    /// Whether the pane is currently showing the shared "not started yet"
+    /// empty state (as opposed to some tab's real chat) - `nil` if there is
+    /// no current tab at all.
+    func debugSRELeadShowingEmptyState() -> Bool? {
+        guard currentTab != nil else { return nil }
+        return !sreLeadEmptyStateView.isHidden
     }
 }
