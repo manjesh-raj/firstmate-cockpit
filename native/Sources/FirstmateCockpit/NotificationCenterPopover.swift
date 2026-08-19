@@ -17,6 +17,30 @@
 // per that method's own doc comment) rather than inventing a second badge
 // visual language.
 //
+// `fm/grandline-notification-bell-badge-fix` shipped the badge 2pt outside
+// the button's own top-right corner (down from an original 5pt) - still not
+// enough, per a second captain screenshot: at a 34x34 box with a 9pt corner
+// radius, the rounded curve starts well before the flat edges, so *any*
+// small overlap positioned at that diagonal corner point cuts across the
+// curve itself. This is the exact same lesson `IconRailController.
+// attachBadge` already learned the hard way (see its own doc comment/
+// AGENTS.md's `fm/grandline-rail-followup-fixes` history) - two overlap-
+// tuning attempts there still collided with an icon's ink, and the only fix
+// that actually worked was to stop overlapping the icon's box at all.
+// `fm/grandline-notification-bell-badge-fix-2` applies that same shape here:
+// the *visible bordered square* (`iconBackground`) stays a fixed 34x34 -
+// matching `themeButton` exactly - while the button's own overall frame
+// (`NotificationBellButton.controlWidth`) is widened so the badge
+// (`badgeContainer`) can sit fully to the icon's right (`iconBackground.
+// trailingAnchor + 3`, never overlapping its frame) with its vertical
+// center pinned near the icon's own top edge, mirroring `attachBadge`'s
+// `iconAnchor.trailingAnchor + 3` / `iconAnchor.topAnchor + 2` constants
+// exactly. `TopBarController`'s width constant for the bell grew to match;
+// its leading/trailing anchor formulas relative to `searchPill`/`themeButton`
+// were deliberately left untouched (see that file's own comment) so the
+// bell's visible icon square keeps the same 10pt gap to `searchPill` it
+// always had - only the reserved zone to the icon's right changed.
+//
 // The panel itself is a plain `NSStackView` of rows, rebuilt in place on
 // every `GrandLineNotificationCenter.observe` firing (the list is always
 // small by design - see the design doc's "avoid noise" section - so this
@@ -26,7 +50,36 @@ import AppKit
 
 /// The bell icon itself - lives in `TopBarController`, badge count driven by
 /// `NotificationCenterController`.
+///
+/// The button's own frame (`NotificationBellButton.controlWidth` wide) is
+/// deliberately wider than the visible icon square: `iconBackground` is the
+/// real, bordered 34x34 surface (matching `themeButton` exactly, so the two
+/// read as the same shape), pinned to the button's leading edge, and the
+/// badge lives entirely in the extra width to its right - see the file
+/// header comment for why an overlapping badge can never look clean at this
+/// corner radius. The whole widened frame stays the click target (same as
+/// before this fix, when the whole 34x34 square was one button) - clicking
+/// in the reserved badge zone still opens the panel.
 final class NotificationBellButton: NSButton {
+    /// The visible, bordered icon square's fixed size - matches
+    /// `TopBarController.themeButton` exactly.
+    static let iconSize: CGFloat = 34
+    /// Real clearance between the icon square's own trailing edge and the
+    /// badge, mirroring `IconRailController.attachBadge`'s `+ 3` gap.
+    private static let badgeGap: CGFloat = 3
+    /// Reserved width for the badge zone - comfortably fits "99+" at the
+    /// badge's own 9pt bold monospaced-digit font with room to spare, so the
+    /// badge never needs to grow into (or short of) exactly this space.
+    /// Measured live: a real "99+" badge (4pt padding each side) renders
+    /// ~31pt wide - 32pt leaves a hair of clearance with no overflow past
+    /// the button's own declared frame.
+    private static let badgeZoneWidth: CGFloat = 32
+    /// The button's total width: the icon square, the gap, and the reserved
+    /// badge zone. `TopBarController` sizes the bell to exactly this.
+    static let controlWidth: CGFloat = iconSize + badgeGap + badgeZoneWidth
+
+    private let iconBackground = NSView()
+    private let iconImageView = NSImageView()
     private let badgeContainer = NSView()
     private let badgeLabel = NSTextField(labelWithString: "")
 
@@ -34,12 +87,23 @@ final class NotificationBellButton: NSButton {
         super.init(frame: frameRect)
         title = ""
         isBordered = false
-        wantsLayer = true
-        layer?.cornerRadius = 9
-        image = NSImage(systemSymbolName: "bell", accessibilityDescription: "Notifications")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        image = nil
         toolTip = "Notifications"
+        setAccessibilityLabel("Notifications")
         translatesAutoresizingMaskIntoConstraints = false
+
+        iconBackground.wantsLayer = true
+        iconBackground.layer?.cornerRadius = 9
+        iconBackground.translatesAutoresizingMaskIntoConstraints = false
+        // Decorative only - clicks are handled by the button itself, and
+        // this view never needs to intercept them ahead of that.
+        addSubview(iconBackground)
+
+        iconImageView.image = NSImage(systemSymbolName: "bell", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        iconImageView.imageScaling = .scaleProportionallyDown
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconImageView)
 
         badgeLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .bold)
         badgeLabel.textColor = .white
@@ -55,25 +119,34 @@ final class NotificationBellButton: NSButton {
         addSubview(badgeContainer)
 
         NSLayoutConstraint.activate([
+            iconBackground.leadingAnchor.constraint(equalTo: leadingAnchor),
+            iconBackground.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconBackground.widthAnchor.constraint(equalToConstant: Self.iconSize),
+            iconBackground.heightAnchor.constraint(equalToConstant: Self.iconSize),
+
+            iconImageView.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
+            iconImageView.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
+
             badgeLabel.leadingAnchor.constraint(equalTo: badgeContainer.leadingAnchor, constant: 4),
             badgeLabel.trailingAnchor.constraint(equalTo: badgeContainer.trailingAnchor, constant: -4),
             badgeLabel.topAnchor.constraint(equalTo: badgeContainer.topAnchor, constant: 1),
             badgeLabel.bottomAnchor.constraint(equalTo: badgeContainer.bottomAnchor, constant: -1),
             badgeContainer.heightAnchor.constraint(equalToConstant: 16),
             badgeContainer.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),
-            // Only a small (2pt) protrusion past the button's own corner -
-            // the bar gives this button just 9pt of headroom above it and
-            // 10pt of gap to the neighboring theme button (TopBarController's
-            // own `height`/spacing constants), so a badge overlapping 5pt on
-            // each side (the original value) ate most of both margins at
-            // once and read as crowded/misaligned. See the rail's own
-            // `attachBadge` history in AGENTS.md for the same class of fix.
-            badgeContainer.topAnchor.constraint(equalTo: topAnchor, constant: -2),
-            badgeContainer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: 2),
+            // Entirely to the icon square's right, never overlapping its
+            // frame - the same shape as `IconRailController.attachBadge`'s
+            // own fix for this exact class of bug (see the file header and
+            // that method's own doc comment for the full history).
+            badgeContainer.leadingAnchor.constraint(equalTo: iconBackground.trailingAnchor, constant: Self.badgeGap),
+            badgeContainer.centerYAnchor.constraint(equalTo: iconBackground.topAnchor, constant: 2),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    /// The visible icon square's frame, in the button's own coordinate space -
+    /// used to anchor the popover on the icon itself, not the wider control.
+    var visibleIconFrame: NSRect { iconBackground.frame }
 
     func setBadgeCount(_ count: Int) {
         badgeContainer.isHidden = count <= 0
@@ -82,10 +155,10 @@ final class NotificationBellButton: NSButton {
     }
 
     func applyTheme(ink: NSColor, line: NSColor, surface: NSColor) {
-        contentTintColor = ink.withAlphaComponent(0.75)
-        layer?.backgroundColor = surface.cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+        iconImageView.contentTintColor = ink.withAlphaComponent(0.75)
+        iconBackground.layer?.backgroundColor = surface.cgColor
+        iconBackground.layer?.borderWidth = 1
+        iconBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
     }
 }
 
@@ -134,7 +207,10 @@ final class NotificationCenterController: NSObject, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             content.reload()
-            popover.show(relativeTo: bell.bounds, of: bell, preferredEdge: .minY)
+            // Anchor on the visible icon square, not the wider control frame
+            // (which now includes the reserved badge zone) - keeps the panel
+            // lined up under the icon exactly like before this fix.
+            popover.show(relativeTo: bell.visibleIconFrame, of: bell, preferredEdge: .minY)
         }
     }
 

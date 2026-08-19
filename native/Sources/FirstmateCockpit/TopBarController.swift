@@ -18,6 +18,17 @@
 // screenshot places it exactly there. `notificationCenter` (`Notification
 // CenterPopover.swift`) owns the badge count and the dropdown panel; this
 // controller only positions the bell button itself and re-themes it.
+//
+// `fm/grandline-notification-bell-badge-fix-2` widened the bell's own width
+// constraint from a fixed 34pt to `NotificationBellButton.controlWidth` -
+// see that type's own doc comment for why the badge needs real, non-
+// overlapping room to the icon's right rather than another overlap-amount
+// tweak. The bell's leading/trailing anchor formulas below are otherwise
+// untouched: `searchPill` still sits 10pt from the bell's leading edge
+// (which is still the visible icon square's own leading edge, unchanged),
+// and the bell's wider trailing edge still sits 10pt from `themeButton` -
+// so `themeButton` never gets crowded, it's simply the reserved badge zone
+// that now occupies what used to be dead space in that same gap.
 
 import AppKit
 
@@ -81,7 +92,7 @@ final class TopBarController: NSViewController {
 
             notificationCenter.bell.trailingAnchor.constraint(equalTo: themeButton.leadingAnchor, constant: -10),
             notificationCenter.bell.centerYAnchor.constraint(equalTo: root.centerYAnchor),
-            notificationCenter.bell.widthAnchor.constraint(equalToConstant: 34),
+            notificationCenter.bell.widthAnchor.constraint(equalToConstant: NotificationBellButton.controlWidth),
             notificationCenter.bell.heightAnchor.constraint(equalToConstant: 34),
 
             searchPill.trailingAnchor.constraint(equalTo: notificationCenter.bell.leadingAnchor, constant: -10),
