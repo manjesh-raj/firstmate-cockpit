@@ -60,6 +60,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// `fm/grandline-notification-center`: fired when an SRE Lead reply
+    /// lands on a tab that isn't the one currently visible to the captain
+    /// (a different tab selected, or this whole host page not the currently
+    /// shown destination). `AppShellController.connectHost` wires this to
+    /// build the in-app notification and its own navigate-back-to-this-tab
+    /// closure - this controller only reports the event, it doesn't know
+    /// about rail destinations or other host pages.
+    var onSRELeadReplyWhileBackground: ((TabModel) -> Void)?
+
     // MARK: Tabs
 
     private var tabs: [TabModel] = []
@@ -1035,6 +1044,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             switch result {
             case .success(let reply):
                 chat.append(SRELeadMessage(role: .assistant, text: reply))
+                // fm/grandline-notification-center (#7): a reply that lands
+                // while this tab isn't the one on screen (a different tab
+                // selected, or this whole host page hidden) is exactly the
+                // "SRE Lead answered on a tab you're not looking at" signal
+                // - a reply landing on the tab the captain is already
+                // watching needs no notification at all.
+                if let self, let tab, tab !== self.currentTab || self.view.isHidden {
+                    self.onSRELeadReplyWhileBackground?(tab)
+                }
             case .failure(let error):
                 chat.append(SRELeadMessage(role: .error, text: error.message))
             }
@@ -1259,6 +1277,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         if tab.sreLead != nil {
             tearDownSRELead(for: tab)
         }
+        // fm/grandline-notification-center: a closed tab can never be
+        // navigated to again - drop its own unread entry, if any, rather
+        // than leaving a dead notification whose click would do nothing.
+        NotificationSources.clearSRELeadReply(tabID: tab.id)
 
         tab.isClosing = true
         tab.mirror?.tearDown()
@@ -1339,7 +1361,31 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         updateComposeControls()
         updateUtilizationControls()
         updateSRELeadControls()
+        // fm/grandline-notification-center (#7): selecting a tab is exactly
+        // "the captain is now looking at this tab" - clears its own SRE
+        // Lead unread entry, if any, regardless of how selection happened
+        // (a chip click, ⌘1-9, or a notification's own navigate closure).
+        NotificationSources.clearSRELeadReply(tabID: tab.id)
         if focus { view.window?.makeFirstResponder(tab.terminal) }
+    }
+
+    /// `fm/grandline-notification-center`: the one external entry point for
+    /// jumping straight to a specific tab (the SRE Lead reply notification's
+    /// own navigate closure) - mirrors `focusCurrentTab()`'s existing public
+    /// surface for "the currently selected tab," just parameterized by id.
+    func selectAndFocusTab(id: UUID) {
+        select(tabID: id, focus: true)
+    }
+
+    /// `fm/grandline-notification-center`: called whenever this whole host
+    /// page comes back on screen without a tab-selection change happening
+    /// (e.g. re-opening it from the rail icon or the Hosts list) - `select`
+    /// above already clears the currently-selected tab's own SRE Lead
+    /// unread entry on every selection change, but that doesn't fire just
+    /// from `isHidden` flipping back to `false` with no selection change.
+    func markCurrentTabAsRead() {
+        guard let tab = currentTab else { return }
+        NotificationSources.clearSRELeadReply(tabID: tab.id)
     }
 
     // MARK: Compose (`fm/grandline-console-command-composer`)
@@ -1722,6 +1768,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         for tab in tabs {
             tab.sreLead?.tearDownSession()
             tab.sreLead = nil
+            // fm/grandline-notification-center: this whole page is going
+            // away (a deleted host) - no dead notification should be left
+            // pointing at a tab that no longer exists.
+            NotificationSources.clearSRELeadReply(tabID: tab.id)
         }
         if let themeObservation {
             ThemeManager.shared.unobserve(themeObservation)
