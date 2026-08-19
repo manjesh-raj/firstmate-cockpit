@@ -222,6 +222,17 @@ enum CommandLibraryCategory {
     }
 }
 
+// MARK: - Recent usage (Phase 2)
+
+/// One entry in `commands/recent.yaml` - `CommandLibraryStore.recentUsage` is
+/// kept in most-recent-first order (a new usage is moved to the front, not
+/// re-sorted by timestamp), so ordering never depends on two events landing
+/// in the same second.
+struct CommandLibraryUsageEntry: Equatable {
+    var id: String
+    var usedAt: Date
+}
+
 // MARK: - Config (captain-configurable select-option lists)
 
 /// `commands/config.yaml` - never hardcode environment/namespace names into

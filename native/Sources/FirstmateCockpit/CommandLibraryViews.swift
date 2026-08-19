@@ -18,10 +18,17 @@
 // would justify an `NSTableView` here - see `ShiftProjectDetailView.swift`'s
 // header for where that line actually gets crossed).
 //
-// Only Copy and Favorite are wired to real behavior in this phase - Send to
-// Terminal / Edit / Explain render as disabled buttons (matching the
-// mockup's own row) since those are explicitly Phase 2/3 per the design
-// doc's phasing table.
+// Phase 2 (fm/grandline-devops-command-library-phase2) wires up everything
+// Phase 1 left disabled: Send to Terminal (`onSendToTerminal`, forwarded by
+// `ShiftController`/`AppShellController` to `ConsoleController.
+// sendCommandLibraryTextToActiveTab`), Edit/Add Command/Duplicate (all open
+// `CommandEditorController` via `onPresentEditor`, since this class isn't
+// itself an `NSViewController` and can't call `presentAsSheet` directly),
+// recent-used tracking (a "RECENTLY USED" section, sorted most-recent-first
+// by `CommandLibraryStore.recentUsage`), and the destructive-confirmation
+// gate (`confirmIfNeeded`, guarding both Copy and Send to Terminal - see the
+// design doc's mockup for the exact copy). Explain stays disabled - AI
+// actions are Phase 3.
 
 import AppKit
 
@@ -68,6 +75,8 @@ final class CommandLibraryPageView: NSObject {
     private let detailCopyButton = NSButton(title: "Copy", target: nil, action: nil)
     private let detailSendButton = NSButton(title: "Send to Terminal", target: nil, action: nil)
     private let detailEditButton = NSButton(title: "Edit", target: nil, action: nil)
+    private let detailDuplicateButton = NSButton(title: "Duplicate", target: nil, action: nil)
+    private let detailWorkflowButton = NSButton(title: "+ Workflow", target: nil, action: nil)
     private let detailExplainButton = NSButton(title: "\u{2728} Explain", target: nil, action: nil)
     private let detailFavoriteButton = NSButton(title: "\u{2606} Favorite", target: nil, action: nil)
     private let detailContentContainer = NSView()
@@ -76,6 +85,18 @@ final class CommandLibraryPageView: NSObject {
     /// currently-rendered command - read from on every keystroke/selection to
     /// regenerate the preview, and rebuilt fresh on every `renderDetail`.
     private var paramControls: [String: NSControl] = [:]
+
+    /// Forwarded to `ConsoleController.sendCommandLibraryTextToActiveTab`
+    /// (see `ShiftController`/`AppShellController`'s wiring) - this class
+    /// knows nothing about the console.
+    var onSendToTerminal: ((String) -> Void)?
+    /// This class isn't an `NSViewController`, so it can't call
+    /// `presentAsSheet` itself - the owning `ShiftController` does, via this
+    /// closure (same forward-don't-own convention as every other page in
+    /// this app that needs its parent to present something).
+    var onPresentEditor: ((CommandEditorController) -> Void)?
+
+    private let runbookStore = DocsRunbookStore()
 
     init(store: CommandLibraryStore) {
         self.store = store
@@ -242,13 +263,12 @@ final class CommandLibraryPageView: NSObject {
         detailParamsStack.spacing = 10
         detailParamsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        for button in [detailSendButton, detailEditButton, detailExplainButton] {
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            button.isEnabled = false
-            button.toolTip = "Coming in a later phase"
-            button.translatesAutoresizingMaskIntoConstraints = false
-        }
+        detailExplainButton.bezelStyle = .rounded
+        detailExplainButton.controlSize = .small
+        detailExplainButton.isEnabled = false
+        detailExplainButton.toolTip = "Coming in a later phase"
+        detailExplainButton.translatesAutoresizingMaskIntoConstraints = false
+
         detailCopyButton.bezelStyle = .rounded
         detailCopyButton.controlSize = .small
         detailCopyButton.keyEquivalent = "c"
@@ -256,6 +276,31 @@ final class CommandLibraryPageView: NSObject {
         detailCopyButton.target = self
         detailCopyButton.action = #selector(copyClicked)
         detailCopyButton.translatesAutoresizingMaskIntoConstraints = false
+
+        detailSendButton.bezelStyle = .rounded
+        detailSendButton.controlSize = .small
+        detailSendButton.target = self
+        detailSendButton.action = #selector(sendToTerminalClicked)
+        detailSendButton.translatesAutoresizingMaskIntoConstraints = false
+
+        detailEditButton.bezelStyle = .rounded
+        detailEditButton.controlSize = .small
+        detailEditButton.target = self
+        detailEditButton.action = #selector(editClicked)
+        detailEditButton.translatesAutoresizingMaskIntoConstraints = false
+
+        detailDuplicateButton.bezelStyle = .rounded
+        detailDuplicateButton.controlSize = .small
+        detailDuplicateButton.target = self
+        detailDuplicateButton.action = #selector(duplicateClicked)
+        detailDuplicateButton.translatesAutoresizingMaskIntoConstraints = false
+
+        detailWorkflowButton.bezelStyle = .rounded
+        detailWorkflowButton.controlSize = .small
+        detailWorkflowButton.target = self
+        detailWorkflowButton.action = #selector(workflowClicked(_:))
+        detailWorkflowButton.toolTip = "Add this command as a step in a Docs \u{2192} Runbook"
+        detailWorkflowButton.translatesAutoresizingMaskIntoConstraints = false
 
         detailFavoriteButton.bezelStyle = .rounded
         detailFavoriteButton.controlSize = .small
@@ -265,7 +310,10 @@ final class CommandLibraryPageView: NSObject {
 
         let buttonsSpacer = NSView()
         buttonsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let buttonsRow = NSStackView(views: [detailCopyButton, detailSendButton, detailEditButton, detailExplainButton, buttonsSpacer, detailFavoriteButton])
+        let buttonsRow = NSStackView(views: [
+            detailCopyButton, detailSendButton, detailEditButton, detailDuplicateButton,
+            detailWorkflowButton, detailExplainButton, buttonsSpacer, detailFavoriteButton,
+        ])
         buttonsRow.orientation = .horizontal
         buttonsRow.distribution = .fill
         buttonsRow.spacing = 8
@@ -431,6 +479,9 @@ final class CommandLibraryPageView: NSObject {
         rowCategoryIDs.removeAll()
         rowCommandIDs.removeAll()
 
+        leftPanelStack.addArrangedSubview(addCommandButton())
+        appendToLeftPanel(divider())
+
         if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
             renderSearchResults()
             return
@@ -442,6 +493,14 @@ final class CommandLibraryPageView: NSObject {
         case .category(let categoryID):
             renderCategoryCommandList(categoryID)
         }
+    }
+
+    private func addCommandButton() -> NSView {
+        let button = NSButton(title: "+ Add Command", target: self, action: #selector(addCommandClicked))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
     }
 
     private func renderSearchResults() {
@@ -473,6 +532,17 @@ final class CommandLibraryPageView: NSObject {
             appendToLeftPanel(divider())
         }
 
+        let recent = store.recentlyUsedCommands(limit: 5)
+        if !recent.isEmpty {
+            appendToLeftPanel(mutedHeaderLabel("\u{1F551} RECENTLY USED"))
+            for command in recent {
+                let row = leftPanelRow(text: command.name, isSelected: command.id == selectedCommandID, action: #selector(recentRowClicked(_:)))
+                rowCommandIDs[ObjectIdentifier(row)] = command.id
+                appendToLeftPanel(row)
+            }
+            appendToLeftPanel(divider())
+        }
+
         for (info, commands) in store.commandsByCategory() where !commands.isEmpty {
             let row = leftPanelRow(text: info.displayName, trailing: "\(commands.count)", action: #selector(categoryRowClicked(_:)))
             rowCategoryIDs[ObjectIdentifier(row)] = info.id
@@ -483,7 +553,7 @@ final class CommandLibraryPageView: NSObject {
         let workflowsRow = NSTextField(labelWithString: "\u{1F4D6} Workflows (Docs \u{2192} Runbooks)")
         workflowsRow.font = .systemFont(ofSize: 11.5)
         workflowsRow.textColor = HelmTheme.mutedInk(theme)
-        workflowsRow.toolTip = "Multi-step command workflows live in Docs \u{2192} Runbooks - see AGENTS.md. Coming in a later phase."
+        workflowsRow.toolTip = "Multi-step command workflows live in Docs \u{2192} Runbooks - use a command's own \u{201C}+ Workflow\u{201D} button to add it as a step."
         appendToLeftPanel(workflowsRow)
     }
 
@@ -539,6 +609,7 @@ final class CommandLibraryPageView: NSObject {
     }
 
     @objc private func favoriteRowClicked(_ sender: NSClickGestureRecognizer) { selectCommandFromRow(sender) }
+    @objc private func recentRowClicked(_ sender: NSClickGestureRecognizer) { selectCommandFromRow(sender) }
     @objc private func categoryCommandRowClicked(_ sender: NSClickGestureRecognizer) { selectCommandFromRow(sender) }
     @objc private func searchResultRowClicked(_ sender: NSClickGestureRecognizer) { selectCommandFromRow(sender) }
 
@@ -719,15 +790,144 @@ final class CommandLibraryPageView: NSObject {
     @objc private func copyClicked() {
         guard let id = selectedCommandID, let command = store.command(id: id) else { return }
         let generated = command.generatedCommand(values: paramValues)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(generated, forType: .string)
-        Toast.show(in: view, message: "Command copied")
+        confirmIfNeeded(for: command, generatedText: generated, actionVerb: "copy") { [weak self] in
+            guard let self else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(generated, forType: .string)
+            self.store.recordUsage(id)
+            Toast.show(in: self.view, message: "Command copied")
+        }
+    }
+
+    @objc private func sendToTerminalClicked() {
+        guard let id = selectedCommandID, let command = store.command(id: id) else { return }
+        let generated = command.generatedCommand(values: paramValues)
+        confirmIfNeeded(for: command, generatedText: generated, actionVerb: "send to the terminal") { [weak self] in
+            guard let self else { return }
+            self.store.recordUsage(id)
+            self.onSendToTerminal?(generated)
+            Toast.show(in: self.view, message: "Sent to terminal")
+        }
     }
 
     @objc private func favoriteClicked() {
         guard let id = selectedCommandID else { return }
         store.toggleFavorite(id)
         render()
+    }
+
+    @objc private func addCommandClicked() {
+        let editor = CommandEditorController(editingID: nil, prefill: nil, config: store.config)
+        editor.onSave = { [weak self] name, description, category, subcategory, template, parameters, tags, risk in
+            guard let self else { return }
+            let created = self.store.createCommand(
+                name: name, description: description, category: category, subcategory: subcategory,
+                commandTemplate: template, parameters: parameters, tags: tags, risk: risk
+            )
+            self.selectedCommandID = created.id
+            self.paramValues = [:]
+            self.render()
+            Toast.show(in: self.view, message: "Command created")
+        }
+        onPresentEditor?(editor)
+    }
+
+    @objc private func editClicked() {
+        guard let id = selectedCommandID, let command = store.command(id: id) else { return }
+        let editor = CommandEditorController(editingID: id, prefill: command, config: store.config)
+        editor.onSave = { [weak self] name, description, category, subcategory, template, parameters, tags, risk in
+            guard let self else { return }
+            guard let updated = self.store.updateCommand(
+                id: id, name: name, description: description, category: category, subcategory: subcategory,
+                commandTemplate: template, parameters: parameters, tags: tags, risk: risk
+            ) else { return }
+            self.selectedCommandID = updated.id
+            self.paramValues = [:]
+            self.render()
+            Toast.show(in: self.view, message: "Command saved")
+        }
+        onPresentEditor?(editor)
+    }
+
+    @objc private func duplicateClicked() {
+        guard let id = selectedCommandID, let duplicate = store.duplicateCommand(id: id) else { return }
+        selectedCommandID = duplicate.id
+        paramValues = [:]
+        render()
+        Toast.show(in: view, message: "Duplicated as \u{201C}\(duplicate.name)\u{201D}")
+    }
+
+    @objc private func workflowClicked(_ sender: NSButton) {
+        guard let id = selectedCommandID, let command = store.command(id: id) else { return }
+        let generated = command.generatedCommand(values: paramValues)
+        let menu = NSMenu()
+        menu.addItem(withTitle: "New Runbook\u{2026}", action: #selector(createNewWorkflowRunbook), keyEquivalent: "")
+        let existing = runbookStore.listRunbooks()
+        if !existing.isEmpty {
+            menu.addItem(.separator())
+            for runbook in existing {
+                let item = NSMenuItem(title: runbook.title, action: #selector(appendToExistingRunbook(_:)), keyEquivalent: "")
+                item.representedObject = runbook.id
+                menu.addItem(item)
+            }
+        }
+        pendingWorkflowCommand = (command, generated)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    /// Stashed by `workflowClicked` just before the menu opens, since an
+    /// `NSMenuItem` action has no way to carry extra context beyond
+    /// `representedObject` (already used here for the target runbook's id).
+    private var pendingWorkflowCommand: (command: DevOpsCommand, generatedText: String)?
+
+    @objc private func createNewWorkflowRunbook() {
+        guard let (command, generatedText) = pendingWorkflowCommand else { return }
+        let title = "\(command.name) Workflow"
+        let content = CommandLibraryWorkflow.newRunbookContent(title: title, command: command, generatedText: generatedText)
+        let runbook = runbookStore.createRunbook(title: title, content: content)
+        Toast.show(in: view, message: "Created workflow \u{201C}\(runbook.title)\u{201D} in Docs \u{2192} Runbooks")
+        pendingWorkflowCommand = nil
+    }
+
+    @objc private func appendToExistingRunbook(_ sender: NSMenuItem) {
+        guard let (command, generatedText) = pendingWorkflowCommand, let runbookID = sender.representedObject as? String,
+              let runbook = runbookStore.listRunbooks().first(where: { $0.id == runbookID }) else { return }
+        let updatedContent = CommandLibraryWorkflow.appending(command: command, generatedText: generatedText, to: runbook.content)
+        runbookStore.updateRunbook(id: runbook.id, content: updatedContent)
+        Toast.show(in: view, message: "Added to \u{201C}\(runbook.title)\u{201D}")
+        pendingWorkflowCommand = nil
+    }
+
+    // MARK: Destructive-confirmation gate
+
+    /// Both Copy and Send to Terminal route through this - `readOnly` never
+    /// interrupts, `potentiallyDisruptive` gets a lighter, still-dismissible
+    /// confirmation, `destructive` gets the full "this can modify or delete
+    /// infrastructure" warning (matching the design doc's mockup). There is
+    /// no silent path from a risky command to the clipboard or a terminal.
+    private func confirmIfNeeded(for command: DevOpsCommand, generatedText: String, actionVerb: String, proceed: @escaping () -> Void) {
+        switch command.risk {
+        case .readOnly:
+            proceed()
+        case .potentiallyDisruptive:
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Potentially disruptive command"
+            alert.informativeText = "This command can change live state:\n\n\(generatedText)"
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Proceed")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            proceed()
+        case .destructive:
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "\u{26A0}\u{FE0F} Destructive command"
+            alert.informativeText = "This command can modify or delete infrastructure:\n\n\(generatedText)"
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "\(actionVerb == "copy" ? "Copy" : "Send") Anyway")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            proceed()
+        }
     }
 }
 

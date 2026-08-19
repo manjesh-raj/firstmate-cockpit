@@ -164,4 +164,40 @@ enum CommandLibraryYaml {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try (text + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
+
+    // MARK: Recent usage (commands/recent.yaml - a `recent: [{id, used_at}]`
+    // list, most-recent-first, order-preserving via YamlOrderedMap/
+    // YamlBeautify like every other file in this app).
+
+    private static let usageDateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    static func readRecentUsage(path: String) -> [CommandLibraryUsageEntry] {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { return [] }
+        guard let doc = try? Yaml.load(text) else { return [] }
+        let entries = doc.dictionary?[str("recent")]?.array ?? []
+        return entries.compactMap { entry -> CommandLibraryUsageEntry? in
+            guard let dict = entry.dictionary, let id = optString(dict[str("id")] ?? .null) else { return nil }
+            let usedAtString = reqString(dict[str("used_at")] ?? .null)
+            let usedAt = usageDateFormatter.date(from: usedAtString) ?? ISO8601DateFormatter().date(from: usedAtString) ?? Date(timeIntervalSince1970: 0)
+            return CommandLibraryUsageEntry(id: id, usedAt: usedAt)
+        }
+    }
+
+    static func writeRecentUsage(_ entries: [CommandLibraryUsageEntry], path: String) throws {
+        var m = YamlOrderedMap()
+        m[str("recent")] = .array(entries.map { entry in
+            var e = YamlOrderedMap()
+            e[str("id")] = str(entry.id)
+            e[str("used_at")] = str(usageDateFormatter.string(from: entry.usedAt))
+            return .dictionary(e)
+        })
+        let text = YamlBeautify.dump([.dictionary(m)])
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
 }

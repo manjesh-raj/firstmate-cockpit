@@ -34,9 +34,18 @@ final class CommandLibraryStore {
     private(set) var commands: [DevOpsCommand] = []
     private(set) var config: CommandLibraryConfig = .empty
     private(set) var favoriteIDs: Set<String> = []
+    /// Most-recent-first - see `CommandLibraryUsageEntry`'s doc comment.
+    private(set) var recentUsage: [CommandLibraryUsageEntry] = []
+
+    /// Recent-used tracking (Phase 2) keeps at most this many entries -
+    /// unbounded growth would mean re-writing an ever-larger file on every
+    /// single Copy/Send, for a list only ever rendered a handful of rows at
+    /// a time.
+    private static let maxRecentUsageEntries = 50
 
     private var configPath: String { root.appendingPathComponent("config.yaml").path }
     private var favoritesPath: String { root.appendingPathComponent("favorites.yaml").path }
+    private var recentUsagePath: String { root.appendingPathComponent("recent.yaml").path }
 
     /// `FM_COMMAND_LIBRARY_DIR` is a narrower override scoped to just this
     /// store; `FM_SHIFT_DIR` is `ShiftStore`'s own existing bypass-git-sync
@@ -74,6 +83,7 @@ final class CommandLibraryStore {
         commands = scanCommands()
         config = CommandLibraryYaml.readConfig(path: configPath)
         favoriteIDs = CommandLibraryYaml.readFavorites(path: favoritesPath)
+        recentUsage = CommandLibraryYaml.readRecentUsage(path: recentUsagePath)
     }
 
     // MARK: Scanning
@@ -156,6 +166,166 @@ final class CommandLibraryStore {
         }
         try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
         gitSync?.markDirty()
+    }
+
+    // MARK: Recent usage (Phase 2 - fm/grandline-devops-command-library-phase2)
+
+    /// Called only when a command's generated text actually leaves the app
+    /// (Copy, Send to Terminal) - never on merely selecting/viewing a
+    /// command's detail pane, per the phase-2 brief. Moves `id` to the front
+    /// rather than re-sorting by timestamp, so ordering is correct even when
+    /// two uses land in the same second.
+    func recordUsage(_ id: String) {
+        recentUsage.removeAll { $0.id == id }
+        recentUsage.insert(CommandLibraryUsageEntry(id: id, usedAt: Date()), at: 0)
+        if recentUsage.count > Self.maxRecentUsageEntries {
+            recentUsage.removeLast(recentUsage.count - Self.maxRecentUsageEntries)
+        }
+        try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+        gitSync?.markDirty()
+    }
+
+    /// Most-recent-first, skipping any id whose command no longer exists
+    /// (e.g. deleted since it was last used) rather than showing a dead row.
+    func recentlyUsedCommands(limit: Int = 8) -> [DevOpsCommand] {
+        var result: [DevOpsCommand] = []
+        for entry in recentUsage {
+            guard let command = command(id: entry.id) else { continue }
+            result.append(command)
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
+    /// Renames every reference to `oldID` into `newID` in favorites/recent-
+    /// usage state - called only when editing a command moves its file to a
+    /// new category/subcategory (see `updateCommand`), so that move never
+    /// silently orphans a favorite or a recent-use entry.
+    private func migrateID(from oldID: String, to newID: String) {
+        if favoriteIDs.remove(oldID) != nil {
+            favoriteIDs.insert(newID)
+            try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
+        }
+        var changedUsage = false
+        recentUsage = recentUsage.map { entry in
+            guard entry.id == oldID else { return entry }
+            changedUsage = true
+            return CommandLibraryUsageEntry(id: newID, usedAt: entry.usedAt)
+        }
+        if changedUsage {
+            try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+        }
+    }
+
+    // MARK: Add / edit / duplicate / delete (Phase 2)
+
+    private static func slugify(_ name: String) -> String {
+        var slug = ""
+        var lastWasDash = false
+        for scalar in name.lowercased().unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                slug.unicodeScalars.append(scalar)
+                lastWasDash = false
+            } else if !lastWasDash && !slug.isEmpty {
+                slug.append("-")
+                lastWasDash = true
+            }
+        }
+        let trimmed = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return trimmed.isEmpty ? "command" : trimmed
+    }
+
+    private static func pathID(category: String, subcategory: String?, slug: String) -> String {
+        ([category, subcategory, slug].compactMap { $0 }.filter { !$0.isEmpty }).joined(separator: "/")
+    }
+
+    private func filePath(for id: String) -> String {
+        root.appendingPathComponent(id).appendingPathExtension("yaml").path
+    }
+
+    /// A slug unique within `category`/`subcategory` - appends `-2`, `-3`, ...
+    /// until no file already exists at that path. Only used when creating a
+    /// brand-new command; an edit reuses its existing slug (see
+    /// `updateCommand`) so editing a command's name never changes its id.
+    private func uniqueSlug(base: String, category: String, subcategory: String?) -> String {
+        var slug = base
+        var n = 2
+        while fm.fileExists(atPath: filePath(for: Self.pathID(category: category, subcategory: subcategory, slug: slug))) {
+            slug = "\(base)-\(n)"
+            n += 1
+        }
+        return slug
+    }
+
+    /// "Add Command" - always creates a new file/id, never collides with an
+    /// existing one (see `uniqueSlug`).
+    @discardableResult
+    func createCommand(
+        name: String, description: String, category: String, subcategory: String?,
+        commandTemplate: String, parameters: [CommandParameter], tags: [String], risk: CommandRiskLevel
+    ) -> DevOpsCommand {
+        let slug = uniqueSlug(base: Self.slugify(name), category: category, subcategory: subcategory)
+        let id = Self.pathID(category: category, subcategory: subcategory, slug: slug)
+        let command = DevOpsCommand(
+            id: id, name: name, description: description, category: category, subcategory: subcategory,
+            commandTemplate: commandTemplate, parameters: parameters, tags: tags, risk: risk
+        )
+        try? CommandLibraryYaml.writeCommand(command, path: filePath(for: id))
+        gitSync?.markDirty()
+        reloadAll()
+        return command
+    }
+
+    /// "Duplicate" - clones an existing command's fields into a brand-new
+    /// id/file (its own name suffixed " Copy"), leaving the original
+    /// untouched. Returns `nil` if `id` no longer exists.
+    @discardableResult
+    func duplicateCommand(id: String) -> DevOpsCommand? {
+        guard let original = command(id: id) else { return nil }
+        return createCommand(
+            name: "\(original.name) Copy", description: original.description, category: original.category,
+            subcategory: original.subcategory, commandTemplate: original.commandTemplate,
+            parameters: original.parameters, tags: original.tags, risk: original.risk
+        )
+    }
+
+    /// Edits an existing command in place. The on-disk slug (the id's last
+    /// path component) never changes on an edit - only a `createCommand`
+    /// picks a fresh slug from the name - so renaming a command's `name`
+    /// field never moves its file. Changing `category`/`subcategory` does
+    /// move the file (the id *is* the on-disk category/subcategory/slug
+    /// path - see this file's header) - favorite/recent-usage state for the
+    /// old id is carried over to the new one rather than silently orphaned.
+    @discardableResult
+    func updateCommand(
+        id: String, name: String, description: String, category: String, subcategory: String?,
+        commandTemplate: String, parameters: [CommandParameter], tags: [String], risk: CommandRiskLevel
+    ) -> DevOpsCommand? {
+        guard command(id: id) != nil else { return nil }
+        let slug = (id as NSString).lastPathComponent
+        let newID = Self.pathID(category: category, subcategory: subcategory, slug: slug)
+        let updated = DevOpsCommand(
+            id: newID, name: name, description: description, category: category, subcategory: subcategory,
+            commandTemplate: commandTemplate, parameters: parameters, tags: tags, risk: risk
+        )
+        if newID != id {
+            try? fm.removeItem(atPath: filePath(for: id))
+            migrateID(from: id, to: newID)
+        }
+        try? CommandLibraryYaml.writeCommand(updated, path: filePath(for: newID))
+        gitSync?.markDirty()
+        reloadAll()
+        return updated
+    }
+
+    func deleteCommand(id: String) {
+        try? fm.removeItem(atPath: filePath(for: id))
+        favoriteIDs.remove(id)
+        try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
+        recentUsage.removeAll { $0.id == id }
+        try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+        gitSync?.markDirty()
+        reloadAll()
     }
 
     // MARK: Seeding

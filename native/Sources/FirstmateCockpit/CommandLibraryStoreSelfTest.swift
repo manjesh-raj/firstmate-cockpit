@@ -1,7 +1,9 @@
 // Manjesh Grand Line - native macOS app.
 //
 // Permanent self-test for the DevOps Command Library's data layer
-// (fm/grandline-devops-command-library, Phase 1), run via
+// (fm/grandline-devops-command-library, Phase 1; extended in Phase 2 -
+// fm/grandline-devops-command-library-phase2 - for add/edit/duplicate and
+// recent-used tracking), run via
 // `FM_RUN_COMMAND_LIBRARY_TESTS=1 .build/debug/FirstmateCockpit` - same
 // convention as `ShiftStoreSelfTest.swift`/`DocsRunbookDataSelfTest.swift`.
 // Runs against a real scratch directory (`FM_COMMAND_LIBRARY_DIR`), never
@@ -117,6 +119,105 @@ enum CommandLibraryStoreSelfTest {
         check(namespaceParam?.configOptionsKey == "namespaces", "a namespace-shaped parameter should reference the config key, not a hardcoded option list")
         check(store.config.options(forKey: "namespaces", fallback: []).contains("raas-prod"), "config.options(forKey:) should resolve the configured list")
         check(store.config.options(forKey: "no-such-key", fallback: ["fallback-value"]) == ["fallback-value"], "an unconfigured key should fall back to the parameter's own literal options")
+
+        // MARK: Phase 2 - add / edit / duplicate, surviving a fresh reload
+
+        let created = store.createCommand(
+            name: "Restart Deployment", description: "Rolling restart", category: "kubernetes", subcategory: "deployments",
+            commandTemplate: "kubectl rollout restart deployment/{{name}} -n {{namespace}}",
+            parameters: [CommandParameter(name: "name", label: "Name"), CommandParameter(name: "namespace", label: "Namespace", defaultValue: "default")],
+            tags: ["restart"], risk: .potentiallyDisruptive
+        )
+        check(created.id == "kubernetes/deployments/restart-deployment", "createCommand should derive a path-shaped id from category/subcategory/name, got \(created.id)")
+        check(store.command(id: created.id) != nil, "created command should be findable in memory immediately")
+        let afterCreateReload = CommandLibraryStore()
+        check(afterCreateReload.command(id: created.id)?.name == "Restart Deployment", "created command should survive a fresh store reload")
+        check(afterCreateReload.command(id: created.id)?.risk == .potentiallyDisruptive, "risk should round-trip through save/reload")
+
+        // A second command with the same name/category disambiguates its
+        // slug rather than colliding with the first.
+        let createdAgain = store.createCommand(
+            name: "Restart Deployment", description: "", category: "kubernetes", subcategory: "deployments",
+            commandTemplate: "kubectl rollout restart deployment/{{name}}", parameters: [], tags: [], risk: .readOnly
+        )
+        check(createdAgain.id != created.id, "a same-named command should get a disambiguated slug, not collide")
+
+        // Editing in place: same category/subcategory keeps the same id.
+        let editedSameLocation = store.updateCommand(
+            id: created.id, name: "Restart Deployment (renamed)", description: "Rolling restart, edited",
+            category: "kubernetes", subcategory: "deployments", commandTemplate: created.commandTemplate,
+            parameters: created.parameters, tags: created.tags, risk: .destructive
+        )
+        check(editedSameLocation?.id == created.id, "editing without changing category/subcategory should keep the same id")
+        let afterEditReload = CommandLibraryStore()
+        check(afterEditReload.command(id: created.id)?.name == "Restart Deployment (renamed)", "an edit should survive a fresh reload")
+        check(afterEditReload.command(id: created.id)?.risk == .destructive, "an edited risk level should round-trip through save/reload")
+
+        // Editing to a different category moves the file to a new id, and
+        // favorite/recent-usage state for the old id migrates rather than
+        // being silently orphaned.
+        store.toggleFavorite(created.id)
+        store.recordUsage(created.id)
+        check(store.isFavorite(created.id), "sanity: favorited before the move")
+        let movedCommand = store.updateCommand(
+            id: created.id, name: "Restart Deployment (renamed)", description: "moved",
+            category: "general", subcategory: nil, commandTemplate: created.commandTemplate,
+            parameters: created.parameters, tags: created.tags, risk: .destructive
+        )
+        check(movedCommand?.category == "general", "changing category should be reflected in the saved command")
+        check(movedCommand?.id != created.id, "changing category should move the file to a new id")
+        if let movedID = movedCommand?.id {
+            check(store.isFavorite(movedID), "favorite state should migrate to the new id after a category move")
+            check(!store.isFavorite(created.id), "the old id should no longer be favorited after the move")
+            check(store.recentUsage.contains { $0.id == movedID }, "recent-usage state should also migrate to the new id")
+            check(store.command(id: created.id) == nil, "the old id's file should no longer exist after the move")
+        }
+
+        // Duplicate clones fields into a brand-new id, leaving the original
+        // untouched.
+        guard let duplicateSource = store.command(id: "kubernetes/pods/describe-pod") else {
+            return report(failures + ["expected seed command kubernetes/pods/describe-pod for the duplicate test"])
+        }
+        let duplicated = store.duplicateCommand(id: duplicateSource.id)
+        check(duplicated?.id != duplicateSource.id, "duplicate should get its own id")
+        check(duplicated?.name == "\(duplicateSource.name) Copy", "duplicate's name should be suffixed \" Copy\"")
+        check(duplicated?.commandTemplate == duplicateSource.commandTemplate, "duplicate should carry over the original template")
+        check(store.command(id: duplicateSource.id) != nil, "duplicating should never touch the original command")
+
+        // MARK: Phase 2 - recent-used tracking only on Copy/Send, never on
+        // mere selection, most-recent-first ordering.
+
+        check(store.recentlyUsedCommands().isEmpty == false, "sanity: recordUsage above should have produced at least one recent entry")
+        let podLogsID = "kubernetes/pods/get-pod-logs"
+        let describePodID = duplicateSource.id
+        store.recordUsage(podLogsID)
+        store.recordUsage(describePodID)
+        let recent = store.recentlyUsedCommands()
+        check(recent.first?.id == describePodID, "the most recently recorded usage should sort first, got \(recent.first?.id ?? "nil")")
+        check(recent.contains { $0.id == podLogsID }, "an earlier recorded usage should still be present")
+        // Re-recording an id moves it back to the front rather than
+        // duplicating the entry.
+        store.recordUsage(podLogsID)
+        check(store.recentlyUsedCommands().first?.id == podLogsID, "re-recording usage should move the id back to the front")
+        check(store.recentUsage.filter { $0.id == podLogsID }.count == 1, "recording usage for an already-present id should not duplicate its entry")
+        let afterUsageReload = CommandLibraryStore()
+        check(afterUsageReload.recentlyUsedCommands().first?.id == podLogsID, "recent-used order should survive a fresh reload")
+
+        // MARK: Phase 2 - workflow content formatting (pure logic, no store/
+        // disk involved - `CommandLibraryWorkflow` never touches
+        // `DocsRunbookStore` itself).
+
+        let workflowCommand = DevOpsCommand(
+            id: "kubernetes/pods/get-pod-logs", name: "Get Pod Logs", description: "Get logs from a pod",
+            category: "kubernetes", commandTemplate: "kubectl logs -n prod search-api"
+        )
+        let newRunbook = CommandLibraryWorkflow.newRunbookContent(title: "Investigate Latency", command: workflowCommand, generatedText: "kubectl logs -n prod search-api")
+        check(newRunbook.hasPrefix("# Investigate Latency"), "a new workflow runbook should start with the given title as a heading")
+        check(newRunbook.contains("```\nkubectl logs -n prod search-api\n```"), "a new workflow runbook should fence the generated command exactly")
+
+        let appended = CommandLibraryWorkflow.appending(command: workflowCommand, generatedText: "kubectl logs -n prod search-api --since=30m", to: "# Existing Runbook\n\nSome prose.\n")
+        check(appended.hasPrefix("# Existing Runbook"), "appending should preserve the existing runbook's own heading")
+        check(appended.contains("```\nkubectl logs -n prod search-api --since=30m\n```"), "appending should fence the new step's generated command exactly")
 
         // MARK: FM_SHIFT_DIR (not just FM_COMMAND_LIBRARY_DIR) must also
         // fully redirect this store - commands live inside the same
