@@ -23,12 +23,17 @@
 // constraint from a fixed 34pt to `NotificationBellButton.controlWidth` -
 // see that type's own doc comment for why the badge needs real, non-
 // overlapping room to the icon's right rather than another overlap-amount
-// tweak. The bell's leading/trailing anchor formulas below are otherwise
-// untouched: `searchPill` still sits 10pt from the bell's leading edge
-// (which is still the visible icon square's own leading edge, unchanged),
-// and the bell's wider trailing edge still sits 10pt from `themeButton` -
-// so `themeButton` never gets crowded, it's simply the reserved badge zone
-// that now occupies what used to be dead space in that same gap.
+// tweak.
+//
+// `fm/grandline-notification-bell-reorder` moved the bell to the trailing-
+// most position (captain request): `searchPill` -> `themeButton` ->
+// `notificationCenter.bell`, with the bell now owning the `-14`-from-
+// `root.trailingAnchor` anchor. The bell's own widened control frame
+// (`iconBackground` pinned to its leading edge, the reserved badge zone
+// trailing it - see `NotificationBellButton`'s doc comment) means that
+// reserved zone now sits at the window's very trailing edge rather than
+// as padding before `themeButton` - exactly the "extra space the icon is
+// taking is fine" tradeoff the captain called out, not a bug to fix.
 
 import AppKit
 
@@ -85,17 +90,17 @@ final class TopBarController: NSViewController {
             titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
             titleLabel.centerYAnchor.constraint(equalTo: root.centerYAnchor),
 
-            themeButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
-            themeButton.centerYAnchor.constraint(equalTo: root.centerYAnchor),
-            themeButton.widthAnchor.constraint(equalToConstant: 34),
-            themeButton.heightAnchor.constraint(equalToConstant: 34),
-
-            notificationCenter.bell.trailingAnchor.constraint(equalTo: themeButton.leadingAnchor, constant: -10),
+            notificationCenter.bell.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             notificationCenter.bell.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             notificationCenter.bell.widthAnchor.constraint(equalToConstant: NotificationBellButton.controlWidth),
             notificationCenter.bell.heightAnchor.constraint(equalToConstant: 34),
 
-            searchPill.trailingAnchor.constraint(equalTo: notificationCenter.bell.leadingAnchor, constant: -10),
+            themeButton.trailingAnchor.constraint(equalTo: notificationCenter.bell.leadingAnchor, constant: -10),
+            themeButton.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            themeButton.widthAnchor.constraint(equalToConstant: 34),
+            themeButton.heightAnchor.constraint(equalToConstant: 34),
+
+            searchPill.trailingAnchor.constraint(equalTo: themeButton.leadingAnchor, constant: -10),
             searchPill.centerYAnchor.constraint(equalTo: root.centerYAnchor),
         ])
 
