@@ -1,26 +1,212 @@
 // Manjesh Grand Line - native macOS app.
 //
 // New/Edit Task sheet (cockpit-shift-create-edit, phase 2 of Shift - see
-// AGENTS.md's "Shift" section). Fields per the brief: Title, Priority,
-// Due (date+time), Project, Tags, Description. Presented as a sheet on
-// `ShiftController` (⌘N / the My Tasks header's "+" button), following
-// `SnippetEditorController.swift`'s shape - a plain `NSStackView` form, no
-// standalone window, since this list of fields is short enough not to need
-// `HostEditorController`'s scroll-and-cap treatment.
+// AGENTS.md's "Shift" section), restyled by fm/grandline-task-editor-
+// redesign against a captain-supplied HTML/CSS mockup
+// (data/grandline-task-editor-redesign/reference-mockup.html) - translated
+// into this app's own dark Helm design language (HelmTheme/ShiftFont/
+// ShiftPanelView/IconTileView/HoverHighlightView), not the mockup's literal
+// light colors, matching how every other reference-mockup redesign in this
+// session has been approached.
 //
-// The live natural-language date detection lives in `ShiftDateParser.swift`;
-// this file only wires the Title field's `controlTextDidChange` to it and
-// reflects a match into the Due controls plus a small inline confirmation
-// label - see `titleDidChange` below.
+// Two things changed here:
+//
+// 1. A real theming bug, the same class this codebase has hit and fixed
+//    repeatedly (see AGENTS.md's "Contrast" note and the many
+//    `.appearance = .darkAqua/.aqua`-forcing fixes across
+//    `SettingsController`/`HostEditorController`/etc.): this sheet's root
+//    view forced `.appearance` via `ThemeManager.shared.observe`, but never
+//    gave itself an explicit `HelmTheme`-derived background - a plain
+//    `NSView` with no `wantsLayer`/`layer.backgroundColor` paints nothing
+//    of its own, so blank areas showed through to the sheet's own default
+//    (light) window backing regardless of the forced appearance. Fixed the
+//    same way `HostEditorController.loadView()` already does it:
+//    `root.wantsLayer = true` plus an explicit
+//    `root.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor`
+//    inside the same observer. `ShiftFollowUpEditorController` and
+//    `ShiftProjectEditorController` had the identical gap and got the same
+//    two-line fix, since leaving two of the three editor sheets broken
+//    would just be the same bug found and left half-fixed.
+//
+// 2. The redesign itself: a large placeholder-styled title field (separated
+//    from a small natural-language-date hint line underneath, instead of
+//    baking the hint into the placeholder text), a "DETAILS" section of
+//    clickable field cards for Priority/Project (each popping an `NSMenu`,
+//    mirroring `ShiftProjectViews`' own status-pill click pattern) instead
+//    of plain `NSGridView` label:popup rows, a distinct toggle-row card for
+//    "Set due date" that reveals the existing date/time controls only once
+//    enabled, and a tags field that renders entered tags as small removable
+//    chips (reusing `VocabularyChipView`/`ChipFlowView` from Dictation's own
+//    chip treatment) instead of a single comma-separated field with no
+//    per-tag feedback. Every existing behavior - natural-language date
+//    detection on the title field (`ShiftDateParser`), priority/project
+//    selection, save/cancel actions, and the existing attachment feature
+//    (`ShiftImageAttachmentWell`) - is preserved; only its presentation
+//    changed. The footer's "⌘Enter to save" hint is now a real shortcut,
+//    not just copy: `save.keyEquivalentModifierMask = [.command]` fires via
+//    `NSWindow.performKeyEquivalent:` regardless of first responder, the
+//    same mechanism `ConsoleComposerPopover`'s Generate button already uses
+//    - it also fixes the pre-existing gap where a plain Return inside the
+//    multi-line Description field just inserted a newline and never saved.
+//
+// The mockup's Attachments drag-and-drop section is deliberately NOT part
+// of this pass - that's a different (already-shipped) attachment mechanism
+// in this app; this task only restructures presentation, not the
+// attachment model.
 
 import AppKit
 import UniformTypeIdentifiers
+
+/// The one "form surface on top of this sheet's own background" fill both
+/// the field cards and the sunken text fields use - blends `chromeInkHex`
+/// into `chromeBackgroundHex` rather than reusing either token bare, so the
+/// surface stays visibly distinct from the sheet's `backgroundHex` root even
+/// in the themes where `chromeBackgroundHex` and `backgroundHex` are
+/// numerically identical (`gruvbox-light`/`tokyo-night-dark`/`tokyo-night-
+/// light` - see `ConsoleComposerPopover.fieldFillColor(for:)`'s own doc
+/// comment for the confirmed list). Mirrors `ShiftController.
+/// detailFieldFillColor(for:)` exactly.
+private func shiftEditorFieldFillColor(for theme: HelmTheme) -> NSColor {
+    let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
+    let ink = HelmTheme.nsColor(theme.chromeInkHex)
+    return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
+}
+
+/// A small "icon-in-a-22pt-square" container holding a centered colored dot
+/// - gives the Priority field card's dot the same footprint as the Project
+/// field card's `IconTileView(size: 22)`, so both cards' text columns start
+/// at the same offset.
+private final class PriorityDotView: NSView {
+    private let dot = NSView()
+
+    init(size: CGFloat = 22, dotDiameter: CGFloat = 10) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = dotDiameter / 2
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(dot)
+        NSLayoutConstraint.activate([
+            dot.centerXAnchor.constraint(equalTo: centerXAnchor),
+            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: dotDiameter),
+            dot.heightAnchor.constraint(equalToConstant: dotDiameter),
+            widthAnchor.constraint(equalToConstant: size),
+            heightAnchor.constraint(equalToConstant: size),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    func setColor(_ color: NSColor) {
+        dot.layer?.backgroundColor = color.cgColor
+    }
+}
+
+/// The mockup's `.field` - a clickable card showing a small leading
+/// accessory (a colored dot for Priority, a mini `IconTileView` for
+/// Project), a muted field label over a bold value, and a trailing chevron.
+/// Clicking anywhere on the card pops an `NSMenu` positioned just under it,
+/// the same interaction `ShiftProjectViews`' status pill already uses.
+private final class TaskFieldCardView: NSView {
+    let card = HoverHighlightView()
+    let valueLabel = NSTextField(labelWithString: "")
+    private let fieldLabelView: NSTextField
+    private let chevron = NSImageView()
+    private let clickButton = NSButton()
+    var onClick: (() -> Void)?
+
+    init(label: String, accessory: NSView) {
+        fieldLabelView = NSTextField(labelWithString: label)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        card.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(equalToConstant: 50),
+        ])
+
+        accessory.translatesAutoresizingMaskIntoConstraints = false
+
+        fieldLabelView.font = .systemFont(ofSize: 10.5)
+        fieldLabelView.translatesAutoresizingMaskIntoConstraints = false
+
+        valueLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        valueLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [fieldLabelView, valueLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [accessory, textStack, chevron])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 9
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -11),
+            row.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+        ])
+
+        clickButton.title = ""
+        clickButton.isBordered = false
+        clickButton.target = self
+        clickButton.action = #selector(clicked)
+        clickButton.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(clickButton)
+        NSLayoutConstraint.activate([
+            clickButton.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            clickButton.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            clickButton.topAnchor.constraint(equalTo: card.topAnchor),
+            clickButton.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    @objc private func clicked() { onClick?() }
+
+    func popMenu(_ menu: NSMenu) {
+        menu.popUp(positioning: nil, at: NSPoint(x: 12, y: bounds.height + 4), in: self)
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        let fill = shiftEditorFieldFillColor(for: theme)
+        card.normalColor = fill
+        card.hoverColor = fill.hoverShifted(by: 0.10, forMode: theme.mode)
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
+        fieldLabelView.textColor = HelmTheme.mutedInk(theme)
+        valueLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        chevron.contentTintColor = HelmTheme.mutedInk(theme)
+    }
+}
 
 final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
     private let editing: ShiftTask?
     private let projects: [ShiftProject]
-    /// Pre-selects the Project popup for a brand-new task opened from inside
+    /// Pre-selects the Project card for a brand-new task opened from inside
     /// a project's own detail page ("+ Add Task", fm/cockpit-shift-project-
     /// page-redesign) - ignored when editing an existing task, which already
     /// has its own `projectID`.
@@ -43,59 +229,104 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// edit that never touches the attachment never rewrites the image file.
     private var attachmentChange: ShiftAttachmentChange?
 
+    private let headingLabel = NSTextField(labelWithString: "")
     private let titleField = NSTextField()
+    private let hintLabel = NSTextField(labelWithString: "")
     private let detectedRow = NSStackView()
+    private let detectedIcon = NSImageView(image: NSImage(systemSymbolName: "calendar.badge.checkmark", accessibilityDescription: nil) ?? NSImage())
     private let detectedLabel = NSTextField(labelWithString: "")
-    private let priorityPopup = NSPopUpButton()
-    private let hasDueCheckbox = NSButton(checkboxWithTitle: "Has due date", target: nil, action: nil)
-    private let dueDatePicker = NSDatePicker()
-    private let projectPopup = NSPopUpButton()
-    private let tagsField = NSTextField()
-    private let descriptionView = NSTextView()
 
-    /// Once the person edits the due-date controls directly (checkbox or
+    private var selectedPriority: ShiftPriority
+    private let priorityDot = PriorityDotView()
+    private lazy var priorityCard = TaskFieldCardView(label: "Priority", accessory: priorityDot)
+
+    private var selectedProjectID: String?
+    private let projectIconTile = IconTileView(size: 22, cornerRadius: 6)
+    private lazy var projectCard = TaskFieldCardView(label: "Project", accessory: projectIconTile)
+
+    private let dueCard = NSView()
+    private let dueSwitch = NSSwitch()
+    private let dueTitleLabel = NSTextField(labelWithString: "Set due date")
+    private let dueSubtitleLabel = NSTextField(labelWithString: "Add a date and optional time")
+    private let dueDatePicker = NSDatePicker()
+
+    private let tagsField = NSTextField()
+    private let tagsChipsFlow = ChipFlowView()
+    private var tagChips: [String] = []
+
+    private let descriptionView = NSTextView()
+    private let descScroll = NSScrollView()
+
+    private let shortcutHintLabel = NSTextField(labelWithString: "\u{2318}\u{23ce} to save")
+
+    /// Every uppercase section-kicker label ("DETAILS"/"TAGS"/etc.), so
+    /// `applyTheme` can re-tint all of them in one loop instead of each
+    /// caller wiring its own theme observer.
+    private var sectionLabels: [NSTextField] = []
+
+    /// Once the person edits the due-date controls directly (switch or
     /// picker), further title edits stop overwriting their choice - only a
     /// brand-new detected phrase should ever clobber a still-untouched Due
     /// field, never a deliberate manual edit.
     private var dueManuallyEdited = false
-
-    /// index 0 is always "None"; index n+1 is `projects[n]`.
-    private var projectIDs: [String?] = []
 
     init(task: ShiftTask?, projects: [ShiftProject], defaultProjectID: String? = nil, existingAttachmentData: Data? = nil) {
         self.editing = task
         self.projects = projects
         self.defaultProjectID = defaultProjectID
         self.existingAttachmentData = existingAttachmentData
+        self.selectedPriority = task?.priority ?? .normal
+        let candidateProjectID = task?.projectID ?? defaultProjectID
+        self.selectedProjectID = projects.contains { $0.id == candidateProjectID } ? candidateProjectID : nil
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 660))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 780))
+        root.wantsLayer = true
         view = root
-        ThemeManager.shared.observe { [weak root, weak attachmentWell] theme in
-            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
-            attachmentWell?.applyTheme(theme)
+        // The fix for the real theming bug (see this file's header): an
+        // explicit `HelmTheme`-derived background, not just a forced
+        // `.appearance` - a plain, unpainted `NSView` shows through to the
+        // sheet's own default (light) window backing regardless of what
+        // appearance its subviews resolve colors against.
+        ThemeManager.shared.observe { [weak self] theme in
+            self?.view.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+            self?.applyTheme(theme)
         }
 
-        let title = NSTextField(labelWithString: editing == nil ? "New Task" : "Edit Task")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        headingLabel.stringValue = editing == nil ? "New Task" : "Edit Task"
+        headingLabel.font = .systemFont(ofSize: 15, weight: .semibold)
 
-        titleField.placeholderString = "Title (try \u{201c}tomorrow 3pm\u{201d} or \u{201c}next mon\u{201d})"
+        // MARK: Big title field + hint
+
+        titleField.placeholderAttributedString = NSAttributedString(
+            string: "What needs to be done?",
+            attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold)]
+        )
         titleField.stringValue = editing?.title ?? ""
+        titleField.font = .systemFont(ofSize: 22, weight: .semibold)
+        titleField.isBordered = false
+        titleField.isBezeled = false
+        titleField.drawsBackground = false
+        titleField.focusRingType = .none
         titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.delegate = self
 
+        hintLabel.lineBreakMode = .byWordWrapping
+        hintLabel.maximumNumberOfLines = 1
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+
         detectedLabel.font = .systemFont(ofSize: 11)
-        detectedLabel.textColor = .secondaryLabelColor
         let clearDetected = NSButton(title: "", target: self, action: #selector(dismissDetected))
         clearDetected.isBordered = false
         clearDetected.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Dismiss")
         clearDetected.imageScaling = .scaleProportionallyDown
         clearDetected.translatesAutoresizingMaskIntoConstraints = false
-        detectedRow.addArrangedSubview(NSImageView(image: NSImage(systemSymbolName: "calendar.badge.checkmark", accessibilityDescription: nil) ?? NSImage()))
+        detectedRow.addArrangedSubview(detectedIcon)
         detectedRow.addArrangedSubview(detectedLabel)
         detectedRow.addArrangedSubview(clearDetected)
         detectedRow.orientation = .horizontal
@@ -104,77 +335,115 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         detectedRow.translatesAutoresizingMaskIntoConstraints = false
         detectedRow.isHidden = true
 
-        priorityPopup.translatesAutoresizingMaskIntoConstraints = false
-        for p in ShiftPriority.allCases { priorityPopup.addItem(withTitle: p.rawValue.capitalized) }
-        priorityPopup.selectItem(at: ShiftPriority.allCases.firstIndex(of: editing?.priority ?? .normal) ?? 1)
+        // MARK: DETAILS - Priority / Project field cards
 
-        hasDueCheckbox.target = self
-        hasDueCheckbox.action = #selector(hasDueToggled)
-        hasDueCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        let detailsLabel = sectionLabel("Details")
+        priorityDot.setColor(.clear)
+        priorityCard.onClick = { [weak self] in self?.priorityCardClicked() }
+        projectIconTile.configure(symbol: "folder.fill", tint: .info, pointSize: 11)
+        projectCard.onClick = { [weak self] in self?.projectCardClicked() }
+        updatePriorityCard()
+        updateProjectCard()
+
+        let metaGrid = NSStackView(views: [priorityCard, projectCard])
+        metaGrid.orientation = .horizontal
+        metaGrid.distribution = .fillEqually
+        metaGrid.spacing = 10
+        metaGrid.translatesAutoresizingMaskIntoConstraints = false
+
+        // MARK: "Set due date" toggle row
+
+        dueCard.wantsLayer = true
+        dueCard.layer?.cornerRadius = 10
+        dueCard.translatesAutoresizingMaskIntoConstraints = false
+
+        dueSwitch.target = self
+        dueSwitch.action = #selector(hasDueToggled)
+        dueSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        dueSwitch.translatesAutoresizingMaskIntoConstraints = false
+
+        dueTitleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        dueTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        dueSubtitleLabel.font = .systemFont(ofSize: 10.5)
+        dueSubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        let dueTextStack = NSStackView(views: [dueTitleLabel, dueSubtitleLabel])
+        dueTextStack.orientation = .vertical
+        dueTextStack.alignment = .leading
+        dueTextStack.spacing = 1
+        dueTextStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let dueLeft = NSStackView(views: [dueSwitch, dueTextStack])
+        dueLeft.orientation = .horizontal
+        dueLeft.alignment = .centerY
+        dueLeft.spacing = 10
+        dueLeft.translatesAutoresizingMaskIntoConstraints = false
+        dueLeft.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         dueDatePicker.datePickerStyle = .textFieldAndStepper
         dueDatePicker.datePickerElements = [.yearMonthDay, .hourMinute]
         dueDatePicker.target = self
         dueDatePicker.action = #selector(dueDatePickerChanged)
         dueDatePicker.translatesAutoresizingMaskIntoConstraints = false
+        dueDatePicker.setContentHuggingPriority(.required, for: .horizontal)
+        dueDatePicker.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let existingDue = ShiftDateFormatting.dateTime(from: editing?.dueDate, time: editing?.dueTime)
         if let existingDue {
-            hasDueCheckbox.state = .on
+            dueSwitch.state = .on
             dueDatePicker.dateValue = existingDue
             dueDatePicker.isEnabled = true
         } else {
-            hasDueCheckbox.state = .off
+            dueSwitch.state = .off
             dueDatePicker.dateValue = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
             dueDatePicker.isEnabled = false
         }
+        dueDatePicker.isHidden = dueSwitch.state != .on
 
-        let dueRow = NSStackView(views: [hasDueCheckbox, dueDatePicker])
+        let dueRow = NSStackView(views: [dueLeft, dueDatePicker])
         dueRow.orientation = .horizontal
-        dueRow.spacing = 10
+        dueRow.distribution = .fill
         dueRow.alignment = .centerY
+        dueRow.spacing = 10
         dueRow.translatesAutoresizingMaskIntoConstraints = false
+        dueCard.addSubview(dueRow)
+        NSLayoutConstraint.activate([
+            dueRow.leadingAnchor.constraint(equalTo: dueCard.leadingAnchor, constant: 13),
+            dueRow.trailingAnchor.constraint(equalTo: dueCard.trailingAnchor, constant: -13),
+            dueRow.topAnchor.constraint(equalTo: dueCard.topAnchor, constant: 12),
+            dueRow.bottomAnchor.constraint(equalTo: dueCard.bottomAnchor, constant: -12),
+        ])
 
-        projectPopup.translatesAutoresizingMaskIntoConstraints = false
-        projectIDs = [nil] + projects.map { $0.id }
-        projectPopup.addItem(withTitle: "None")
-        for p in projects { projectPopup.addItem(withTitle: p.name) }
-        if let pid = editing?.projectID ?? defaultProjectID, let idx = projectIDs.firstIndex(of: pid) {
-            projectPopup.selectItem(at: idx)
-        } else {
-            projectPopup.selectItem(at: 0)
-        }
+        // MARK: Tags
 
-        tagsField.placeholderString = "Tags, comma separated"
-        tagsField.stringValue = (editing?.tags ?? []).joined(separator: ", ")
+        let tagsLabel = sectionLabel("Tags")
+        tagsField.placeholderString = "Add tags, separated by commas"
+        styleSunkenField(tagsField)
         tagsField.translatesAutoresizingMaskIntoConstraints = false
+        tagsField.delegate = self
+        tagChips = editing?.tags ?? []
+        renderTagChips()
 
+        // MARK: Description
+
+        let descLabel = sectionLabel("Description")
         descriptionView.string = editing?.description ?? ""
         descriptionView.font = .systemFont(ofSize: 12)
         descriptionView.isRichText = false
-        descriptionView.textContainerInset = NSSize(width: 6, height: 6)
-        let descScroll = NSScrollView()
-        descScroll.borderType = .bezelBorder
+        descriptionView.textContainerInset = NSSize(width: 8, height: 8)
+        descriptionView.drawsBackground = true
+        descScroll.wantsLayer = true
+        descScroll.layer?.cornerRadius = 8
+        descScroll.layer?.masksToBounds = true
+        descScroll.layer?.borderWidth = 1
+        descScroll.borderType = .noBorder
         descScroll.hasVerticalScroller = true
         descScroll.documentView = descriptionView
         descScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let grid = NSGridView(views: [
-            [rowLabel("Priority"), priorityPopup],
-            [rowLabel("Due"), dueRow],
-            [rowLabel("Project"), projectPopup],
-            [rowLabel("Tags"), tagsField],
-        ])
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = 12
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 90
-        grid.column(at: 1).xPlacement = .fill
+        // MARK: Attachment (existing feature, unchanged - out of this
+        // redesign's scope, see this file's header)
 
-        let descLabel = rowLabel("Description")
-
-        let attachmentLabel = rowLabel("Attachment")
+        let attachmentLabel = sectionLabel("Attachment")
         attachmentWell.translatesAutoresizingMaskIntoConstraints = false
         attachmentWell.onImageChosen = { [weak self] data in self?.attachmentChange = .set(data) }
         attachmentWell.onRemove = { [weak self] in self?.attachmentChange = .removed }
@@ -192,41 +461,67 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         attachmentRow.distribution = .fill
         attachmentRow.translatesAutoresizingMaskIntoConstraints = false
 
+        // MARK: Footer
+
+        shortcutHintLabel.font = .systemFont(ofSize: 11)
+        shortcutHintLabel.translatesAutoresizingMaskIntoConstraints = false
+
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
+        let save = NSButton(title: editing == nil ? "Create Task" : "Save", target: self, action: #selector(save))
         save.bezelStyle = .rounded
+        // Fires via `NSWindow.performKeyEquivalent:` regardless of first
+        // responder - same mechanism `ConsoleComposerPopover`'s Generate
+        // button uses, so ⌘Enter saves even while focus is in the
+        // multi-line Description field (where a plain Return just inserts
+        // a newline, per `descriptionView`'s own default key binding).
         save.keyEquivalent = "\r"
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let bottom = NSStackView(views: [spacer, cancel, save])
-        bottom.orientation = .horizontal
-        bottom.spacing = 10
+        save.keyEquivalentModifierMask = [.command]
+        let actionsSpacer = NSView()
+        actionsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let footer = NSStackView(views: [shortcutHintLabel, actionsSpacer, cancel, save])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 10
+        footer.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [
-            title, titleField, detectedRow, grid, descLabel, descScroll,
-            attachmentRow, attachmentWell, bottom,
+            headingLabel, titleField, hintLabel, detectedRow,
+            detailsLabel, metaGrid, dueCard,
+            tagsLabel, tagsField, tagsChipsFlow,
+            descLabel, descScroll,
+            attachmentRow, attachmentWell,
+            footer,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
+        stack.setCustomSpacing(2, after: titleField)
+        stack.setCustomSpacing(16, after: hintLabel)
+        stack.setCustomSpacing(8, after: detailsLabel)
+        stack.setCustomSpacing(8, after: tagsField)
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
             titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            hintLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             detectedRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            metaGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            dueCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            tagsField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            tagsField.heightAnchor.constraint(equalToConstant: 30),
+            tagsChipsFlow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             descScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            descScroll.heightAnchor.constraint(equalToConstant: 100),
+            descScroll.heightAnchor.constraint(equalToConstant: 110),
             attachmentRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             attachmentWell.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -235,17 +530,177 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         view.window?.makeFirstResponder(titleField)
     }
 
+    // MARK: Theming
+
+    private func sectionLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        label.attributedStringValue = NSAttributedString(string: text.uppercased(), attributes: [
+            .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+            .kern: 0.7,
+        ])
+        label.translatesAutoresizingMaskIntoConstraints = false
+        sectionLabels.append(label)
+        return label
+    }
+
+    /// Removes the stock system bezel and hands the whole look to an
+    /// explicit `HelmTheme`-derived fill/border, matching
+    /// `ShiftController.styleDetailFormField`/`ConsoleComposerViewController`'s
+    /// identical fix for the same off-theme-bezel problem.
+    private func styleSunkenField(_ field: NSTextField) {
+        field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
+        field.drawsBackground = true
+        field.wantsLayer = true
+        field.layer?.masksToBounds = true
+        field.layer?.cornerRadius = 8
+        field.layer?.borderWidth = 1
+    }
+
+    private func applyTheme(_ theme: HelmTheme) {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let muted = HelmTheme.mutedInk(theme)
+        let fieldFill = shiftEditorFieldFillColor(for: theme)
+        let lineColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
+
+        headingLabel.textColor = ink
+
+        titleField.textColor = ink
+        titleField.placeholderAttributedString = NSAttributedString(
+            string: "What needs to be done?",
+            attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold), .foregroundColor: muted]
+        )
+
+        hintLabel.attributedStringValue = hintAttributedString(muted: muted, emphasis: ink)
+
+        detectedIcon.contentTintColor = HelmTheme.nsColor(theme.accentHex)
+        detectedLabel.textColor = muted
+
+        sectionLabels.forEach { $0.textColor = muted }
+
+        priorityCard.applyTheme(theme)
+        projectCard.applyTheme(theme)
+        updatePriorityDotColor(theme: theme)
+
+        dueCard.layer?.backgroundColor = fieldFill.cgColor
+        dueCard.layer?.borderWidth = 1
+        dueCard.layer?.borderColor = lineColor.cgColor
+        dueTitleLabel.textColor = ink
+        dueSubtitleLabel.textColor = muted
+
+        tagsField.textColor = ink
+        tagsField.placeholderAttributedString = NSAttributedString(
+            string: "Add tags, separated by commas",
+            attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: muted]
+        )
+        tagsField.layer?.backgroundColor = fieldFill.cgColor
+        tagsField.layer?.borderColor = lineColor.cgColor
+        tagsChipsFlow.subviews.compactMap { $0 as? VocabularyChipView }.forEach { $0.applyTheme(theme) }
+
+        descScroll.layer?.backgroundColor = fieldFill.cgColor
+        descScroll.layer?.borderColor = lineColor.cgColor
+        descriptionView.backgroundColor = fieldFill
+        descriptionView.textColor = ink
+        descriptionView.insertionPointColor = ink
+
+        shortcutHintLabel.textColor = muted
+
+        attachmentWell.applyTheme(theme)
+    }
+
+    private func hintAttributedString(muted: NSColor, emphasis: NSColor) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: muted]
+        let bold: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: emphasis]
+        result.append(NSAttributedString(string: "Tip: type natural dates like ", attributes: base))
+        result.append(NSAttributedString(string: "tomorrow 3pm", attributes: bold))
+        result.append(NSAttributedString(string: " or ", attributes: base))
+        result.append(NSAttributedString(string: "next Monday", attributes: bold))
+        result.append(NSAttributedString(string: ".", attributes: base))
+        return result
+    }
+
+    // MARK: Priority / Project field cards
+
+    private func priorityTint(_ priority: ShiftPriority) -> HelmTint {
+        switch priority {
+        case .high: return .critical
+        case .normal: return .info
+        case .low: return .neutral
+        }
+    }
+
+    private func updatePriorityDotColor(theme: HelmTheme) {
+        priorityDot.setColor(HelmTheme.nsColor(priorityTint(selectedPriority).hex(in: theme)))
+    }
+
+    private func updatePriorityCard() {
+        priorityCard.valueLabel.stringValue = selectedPriority.rawValue.capitalized
+        updatePriorityDotColor(theme: ThemeManager.shared.theme)
+    }
+
+    private func updateProjectCard() {
+        let name = projects.first(where: { $0.id == selectedProjectID })?.name ?? "No project"
+        projectCard.valueLabel.stringValue = name
+    }
+
+    private func priorityCardClicked() {
+        let menu = NSMenu()
+        for priority in ShiftPriority.allCases {
+            let item = NSMenuItem(title: priority.rawValue.capitalized, action: #selector(priorityItemSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = priority == selectedPriority ? .on : .off
+            item.representedObject = priority.rawValue
+            menu.addItem(item)
+        }
+        priorityCard.popMenu(menu)
+    }
+
+    @objc private func priorityItemSelected(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let priority = ShiftPriority(rawValue: raw) else { return }
+        selectedPriority = priority
+        updatePriorityCard()
+    }
+
+    private func projectCardClicked() {
+        let menu = NSMenu()
+        let noneItem = NSMenuItem(title: "No project", action: #selector(projectItemSelected(_:)), keyEquivalent: "")
+        noneItem.target = self
+        noneItem.state = selectedProjectID == nil ? .on : .off
+        menu.addItem(noneItem)
+        for project in projects {
+            let item = NSMenuItem(title: project.name, action: #selector(projectItemSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = project.id == selectedProjectID ? .on : .off
+            item.representedObject = project.id
+            menu.addItem(item)
+        }
+        projectCard.popMenu(menu)
+    }
+
+    @objc private func projectItemSelected(_ sender: NSMenuItem) {
+        selectedProjectID = sender.representedObject as? String
+        updateProjectCard()
+    }
+
     // MARK: Live date detection
 
     func controlTextDidChange(_ notification: Notification) {
-        guard notification.object as? NSTextField === titleField else { return }
+        guard let field = notification.object as? NSTextField else { return }
+        if field === tagsField {
+            tagsFieldDidChange()
+            return
+        }
+        guard field === titleField else { return }
         guard !dueManuallyEdited else { return }
         guard let parsed = ShiftDateParser.parse(titleField.stringValue) else {
             detectedRow.isHidden = true
             return
         }
-        hasDueCheckbox.state = .on
+        dueSwitch.state = .on
         dueDatePicker.isEnabled = true
+        dueDatePicker.isHidden = false
         if parsed.hasTime {
             dueDatePicker.dateValue = parsed.date
         } else {
@@ -270,13 +725,56 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
     @objc private func hasDueToggled() {
         dueManuallyEdited = true
-        dueDatePicker.isEnabled = hasDueCheckbox.state == .on
+        let on = dueSwitch.state == .on
+        dueDatePicker.isEnabled = on
+        dueDatePicker.isHidden = !on
         detectedRow.isHidden = true
     }
 
     @objc private func dueDatePickerChanged() {
         dueManuallyEdited = true
         detectedRow.isHidden = true
+    }
+
+    // MARK: Tags
+
+    /// A typed trailing comma commits everything before it as a chip and
+    /// clears the field, matching the mockup's own tag-entry interaction.
+    private func tagsFieldDidChange() {
+        let text = tagsField.stringValue
+        guard text.hasSuffix(",") else { return }
+        let candidate = String(text.dropLast())
+        tagsField.stringValue = ""
+        commitTagText(candidate)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === tagsField, commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        commitTagText(tagsField.stringValue)
+        tagsField.stringValue = ""
+        return true
+    }
+
+    private func commitTagText(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        guard !tagChips.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return }
+        tagChips.append(trimmed)
+        renderTagChips()
+    }
+
+    private func renderTagChips() {
+        let theme = ThemeManager.shared.theme
+        let chips: [NSView] = tagChips.map { tag in
+            let chip = VocabularyChipView(word: tag)
+            chip.applyTheme(theme)
+            chip.onRemove = { [weak self] in
+                self?.tagChips.removeAll { $0 == tag }
+                self?.renderTagChips()
+            }
+            return chip
+        }
+        tagsChipsFlow.setChips(chips)
     }
 
     // MARK: Attachment
@@ -303,11 +801,14 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             NSSound.beep()
             return
         }
+        commitTagText(tagsField.stringValue)
+        tagsField.stringValue = ""
+
         var task = editing ?? ShiftTask.fresh()
         task.title = titleText
         task.description = descriptionView.string
-        task.priority = ShiftPriority.allCases[priorityPopup.indexOfSelectedItem]
-        if hasDueCheckbox.state == .on {
+        task.priority = selectedPriority
+        if dueSwitch.state == .on {
             let (dateStr, timeStr) = ShiftDateFormatting.components(from: dueDatePicker.dateValue)
             task.dueDate = dateStr
             task.dueTime = timeStr
@@ -315,23 +816,13 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             task.dueDate = nil
             task.dueTime = nil
         }
-        task.projectID = projectIDs[projectPopup.indexOfSelectedItem]
-        task.tags = tagsField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        task.projectID = selectedProjectID
+        task.tags = tagChips
         onSave?(task, attachmentChange ?? .unchanged)
         dismiss(self)
     }
 
     @objc private func cancel() {
         dismiss(self)
-    }
-
-    private func rowLabel(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12)
-        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
-        return l
     }
 }

@@ -40,9 +40,17 @@ final class ShiftFollowUpEditorController: NSViewController {
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 420))
+        root.wantsLayer = true
         view = root
+        // Fix for a real theming bug (fm/grandline-task-editor-redesign):
+        // forcing `.appearance` alone doesn't paint anything - a plain
+        // `NSView` with no `wantsLayer`/`layer.backgroundColor` shows
+        // through to the sheet's default (light) window backing regardless
+        // of the forced appearance. Same fix as `HostEditorController.
+        // loadView()` and `ShiftTaskEditorController.loadView()`.
         ThemeManager.shared.observe { [weak root] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Follow-up" : "Edit Follow-up")
