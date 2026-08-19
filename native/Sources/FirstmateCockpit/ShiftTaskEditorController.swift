@@ -232,7 +232,7 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     var onSave: ((ShiftTask, ShiftAttachmentChange) -> Void)?
 
     private let attachmentWell = ShiftImageAttachmentWell()
-    private let chooseImageButton = NSButton(title: "Choose Image\u{2026}", target: nil, action: nil)
+    private let chooseImageButton = HelmButton(title: "Choose Image\u{2026}", variant: .secondary, target: nil, action: nil)
     /// `nil` until the captain interacts with the well in this session -
     /// `.unchanged` is reported on Save if this stays `nil`, so an ordinary
     /// edit that never touches the attachment never rewrites the image file.
@@ -467,7 +467,6 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         }
         chooseImageButton.target = self
         chooseImageButton.action = #selector(chooseImageClicked)
-        chooseImageButton.bezelStyle = .rounded
         chooseImageButton.controlSize = .small
         let attachmentRowSpacer = NSView()
         attachmentRowSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -481,11 +480,9 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         shortcutHintLabel.font = .systemFont(ofSize: 11)
         shortcutHintLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: editing == nil ? "Create Task" : "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: editing == nil ? "Create Task" : "Save", variant: .primary, target: self, action: #selector(save))
         // Fires via `NSWindow.performKeyEquivalent:` regardless of first
         // responder - same mechanism `ConsoleComposerPopover`'s Generate
         // button uses, so ⌘Enter saves even while focus is in the

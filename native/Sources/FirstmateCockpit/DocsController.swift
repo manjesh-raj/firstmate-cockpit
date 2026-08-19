@@ -72,13 +72,13 @@ final class DocsController: NSViewController {
     private var backButton: NSButton!
     private var forwardButton: NSButton!
     private var reloadButton: NSButton!
-    private let openLiveButton = NSButton()
+    private let openLiveButton = HelmButton(title: "", variant: .secondary, symbol: "arrow.up.forward.square")
     private let toolbarDivider = NSView()
     private let emptyStateContainer = NSView()
     private let emptyIcon = NSImageView()
     private let emptyTitleLabel = NSTextField(labelWithString: "Docs not synced yet")
     private let emptyBodyLabel = NSTextField(wrappingLabelWithString: "The DevOps Playbook hasn't been synced to this Mac yet. Sync it once to browse it here, fully offline afterward.")
-    private let syncButton = NSButton()
+    private let syncButton = HelmButton(title: "", variant: .primary)
     private let syncSpinner = NSProgressIndicator()
     private var isSyncing = false
     private var docsTitleLabel: NSTextField?
@@ -99,9 +99,9 @@ final class DocsController: NSViewController {
     private let runbookTitleField = NSTextField()
     private let runbookBodyScroll = NSScrollView()
     private let runbookBodyTextView = NSTextView()
-    private let runbookSaveButton = NSButton()
-    private let runbookCancelButton = NSButton()
-    private let runbookDeleteButton = NSButton()
+    private let runbookSaveButton = HelmButton(title: "", variant: .primary)
+    private let runbookCancelButton = HelmButton(title: "", variant: .secondary)
+    private let runbookDeleteButton = HelmButton(title: "", variant: .destructive)
     private let runbookEditorTitleLabel = NSTextField(labelWithString: "")
     /// The list-state container (header row + scrollable list) - kept as a
     /// property so it can be hidden whenever `runbookEditorContainer` is
@@ -368,9 +368,6 @@ final class DocsController: NSViewController {
         self.docsTitleLabel = titleLabel
 
         openLiveButton.title = "Open Live Site"
-        openLiveButton.image = NSImage(systemSymbolName: "arrow.up.forward.square", accessibilityDescription: nil)
-        openLiveButton.imagePosition = .imageLeading
-        openLiveButton.bezelStyle = .rounded
         openLiveButton.controlSize = .small
         openLiveButton.target = self
         openLiveButton.action = #selector(openLiveTapped)
@@ -392,13 +389,8 @@ final class DocsController: NSViewController {
     }
 
     private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> NSButton {
-        let b = NSButton(title: "", target: self, action: action)
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 6
+        let b = HelmButton(symbol: symbol, variant: .quiet, target: self, action: action)
         b.toolTip = tooltip
-        b.imageScaling = .scaleProportionallyDown
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
         NSLayoutConstraint.activate([
             b.widthAnchor.constraint(equalToConstant: 28),
             b.heightAnchor.constraint(equalToConstant: 26),
@@ -431,7 +423,6 @@ final class DocsController: NSViewController {
         emptyBodyLabel.translatesAutoresizingMaskIntoConstraints = false
 
         syncButton.title = "Sync Now"
-        syncButton.bezelStyle = .rounded
         syncButton.controlSize = .regular
         syncButton.target = self
         syncButton.action = #selector(syncNowTapped)
@@ -511,8 +502,7 @@ final class DocsController: NSViewController {
         runbooksHeaderCountLabel.font = .systemFont(ofSize: 11, weight: .medium)
         runbooksHeaderCountLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let newButton = NSButton(title: "+ New Runbook", target: nil, action: nil)
-        newButton.bezelStyle = .rounded
+        let newButton = HelmButton(title: "+ New Runbook", variant: .primary, target: nil, action: nil)
         newButton.controlSize = .small
         let newSleeve = ClosureSleeve { [weak self] in self?.beginNewRunbook() }
         rowSleeves.append(newSleeve)
@@ -614,7 +604,6 @@ final class DocsController: NSViewController {
         runbookBodyScroll.translatesAutoresizingMaskIntoConstraints = false
 
         runbookSaveButton.title = "Save"
-        runbookSaveButton.bezelStyle = .rounded
         runbookSaveButton.keyEquivalent = "\r"
         let saveSleeve = ClosureSleeve { [weak self] in self?.saveRunbookEditor() }
         rowSleeves.append(saveSleeve)
@@ -623,7 +612,6 @@ final class DocsController: NSViewController {
         runbookSaveButton.translatesAutoresizingMaskIntoConstraints = false
 
         runbookCancelButton.title = "Cancel"
-        runbookCancelButton.bezelStyle = .rounded
         let cancelSleeve = ClosureSleeve { [weak self] in self?.cancelRunbookEditor() }
         rowSleeves.append(cancelSleeve)
         runbookCancelButton.target = cancelSleeve
@@ -631,7 +619,6 @@ final class DocsController: NSViewController {
         runbookCancelButton.translatesAutoresizingMaskIntoConstraints = false
 
         runbookDeleteButton.title = "Delete"
-        runbookDeleteButton.bezelStyle = .rounded
         let deleteSleeve = ClosureSleeve { [weak self] in self?.confirmDeleteEditingRunbook() }
         rowSleeves.append(deleteSleeve)
         runbookDeleteButton.target = deleteSleeve
@@ -1050,9 +1037,7 @@ final class DocsController: NSViewController {
         var rowTrailingConstant: CGFloat = -Self.docCardPadding
 
         if let onDelete = item.onDelete {
-            let deleteButton = NSButton(title: "", target: nil, action: nil)
-            deleteButton.isBordered = false
-            deleteButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
+            let deleteButton = HelmButton(symbol: "trash", variant: .quiet)
             let sleeve = ClosureSleeve(onDelete)
             rowSleeves.append(sleeve)
             deleteButton.target = sleeve
@@ -1103,9 +1088,8 @@ final class DocsController: NSViewController {
         playbookToolbar.wantsLayer = true
         playbookToolbar.layer?.backgroundColor = surface.cgColor
         docsTitleLabel?.textColor = ink
-        for b in [backButton, forwardButton, reloadButton] {
-            b?.contentTintColor = ink.withAlphaComponent(0.75)
-        }
+        // The three toolbar glyphs are `HelmButton(.quiet)` now and own their
+        // own tint, re-derived from the theme by the button itself.
         emptyIcon.contentTintColor = muted
         emptyTitleLabel.textColor = ink
         emptyBodyLabel.textColor = muted

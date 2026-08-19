@@ -141,7 +141,7 @@ private final class QuotaUsageViewController: NSViewController {
     private let warningLabel = NSTextField(labelWithString: "")
 
     private let footerLabel = NSTextField(labelWithString: "")
-    private let copyButton = NSButton(title: "Copy Summary", target: nil, action: nil)
+    private let copyButton = HelmButton(title: "Copy Summary", variant: .secondary, target: nil, action: nil)
 
     var onSizeChanged: ((NSSize) -> Void)?
 
@@ -197,7 +197,6 @@ private final class QuotaUsageViewController: NSViewController {
 
         copyButton.target = self
         copyButton.action = #selector(copyClicked)
-        copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
         copyButton.isEnabled = false
 

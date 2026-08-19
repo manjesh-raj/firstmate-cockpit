@@ -72,7 +72,7 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
     /// Tags currently toggled on in the chip row; a host must carry at least
     /// one to pass (in addition to the text filter).
     private var selectedTags: Set<String> = []
-    private var tagButtons: [String: NSButton] = [:]
+    private var tagButtons: [String: HelmButton] = [:]
 
     init(store: HostStore) {
         self.store = store
@@ -171,9 +171,9 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        connectButton = footerButton("Connect", symbol: "bolt.fill", action: #selector(connectSelected))
-        editButton = footerButton("Edit", symbol: "pencil", action: #selector(editSelected))
-        deleteButton = footerButton("Delete", symbol: "trash", action: #selector(deleteSelected))
+        connectButton = footerButton("Connect", symbol: "bolt.fill", variant: .primary, action: #selector(connectSelected))
+        editButton = footerButton("Edit", symbol: "pencil", variant: .secondary, action: #selector(editSelected))
+        deleteButton = footerButton("Delete", symbol: "trash", variant: .destructive, action: #selector(deleteSelected))
         let footer = NSStackView(views: [connectButton, editButton, deleteButton])
         footer.orientation = .horizontal
         footer.distribution = .fillEqually
@@ -227,11 +227,9 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         updateButtons()
     }
 
-    private func footerButton(_ title: String, symbol: String, action: Selector) -> NSButton {
-        let b = NSButton(title: " " + title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-        b.imagePosition = .imageLeading
+    private func footerButton(_ title: String, symbol: String, variant: HelmButton.Variant,
+                             action: Selector) -> NSButton {
+        let b = HelmButton(title: title, variant: variant, symbol: symbol, target: self, action: action)
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }
@@ -277,11 +275,16 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         let allTags = Set(store.hosts.flatMap(\.tags)).sorted()
         selectedTags.formIntersection(allTags)
         for tag in allTags {
-            let b = NSButton(title: tag, target: self, action: #selector(tagChipClicked(_:)))
-            b.bezelStyle = .inline
+            // A real on/off toggle: `setButtonType(.pushOnPushOff)` still
+            // tracks `state` (which `tagChipClicked` reads), but its *look*
+            // used to come from the stock `.inline` bezel's own on-state, so
+            // the selected chip now reads as the accent-filled `.primary`
+            // variant instead - see `applyTheme`, which re-derives it.
+            let b = HelmButton(title: tag, variant: .secondary, size: .small,
+                               target: self, action: #selector(tagChipClicked(_:)))
             b.setButtonType(.pushOnPushOff)
             b.state = selectedTags.contains(tag) ? .on : .off
-            b.font = .systemFont(ofSize: 10)
+            b.variant = b.state == .on ? .primary : .secondary
             b.identifier = NSUserInterfaceItemIdentifier(tag)
             tagButtons[tag] = b
             tagsStack.addArrangedSubview(b)
@@ -296,6 +299,9 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         } else {
             selectedTags.remove(tag)
         }
+        // `.pushOnPushOff` still flips `state`, but nothing draws that state
+        // now that the stock bezel is gone - the variant is what shows it.
+        (sender as? HelmButton)?.variant = sender.state == .on ? .primary : .secondary
         applyFilter(searchField.stringValue)
     }
 

@@ -25,7 +25,7 @@ final class ShiftProjectEditorController: NSViewController {
     var onSave: ((ShiftProject) -> Void)?
 
     private let nameField = NSTextField()
-    private let statusPopup = NSPopUpButton()
+    private let statusPopup = HelmPopUpButton()
     private let startDateField = NSTextField()
     private let dueDateField = NSTextField()
     private let descriptionView = NSTextView()
@@ -84,11 +84,9 @@ final class ShiftProjectEditorController: NSViewController {
 
         let descLabel = rowLabel("Description")
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
         save.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)

@@ -72,13 +72,13 @@ final class CommandLibraryPageView: NSObject {
     private let detailCommandBox = NSView()
     private let detailCommandLabel = NSTextField(wrappingLabelWithString: "")
     private let detailParamsStack = NSStackView()
-    private let detailCopyButton = NSButton(title: "Copy", target: nil, action: nil)
-    private let detailSendButton = NSButton(title: "Send to Terminal", target: nil, action: nil)
-    private let detailEditButton = NSButton(title: "Edit", target: nil, action: nil)
-    private let detailDuplicateButton = NSButton(title: "Duplicate", target: nil, action: nil)
-    private let detailWorkflowButton = NSButton(title: "+ Workflow", target: nil, action: nil)
-    private let detailExplainButton = NSButton(title: "\u{2728} Explain", target: nil, action: nil)
-    private let detailFavoriteButton = NSButton(title: "\u{2606} Favorite", target: nil, action: nil)
+    private let detailCopyButton = HelmButton(title: "Copy", variant: .secondary, target: nil, action: nil)
+    private let detailSendButton = HelmButton(title: "Send to Terminal", variant: .primary, target: nil, action: nil)
+    private let detailEditButton = HelmButton(title: "Edit", variant: .secondary, target: nil, action: nil)
+    private let detailDuplicateButton = HelmButton(title: "Duplicate", variant: .secondary, target: nil, action: nil)
+    private let detailWorkflowButton = HelmButton(title: "+ Workflow", variant: .secondary, target: nil, action: nil)
+    private let detailExplainButton = HelmButton(title: "\u{2728} Explain", variant: .secondary, target: nil, action: nil)
+    private let detailFavoriteButton = HelmButton(title: "\u{2606} Favorite", variant: .secondary, target: nil, action: nil)
     private let detailContentContainer = NSView()
 
     /// Every live parameter input control, keyed by parameter name, for the
@@ -273,13 +273,11 @@ final class CommandLibraryPageView: NSObject {
         detailParamsStack.spacing = 12
         detailParamsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        detailExplainButton.bezelStyle = .rounded
         detailExplainButton.controlSize = .small
         detailExplainButton.isEnabled = false
         detailExplainButton.toolTip = "Coming in a later phase"
         detailExplainButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailCopyButton.bezelStyle = .rounded
         detailCopyButton.controlSize = .small
         detailCopyButton.keyEquivalent = "c"
         detailCopyButton.keyEquivalentModifierMask = [.command]
@@ -287,33 +285,33 @@ final class CommandLibraryPageView: NSObject {
         detailCopyButton.action = #selector(copyClicked)
         detailCopyButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailSendButton.bezelStyle = .rounded
         detailSendButton.controlSize = .small
         detailSendButton.target = self
         detailSendButton.action = #selector(sendToTerminalClicked)
         detailSendButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailEditButton.bezelStyle = .rounded
         detailEditButton.controlSize = .small
         detailEditButton.target = self
         detailEditButton.action = #selector(editClicked)
         detailEditButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailDuplicateButton.bezelStyle = .rounded
         detailDuplicateButton.controlSize = .small
         detailDuplicateButton.target = self
         detailDuplicateButton.action = #selector(duplicateClicked)
         detailDuplicateButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailWorkflowButton.bezelStyle = .rounded
         detailWorkflowButton.controlSize = .small
         detailWorkflowButton.target = self
         detailWorkflowButton.action = #selector(workflowClicked(_:))
         detailWorkflowButton.toolTip = "Add this command as a step in a Docs \u{2192} Runbook"
         detailWorkflowButton.translatesAutoresizingMaskIntoConstraints = false
 
-        detailFavoriteButton.bezelStyle = .rounded
         detailFavoriteButton.controlSize = .small
+        // The amber emphasis used to be a hand-rolled `attributedTitle`
+        // (`contentTintColor` does not colour a string title) - `HelmButton`'s
+        // `tint` is that, shared and routed through `HelmContrast` so the hue
+        // stays legible on the button's own fill in all 12 palettes.
+        detailFavoriteButton.tint = .warn
         detailFavoriteButton.target = self
         detailFavoriteButton.action = #selector(favoriteClicked)
         detailFavoriteButton.translatesAutoresizingMaskIntoConstraints = false
@@ -365,7 +363,6 @@ final class CommandLibraryPageView: NSObject {
         let muted = HelmTheme.mutedInk(theme)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        let accent = HelmTheme.nsColor(theme.accentHex)
 
         searchRow.layer?.backgroundColor = surface.cgColor
         searchRow.layer?.borderWidth = 1
@@ -387,23 +384,11 @@ final class CommandLibraryPageView: NSObject {
         detailCommandBox.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         detailCommandBox.layer?.borderWidth = 1
         detailCommandBox.layer?.borderColor = line.withAlphaComponent(0.6).cgColor
-        // `Copy` is the row's one primary action (mockup: a solid
-        // accent-filled pill, every other button a plain outlined one).
-        // `NSButton.bezelColor` was tried first and confirmed live to have
-        // no visible effect at this bezel style/control size - the button's
-        // fill stayed identical to every sibling button regardless. Rather
-        // than fight AppKit's bezel rendering further, the emphasis comes
-        // from bold accent-colored text instead - still a real, legible
-        // hierarchy signal next to the other buttons' plain white text, and
-        // needs no departure from a plain `NSButton`.
-        detailCopyButton.attributedTitle = NSAttributedString(
-            string: "Copy", attributes: [.foregroundColor: accent, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]
-        )
-
-        // `contentTintColor` has no effect on a plain-string bezel button's
-        // title (only on an image) - restyle via `refreshFavoriteButton`
-        // instead, which is what actually makes this button read as
-        // gold/amber the way the mockup's "\u{2606} Favorite" does.
+        // Both the "Copy is emphasised" and "Favorite reads as gold" hand-rolls
+        // that used to live here are gone: emphasis is `HelmButton`'s variant
+        // (the audit's own prototype makes "Send to Terminal" the pane's
+        // primary and Copy an ordinary secondary), and the amber is its
+        // `tint`. `refreshFavoriteButton` now only flips the title text.
         refreshFavoriteButton()
 
         renderLeftPanel()
@@ -538,8 +523,7 @@ final class CommandLibraryPageView: NSObject {
     }
 
     private func addCommandButton() -> NSView {
-        let button = NSButton(title: "+ Add Command", target: self, action: #selector(addCommandClicked))
-        button.bezelStyle = .rounded
+        let button = HelmButton(title: "+ Add Command", variant: .secondary, target: self, action: #selector(addCommandClicked))
         button.controlSize = .small
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
@@ -694,16 +678,12 @@ final class CommandLibraryPageView: NSObject {
         refreshFavoriteButton()
     }
 
-    /// Re-derives the Favorite button's title/color from the current
-    /// selection + theme - called on both a state change (`renderDetail`)
-    /// and a theme change (`applyTheme`) so the two can never disagree.
+    /// Flips the Favorite button's title for the current selection. Its amber
+    /// colour is `HelmButton`'s own `tint` now, re-derived on every theme
+    /// change by the button itself, so this no longer has to know the theme.
     private func refreshFavoriteButton() {
         let isFavorite = selectedCommandID.map(store.isFavorite) ?? false
-        let text = isFavorite ? "\u{2605} Favorited" : "\u{2606} Favorite"
-        let color = HelmTheme.nsColor(HelmTint.warn.hex(in: theme))
-        detailFavoriteButton.attributedTitle = NSAttributedString(
-            string: text, attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 12, weight: .medium)]
-        )
+        detailFavoriteButton.title = isFavorite ? "\u{2605} Favorited" : "\u{2606} Favorite"
     }
 
     private func rebuildParamControls(for command: DevOpsCommand) {
@@ -736,7 +716,7 @@ final class CommandLibraryPageView: NSObject {
             checkbox.state = (paramValues[param.name] ?? param.defaultValue) == "true" ? .on : .off
             control = checkbox
         case .select:
-            let popup = NSPopUpButton()
+            let popup = HelmPopUpButton()
             let options = store.config.options(forKey: param.configOptionsKey, fallback: param.options)
             popup.addItems(withTitles: options.isEmpty ? [param.defaultValue ?? ""] : options)
             if let current = paramValues[param.name] ?? param.defaultValue, popup.itemTitles.contains(current) {

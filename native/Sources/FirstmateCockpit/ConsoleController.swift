@@ -158,7 +158,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// whichever tab is on screen without reaching for the toolbar pill.
     private let sreLeadEmptyStateView = NSView()
     private let sreLeadEmptyStateLabel = NSTextField(wrappingLabelWithString: "SRE Lead hasn't been started for this tab yet.")
-    private let sreLeadEmptyStateButton = NSButton()
+    private let sreLeadEmptyStateButton = HelmButton(title: "", variant: .primary)
     /// Only ever created on demand (`generatePostmortemClicked`) - a fresh
     /// `DocsRunbookStore()` shares `DocsRunbookGitSync.shared`'s singleton
     /// clone/queue exactly like `DocsController`'s own instance does (see
@@ -927,7 +927,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadEmptyStateView.addSubview(sreLeadEmptyStateLabel)
 
         sreLeadEmptyStateButton.title = "Start SRE Lead for This Tab"
-        sreLeadEmptyStateButton.bezelStyle = .rounded
         sreLeadEmptyStateButton.controlSize = .small
         sreLeadEmptyStateButton.target = self
         sreLeadEmptyStateButton.action = #selector(startSRELeadForCurrentTabClicked)

@@ -88,7 +88,7 @@ final class SettingsController: NSViewController {
     private let appearanceContainer = NSStackView()
 
     // Terminal
-    private var fontPresetButtons: [Int: NSButton] = [:]
+    private var fontPresetButtons: [Int: HelmButton] = [:]
     private let autoReconnectSwitch = NSSwitch()
     private let notifySwitch = NSSwitch()
     private let sessionLoggingSwitch = NSSwitch()
@@ -330,10 +330,7 @@ final class SettingsController: NSViewController {
         desc.preferredMaxLayoutWidth = 520
 
         configure(mirrorTargetField, placeholder: "firstmate")
-        let detectButton = NSButton(title: "Detect", target: self, action: #selector(detectClicked))
-        detectButton.bezelStyle = .rounded
-        detectButton.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Detect")
-        detectButton.imagePosition = .imageLeading
+        let detectButton = HelmButton(title: "Detect", variant: .secondary, symbol: "arrow.triangle.2.circlepath", target: self, action: #selector(detectClicked))
 
         let fieldRow = NSStackView(views: [mirrorTargetField, detectButton])
         fieldRow.orientation = .horizontal
@@ -355,8 +352,7 @@ final class SettingsController: NSViewController {
         fieldRow.widthAnchor.constraint(equalTo: mirrorGroup.widthAnchor).isActive = true
         sessionsStack.widthAnchor.constraint(equalTo: mirrorGroup.widthAnchor).isActive = true
 
-        let chooseCwd = NSButton(title: "Choose\u{2026}", target: self, action: #selector(chooseShellCwd))
-        chooseCwd.bezelStyle = .rounded
+        let chooseCwd = HelmButton(title: "Choose\u{2026}", variant: .secondary, target: self, action: #selector(chooseShellCwd))
         configure(shellCwdField, placeholder: "~ (Home)")
         shellCwdField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let cwdRow = NSStackView(views: [shellCwdField, chooseCwd])
@@ -622,9 +618,8 @@ final class SettingsController: NSViewController {
 
     private func buildTerminalSection() -> NSView {
         let sizes = [12, 13, 14, 16]
-        let buttons = sizes.map { size -> NSButton in
-            let b = NSButton(title: "\(size)", target: self, action: #selector(fontPresetClicked(_:)))
-            b.bezelStyle = .rounded
+        let buttons = sizes.map { size -> HelmButton in
+            let b = HelmButton(title: "\(size)", variant: .secondary, target: self, action: #selector(fontPresetClicked(_:)))
             b.tag = size
             fontPresetButtons[size] = b
             return b
@@ -696,8 +691,7 @@ final class SettingsController: NSViewController {
         case .enabled:
             statusView = pillView(text: "Enabled", colorHex: theme.ansiHex[2])
         case .notEnabled:
-            let button = NSButton(title: isHardeningSudo ? "Enabling\u{2026}" : "Enable", target: self, action: #selector(enableSudoTouchIDClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: isHardeningSudo ? "Enabling\u{2026}" : "Enable", variant: .primary, target: self, action: #selector(enableSudoTouchIDClicked))
             button.isEnabled = !isHardeningSudo
             statusView = button
         case .notEnabledNixDarwin:
@@ -722,14 +716,9 @@ final class SettingsController: NSViewController {
         if sudoTouchIDStatus == .checking {
             trailing = statusView
         } else {
-            let refreshButton = NSButton()
-            refreshButton.title = ""
-            refreshButton.isBordered = false
-            refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Recheck status")
+            let refreshButton = HelmButton(symbol: "arrow.clockwise", variant: .quiet,
+                                           target: self, action: #selector(recheckSudoTouchIDClicked))
             refreshButton.toolTip = "Recheck Touch ID for sudo status"
-            refreshButton.target = self
-            refreshButton.action = #selector(recheckSudoTouchIDClicked)
-            refreshButton.contentTintColor = HelmTheme.mutedInk(theme)
 
             let combined = NSStackView(views: [statusView, refreshButton])
             combined.orientation = .horizontal
@@ -787,10 +776,8 @@ final class SettingsController: NSViewController {
         backupStatusLabel.font = .systemFont(ofSize: 11)
         mutedLabel(backupStatusLabel)
 
-        let exportButton = NSButton(title: "Export\u{2026}", target: self, action: #selector(exportBackupClicked))
-        exportButton.bezelStyle = .rounded
-        let importButton = NSButton(title: "Import\u{2026}", target: self, action: #selector(importBackupClicked))
-        importButton.bezelStyle = .rounded
+        let exportButton = HelmButton(title: "Export\u{2026}", variant: .secondary, target: self, action: #selector(exportBackupClicked))
+        let importButton = HelmButton(title: "Import\u{2026}", variant: .secondary, target: self, action: #selector(importBackupClicked))
 
         let buttonRow = NSStackView(views: [exportButton, importButton])
         buttonRow.orientation = .horizontal
@@ -869,7 +856,10 @@ final class SettingsController: NSViewController {
         mirrorTargetField.stringValue = AppSettings.shared.mirrorTarget ?? ""
         shellCwdField.stringValue = AppSettings.shared.defaultShellCwd ?? ""
         for size in [12, 13, 14, 16] {
-            fontPresetButtons[size]?.state = Int(AppSettings.shared.fontSize) == size ? .on : .off
+            // `NSButton.state`'s on-look was the stock bezel's; the selected
+            // preset now reads as the accent-filled `.primary` variant, which
+            // is both on-palette and a stronger signal than the bezel ever was.
+            fontPresetButtons[size]?.variant = Int(AppSettings.shared.fontSize) == size ? .primary : .secondary
         }
         autoReconnectSwitch.state = AppSettings.shared.autoReconnect ? .on : .off
         notifySwitch.state = AppSettings.shared.notifyOnNeedsDecision ? .on : .off

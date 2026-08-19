@@ -19,8 +19,9 @@
 // the Tools page's own `ToolInstance.codeEditor` - a bordered, corner-radius
 // `NSScrollView`/`NSTextView` in the active `HelmTheme`'s colors, not a
 // plain `NSTextField`), Copy/Run buttons following this app's established
-// `bezelStyle = .rounded, controlSize = .small` pill-button convention (the
-// same one Vault's "Run injected…"/"Copy Name" row buttons use), and a
+// small pill-button convention (the same one Vault's "Run injected…"/"Copy
+// Name" row buttons use - all of them `HelmButton` since the design system's
+// phase 2), and a
 // `⌘⏎` shortcut hint next to the intent field.
 //
 // `fm/grandline-composer-theme-and-width` fixed two real captain-reported
@@ -191,14 +192,14 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
     private let intentScroll = NSScrollView()
     private let intentTextView = NSTextView()
     private let intentPlaceholderLabel = NSTextField(labelWithString: "Describe what you want to run…")
-    private let generateButton = NSButton(title: "Generate", target: nil, action: nil)
+    private let generateButton = HelmButton(title: "Generate", variant: .primary, target: nil, action: nil)
     private let shortcutHintLabel = NSTextField(labelWithString: "\u{2318}\u{23ce} to generate")
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let codeScroll = NSScrollView()
     private let codeTextView = NSTextView()
-    private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
-    private let runButton = NSButton(title: "Run in Terminal", target: nil, action: nil)
+    private let copyButton = HelmButton(title: "Copy", variant: .secondary, target: nil, action: nil)
+    private let runButton = HelmButton(title: "Run in Terminal", variant: .primary, target: nil, action: nil)
     private let commandStack = NSStackView()
 
     var onRunInTerminal: ((String) -> Void)?
@@ -232,7 +233,6 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
 
         generateButton.target = self
         generateButton.action = #selector(generateClicked)
-        generateButton.bezelStyle = .rounded
         generateButton.controlSize = .small
         // `⌘⏎` fires Generate regardless of first responder - `NSWindow`'s
         // `performKeyEquivalent:` traversal reaches this button before a
@@ -273,12 +273,10 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
 
         copyButton.target = self
         copyButton.action = #selector(copyClicked)
-        copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
 
         runButton.target = self
         runButton.action = #selector(runClicked)
-        runButton.bezelStyle = .rounded
         runButton.controlSize = .small
         runButton.keyEquivalent = "\r"
 

@@ -67,7 +67,7 @@ final class VaultController: NSViewController {
     private let contentStack = NSStackView()
 
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let refreshButton = NSButton()
+    private let refreshButton = HelmButton(symbol: "arrow.clockwise", variant: .quiet)
 
     // Whether `av` itself is installed - checked in the background (reusing
     // the same `UpdatesSource`/`DependencyCatalog` "automic-vault" entry the
@@ -89,7 +89,7 @@ final class VaultController: NSViewController {
     private let secretsPanel = HelmCard()
     private let secretsStack = NSStackView()
     private let secretsCountBadge = NSTextField(labelWithString: "0")
-    private let addSecretButton = NSButton()
+    private let addSecretButton = HelmButton(title: "", variant: .primary)
 
     private let toolsPanel = HelmCard()
     private let toolsStack = NSStackView()
@@ -99,8 +99,8 @@ final class VaultController: NSViewController {
     // see VaultRecipe.swift/VaultRecipeGit.swift for what's recorded and why.
     private let recipePanel = HelmCard()
     private let recipeDetailLabel = NSTextField(wrappingLabelWithString: "")
-    private let exportRecipeButton = NSButton()
-    private let checkBackupButton = NSButton()
+    private let exportRecipeButton = HelmButton(title: "", variant: .primary)
+    private let checkBackupButton = HelmButton(title: "", variant: .secondary)
     private let recipeSpinner = NSProgressIndicator()
     private var isRecipeBusy = false
     // Bug fix (fm/grandline-dictation-global-hotkey-and-theme-fixes):
@@ -204,9 +204,6 @@ final class VaultController: NSViewController {
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        refreshButton.title = ""
-        refreshButton.isBordered = false
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshButton.target = self
         refreshButton.action = #selector(refreshTapped)
         refreshButton.toolTip = "Refresh Vault status"
@@ -256,7 +253,6 @@ final class VaultController: NSViewController {
         _ = attentionBannerView() // configures attentionBanner's fixed chrome once.
 
         addSecretButton.title = "+ Add Secret"
-        addSecretButton.bezelStyle = .rounded
         addSecretButton.controlSize = .small
         addSecretButton.target = self
         addSecretButton.action = #selector(addSecretTapped)
@@ -289,13 +285,11 @@ final class VaultController: NSViewController {
 
     private func buildRecipeSection() -> NSView {
         exportRecipeButton.title = "Export Recipe"
-        exportRecipeButton.bezelStyle = .rounded
         exportRecipeButton.controlSize = .small
         exportRecipeButton.target = self
         exportRecipeButton.action = #selector(exportRecipeTapped)
 
         checkBackupButton.title = "Check Against Backup"
-        checkBackupButton.bezelStyle = .rounded
         checkBackupButton.controlSize = .small
         checkBackupButton.target = self
         checkBackupButton.action = #selector(checkBackupTapped)
@@ -497,8 +491,7 @@ final class VaultController: NSViewController {
         )
         ToolRowLayout.pill(text: "Hardened", colorHex: theme.ansiHex[2], into: views.pill, label: views.pillLabel, theme: theme)
 
-        let runButton = NSButton(title: "Run injected\u{2026}", target: self, action: #selector(runInjectedTapped(_:)))
-        runButton.bezelStyle = .rounded
+        let runButton = HelmButton(title: "Run injected\u{2026}", variant: .secondary, target: self, action: #selector(runInjectedTapped(_:)))
         runButton.controlSize = .small
         runButton.identifier = NSUserInterfaceItemIdentifier("secret-run:\(secret.name)")
 
@@ -508,8 +501,7 @@ final class VaultController: NSViewController {
         // trailing edge. Still only ever copies the NAME already shown in
         // this row; the secret's value never touches this app (see this
         // file's header comment).
-        let copyButton = NSButton(title: "Copy Name", target: self, action: #selector(copyNameTapped(_:)))
-        copyButton.bezelStyle = .rounded
+        let copyButton = HelmButton(title: "Copy Name", variant: .secondary, target: self, action: #selector(copyNameTapped(_:)))
         copyButton.controlSize = .small
         copyButton.toolTip = "Copy secret name to clipboard"
         copyButton.identifier = NSUserInterfaceItemIdentifier("secret-copy:\(secret.name)")
@@ -698,7 +690,6 @@ final class VaultController: NSViewController {
         subtitleLabel.stringValue = installStatus == .notInstalled
             ? "Automic Vault isn't installed on this machine yet."
             : "\(secrets.count) secret\(secrets.count == 1 ? "" : "s") \u{00B7} \(tools.count) verified launcher\(tools.count == 1 ? "" : "s")"
-        refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
 
         attentionBanner.layer?.backgroundColor = warn.withAlphaComponent(0.14).cgColor
         attentionLabel.textColor = ink
@@ -747,11 +738,9 @@ final class VaultSaveSecretSheetController: NSViewController {
         errorLabel.textColor = .systemRed
         errorLabel.isHidden = true
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save\u{2026}", target: self, action: #selector(confirm))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save\u{2026}", variant: .primary, target: self, action: #selector(confirm))
         save.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -895,8 +884,7 @@ final class VaultRecipeChecklistSheetController: NSViewController {
         hugContent.isActive = true
         scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 360).isActive = true
 
-        let close = NSButton(title: "Close", target: self, action: #selector(closeTapped))
-        close.bezelStyle = .rounded
+        let close = HelmButton(title: "Close", variant: .primary, target: self, action: #selector(closeTapped))
         close.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -983,7 +971,7 @@ final class VaultInjectSheetController: NSViewController {
 
     private let secretNames: [String]
     private let preselected: String?
-    private let secretPopup = NSPopUpButton()
+    private let secretPopup = HelmPopUpButton()
     private let commandField = NSTextField()
     private let errorLabel = NSTextField(labelWithString: "")
 
@@ -1029,11 +1017,9 @@ final class VaultInjectSheetController: NSViewController {
             errorLabel.isHidden = false
         }
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let run = NSButton(title: "Run", target: self, action: #selector(confirm))
-        run.bezelStyle = .rounded
+        let run = HelmButton(title: "Run", variant: .primary, target: self, action: #selector(confirm))
         run.keyEquivalent = "\r"
         run.isEnabled = !secretNames.isEmpty
         let spacer = NSView()

@@ -101,8 +101,8 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        editButton = footerButton("Edit", symbol: "pencil", action: #selector(editSelected))
-        deleteButton = footerButton("Delete", symbol: "trash", action: #selector(deleteSelected))
+        editButton = footerButton("Edit", symbol: "pencil", variant: .secondary, action: #selector(editSelected))
+        deleteButton = footerButton("Delete", symbol: "trash", variant: .destructive, action: #selector(deleteSelected))
         let footer = NSStackView(views: [editButton, deleteButton])
         footer.orientation = .horizontal
         footer.distribution = .fillEqually
@@ -142,11 +142,9 @@ final class KeysSidebarController: NSViewController, NSTableViewDataSource, NSTa
         reload()
     }
 
-    private func footerButton(_ title: String, symbol: String, action: Selector) -> NSButton {
-        let b = NSButton(title: " " + title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-        b.imagePosition = .imageLeading
+    private func footerButton(_ title: String, symbol: String, variant: HelmButton.Variant,
+                             action: Selector) -> NSButton {
+        let b = HelmButton(title: title, variant: variant, symbol: symbol, target: self, action: action)
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }

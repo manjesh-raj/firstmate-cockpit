@@ -34,17 +34,17 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let contentStack = NSStackView()
 
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let refreshButton = NSButton()
+    private let refreshButton = HelmButton(symbol: "arrow.clockwise", variant: .quiet)
 
     private let statusPanel = HelmCard()
     private let statusIconTile = IconTileView(size: 40, cornerRadius: 10)
     private let statusTitleLabel = NSTextField(labelWithString: "")
     private let statusDetailLabel = NSTextField(wrappingLabelWithString: "")
-    private let statusActionButton = NSButton()
+    private let statusActionButton = HelmButton(title: "", variant: .primary)
 
     private let shortcutPanel = HelmCard()
     private let shortcutRecorder: DictationShortcutRecorderView
-    private let shortcutResetButton = NSButton()
+    private let shortcutResetButton = HelmButton(title: "", variant: .secondary)
     private let shortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
 
     private let cleanupPanel = HelmCard()
@@ -57,7 +57,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let localWhisperTitleLabel = NSTextField(labelWithString: "")
     private let localWhisperDetailLabel = NSTextField(wrappingLabelWithString: "")
     private let modelStatusLabel = NSTextField(labelWithString: "")
-    private let modelActionButton = NSButton()
+    private let modelActionButton = HelmButton(title: "", variant: .primary)
     private let modelProgressBar = NSProgressIndicator()
     private var modelState: WhisperModelState = .notDownloaded
 
@@ -65,7 +65,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let vocabularyCountLabel = NSTextField(labelWithString: "")
     private let vocabularyChipFlow = ChipFlowView()
     private let vocabularyInputField = NSTextField()
-    private let vocabularyAddButton = NSButton()
+    private let vocabularyAddButton = HelmButton(title: "", variant: .secondary)
 
     private let historyPanel = HelmCard()
     private let historyCountLabel = NSTextField(labelWithString: "")
@@ -227,9 +227,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         subtitleLabel.stringValue = "A first-party, in-process dictation pipeline - no third-party app required."
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        refreshButton.title = ""
-        refreshButton.isBordered = false
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshButton.target = self
         refreshButton.action = #selector(refreshTapped)
         refreshButton.toolTip = "Re-check Dictation permissions"
@@ -267,7 +264,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
-        statusActionButton.bezelStyle = .rounded
         statusActionButton.controlSize = .regular
         statusActionButton.target = self
         statusActionButton.action = #selector(statusActionTapped)
@@ -299,7 +295,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         }
 
         shortcutResetButton.title = "Reset to Right ⌥ Option"
-        shortcutResetButton.bezelStyle = .rounded
         shortcutResetButton.controlSize = .small
         shortcutResetButton.target = self
         shortcutResetButton.action = #selector(resetShortcutTapped)
@@ -428,7 +423,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         modelProgressBar.translatesAutoresizingMaskIntoConstraints = false
         modelProgressBar.widthAnchor.constraint(equalToConstant: 160).isActive = true
 
-        modelActionButton.bezelStyle = .rounded
         modelActionButton.controlSize = .small
         modelActionButton.target = self
         modelActionButton.action = #selector(modelActionTapped)
@@ -477,7 +471,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         vocabularyInputField.translatesAutoresizingMaskIntoConstraints = false
 
         vocabularyAddButton.title = "Add"
-        vocabularyAddButton.bezelStyle = .rounded
         vocabularyAddButton.controlSize = .small
         vocabularyAddButton.target = self
         vocabularyAddButton.action = #selector(addVocabularyWordTapped)
@@ -575,7 +568,6 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         statusTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         statusDetailLabel.textColor = HelmTheme.mutedInk(theme)
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
-        refreshButton.contentTintColor = HelmTheme.mutedInk(theme)
         shortcutRecorder.applyTheme(theme)
         shortcutDetailLabel.textColor = HelmTheme.mutedInk(theme)
         cleanupPanel.applyTheme(theme)

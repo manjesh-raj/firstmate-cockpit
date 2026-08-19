@@ -213,8 +213,8 @@ final class BootstrapController: NSViewController {
     private let currentPathLabel = NSTextField(labelWithString: "")
     private let pathField = NSTextField()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private let saveButton = NSButton()
-    private let restartButton = NSButton()
+    private let saveButton = HelmButton(title: "", variant: .primary)
+    private let restartButton = HelmButton(title: "", variant: .secondary)
 
     /// Set by `AppShellController` (mirrors `onPresentHostEditor`'s wiring
     /// pattern) so this controller can ask for a command to run in the
@@ -281,7 +281,7 @@ final class BootstrapController: NSViewController {
     private let driftDescLabel = NSTextField(wrappingLabelWithString: "Re-runs each setup step's own check to confirm nothing has drifted since setup - a dotfile that got unlinked, a tool that got uninstalled, or a config that got reverted.")
     private let driftStatusLabel = NSTextField(labelWithString: "")
     private let driftLastCheckedLabel = NSTextField(labelWithString: "")
-    private let driftRecheckButton = NSButton()
+    private let driftRecheckButton = HelmButton(title: "", variant: .secondary)
 
     private static let driftTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -327,7 +327,7 @@ final class BootstrapController: NSViewController {
     private var setupSteps: [SetupStepState] = SetupStepKind.allCases.filter { $0.isPartOfFullSetupSequence }.map { SetupStepState(kind: $0) }
     private var isRunningFullSetup = false
     private let setupStack = NSStackView()
-    private let runFullSetupButton = NSButton()
+    private let runFullSetupButton = HelmButton(title: "", variant: .primary)
     private let fullSetupSubtitleLabel = NSTextField(wrappingLabelWithString: "")
     private let progressTrack = NSView()
     private let progressFill = NSView()
@@ -550,8 +550,7 @@ final class BootstrapController: NSViewController {
         pathField.placeholderString = "~/manjesh/firstmate"
         pathField.translatesAutoresizingMaskIntoConstraints = false
 
-        let browseButton = NSButton(title: "Browse\u{2026}", target: self, action: #selector(browseClicked))
-        browseButton.bezelStyle = .rounded
+        let browseButton = HelmButton(title: "Browse\u{2026}", variant: .secondary, target: self, action: #selector(browseClicked))
 
         let fieldRow = NSStackView(views: [pathField, browseButton])
         fieldRow.orientation = .horizontal
@@ -559,12 +558,10 @@ final class BootstrapController: NSViewController {
         pathField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         saveButton.title = "Save & Verify"
-        saveButton.bezelStyle = .rounded
         saveButton.target = self
         saveButton.action = #selector(saveClicked)
 
         restartButton.title = "Restart Manjesh Grand Line"
-        restartButton.bezelStyle = .rounded
         restartButton.target = self
         restartButton.action = #selector(restartClicked)
         restartButton.isHidden = true
@@ -693,7 +690,6 @@ final class BootstrapController: NSViewController {
         ])
 
         runFullSetupButton.title = "Run full setup"
-        runFullSetupButton.bezelStyle = .rounded
         runFullSetupButton.target = self
         runFullSetupButton.action = #selector(runFullSetupClicked)
 
@@ -1237,8 +1233,7 @@ final class BootstrapController: NSViewController {
         restoreStatusLabel.textColor = HelmTheme.mutedInk(theme)
         dynamicLabels.append(restoreStatusLabel)
 
-        let importButton = NSButton(title: "Import\u{2026}", target: self, action: #selector(importRestoreConfigClicked))
-        importButton.bezelStyle = .rounded
+        let importButton = HelmButton(title: "Import\u{2026}", variant: .primary, target: self, action: #selector(importRestoreConfigClicked))
 
         let section = NSStackView(views: [desc, restoreStatusLabel, importButton])
         section.orientation = .vertical
@@ -1267,7 +1262,6 @@ final class BootstrapController: NSViewController {
         driftLastCheckedLabel.font = .systemFont(ofSize: 11)
 
         driftRecheckButton.title = "Re-check now"
-        driftRecheckButton.bezelStyle = .rounded
         driftRecheckButton.target = self
         driftRecheckButton.action = #selector(driftRecheckClicked)
         driftRecheckButton.setContentHuggingPriority(.required, for: .horizontal)
@@ -1386,8 +1380,7 @@ final class BootstrapController: NSViewController {
 
         var trailingViews: [NSView] = [views.pill]
         if let (title, action) = driftRemedy(for: kind) {
-            let button = NSButton(title: title, target: self, action: action)
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: title, variant: .secondary, target: self, action: action)
             button.controlSize = .small
             trailingViews.append(button)
         }
@@ -1468,8 +1461,7 @@ final class BootstrapController: NSViewController {
         dynamicLabels.append(desc)
 
         clonePathField.translatesAutoresizingMaskIntoConstraints = false
-        let cloneButton = NSButton(title: "Clone & Bootstrap", target: self, action: #selector(cloneAndBootstrapClicked))
-        cloneButton.bezelStyle = .rounded
+        let cloneButton = HelmButton(title: "Clone & Bootstrap", variant: .primary, target: self, action: #selector(cloneAndBootstrapClicked))
         let fieldRow = NSStackView(views: [clonePathField, cloneButton])
         fieldRow.orientation = .horizontal
         fieldRow.spacing = 8
@@ -1512,8 +1504,7 @@ final class BootstrapController: NSViewController {
 
         rows.append(buildUsernameRow(repoPath: repoPath))
 
-        let rebuildButton = NSButton(title: "Run rebuild.sh", target: self, action: #selector(runRebuildClicked))
-        rebuildButton.bezelStyle = .rounded
+        let rebuildButton = HelmButton(title: "Run rebuild.sh", variant: .primary, target: self, action: #selector(runRebuildClicked))
         rows.append(rebuildButton)
 
         let managedTitle = NSTextField(labelWithString: "Managed items")
@@ -1635,8 +1626,7 @@ final class BootstrapController: NSViewController {
         label.font = .systemFont(ofSize: 12, weight: .medium)
 
         usernameField.translatesAutoresizingMaskIntoConstraints = false
-        let save = NSButton(title: "Save", target: self, action: #selector(saveUsernameClicked))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(saveUsernameClicked))
 
         let row = NSStackView(views: [usernameField, save])
         row.orientation = .horizontal
@@ -1738,8 +1728,7 @@ final class BootstrapController: NSViewController {
         let (pillText, pillColor) = agentStatusVisuals(item.status)
         ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        let button = NSButton(title: item.status == .linked ? "Linked" : "Create link", target: self, action: #selector(createLinkClicked))
-        button.bezelStyle = .rounded
+        let button = HelmButton(title: item.status == .linked ? "Linked" : "Create link", variant: .secondary, target: self, action: #selector(createLinkClicked))
         button.controlSize = .small
         button.isEnabled = item.status != .linked
 
@@ -1819,8 +1808,7 @@ final class BootstrapController: NSViewController {
         }
         let missingCount = softwareRows.filter { $0.status == .notInstalled }.count
         if missingCount > 0 {
-            let button = NSButton(title: "Install everything missing (\(missingCount))", target: self, action: #selector(installAllMissingClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: "Install everything missing (\(missingCount))", variant: .primary, target: self, action: #selector(installAllMissingClicked))
             button.isEnabled = !softwareRows.contains { $0.isBusy }
             softwareStack.addArrangedSubview(button)
             softwareStack.setCustomSpacing(12, after: button)
@@ -1862,8 +1850,7 @@ final class BootstrapController: NSViewController {
         let (pillText, pillColor) = softwareStatusVisuals(row.status)
         ToolRowLayout.pill(text: pillText, colorHex: pillColor, into: views.pill, label: views.pillLabel)
 
-        let button = NSButton(title: installButtonTitle(row), target: self, action: #selector(installSoftwareClicked(_:)))
-        button.bezelStyle = .rounded
+        let button = HelmButton(title: installButtonTitle(row), variant: .secondary, target: self, action: #selector(installSoftwareClicked(_:)))
         button.controlSize = .small
         button.isEnabled = installButtonEnabled(row)
         button.identifier = NSUserInterfaceItemIdentifier(row.item.id)
@@ -2100,8 +2087,7 @@ final class BootstrapController: NSViewController {
             trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
         case .notHardened:
             bodyText = "gh credentials are not yet migrated into Automic Vault. \"av harden gh\" moves them into protected storage and requires the patched gh-cli build (brew install automic-vault/isotopes/gh-cli)."
-            let button = NSButton(title: isHardeningGh ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenGhClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: isHardeningGh ? "Hardening\u{2026}" : "Harden via Automic Vault", variant: .secondary, target: self, action: #selector(hardenGhClicked))
             button.isEnabled = !isHardeningGh
             trailing.append(button)
         case .isotopeMissingPlainGhInstalled:
@@ -2129,8 +2115,7 @@ final class BootstrapController: NSViewController {
             trailing.append(statusPill(text: "Nothing to harden", colorHex: theme.ansiHex[3]))
         case .notHardened:
             bodyText = "A default AWS key pair exists in ~/.aws/credentials and is not yet migrated. \"av harden aws\" moves it into the login keychain and installs a protected /usr/local/bin/aws launcher in front of the real AWS CLI."
-            let button = NSButton(title: isHardeningAws ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenAwsClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: isHardeningAws ? "Hardening\u{2026}" : "Harden via Automic Vault", variant: .secondary, target: self, action: #selector(hardenAwsClicked))
             button.isEnabled = !isHardeningAws
             trailing.append(button)
         case .checkFailed(let reason):
@@ -2152,8 +2137,7 @@ final class BootstrapController: NSViewController {
             trailing.append(statusPill(text: "Hardened", colorHex: theme.ansiHex[2]))
         case .notHardened:
             bodyText = "Codex CLI credentials are still on disk in plaintext auth.json. \"av harden codex\" migrates them into the macOS Keychain. It refuses to run while ChatGPT.app is open, since Codex CLI, its IDE extension, and the ChatGPT desktop app share configuration - quit ChatGPT first."
-            let button = NSButton(title: isHardeningCodex ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenCodexClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: isHardeningCodex ? "Hardening\u{2026}" : "Harden via Automic Vault", variant: .secondary, target: self, action: #selector(hardenCodexClicked))
             button.isEnabled = !isHardeningCodex
             trailing.append(button)
         case .checkFailed(let reason):
@@ -2187,8 +2171,7 @@ final class BootstrapController: NSViewController {
             checkbox.state = homebrewDisruptionAcknowledged ? .on : .off
             extra.append(checkbox)
 
-            let button = NSButton(title: isHardeningHomebrew ? "Hardening\u{2026}" : "Harden via Automic Vault", target: self, action: #selector(hardenHomebrewClicked))
-            button.bezelStyle = .rounded
+            let button = HelmButton(title: isHardeningHomebrew ? "Hardening\u{2026}" : "Harden via Automic Vault", variant: .secondary, target: self, action: #selector(hardenHomebrewClicked))
             button.isEnabled = homebrewDisruptionAcknowledged && !isHardeningHomebrew
             trailing.append(button)
         case .checkFailed(let reason):

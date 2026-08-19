@@ -20,10 +20,10 @@ final class ShiftFollowUpEditorController: NSViewController {
 
     private let titleField = NSTextField()
     private let followUpDatePicker = NSDatePicker()
-    private let priorityPopup = NSPopUpButton()
+    private let priorityPopup = HelmPopUpButton()
     private let notesView = NSTextView()
-    private let taskPopup = NSPopUpButton()
-    private let projectPopup = NSPopUpButton()
+    private let taskPopup = HelmPopUpButton()
+    private let projectPopup = HelmPopUpButton()
 
     /// index 0 is always "None"; index n+1 is `tasks[n]` / `projects[n]`.
     private var taskIDs: [String?] = []
@@ -117,11 +117,9 @@ final class ShiftFollowUpEditorController: NSViewController {
 
         let notesLabel = rowLabel("Notes")
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
         save.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)

@@ -377,3 +377,540 @@ final class HelmCard: NSView {
     /// outline, so the card reads as one object rather than two stacked ones.
     static let dividerAlpha: CGFloat = 0.5
 }
+
+// MARK: - HelmButton
+
+/// The app's one button.
+///
+/// **Why this exists.** The audit (§3.2 "Buttons - the biggest single driver
+/// of the legacy feel") counted **124 stock `bezelStyle` buttons across 29
+/// files** and **18 `keyEquivalent = "\r"` default buttons across 15**. A
+/// stock `NSButton` paints macOS's own grey gradient bezel and a default
+/// button paints literal system blue (`#0a84ff` measured; `controlAccentColor`
+/// is `#007aff`, `selectedContentBackgroundColor` `#0059d1`) - none of which
+/// has any relationship to the 12 Helm accents
+/// (`#6cd7e3 #007194 #2aa198 #cba6f7 #8839ef #fe8019 #af3a03 #7aa2f7 #2959aa
+/// #c4a7e7 #286983`, no overlap). So a fully themed app still read as generic
+/// system chrome, and the report's own conclusion was that this one component
+/// "would change the app's perceived age more than any other single change."
+///
+/// **Nothing here is a new visual invention.** The recipe is
+/// `UpdatesController`'s Refresh pill - the single correctly-themed primary
+/// action that already existed - promoted into a real control: an opaque
+/// `accentHex` fill with a `selectionTextHex` label. That pairing is not a
+/// guess either; `selectionTextHex` is SwiftTerm's own selected-text tone,
+/// already contrast-verified against an opaque `accentHex` in every palette
+/// (and re-asserted per theme by `HelmContrastSelfTest`).
+///
+/// **How it stops being a bezel.** `isBordered = false` makes AppKit draw no
+/// bezel at all - verified by rendering a real default button both ways: the
+/// stock one composites its bezel material, the unbordered one captures fully
+/// transparent. So the Return-key shortcut (`keyEquivalent = "\r"`, which
+/// every migrated site keeps) survives while the blue *look* has nothing left
+/// to paint. Chrome then comes from the view's own layer, and the label from
+/// `attributedTitle` - `contentTintColor` does not colour a string title,
+/// only an image, which is why three pages had already hand-rolled exactly
+/// this workaround before it was shared (`UpdatesController`'s "Install in
+/// Bootstrap", `CommandLibraryViews`' Copy and Favorite).
+///
+/// **It themes itself**, like `HelmCard`: it registers its own
+/// `ThemeManager.observe` and unregisters in `deinit`, so no page has to keep
+/// a button registry. That is deliberate rather than convenient - a per-page
+/// registry is exactly the shape of `ThemeManager.swift`'s checklist item 4
+/// (a theme closure looping a collection that is still empty on its first,
+/// synchronous firing), which is the single most repeated bug class in this
+/// codebase.
+///
+/// **Migrating a site** is a type change, nothing more; `title`, `target`,
+/// `action`, `keyEquivalent`, `isEnabled`, `isHidden`, `controlSize` and
+/// `identifier` all keep working, because this is an `NSButton`:
+///
+/// ```swift
+/// // before
+/// let save = NSButton(title: "Save", target: self, action: #selector(save))
+/// save.bezelStyle = .rounded
+/// save.keyEquivalent = "\r"
+/// // after
+/// let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
+/// save.keyEquivalent = "\r"
+/// ```
+final class HelmButton: NSButton {
+    /// Which of the four roles a button plays. Picked per site from what the
+    /// button already did, not assigned mechanically: `.primary` is the one
+    /// action a sheet or card is *for*, `.secondary` is everything ordinary,
+    /// `.quiet` is toolbar/inline weight, `.destructive` is delete/discard.
+    enum Variant {
+        /// Opaque accent fill, `selectionTextHex` label. At most one per
+        /// sheet footer / card header.
+        case primary
+        /// Bordered, theme-derived - the default. Replaces the stock bezel.
+        case secondary
+        /// Borderless, muted label, hover-only background. Toolbar icons and
+        /// link-weight actions.
+        case quiet
+        /// A contrast-corrected wash of the theme's own red. Delete, discard,
+        /// "Keep deleted".
+        case destructive
+    }
+
+    /// Two densities, matching `controlSize`'s `.regular` / `.small` so an
+    /// existing `controlSize = .small` line at a migrated site keeps working
+    /// unchanged (see the `controlSize` override).
+    enum Size {
+        case regular
+        case small
+
+        var font: NSFont {
+            switch self {
+            case .regular: return .systemFont(ofSize: 12, weight: .semibold)
+            case .small: return .systemFont(ofSize: 11, weight: .semibold)
+            }
+        }
+
+        var symbolPointSize: CGFloat {
+            switch self {
+            case .regular: return 12
+            case .small: return 11
+            }
+        }
+
+        /// Vertical padding above/below the label.
+        var vInset: CGFloat {
+            switch self {
+            case .regular: return 6
+            case .small: return 4
+            }
+        }
+
+        /// The floor height, so a row of buttons stays on one baseline even
+        /// when one of them is icon-only.
+        var minHeight: CGFloat {
+            switch self {
+            case .regular: return 26
+            case .small: return 21
+            }
+        }
+    }
+
+    // MARK: Configuration
+
+    var variant: Variant {
+        didSet { if variant != oldValue { invalidateIntrinsicContentSize(); restyle() } }
+    }
+
+    var size: Size {
+        didSet { if size != oldValue { rebuildImage(); invalidateIntrinsicContentSize(); restyle() } }
+    }
+
+    /// An optional semantic hue for the *label* of a `.secondary` / `.quiet`
+    /// button - the "this action is amber / accent-coloured" emphasis three
+    /// pages had already hand-rolled with `attributedTitle`. Routed through
+    /// `HelmContrast` rather than used raw, per Phase 0's rule: a `HelmTint`
+    /// hue is safe as a fill or a bar and is **not** automatically safe as
+    /// text. Ignored by `.primary` (its label is fixed to the on-accent tone)
+    /// and by `.destructive` (its hue is already the point).
+    var tint: HelmTint? {
+        didSet { if tint != oldValue { restyle() } }
+    }
+
+    /// SF Symbol shown before the title, or alone when the title is empty.
+    var symbolName: String? {
+        didSet { if symbolName != oldValue { rebuildImage(); invalidateIntrinsicContentSize(); restyle() } }
+    }
+
+    private var plainTitle: String
+    private var isHovering = false
+    private var isPressed = false
+    private var themeObservation: ThemeObservation?
+    private var hoverTracking: NSTrackingArea?
+
+    // MARK: Init
+
+    init(title: String,
+         variant: Variant = .secondary,
+         size: Size = .regular,
+         symbol: String? = nil,
+         target: AnyObject? = nil,
+         action: Selector? = nil) {
+        self.plainTitle = title
+        self.variant = variant
+        self.size = size
+        self.symbolName = symbol
+        super.init(frame: .zero)
+
+        // No bezel to paint grey (or system blue): all chrome is this view's
+        // own layer from here on.
+        isBordered = false
+        // The stock default/focus rings are the other half of the system-blue
+        // look the audit measured.
+        focusRingType = .none
+        wantsLayer = true
+        layer?.masksToBounds = true
+        alignment = .center
+        lineBreakMode = .byTruncatingTail
+        self.target = target
+        self.action = action
+        rebuildImage()
+
+        // Registered last: `observe` fires synchronously, and `restyle` reads
+        // every property above.
+        themeObservation = ThemeManager.shared.observe { [weak self] _ in self?.restyle() }
+        // Match `NSButton(title:target:action:)`, which hands back a
+        // already-sized frame - a caller using frame layout (or relying on
+        // `translatesAutoresizingMaskIntoConstraints`'s default `true`, which
+        // this deliberately leaves alone) would otherwise get a zero rect.
+        sizeToFit()
+    }
+
+    /// A title-less icon button - the toolbar shape. `.quiet` by default,
+    /// since that is what a bare glyph in a toolbar reads as.
+    convenience init(symbol: String,
+                     variant: Variant = .quiet,
+                     size: Size = .regular,
+                     target: AnyObject? = nil,
+                     action: Selector? = nil) {
+        self.init(title: "", variant: variant, size: size, symbol: symbol, target: target, action: action)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    deinit {
+        if let themeObservation { ThemeManager.shared.unobserve(themeObservation) }
+    }
+
+    // MARK: NSButton overrides
+
+    /// Kept in sync with the plain string this button re-derives its
+    /// `attributedTitle` from, so a site that rewrites `title` live (a
+    /// Favorite / Favorited flip, a "Save"/"Create" swap) still repaints.
+    override var title: String {
+        get { plainTitle }
+        set {
+            plainTitle = newValue
+            rebuildImage()
+            invalidateIntrinsicContentSize()
+            restyle()
+        }
+    }
+
+    /// `.small` / `.mini` map to `Size.small`, so a migrated site's existing
+    /// `controlSize = .small` line needs no edit.
+    override var controlSize: NSControl.ControlSize {
+        get { super.controlSize }
+        set {
+            super.controlSize = newValue
+            size = (newValue == .small || newValue == .mini) ? .small : .regular
+        }
+    }
+
+    /// A disabled button dims as a whole - fill, border, label and glyph
+    /// together - rather than relying on the cell's own greying, which only
+    /// applies to chrome this no longer draws.
+    override var isEnabled: Bool {
+        get { super.isEnabled }
+        set { super.isEnabled = newValue; restyle() }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        var s = super.intrinsicContentSize
+        s.width += 2 * hInset
+        s.height = max(s.height + 2 * size.vInset, size.minHeight)
+        // An icon-only button reads as a square tap target, not a sliver.
+        if plainTitle.isEmpty { s.width = max(s.width, s.height) }
+        return s
+    }
+
+    // MARK: Press / hover feedback
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        restyle()
+        // `super` runs AppKit's own tracking loop, so click-cancel-by-dragging
+        // -out and the action dispatch itself stay exactly as they were.
+        super.mouseDown(with: event)
+        isPressed = false
+        restyle()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                                  owner: self,
+                                  userInfo: nil)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        restyle()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        restyle()
+    }
+
+    // MARK: Chrome
+
+    /// Horizontal padding. `.quiet` is tighter, so a bare toolbar glyph does
+    /// not carry a pill's worth of dead space around it.
+    private var hInset: CGFloat {
+        switch (variant, size) {
+        case (.quiet, .regular): return 8
+        case (.quiet, .small): return 6
+        case (_, .regular): return 13
+        case (_, .small): return 10
+        }
+    }
+
+    /// What this button is actually painted with, for `theme`.
+    ///
+    /// Exposed (rather than private) so `HelmButtonSelfTest` can assert the
+    /// real resolved colours per variant per theme instead of re-deriving
+    /// them, and so a probe can pixel-check a render against them.
+    struct Palette {
+        let fill: NSColor
+        let hoverFill: NSColor
+        let pressedFill: NSColor
+        let border: NSColor
+        let label: NSColor
+    }
+
+    static func palette(variant: Variant, tint: HelmTint?, theme: HelmTheme) -> Palette {
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        let line = HelmTheme.nsColor(theme.chromeLineHex)
+        let hoverWash = line.withAlphaComponent(0.30)
+
+        switch variant {
+        case .primary:
+            let accent = HelmTheme.nsColor(theme.accentHex)
+            return Palette(fill: accent,
+                           hoverFill: accent.hoverShifted(by: 0.12, forMode: theme.mode),
+                           // Pressed goes the *other* way from hover, so the
+                           // two states are never confusable.
+                           pressedFill: accent.hoverShifted(by: 0.14, forMode: theme.mode == .dark ? .light : .dark),
+                           border: .clear,
+                           label: HelmTheme.nsColor(theme.selectionTextHex))
+
+        case .secondary:
+            // The one "sunken control fill" in this app: `chromeInkHex`
+            // blended 8% into `chromeBackgroundHex`. Deliberately not
+            // `backgroundHex`, which is numerically identical to
+            // `chromeBackgroundHex` in gruvbox-light / tokyo-night-dark /
+            // tokyo-night-light and would leave the control invisible there.
+            let fill = Self.controlFill(theme)
+            return Palette(fill: fill,
+                           hoverFill: fill.hoverShifted(by: 0.07, forMode: theme.mode),
+                           pressedFill: fill.hoverShifted(by: 0.12, forMode: theme.mode),
+                           border: line.withAlphaComponent(0.70),
+                           // `chromeInkHex` is guaranteed against the theme's
+                           // *card* surface, and this fill sits 8% off it -
+                           // enough to drop solarized-dark's ink to 4.20:1
+                           // (measured). So the ink gets the same treatment
+                           // every other tone in this file gets rather than
+                           // being assumed safe.
+                           label: Self.label(tint: tint, over: fill, theme: theme)
+                               ?? Self.legible(ink, over: fill))
+
+        case .quiet:
+            let fill = NSColor.clear
+            return Palette(fill: fill,
+                           hoverFill: hoverWash,
+                           pressedFill: line.withAlphaComponent(0.42),
+                           border: .clear,
+                           // A quiet button sits directly on a page or a card,
+                           // so score its tinted label against the card
+                           // surface it is most likely on.
+                           label: Self.label(tint: tint,
+                                             over: HelmTheme.nsColor(theme.chromeBackgroundHex),
+                                             theme: theme) ?? HelmTheme.mutedInk(theme))
+
+        case .destructive:
+            // Phase 0's rule in one line: the red hue is fine as the fill,
+            // and is *not* automatically legible as the label on top of it -
+            // `tintedSurface` flattens the wash and nudges the label toward
+            // the theme's own ink by the least amount that clears 4.5:1.
+            let redHex = theme.ansiHex[1]
+            let resolved = HelmContrast.tintedSurface(tintHex: redHex,
+                                                      theme: theme,
+                                                      target: HelmContrast.textTarget)
+            return Palette(fill: resolved.fill,
+                           hoverFill: resolved.fill.hoverShifted(by: 0.08, forMode: theme.mode),
+                           pressedFill: resolved.fill.hoverShifted(by: 0.14, forMode: theme.mode),
+                           border: HelmTheme.nsColor(redHex).withAlphaComponent(0.45),
+                           label: resolved.foreground)
+        }
+    }
+
+    /// The shared sunken-control fill, and the single definition of it.
+    /// `ConsoleComposerPopover`, `ShiftController`'s project-detail form and
+    /// `ShiftTaskEditorController` each carried a byte-identical private copy
+    /// (audit §3.2, "Sunken form field - 3 byte-identical copies"); their
+    /// consolidation into a real `HelmField` is Phase 6, but every button and
+    /// popup this phase touches already reads it from here.
+    static func controlFill(_ theme: HelmTheme) -> NSColor {
+        let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
+    }
+
+    /// `base` if it already clears the text floor against `surface`, else
+    /// `base` blended toward whichever of white/black it can reach the most
+    /// contrast against, by the smallest step that clears it.
+    ///
+    /// The direction has to be chosen by evaluating both endpoints rather than
+    /// assumed from the theme's mode - a tone already close to one extreme has
+    /// almost no headroom left in that direction. Same reasoning as the
+    /// vendored `NSColor.legibleColor(against:)` truecolor patch
+    /// (`Vendor/SwiftTerm/README.md`, "Second patch").
+    static func legible(_ base: NSColor, over surface: NSColor) -> NSColor {
+        if HelmContrast.ratio(base, surface) >= HelmContrast.textTarget { return base }
+        let endpoint: NSColor = HelmContrast.relativeLuminance(HelmContrast.components(surface)) > 0.35
+            ? .black : .white
+        for step in stride(from: 0.05, through: 1.0, by: 0.05) {
+            guard let blended = base.blended(withFraction: CGFloat(step), of: endpoint) else { break }
+            if HelmContrast.ratio(blended, surface) >= HelmContrast.textTarget { return blended }
+        }
+        return endpoint
+    }
+
+    /// A tinted label, contrast-corrected against the surface it lands on -
+    /// `nil` when no tint was asked for, so the caller falls back to ink.
+    private static func label(tint: HelmTint?, over surface: NSColor, theme: HelmTheme) -> NSColor? {
+        guard let tint else { return nil }
+        let hue = HelmTheme.nsColor(tint.hex(in: theme))
+        if HelmContrast.ratio(hue, surface) >= HelmContrast.textTarget { return hue }
+        // Blend toward the theme's ink by the smallest step that clears the
+        // floor - the same technique as `HelmContrast.tintedSurface`, applied
+        // to a label over an already-known opaque fill.
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        for step in stride(from: 0.1, through: 1.0, by: 0.1) {
+            guard let blended = hue.blended(withFraction: CGFloat(step), of: ink) else { break }
+            if HelmContrast.ratio(blended, surface) >= HelmContrast.textTarget { return blended }
+        }
+        return legible(ink, over: surface)
+    }
+
+    private func restyle() {
+        let theme = ThemeManager.shared.theme
+        let p = Self.palette(variant: variant, tint: tint, theme: theme)
+
+        let fill: NSColor
+        if !isEnabled { fill = p.fill }
+        else if isPressed { fill = p.pressedFill }
+        else if isHovering { fill = p.hoverFill }
+        else { fill = p.fill }
+
+        layer?.cornerRadius = HelmMetrics.rControl
+        layer?.backgroundColor = fill.cgColor
+        layer?.borderColor = p.border.cgColor
+        layer?.borderWidth = p.border.alphaComponent > 0 ? 1 : 0
+        // Dim the whole control, not just chrome the cell no longer draws.
+        alphaValue = isEnabled ? 1 : 0.42
+
+        let labelColor = (variant == .quiet && isHovering && isEnabled)
+            ? HelmTheme.nsColor(theme.chromeInkHex)
+            : p.label
+        let paragraph = NSMutableParagraphStyle()
+        // `NSButton.attributedTitle` lays text out with the *string's* own
+        // paragraph alignment, not the button's `alignment` - omitting this
+        // left the rail's labels (and their icons) visibly off-centre once
+        // before (`fm/grandline-sidebar-nav-polish`).
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byTruncatingTail
+        super.attributedTitle = NSAttributedString(string: plainTitle, attributes: [
+            .font: size.font,
+            .foregroundColor: labelColor,
+            .paragraphStyle: paragraph,
+        ])
+        // The glyph does follow `contentTintColor` (only a string title does not).
+        contentTintColor = labelColor
+    }
+
+    private func rebuildImage() {
+        guard let symbolName else {
+            image = nil
+            imagePosition = .noImage
+            return
+        }
+        let configuration = NSImage.SymbolConfiguration(pointSize: size.symbolPointSize, weight: .semibold)
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: plainTitle.isEmpty ? symbolName : plainTitle)?
+            .withSymbolConfiguration(configuration)
+        imagePosition = plainTitle.isEmpty ? .imageOnly : .imageLeading
+        // Without this the glyph is pinned to the cell's leading edge and the
+        // title floats away from it, instead of the two reading as one label.
+        imageHugsTitle = true
+        imageScaling = .scaleNone
+    }
+}
+
+// MARK: - HelmPopUpButton
+
+/// `NSPopUpButton` with `HelmButton(.secondary)`'s chrome.
+///
+/// The audit counted 13 `NSPopUpButton`s rendering in system chrome (§3.2),
+/// and §6.5 put *reimplementing* AppKit controls out of scope - "wrapping
+/// their containers and re-tinting is buildable; reimplementing a date picker
+/// is not worth it." A popup happens to need neither: `NSPopUpButton` is an
+/// `NSButton` subclass, so `isBordered = false` drops its bezel exactly like
+/// `HelmButton`'s while the menu, `selectItem…`, `titleOfSelectedItem`,
+/// `indexOfSelectedItem` and every other API a caller uses keep working -
+/// verified live before this was written (unbordered + layer fill + tint
+/// renders themed, and `titleOfSelectedItem` / `numberOfItems` still report
+/// correctly). Migrating a site is therefore also just a type change.
+///
+/// The one visible difference from `HelmButton`: the cell still draws the
+/// disclosure chevron, which follows `contentTintColor`.
+final class HelmPopUpButton: NSPopUpButton {
+    private var themeObservation: ThemeObservation?
+
+    init() {
+        super.init(frame: .zero, pullsDown: false)
+        commonSetup()
+    }
+
+    override init(frame: NSRect, pullsDown: Bool) {
+        super.init(frame: frame, pullsDown: pullsDown)
+        commonSetup()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    deinit {
+        if let themeObservation { ThemeManager.shared.unobserve(themeObservation) }
+    }
+
+    private func commonSetup() {
+        isBordered = false
+        focusRingType = .none
+        wantsLayer = true
+        layer?.masksToBounds = true
+        themeObservation = ThemeManager.shared.observe { [weak self] theme in self?.applyTheme(theme) }
+    }
+
+    /// A popup's own title is drawn from its selected menu item, not from
+    /// `attributedTitle`, so its label follows `contentTintColor` here -
+    /// unlike `HelmButton`, whose string title does not.
+    private func applyTheme(_ theme: HelmTheme) {
+        let p = HelmButton.palette(variant: .secondary, tint: nil, theme: theme)
+        layer?.cornerRadius = HelmMetrics.rControl
+        layer?.backgroundColor = p.fill.cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = p.border.cgColor
+        contentTintColor = p.label
+        // The menu itself is AppKit chrome drawn outside this view; matching
+        // its light/dark side to the theme is all a view can do for it.
+        appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+    }
+
+    override var intrinsicContentSize: NSSize {
+        var s = super.intrinsicContentSize
+        // The stock bezel supplied this padding; an unbordered cell does not.
+        s.width += 10
+        s.height = max(s.height, 24)
+        return s
+    }
+}

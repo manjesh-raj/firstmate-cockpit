@@ -99,9 +99,9 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        runButton = footerButton("Run", symbol: "play.fill", action: #selector(runSelected))
-        editButton = footerButton("Edit", symbol: "pencil", action: #selector(editSelected))
-        deleteButton = footerButton("Delete", symbol: "trash", action: #selector(deleteSelected))
+        runButton = footerButton("Run", symbol: "play.fill", variant: .primary, action: #selector(runSelected))
+        editButton = footerButton("Edit", symbol: "pencil", variant: .secondary, action: #selector(editSelected))
+        deleteButton = footerButton("Delete", symbol: "trash", variant: .destructive, action: #selector(deleteSelected))
         let footer = NSStackView(views: [runButton, editButton, deleteButton])
         footer.orientation = .horizontal
         footer.distribution = .fillEqually
@@ -141,11 +141,9 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
         reload()
     }
 
-    private func footerButton(_ title: String, symbol: String, action: Selector) -> NSButton {
-        let b = NSButton(title: " " + title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-        b.imagePosition = .imageLeading
+    private func footerButton(_ title: String, symbol: String, variant: HelmButton.Variant,
+                             action: Selector) -> NSButton {
+        let b = HelmButton(title: title, variant: variant, symbol: symbol, target: self, action: action)
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }

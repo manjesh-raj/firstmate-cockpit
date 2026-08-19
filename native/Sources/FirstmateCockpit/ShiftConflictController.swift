@@ -33,7 +33,7 @@ final class ShiftConflictController: NSViewController {
     /// re-style just that row's two buttons without rebuilding the page.
     private var choiceButtons: [String: (local: NSButton, remote: NSButton)] = [:]
 
-    private let applyButton = NSButton(title: "Apply & Push", target: nil, action: nil)
+    private let applyButton = HelmButton(title: "Apply & Push", variant: .primary, target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let progressSpinner = NSProgressIndicator()
 
@@ -119,7 +119,7 @@ final class ShiftConflictController: NSViewController {
         progressSpinner.isDisplayedWhenStopped = false
         progressSpinner.translatesAutoresizingMaskIntoConstraints = false
 
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked))
+        let cancelButton = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancelClicked))
         applyButton.keyEquivalent = "\r"
         applyButton.target = self
         applyButton.action = #selector(applyClicked)
@@ -234,15 +234,13 @@ final class ShiftConflictController: NSViewController {
         // that side), choosing it is still a meaningful, valid resolution -
         // it means letting that deletion stand - so the label says so
         // instead of the button being unavailable.
-        let localButton = NSButton(title: conflict.local != nil ? "Keep mine" : "Keep deleted (mine)", target: self, action: #selector(choiceClicked(_:)))
+        let localButton = HelmButton(title: conflict.local != nil ? "Keep mine" : "Keep deleted (mine)", variant: .secondary, target: self, action: #selector(choiceClicked(_:)))
         localButton.identifier = NSUserInterfaceItemIdentifier("\(conflict.id)\u{0}local")
-        localButton.bezelStyle = .rounded
         localButton.wantsLayer = true
         localButton.layer?.cornerRadius = 5
 
-        let remoteButton = NSButton(title: conflict.remote != nil ? "Keep GitHub's" : "Keep deleted (GitHub's)", target: self, action: #selector(choiceClicked(_:)))
+        let remoteButton = HelmButton(title: conflict.remote != nil ? "Keep GitHub's" : "Keep deleted (GitHub's)", variant: .secondary, target: self, action: #selector(choiceClicked(_:)))
         remoteButton.identifier = NSUserInterfaceItemIdentifier("\(conflict.id)\u{0}remote")
-        remoteButton.bezelStyle = .rounded
         remoteButton.wantsLayer = true
         remoteButton.layer?.cornerRadius = 5
 

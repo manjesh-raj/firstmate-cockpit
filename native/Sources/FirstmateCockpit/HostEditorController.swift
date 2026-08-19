@@ -74,7 +74,7 @@ final class HostEditorController: NSViewController {
     private let portField = NSTextField()
     private let usernameField = NSTextField()
     private let passwordField = NSSecureTextField()
-    private let keyPopup = NSPopUpButton()
+    private let keyPopup = HelmPopUpButton()
     private let groupField = NSTextField()
     private let tagsField = NSTextField()
     private let agentForwardCheckbox = NSButton(checkboxWithTitle: "Forward SSH agent (-A)", target: nil, action: nil)
@@ -83,8 +83,8 @@ final class HostEditorController: NSViewController {
     /// `FM_BLOCK_VIEW_ENABLED` is also set; the caption below says so.
     private let blockViewCheckbox = NSButton(checkboxWithTitle: "Render command blocks (Stage 0, needs FM_BLOCK_VIEW_ENABLED)", target: nil, action: nil)
     private let jumpViaField = NSTextField()
-    private let portForwardingButton = NSButton()
-    private let snippetPopup = NSPopUpButton()
+    private let portForwardingButton = HelmButton(title: "", variant: .secondary)
+    private let snippetPopup = HelmPopUpButton()
 
     /// Edited in the nested `PortForwardingController` sheet, carried here
     /// until Save.
@@ -168,7 +168,6 @@ final class HostEditorController: NSViewController {
 
         portForwardingButton.target = self
         portForwardingButton.action = #selector(editPortForwarding)
-        portForwardingButton.bezelStyle = .rounded
         portForwardingButton.translatesAutoresizingMaskIntoConstraints = false
         updatePortForwardingButtonTitle()
 
@@ -202,17 +201,13 @@ final class HostEditorController: NSViewController {
         grid.column(at: 1).xPlacement = .fill
 
         // Bottom bar: Delete on the left (editing only), Cancel + Save on the right.
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}" // Esc
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
         save.keyEquivalent = "\r" // Return
         var bottomViews: [NSView] = []
         if editing != nil {
-            let del = NSButton(title: "Delete", target: self, action: #selector(deleteHost))
-            del.bezelStyle = .rounded
-            del.contentTintColor = .systemRed
+            let del = HelmButton(title: "Delete", variant: .destructive, target: self, action: #selector(deleteHost))
             bottomViews.append(del)
         }
         let spacer = NSView()

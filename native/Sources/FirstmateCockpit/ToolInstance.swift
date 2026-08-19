@@ -277,8 +277,7 @@ final class ToolInstance: NSObject {
     }
 
     private func copyButton(action: Selector) -> NSButton {
-        let button = NSButton(title: "Copy", target: self, action: action)
-        button.bezelStyle = .rounded
+        let button = HelmButton(title: "Copy", variant: .secondary, target: self, action: action)
         button.isEnabled = false
         return button
     }
@@ -313,10 +312,8 @@ final class ToolInstance: NSObject {
         note.preferredMaxLayoutWidth = 640
         mutedLabels.append(note)
 
-        let validateButton = NSButton(title: "Validate", target: self, action: #selector(yamlValidateClicked))
-        validateButton.bezelStyle = .rounded
-        let beautifyButton = NSButton(title: "Beautify", target: self, action: #selector(yamlBeautifyClicked))
-        beautifyButton.bezelStyle = .rounded
+        let validateButton = HelmButton(title: "Validate", variant: .secondary, target: self, action: #selector(yamlValidateClicked))
+        let beautifyButton = HelmButton(title: "Beautify", variant: .primary, target: self, action: #selector(yamlBeautifyClicked))
         let buttonRow = NSStackView(views: [validateButton, beautifyButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
@@ -385,10 +382,8 @@ final class ToolInstance: NSObject {
         sLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         statusLabel = sLabel
 
-        let validateButton = NSButton(title: "Validate", target: self, action: #selector(jsonValidateClicked))
-        validateButton.bezelStyle = .rounded
-        let beautifyButton = NSButton(title: "Beautify", target: self, action: #selector(jsonBeautifyClicked))
-        beautifyButton.bezelStyle = .rounded
+        let validateButton = HelmButton(title: "Validate", variant: .secondary, target: self, action: #selector(jsonValidateClicked))
+        let beautifyButton = HelmButton(title: "Beautify", variant: .primary, target: self, action: #selector(jsonBeautifyClicked))
         let buttonRow = NSStackView(views: [validateButton, beautifyButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
@@ -459,10 +454,8 @@ final class ToolInstance: NSObject {
         sLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         statusLabel = sLabel
 
-        let encodeButton = NSButton(title: "Encode", target: self, action: #selector(base64EncodeClicked))
-        encodeButton.bezelStyle = .rounded
-        let decodeButton = NSButton(title: "Decode", target: self, action: #selector(base64DecodeClicked))
-        decodeButton.bezelStyle = .rounded
+        let encodeButton = HelmButton(title: "Encode", variant: .primary, target: self, action: #selector(base64EncodeClicked))
+        let decodeButton = HelmButton(title: "Decode", variant: .secondary, target: self, action: #selector(base64DecodeClicked))
         let buttonRow = NSStackView(views: [encodeButton, decodeButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
@@ -533,8 +526,7 @@ final class ToolInstance: NSObject {
         note.preferredMaxLayoutWidth = 640
         mutedLabels.append(note)
 
-        let decodeButton = NSButton(title: "Decode", target: self, action: #selector(jwtDecodeClicked))
-        decodeButton.bezelStyle = .rounded
+        let decodeButton = HelmButton(title: "Decode", variant: .primary, target: self, action: #selector(jwtDecodeClicked))
 
         jwtHeaderCopyButton = copyButton(action: #selector(jwtCopyHeaderClicked))
         jwtHeaderCopyButton.title = "Copy header"
@@ -637,10 +629,8 @@ final class ToolInstance: NSObject {
         tsEpochField.placeholderString = "e.g. 1734000000"
         tsEpochField.translatesAutoresizingMaskIntoConstraints = false
 
-        let nowButton = NSButton(title: "Now", target: self, action: #selector(nowClicked))
-        nowButton.bezelStyle = .rounded
-        let toHumanButton = NSButton(title: "\u{2192} Human", target: self, action: #selector(epochToHumanClicked))
-        toHumanButton.bezelStyle = .rounded
+        let nowButton = HelmButton(title: "Now", variant: .secondary, target: self, action: #selector(nowClicked))
+        let toHumanButton = HelmButton(title: "\u{2192} Human", variant: .secondary, target: self, action: #selector(epochToHumanClicked))
 
         let epochRow = NSStackView(views: [tsEpochField, nowButton, toHumanButton])
         epochRow.orientation = .horizontal
@@ -654,8 +644,7 @@ final class ToolInstance: NSObject {
         tsHumanField = NSTextField()
         tsHumanField.placeholderString = "e.g. 2026-08-12T10:00:00Z"
         tsHumanField.translatesAutoresizingMaskIntoConstraints = false
-        let toEpochButton = NSButton(title: "\u{2192} Epoch", target: self, action: #selector(humanToEpochClicked))
-        toEpochButton.bezelStyle = .rounded
+        let toEpochButton = HelmButton(title: "\u{2192} Epoch", variant: .secondary, target: self, action: #selector(humanToEpochClicked))
         let humanRow = NSStackView(views: [tsHumanField, toEpochButton])
         humanRow.orientation = .horizontal
         humanRow.spacing = 8
@@ -773,8 +762,7 @@ final class ToolInstance: NSObject {
         inputsRow.distribution = .fillEqually
         inputsRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let compareButton = NSButton(title: "Compare", target: self, action: #selector(diffCompareClicked))
-        compareButton.bezelStyle = .rounded
+        let compareButton = HelmButton(title: "Compare", variant: .primary, target: self, action: #selector(diffCompareClicked))
         compareButton.keyEquivalent = "\r"
 
         diffShowOnlyDifferences = NSButton(checkboxWithTitle: "Show only differences", target: self, action: #selector(diffShowOnlyDifferencesToggled))
@@ -851,8 +839,7 @@ final class ToolInstance: NSObject {
         sLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         statusLabel = sLabel
 
-        let inspectButton = NSButton(title: "Inspect", target: self, action: #selector(certInspectClicked))
-        inspectButton.bezelStyle = .rounded
+        let inspectButton = HelmButton(title: "Inspect", variant: .primary, target: self, action: #selector(certInspectClicked))
 
         certCopyButton = copyButton(action: #selector(certCopyClicked))
         let outputHeaderRow = NSStackView(views: [sectionLabel("Details"), certCopyButton])
@@ -922,10 +909,8 @@ final class ToolInstance: NSObject {
         cronInput.translatesAutoresizingMaskIntoConstraints = false
         cronInput.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let explainButton = NSButton(title: "Explain", target: self, action: #selector(cronExplainClicked))
-        explainButton.bezelStyle = .rounded
-        let randomButton = NSButton(title: "Random", target: self, action: #selector(cronRandomClicked))
-        randomButton.bezelStyle = .rounded
+        let explainButton = HelmButton(title: "Explain", variant: .primary, target: self, action: #selector(cronExplainClicked))
+        let randomButton = HelmButton(title: "Random", variant: .secondary, target: self, action: #selector(cronRandomClicked))
         let inputRow = NSStackView(views: [cronInput, explainButton, randomButton])
         inputRow.orientation = .horizontal
         inputRow.spacing = 8
@@ -1018,8 +1003,7 @@ final class ToolInstance: NSObject {
         cpuMillicoresField.placeholderString = "e.g. 500m"
         cpuMillicoresField.translatesAutoresizingMaskIntoConstraints = false
         cpuMillicoresField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let toCoresButton = NSButton(title: "\u{2192} Cores", target: self, action: #selector(cpuToCoresClicked))
-        toCoresButton.bezelStyle = .rounded
+        let toCoresButton = HelmButton(title: "\u{2192} Cores", variant: .secondary, target: self, action: #selector(cpuToCoresClicked))
         let millicoresRow = NSStackView(views: [cpuMillicoresField, toCoresButton])
         millicoresRow.orientation = .horizontal
         millicoresRow.spacing = 8
@@ -1037,8 +1021,7 @@ final class ToolInstance: NSObject {
         cpuCoresField.placeholderString = "e.g. 0.5"
         cpuCoresField.translatesAutoresizingMaskIntoConstraints = false
         cpuCoresField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let toMillicoresButton = NSButton(title: "\u{2192} Millicores", target: self, action: #selector(cpuToMillicoresClicked))
-        toMillicoresButton.bezelStyle = .rounded
+        let toMillicoresButton = HelmButton(title: "\u{2192} Millicores", variant: .secondary, target: self, action: #selector(cpuToMillicoresClicked))
         let coresRow = NSStackView(views: [cpuCoresField, toMillicoresButton])
         coresRow.orientation = .horizontal
         coresRow.spacing = 8
@@ -1060,8 +1043,7 @@ final class ToolInstance: NSObject {
         memoryQuantityField.placeholderString = "e.g. 256Mi, 1.5Gi, 500M, or a plain byte count"
         memoryQuantityField.translatesAutoresizingMaskIntoConstraints = false
         memoryQuantityField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let convertButton = NSButton(title: "Convert", target: self, action: #selector(memoryConvertClicked))
-        convertButton.bezelStyle = .rounded
+        let convertButton = HelmButton(title: "Convert", variant: .primary, target: self, action: #selector(memoryConvertClicked))
         let memoryRow = NSStackView(views: [memoryQuantityField, convertButton])
         memoryRow.orientation = .horizontal
         memoryRow.spacing = 8
