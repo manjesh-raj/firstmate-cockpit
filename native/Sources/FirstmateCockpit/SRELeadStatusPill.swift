@@ -12,7 +12,10 @@
 import AppKit
 
 final class SRELeadStatusPill: NSView {
-    enum State {
+    /// `Equatable` (`fm/grandline-sre-lead-per-tab`): also reused directly as
+    /// `SRELeadTabState.phase`'s type, so per-tab cap/gating checks
+    /// elsewhere can compare phases with `==` instead of a manual switch.
+    enum State: Equatable {
         case notStarted, starting, ready, failed
 
         var text: String {

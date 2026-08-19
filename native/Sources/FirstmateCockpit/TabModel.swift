@@ -187,6 +187,13 @@ final class TabModel {
     /// without ever touching `terminal` or the underlying process.
     var blockContainer: BlockContainerView?
 
+    /// `fm/grandline-sre-lead-per-tab`: this tab's own independent SRE Lead
+    /// investigation - `nil` until the captain explicitly starts SRE Lead for
+    /// this specific tab (never inherited by a duplicate, never auto-started).
+    /// See `SRELeadTabState.swift`'s header for why this lives here rather
+    /// than in a dictionary on `ConsoleController`.
+    var sreLead: SRELeadTabState?
+
     init(name: String, launch: TabLaunch, terminal: CockpitTerminalView, accentHex: String? = nil) {
         self.name = name
         self.launch = launch

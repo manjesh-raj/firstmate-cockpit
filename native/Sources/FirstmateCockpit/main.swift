@@ -711,6 +711,14 @@ if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_BRIDGE_TESTS"] == "1" {
     exit(SRELeadBridgeSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-sre-lead-per-tab`: same convention, for the real
+// `ConsoleController` per-tab SRE Lead integration (independent phases, no
+// chat cross-talk, tab-switch rebinding, the 5-tab cap, per-tab teardown on
+// close) - see `SRELeadPerTabSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_SRE_LEAD_PER_TAB_TESTS"] == "1" {
+    exit(SRELeadPerTabSelfTest.run() ? 0 : 1)
+}
+
 // `fm/cockpit-sre-lead-reply-formatting`: same convention, for
 // `SRELeadMarkdown.parse`'s block/callout parsing - see
 // `SRELeadMarkdownSelfTest.swift`'s header.

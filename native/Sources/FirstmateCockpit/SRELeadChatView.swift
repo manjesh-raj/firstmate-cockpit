@@ -171,6 +171,11 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         }.joined(separator: "\n\n")
     }
 
+    /// `fm/grandline-sre-lead-per-tab`: the exact text of every message in
+    /// this chat, in order - lets `SRELeadPerTabSelfTest` confirm a tab's
+    /// chat contains only its own question/answer, never another tab's.
+    func debugMessageTexts() -> [String] { messages.map { $0.text } }
+
     /// Disables input while a turn is in flight so the captain can't fire a
     /// second question before the first one's `claude -p` process exits -
     /// `SRELeadRunner` is not built to handle concurrent `ask` calls.

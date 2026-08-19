@@ -84,6 +84,7 @@ enum SRELeadBridgeSelfTest {
             ("discardsOutputWhenCaptainTypesWhileCommandIsRunning", test_discardsOutputWhenCaptainTypesWhileCommandIsRunning),
             ("timesOutIfEndMarkerNeverAppears", test_timesOutIfEndMarkerNeverAppears),
             ("errorsCleanlyWhenTargetTabIsGone", test_errorsCleanlyWhenTargetTabIsGone),
+            ("twoConcurrentBridgesNoCrossTalk", test_twoConcurrentBridgesNoCrossTalk),
         ]
 
         var failures = 0
@@ -281,6 +282,61 @@ enum SRELeadBridgeSelfTest {
         guard let response = readResponse(dir: dir, id: "gone") else { return "no response written" }
         guard response["ok"] as? Bool == false else { return "expected ok=false when the target tab is gone" }
         guard response["error"] != nil else { return "expected an error message" }
+        return nil
+    }
+
+    /// `fm/grandline-sre-lead-per-tab`: the design doc's flagged risk -
+    /// "two tabs each running their own `SRELeadBridge` poll loop... should
+    /// be safe by construction, but not yet actually proven." Runs two fully
+    /// independent bridges (two scratch dirs, two fake terminals) with
+    /// interleaved ticks (never letting one bridge run to completion before
+    /// the other has even started, the way two real per-tab timers on the
+    /// same run loop would interleave) and confirms neither's request or
+    /// response ever crosses into the other - tab A's kubectl output never
+    /// lands in tab B's chat, and vice versa.
+    private static func test_twoConcurrentBridgesNoCrossTalk(with dirA: URL) -> String? {
+        let dirB = makeScratchDir()
+        defer { try? FileManager.default.removeItem(at: dirB) }
+
+        let fakeA = FakeBridgeTerminal()
+        let fakeB = FakeBridgeTerminal()
+        let bridgeA = SRELeadBridge(bridgeDir: dirA, target: fakeA)
+        let bridgeB = SRELeadBridge(bridgeDir: dirB, target: fakeB)
+
+        fakeA.onSendCommand = { injected in
+            guard let (start, end) = markers(in: injected) else { return }
+            fakeA.appendOutput("\(start)\npod/tab-a-1   1/1   Running\n\(end)")
+        }
+        fakeB.onSendCommand = { injected in
+            guard let (start, end) = markers(in: injected) else { return }
+            fakeB.appendOutput("\(start)\npod/tab-b-1   1/1   Running\n\(end)")
+        }
+
+        do {
+            try writeRequest(dir: dirA, id: "req-a", command: "kubectl get pods -n a")
+            try writeRequest(dir: dirB, id: "req-b", command: "kubectl get pods -n b")
+        } catch { return "writeRequest threw: \(error)" }
+
+        for _ in 0..<20 {
+            bridgeA.tick()
+            bridgeB.tick()
+            if readResponse(dir: dirA, id: "req-a") != nil, readResponse(dir: dirB, id: "req-b") != nil { break }
+        }
+
+        guard let responseA = readResponse(dir: dirA, id: "req-a") else { return "bridge A never responded" }
+        guard let responseB = readResponse(dir: dirB, id: "req-b") else { return "bridge B never responded" }
+
+        guard responseA["ok"] as? Bool == true, responseA["output"] as? String == "pod/tab-a-1   1/1   Running" else {
+            return "bridge A's response was wrong or contaminated: \(responseA)"
+        }
+        guard responseB["ok"] as? Bool == true, responseB["output"] as? String == "pod/tab-b-1   1/1   Running" else {
+            return "bridge B's response was wrong or contaminated: \(responseB)"
+        }
+        guard fakeA.sentCommands.count == 1, fakeB.sentCommands.count == 1 else {
+            return "expected exactly one injected command per tab, got A=\(fakeA.sentCommands.count) B=\(fakeB.sentCommands.count)"
+        }
+        guard !fakeA.lines.contains(where: { $0.contains("tab-b") }) else { return "tab A's terminal saw tab B's content" }
+        guard !fakeB.lines.contains(where: { $0.contains("tab-a") }) else { return "tab B's terminal saw tab A's content" }
         return nil
     }
 }
