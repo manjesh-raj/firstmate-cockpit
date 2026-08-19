@@ -79,6 +79,12 @@ final class ShiftController: NSViewController {
     private lazy var commandLibraryView = CommandLibraryPageView(store: commandLibraryStore)
     private let commandsTab = HoverHighlightView()
     private let commandsTabLabel = NSTextField(labelWithString: "DevOps Commands")
+    /// Wraps the three tab pills in one bordered/tinted segmented-control
+    /// look (mockup: the tab row sits inside its own rounded, bordered
+    /// group) instead of three loose pills floating in space - the same
+    /// `segmentedBackground` idiom `UpdatesController`'s All/Needs Attention
+    /// filter already established.
+    private let tabsBackground = NSView()
 
     /// Phase 2 (fm/grandline-devops-command-library-phase2) - forward-don't-
     /// own, same convention as every other page's `onRunCommand`/`onRun`:
@@ -546,19 +552,34 @@ final class ShiftController: NSViewController {
 
     // MARK: Weekly Review
 
-    /// The mockup's `.shift-nav .item` tab look, as two clickable
+    /// The mockup's `.shift-nav .item` tab look, as three clickable
     /// `HoverHighlightView`s rather than an `NSSegmentedControl` - the same
     /// custom-pill-control convention the Updates page's All/Needs-attention
-    /// filter already established (see AGENTS.md's Tools section).
+    /// filter already established (see AGENTS.md's Tools section). Wrapped
+    /// in `tabsBackground` so the three read as one unified segmented
+    /// control (mockup: a bordered, tinted group), not three pills loose on
+    /// the page background.
     private func buildTabRow() -> NSView {
         let dashboardRow = tabItem(dashboardTab, label: dashboardTabLabel, action: #selector(dashboardTabClicked))
         let reviewRow = tabItem(reviewTab, label: reviewTabLabel, action: #selector(reviewTabClicked))
         let commandsRow = tabItem(commandsTab, label: commandsTabLabel, action: #selector(commandsTabClicked))
         let row = NSStackView(views: [dashboardRow, reviewRow, commandsRow])
         row.orientation = .horizontal
-        row.spacing = 6
+        row.spacing = 3
         row.translatesAutoresizingMaskIntoConstraints = false
-        return row
+
+        tabsBackground.wantsLayer = true
+        tabsBackground.layer?.cornerRadius = 9
+        tabsBackground.translatesAutoresizingMaskIntoConstraints = false
+        tabsBackground.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: tabsBackground.leadingAnchor, constant: 3),
+            row.trailingAnchor.constraint(equalTo: tabsBackground.trailingAnchor, constant: -3),
+            row.topAnchor.constraint(equalTo: tabsBackground.topAnchor, constant: 3),
+            row.bottomAnchor.constraint(equalTo: tabsBackground.bottomAnchor, constant: -3),
+        ])
+        tabsBackground.setContentHuggingPriority(.required, for: .horizontal)
+        return tabsBackground
     }
 
     private func tabItem(_ container: HoverHighlightView, label: NSTextField, action: Selector) -> NSView {
@@ -1398,6 +1419,9 @@ final class ShiftController: NSViewController {
 
         let accent = HelmTheme.nsColor(theme.accentHex)
         let accentTint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
+        tabsBackground.layer?.backgroundColor = surface.withAlphaComponent(0.6).cgColor
+        tabsBackground.layer?.borderWidth = 1
+        tabsBackground.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
         for (container, label, isActive) in [
             (dashboardTab, dashboardTabLabel, topLevelView == .dashboard),
             (reviewTab, reviewTabLabel, topLevelView == .weeklyReview),
