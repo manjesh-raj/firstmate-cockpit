@@ -45,6 +45,29 @@
 // every `GrandLineNotificationCenter.observe` firing (the list is always
 // small by design - see the design doc's "avoid noise" section - so this
 // app's usual `NSTableView`-for-large-lists convention doesn't apply here).
+//
+// `fm/grandline-notification-row-redesign` restyled each row from a flat,
+// borderless dot+title+subtext line into its own bordered "claim card"
+// (captain reference: a Slack-RCA claims panel - `data/grandline-
+// notification-row-redesign/reference-target.png`) - a colored left accent
+// bar, a small round icon badge, a bold uppercase kicker label, the body
+// message, and a trailing chip carrying the entry's own source/clear-rule
+// text. This is a rendering-only pass: `GrandLineNotificationCenter`'s store,
+// the 9 signal adapters (`NotificationSources.swift`), dedup/clear
+// semantics, and the bell's badge count are all untouched - only how each
+// entry renders inside `rowsStack`. The reference's literal "numbered
+// sequence" framing (steps 1-4 of one incident) doesn't apply to an
+// unordered notification list, so only the *visual pattern* was carried
+// over, not the numbering - see `NotificationRowPresentation` for the per-
+// source icon/kicker mapping this needed (derived from each source's
+// already-stable `id`, not a new field on `AppNotification`). The card
+// border/fill mirrors `ToolRowLayout`'s existing `cardStyle` idiom
+// (`HelmUIComponents.swift`, `fm/grandline-vault-row-polish`) rather than a
+// second card mechanism, and the trailing chip reuses `ToolRowLayout.pill`
+// directly - `ToolRowLayout.build`'s own icon-tile/trailing-stack/chevron/
+// log assembly doesn't fit this row's shape (no expandable log, no button
+// stack, needs a left accent bar `ToolRowLayout` has no concept of), so the
+// row itself stays a bespoke view rather than forcing a mismatched fit.
 
 import AppKit
 
@@ -222,7 +245,11 @@ final class NotificationCenterController: NSObject, NSPopoverDelegate {
 private final class NotificationPanelViewController: NSViewController {
     private var theme = ThemeManager.shared.theme
 
-    static let width: CGFloat = 320
+    // Widened from the original flat-list width (320) to give the new card
+    // treatment (left accent bar + icon badge + trailing chip) room to
+    // breathe without feeling cramped - still a modest popover width, not a
+    // dramatic widening.
+    static let width: CGFloat = 340
 
     private let titleLabel = NSTextField(labelWithString: "Notifications")
     private let markAllReadLabel = NSTextField(labelWithString: "Mark all read")
@@ -263,7 +290,10 @@ private final class NotificationPanelViewController: NSViewController {
 
         rowsStack.orientation = .vertical
         rowsStack.alignment = .leading
-        rowsStack.spacing = 0
+        // Cards are now separated by visible gaps (each has its own border/
+        // fill), not a hairline divider baked into each row - see
+        // `NotificationRowView`.
+        rowsStack.spacing = 8
         rowsStack.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [headerRow, separator, emptyStateLabel, rowsStack])
@@ -310,15 +340,22 @@ private final class NotificationPanelViewController: NSViewController {
         let entries = GrandLineNotificationCenter.shared.entries
         emptyStateLabel.isHidden = !entries.isEmpty
         markAllReadLabel.isHidden = !entries.contains { $0.kind == .informational }
-        for (index, entry) in entries.enumerated() {
-            let row = NotificationRowView(entry: entry, showsBottomDivider: index < entries.count - 1)
+        for entry in entries {
+            let row = NotificationRowView(entry: entry)
             row.translatesAutoresizingMaskIntoConstraints = false
             row.onClick = { [weak self] in
                 entry.navigate()
                 self?.onRequestClose?()
             }
             rowsStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
+            // Each card gets its own margin from the panel's edges (unlike
+            // the old full-bleed row, whose hover fill ran edge to edge) -
+            // an explicit leading/trailing offset from `rowsStack`, not a
+            // width-equal-to-stack constraint, is what creates that margin.
+            NSLayoutConstraint.activate([
+                row.leadingAnchor.constraint(equalTo: rowsStack.leadingAnchor, constant: 14),
+                row.trailingAnchor.constraint(equalTo: rowsStack.trailingAnchor, constant: -14),
+            ])
         }
         applyTheme(theme)
         updateSize()
@@ -351,79 +388,137 @@ private final class NotificationPanelViewController: NSViewController {
     }
 }
 
-/// One notification row - a colored dot, a title, and a subtext line
-/// stating its own clear-rule (matching the panel mock's copy exactly),
-/// wrapped in a `HoverHighlightView` per this app's standing row convention.
+/// Per-source icon + kicker label for a notification row - derived from each
+/// source's own stable `id` (see `NotificationSources.swift`), not a new
+/// field on `AppNotification` (this is a rendering-only pass; the store
+/// stays untouched). Falls back to a generic bell/kind-based kicker for any
+/// id this mapping doesn't recognize, so a future signal added without a
+/// matching case here still renders sensibly rather than crashing or
+/// showing nothing.
+private struct NotificationRowPresentation {
+    let icon: String
+    let kicker: String
+
+    init(for entry: AppNotification) {
+        switch entry.id {
+        case NotificationSources.fleetDecisionsID:
+            icon = "person.crop.circle.badge.exclamationmark"
+            kicker = "Decision Needed"
+        case NotificationSources.prReadyID:
+            icon = "checkmark.circle.fill"
+            kicker = "PR Ready"
+        case NotificationSources.toolUpdatesID:
+            icon = "arrow.down.circle.fill"
+            kicker = "Update Available"
+        case NotificationSources.githubSyncID:
+            icon = "arrow.triangle.branch"
+            kicker = "Fork Behind"
+        case NotificationSources.vaultAttentionID:
+            icon = "lock.shield.fill"
+            kicker = "Needs Attention"
+        case NotificationSources.setupDriftID:
+            icon = "wrench.and.screwdriver.fill"
+            kicker = "Setup Drifted"
+        case NotificationSources.shiftDueID:
+            icon = "clock.fill"
+            kicker = "Due Or Overdue"
+        case NotificationSources.fleetFinishedID:
+            icon = "flag.checkered"
+            kicker = "Task Finished"
+        default:
+            if entry.id.hasPrefix("sre-lead.") {
+                icon = "bubble.left.fill"
+                kicker = "SRE Lead Reply"
+            } else {
+                icon = "bell.fill"
+                kicker = entry.kind == .actionNeeded ? "Action Needed" : "Update"
+            }
+        }
+    }
+}
+
+/// One notification row, restyled (`fm/grandline-notification-row-redesign`)
+/// as its own bordered card - a colored left accent bar, a small round icon
+/// badge, a bold uppercase kicker, the body message, and a trailing chip
+/// carrying the entry's source/clear-rule text - translating the captain's
+/// Slack-RCA-claims reference image into this app's own theme tokens rather
+/// than copying its literal palette. `card` mirrors `ToolRowLayout`'s
+/// `cardStyle` fill/border idiom; the trailing chip reuses `ToolRowLayout.
+/// pill` directly. Still wrapped in the same click-to-navigate contract as
+/// before this task.
 private final class NotificationRowView: NSView {
-    private let hover = HoverHighlightView()
-    private let dot = NSView()
-    private let titleLabel = NSTextField(wrappingLabelWithString: "")
-    private let subtextLabel = NSTextField(wrappingLabelWithString: "")
-    private let bottomDivider = NSView()
+    private let card = HoverHighlightView()
+    private let accentBar = NSView()
+    private let badge = IconTileView(size: 26, cornerRadius: 13)
+    private let kickerLabel = NSTextField(labelWithString: "")
+    private let bodyLabel = NSTextField(wrappingLabelWithString: "")
+    private let chip = NSView()
+    private let chipLabel = NSTextField(labelWithString: "")
     private let tint: HelmTint
-    private let showsBottomDivider: Bool
+    private let subtext: String
+    private let presentation: NotificationRowPresentation
 
     var onClick: (() -> Void)?
 
-    init(entry: AppNotification, showsBottomDivider: Bool) {
+    init(entry: AppNotification) {
         self.tint = entry.tint
-        self.showsBottomDivider = showsBottomDivider
+        self.subtext = entry.subtext
+        self.presentation = NotificationRowPresentation(for: entry)
         super.init(frame: .zero)
 
-        hover.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hover)
+        card.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
 
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.setContentHuggingPriority(.required, for: .horizontal)
-        dot.setContentCompressionResistancePriority(.required, for: .horizontal)
+        accentBar.wantsLayer = true
+        accentBar.layer?.cornerRadius = 1.5
+        accentBar.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(accentBar)
 
-        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badge.configure(symbol: presentation.icon, tint: tint, pointSize: 11)
 
-        subtextLabel.font = .systemFont(ofSize: 10.5)
-        subtextLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtextLabel.stringValue = entry.subtext
-        subtextLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        kickerLabel.translatesAutoresizingMaskIntoConstraints = false
+        kickerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        titleLabel.stringValue = entry.title
+        bodyLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+        bodyLabel.stringValue = entry.title
+        bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let textStack = NSStackView(views: [titleLabel, subtextLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
-        textStack.translatesAutoresizingMaskIntoConstraints = false
+        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: ThemeManager.shared.theme), into: chip, label: chipLabel)
+        chip.setContentHuggingPriority(.required, for: .horizontal)
+        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        bottomDivider.wantsLayer = true
-        bottomDivider.translatesAutoresizingMaskIntoConstraints = false
-        bottomDivider.isHidden = !showsBottomDivider
+        let textColumn = NSStackView(views: [kickerLabel, bodyLabel, chip])
+        textColumn.orientation = .vertical
+        textColumn.alignment = .leading
+        textColumn.spacing = 4
+        textColumn.setCustomSpacing(6, after: bodyLabel)
+        textColumn.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(bottomDivider)
-        hover.addSubview(dot)
-        hover.addSubview(textStack)
+        card.addSubview(badge)
+        card.addSubview(textColumn)
 
         NSLayoutConstraint.activate([
-            hover.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hover.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hover.topAnchor.constraint(equalTo: topAnchor),
-            hover.bottomAnchor.constraint(equalTo: bottomAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-            dot.leadingAnchor.constraint(equalTo: hover.leadingAnchor, constant: 14),
-            dot.topAnchor.constraint(equalTo: hover.topAnchor, constant: 16),
+            // Inset 2pt from the top/bottom so the bar never clips past the
+            // card's own rounded corners at this radius.
+            accentBar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 2),
+            accentBar.widthAnchor.constraint(equalToConstant: 3),
+            accentBar.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            accentBar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
 
-            textStack.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 10),
-            textStack.trailingAnchor.constraint(equalTo: hover.trailingAnchor, constant: -14),
-            textStack.topAnchor.constraint(equalTo: hover.topAnchor, constant: 10),
-            textStack.bottomAnchor.constraint(equalTo: hover.bottomAnchor, constant: -10),
+            badge.leadingAnchor.constraint(equalTo: accentBar.trailingAnchor, constant: 12),
+            badge.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
 
-            bottomDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            bottomDivider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            bottomDivider.bottomAnchor.constraint(equalTo: bottomAnchor),
-            bottomDivider.heightAnchor.constraint(equalToConstant: 1),
+            textColumn.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
+            textColumn.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            textColumn.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            textColumn.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
         ])
 
         addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(clicked)))
@@ -437,12 +532,27 @@ private final class NotificationRowView: NSView {
     func applyTheme(_ theme: HelmTheme) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
-        let line = HelmTheme.nsColor(theme.chromeLineHex)
-        dot.layer?.backgroundColor = HelmTheme.nsColor(tint.hex(in: theme)).cgColor
-        titleLabel.textColor = ink
-        subtextLabel.textColor = muted
-        bottomDivider.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
-        hover.normalColor = .clear
-        hover.hoverColor = line.withAlphaComponent(0.15)
+        let tintColor = HelmTheme.nsColor(tint.hex(in: theme))
+
+        badge.applyTheme(theme)
+
+        kickerLabel.attributedStringValue = NSAttributedString(
+            string: presentation.kicker.uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .kern: 0.9,
+                .foregroundColor: muted,
+            ]
+        )
+        bodyLabel.textColor = ink
+        ToolRowLayout.pill(text: subtext, colorHex: tint.hex(in: theme), into: chip, label: chipLabel)
+
+        accentBar.layer?.backgroundColor = tintColor.cgColor
+
+        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        card.normalColor = cardFill
+        card.hoverColor = cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = tintColor.withAlphaComponent(0.4).cgColor
     }
 }
