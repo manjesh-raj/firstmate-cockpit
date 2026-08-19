@@ -30,6 +30,10 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: Layout
 
+    /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
+    /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    private let mutedLabels = MutedInkLabels()
+
     override func loadView() {
         // Theme-audit task: this was `NSVisualEffectView(.sidebar,
         // .behindWindow)`, the same material/blending pair that rendered an
@@ -42,9 +46,17 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 480))
         root.wantsLayer = true
         view = root
-        ThemeManager.shared.observe { [weak root] theme in
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+            self?.mutedLabels.apply(theme)
+            // Every row cell now carries `HelmTheme`-derived colours (audit
+            // §5.3) and `HelmTableRowView` paints a theme-accent selection
+            // (§5.2), and neither re-derives itself - so the list has to be
+            // rebuilt on a theme change rather than relying on system
+            // semantic colours re-resolving against the forced appearance.
+            // `reloadData` preserves the selected row indexes.
+            self?.table.reloadData()
         }
 
         let title = NSTextField(labelWithString: "Snippets")
@@ -59,14 +71,19 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
 
         let caption = NSTextField(wrappingLabelWithString: "Run sends a snippet's command to the active terminal tab.")
         caption.font = .systemFont(ofSize: 11)
-        caption.textColor = .tertiaryLabelColor
+        mutedLabels.add(caption)
         caption.translatesAutoresizingMaskIntoConstraints = false
 
         table.headerView = nil
         table.style = .sourceList
         table.rowHeight = 42
         table.backgroundColor = .clear
-        table.selectionHighlightStyle = .regular
+        // Selection rendering is ours, not AppKit's: `.sourceList` +
+        // `.regular` installs `NSTableRowSidebarSelectionView`, which draws
+        // from the *system* accent rather than the active `HelmTheme` (audit
+        // §5.2). `.none` stops that; `HelmTableRowView` paints the theme's
+        // own accent instead - see `tableView(_:rowViewForRow:)` below.
+        table.selectionHighlightStyle = .none
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -173,6 +190,15 @@ final class SnippetsController: NSViewController, NSTableViewDataSource, NSTable
 
     func numberOfRows(in tableView: NSTableView) -> Int { store.snippets.count }
 
+    /// Theme-derived selected-row background - see `HelmTableRowView`.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("helmRow")
+        let view = (tableView.makeView(withIdentifier: id, owner: self) as? HelmTableRowView) ?? HelmTableRowView()
+        view.identifier = id
+        view.accentHex = ThemeManager.shared.theme.accentHex
+        return view
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("SnippetRow")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? SnippetRowView) ?? SnippetRowView()
@@ -249,7 +275,7 @@ final class SnippetRowView: NSTableCellView {
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        icon.contentTintColor = .secondaryLabelColor
+        icon.contentTintColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         icon.image = NSImage(systemSymbolName: "chevron.left.forwardslash.chevron.right", accessibilityDescription: "Snippet")
 
         title.font = .systemFont(ofSize: 13, weight: .medium)
@@ -257,7 +283,7 @@ final class SnippetRowView: NSTableCellView {
         title.translatesAutoresizingMaskIntoConstraints = false
 
         subtitle.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        subtitle.textColor = .secondaryLabelColor
+        subtitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         subtitle.lineBreakMode = .byTruncatingTail
         subtitle.translatesAutoresizingMaskIntoConstraints = false
 

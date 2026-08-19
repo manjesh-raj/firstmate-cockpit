@@ -453,7 +453,9 @@ final class VaultController: NSViewController {
             v.removeFromSuperview()
         }
         if secrets.isEmpty {
-            secretsStack.addArrangedSubview(emptyStateRow("No saved secrets yet. Use \u{201c}Add Secret\u{201d} above - the value is entered directly in a real terminal, never through this app."))
+            addEmptyState(to: secretsStack,
+                          symbol: "key",
+                          text: "No saved secrets yet. Use \u{201c}Add Secret\u{201d} above - the value is entered directly in a real terminal, never through this app.")
             return
         }
         for secret in secrets {
@@ -469,7 +471,9 @@ final class VaultController: NSViewController {
             v.removeFromSuperview()
         }
         if tools.isEmpty {
-            toolsStack.addArrangedSubview(emptyStateRow("No verified launchers registered with Automic Vault yet."))
+            addEmptyState(to: toolsStack,
+                          symbol: "checkmark.shield",
+                          text: "No verified launchers registered with Automic Vault yet.")
             return
         }
         for tool in tools {
@@ -479,12 +483,22 @@ final class VaultController: NSViewController {
         }
     }
 
-    private func emptyStateRow(_ text: String) -> NSView {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: 11.5)
-        label.textColor = HelmTheme.mutedInk(theme)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
+    /// This used to return a bare, unpadded, unconstrained wrapping label,
+    /// which is why an empty Secrets / Verified Launchers panel collapsed to a
+    /// header-only slab - measured live at `bodyH=0` for both, exactly the
+    /// state a fresh machine (or a machine where `av list` returns nothing)
+    /// shows (audit §5.5). `ShiftEmptyStateView` is this app's existing
+    /// centered icon + wrapping copy empty state, already used by Shift, the
+    /// command library, Dictation and the project detail page; giving it a
+    /// real height is what makes the panel actually occupy space. Sized and
+    /// wired exactly like `ShiftController`'s own call sites.
+    private func addEmptyState(to stack: NSStackView, symbol: String, text: String) {
+        let empty = ShiftEmptyStateView(symbol: symbol, text: text)
+        empty.applyTheme(theme)
+        empty.translatesAutoresizingMaskIntoConstraints = false
+        empty.heightAnchor.constraint(equalToConstant: 90).isActive = true
+        stack.addArrangedSubview(empty)
+        empty.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
     private func secretRowView(_ secret: VaultSecret) -> NSView {
@@ -495,7 +509,7 @@ final class VaultController: NSViewController {
             detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
             logContainer: NSView(), rowContainer: HoverHighlightView()
         )
-        ToolRowLayout.pill(text: "Hardened", colorHex: theme.ansiHex[2], into: views.pill, label: views.pillLabel)
+        ToolRowLayout.pill(text: "Hardened", colorHex: theme.ansiHex[2], into: views.pill, label: views.pillLabel, theme: theme)
 
         let runButton = NSButton(title: "Run injected\u{2026}", target: self, action: #selector(runInjectedTapped(_:)))
         runButton.bezelStyle = .rounded
@@ -550,7 +564,7 @@ final class VaultController: NSViewController {
         ToolRowLayout.pill(
             text: tool.status.label,
             colorHex: isHardened ? theme.ansiHex[2] : theme.ansiHex[3],
-            into: views.pill, label: views.pillLabel
+            into: views.pill, label: views.pillLabel, theme: theme
         )
 
         let row = ToolRowLayout.build(
@@ -737,7 +751,7 @@ final class VaultSaveSecretSheetController: NSViewController {
 
         let help = NSTextField(wrappingLabelWithString: "Only the name is sent here. Automic Vault will prompt for the value directly in a real terminal - Grand Line never sees it.")
         help.font = .systemFont(ofSize: 11)
-        help.textColor = .secondaryLabelColor
+        help.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         help.preferredMaxLayoutWidth = 320
 
         nameField.placeholderString = "SECRET_NAME"
@@ -842,7 +856,7 @@ final class VaultRecipeChecklistSheetController: NSViewController {
 
         let help = NSTextField(wrappingLabelWithString: "Compared against the recipe backup from \(generatedAt). \u{201c}Missing\u{201d} items were recorded before but aren\u{2019}t true right now - re-save the secret or re-harden the tool from its real source; this app never invents a value.")
         help.font = .systemFont(ofSize: 11)
-        help.textColor = .secondaryLabelColor
+        help.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         help.preferredMaxLayoutWidth = 440
 
         let listStack = NSStackView()
@@ -854,7 +868,7 @@ final class VaultRecipeChecklistSheetController: NSViewController {
         if items.isEmpty {
             let empty = NSTextField(labelWithString: "No secrets or hardened tools recorded in the backup or right now.")
             empty.font = .systemFont(ofSize: 11.5)
-            empty.textColor = .secondaryLabelColor
+            empty.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
             listStack.addArrangedSubview(empty)
         } else {
             for item in items {
@@ -1007,7 +1021,7 @@ final class VaultInjectSheetController: NSViewController {
 
         let help = NSTextField(wrappingLabelWithString: "Runs \u{201c}av inject +SECRET -- command\u{201d} in a Console tab, so any output or approval prompt is visible directly - never captured by this app.")
         help.font = .systemFont(ofSize: 11)
-        help.textColor = .secondaryLabelColor
+        help.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         help.preferredMaxLayoutWidth = 340
 
         secretPopup.removeAllItems()

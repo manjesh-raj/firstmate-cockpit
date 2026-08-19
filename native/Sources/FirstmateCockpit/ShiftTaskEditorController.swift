@@ -539,6 +539,26 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
+        // `ThemeManager.observe` fires synchronously at registration (this
+        // codebase's documented convention), and that registration happens
+        // near the top of this method - long before the four
+        // `sectionLabel(...)` calls below it have appended anything to
+        // `sectionLabels`. So that first, and absent a theme change *only*,
+        // firing found an empty array and `applyTheme`'s
+        // `sectionLabels.forEach { ... }` was a no-op: the DETAILS / TAGS /
+        // DESCRIPTION / ATTACHMENT kickers rendered in the system
+        // `.labelColor` (measured #ffffff@0.85) instead of
+        // `HelmTheme.mutedInk` (#f0f4f7@0.70), i.e. *brighter* than the body
+        // text they label, inverting the intended hierarchy - and it
+        // self-healed on any later theme switch, which is why this sheet's
+        // own theme-sweep verification never caught it.
+        //
+        // One explicit re-apply at the end of `loadView`, once everything a
+        // theme observer iterates actually exists, is the fix. See
+        // `ThemeManager.swift`'s checklist - this was the third confirmed
+        // instance of the same trap in this codebase.
+        applyTheme(ThemeManager.shared.theme)
+
         resizeToFitContent()
     }
 

@@ -96,9 +96,16 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
         root.wantsLayer = true
         view = root
-        ThemeManager.shared.observe { [weak root] theme in
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+            // Every row cell now carries `HelmTheme`-derived colours (audit
+            // §5.3) and `HelmTableRowView` paints a theme-accent selection
+            // (§5.2), and neither re-derives itself - so the list has to be
+            // rebuilt on a theme change rather than relying on system
+            // semantic colours re-resolving against the forced appearance.
+            // `reloadData` preserves the selected row indexes.
+            self?.table.reloadData()
         }
 
         let title = NSTextField(labelWithString: "Hosts")
@@ -143,7 +150,12 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
         table.style = .sourceList
         table.rowHeight = 46
         table.backgroundColor = .clear
-        table.selectionHighlightStyle = .regular
+        // Selection rendering is ours, not AppKit's: `.sourceList` +
+        // `.regular` installs `NSTableRowSidebarSelectionView`, which draws
+        // from the *system* accent rather than the active `HelmTheme` (audit
+        // §5.2). `.none` stops that; `HelmTableRowView` paints the theme's
+        // own accent instead - see `tableView(_:rowViewForRow:)` below.
+        table.selectionHighlightStyle = .none
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -365,6 +377,17 @@ final class HostsSidebarController: NSViewController, NSTableViewDataSource, NST
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
+    /// Theme-derived selected-row background - see `HelmTableRowView`. The
+    /// group headers are not selectable (`shouldSelectRow` below), so they
+    /// simply never paint one.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let id = NSUserInterfaceItemIdentifier("helmRow")
+        let view = (tableView.makeView(withIdentifier: id, owner: self) as? HelmTableRowView) ?? HelmTableRowView()
+        view.identifier = id
+        view.accentHex = ThemeManager.shared.theme.accentHex
+        return view
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch rows[row] {
         case .pinned:
@@ -537,7 +560,7 @@ final class HostSectionHeaderView: NSTableCellView {
     init() {
         super.init(frame: .zero)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
+        label.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -580,7 +603,7 @@ final class HostRowView: NSTableCellView {
         title.translatesAutoresizingMaskIntoConstraints = false
 
         subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
+        subtitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         subtitle.lineBreakMode = .byTruncatingTail
         subtitle.translatesAutoresizingMaskIntoConstraints = false
 
@@ -638,7 +661,15 @@ final class FirstmateRowView: NSTableCellView {
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
-        icon.image = NSImage(systemSymbolName: "anchor", accessibilityDescription: "Firstmate")
+        // "anchor" is not an SF Symbol on macOS (confirmed live:
+        // `NSImage(systemSymbolName: "anchor", ...)` returns nil), so this
+        // pinned row has silently rendered with no icon at all since it
+        // shipped - visible in the full-app UI audit's own
+        // `helm-dark-hosts.png` capture. "sailboat" is the glyph this app
+        // already uses for itself (the rail's own mark, the lock screen, the
+        // Tasks menu bar item), so it is the consistent choice rather than a
+        // new one.
+        icon.image = NSImage(systemSymbolName: "sailboat", accessibilityDescription: "Firstmate")
         icon.contentTintColor = HelmTheme.nsColor(ThemeManager.shared.theme.accentHex)
 
         title.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -646,7 +677,7 @@ final class FirstmateRowView: NSTableCellView {
         title.translatesAutoresizingMaskIntoConstraints = false
 
         subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
+        subtitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         subtitle.lineBreakMode = .byTruncatingTail
         subtitle.translatesAutoresizingMaskIntoConstraints = false
 

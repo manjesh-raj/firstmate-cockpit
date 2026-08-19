@@ -121,7 +121,10 @@ private final class ShiftMenuBarPopoverController: NSViewController {
         headerLabel.font = .systemFont(ofSize: 13, weight: .semibold)
 
         nextFollowUpTitle.font = .systemFont(ofSize: 11)
-        nextFollowUpTitle.textColor = .secondaryLabelColor
+        // Re-derived from the active theme on every popover refresh (see
+        // `update(tasksToday:nextFollowUp:nextFollowUpDate:)`), not a fixed
+        // system grey - audit §5.3.
+        nextFollowUpTitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         nextFollowUpTitle.lineBreakMode = .byTruncatingTail
         nextFollowUpTitle.maximumNumberOfLines = 2
 
@@ -154,6 +157,10 @@ private final class ShiftMenuBarPopoverController: NSViewController {
     }
 
     func update(tasksToday: Int, nextFollowUp: ShiftFollowUp?, nextFollowUpDate: Date?) {
+        // This popover has no `ThemeManager.observe` of its own (it is rebuilt
+        // from the menu bar item on every open, and `NSPopover` supplies its
+        // own chrome), so its one theme-derived colour is refreshed here.
+        nextFollowUpTitle.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         tasksRow.setValue("\(tasksToday)")
         if let nextFollowUp, let nextFollowUpDate {
             let f = DateFormatter()

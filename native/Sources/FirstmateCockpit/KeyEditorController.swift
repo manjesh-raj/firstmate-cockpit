@@ -87,6 +87,9 @@ final class KeyEditorController: NSViewController {
 
     // MARK: Layout
 
+    /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
+    /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    private let mutedLabels = MutedInkLabels()
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 620))
         view = root
@@ -96,8 +99,10 @@ final class KeyEditorController: NSViewController {
         // was never doing that, so those colors resolved against whichever
         // window presented this sheet, which itself never set `.appearance`
         // either, leaving everything on the OS's actual light/dark setting.
-        ThemeManager.shared.observe { [weak root] theme in
+        ThemeManager.shared.observe { [weak root, weak self] theme in
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
+            self?.mutedLabels.apply(theme)
+            self?.importDropZone.applyTheme(theme)
         }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Key" : "Edit Key")
@@ -225,7 +230,7 @@ final class KeyEditorController: NSViewController {
 
         let hint = NSTextField(labelWithString: "Drop a private key file here")
         hint.font = .systemFont(ofSize: 12)
-        hint.textColor = .tertiaryLabelColor
+        mutedLabels.add(hint)
         hint.translatesAutoresizingMaskIntoConstraints = false
         importDropZone.addSubview(hint)
         NSLayoutConstraint.activate([
@@ -271,7 +276,7 @@ final class KeyEditorController: NSViewController {
 
     private func buildEditLayout(for key: SSHKey) -> NSStackView {
         let typeLabel = NSTextField(labelWithString: key.type.displayName)
-        typeLabel.textColor = .secondaryLabelColor
+        mutedLabels.add(typeLabel)
 
         publicKeyView.string = key.publicKey
         let publicKeyBox = buildPublicKeyPreview()
@@ -324,13 +329,13 @@ final class KeyEditorController: NSViewController {
     private func buildPublicKeyPreview() -> NSView {
         publicKeyView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         publicKeyView.isEditable = false
-        publicKeyView.textColor = .secondaryLabelColor
+        publicKeyView.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         let box = scrollable(publicKeyView, height: 50)
 
         let copy = NSButton(title: "Copy", target: self, action: #selector(copyPublicKey))
         copy.bezelStyle = .rounded
         fingerprintLabel.font = .systemFont(ofSize: 11)
-        fingerprintLabel.textColor = .tertiaryLabelColor
+        mutedLabels.add(fingerprintLabel)
 
         let footer = NSStackView(views: [fingerprintLabel, NSView(), copy])
         footer.orientation = .horizontal
@@ -512,7 +517,7 @@ final class KeyEditorController: NSViewController {
     private func rowLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: 12)
-        l.textColor = .secondaryLabelColor
+        mutedLabels.add(l)
         return l
     }
 
@@ -540,7 +545,7 @@ final class KeyEditorController: NSViewController {
     private func labeledBox(_ caption: String, view boxed: NSView, footer: NSView? = nil) -> NSView {
         let label = NSTextField(labelWithString: caption)
         label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
+        mutedLabels.add(label)
         var views: [NSView] = [label, boxed]
         if let footer { views.append(footer) }
         let stack = NSStackView(views: views)
@@ -573,8 +578,16 @@ final class KeyDropZone: NSView {
         registerForDraggedTypes([.fileURL])
         wantsLayer = true
         layer?.borderWidth = 1.5
-        layer?.borderColor = NSColor.tertiaryLabelColor.cgColor
         layer?.cornerRadius = 8
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    /// The drop zone's dashed-looking border used to be
+    /// `NSColor.tertiaryLabelColor`, a fixed system grey that knows nothing
+    /// about the active palette (audit §5.3). `chromeLineHex` is this app's
+    /// own hairline/border token.
+    func applyTheme(_ theme: HelmTheme) {
+        layer?.borderColor = HelmTheme.nsColor(theme.chromeLineHex).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

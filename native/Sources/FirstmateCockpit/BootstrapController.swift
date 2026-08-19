@@ -463,7 +463,14 @@ final class BootstrapController: NSViewController {
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            // AGENTS.md gotcha #4: pin the document view to the *clip*
+            // view, never the outer scroll view. With "Show scroll bars:
+            // Always" (the default with a mouse attached) a non-overlay
+            // vertical scroller reserves a real ~15pt track that narrows the
+            // clip view without narrowing `scroll`'s own frame, so pinning to
+            // `scroll.widthAnchor` renders the content's trailing edge
+            // underneath that track.
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
         scrollView = scroll
 
@@ -562,7 +569,11 @@ final class BootstrapController: NSViewController {
 
         let desc = NSTextField(wrappingLabelWithString: "The directory firstmate reads projects, backlog, and crew state from. Checked after the FM_HOME / FIRSTMATE_HOME environment variables. Changing it here requires a restart to take effect.")
         desc.font = .systemFont(ofSize: 11)
-        desc.textColor = .secondaryLabelColor
+        // `dynamicLabels` is this file's own muted-text re-theming list -
+        // `.secondaryLabelColor` was a fixed system grey that knows nothing
+        // about the active palette (audit §5.3).
+        dynamicLabels.append(desc)
+        desc.textColor = HelmTheme.mutedInk(theme)
         desc.preferredMaxLayoutWidth = 520
 
         pathField.placeholderString = "~/manjesh/firstmate"
@@ -1412,7 +1423,7 @@ final class BootstrapController: NSViewController {
         )
         dynamicLabels.append(contentsOf: [views.nameLabel, views.detailLabel])
 
-        ToolRowLayout.pill(text: "Drifted", colorHex: theme.ansiHex[1], into: views.pill, label: views.pillLabel)
+        ToolRowLayout.pill(text: "Drifted", colorHex: theme.ansiHex[1], into: views.pill, label: views.pillLabel, theme: theme)
 
         var trailingViews: [NSView] = [views.pill]
         if let (title, action) = driftRemedy(for: kind) {
