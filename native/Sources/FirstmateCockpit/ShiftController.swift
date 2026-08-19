@@ -1113,6 +1113,9 @@ final class ShiftController: NSViewController {
     /// a fill-width field column read as a real form, not a raw debug
     /// dump of controls.
     private func buildDetailForm() -> NSView {
+        for field in [detailNameField, detailDescriptionField, detailStartDateField, detailDueDateField] {
+            styleDetailFormField(field)
+        }
         detailNameField.translatesAutoresizingMaskIntoConstraints = false
         detailDescriptionField.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1164,6 +1167,40 @@ final class ShiftController: NSViewController {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 12)
         return label
+    }
+
+    /// Removes the stock system bezel and hands the whole look to an
+    /// explicit `HelmTheme`-derived fill/border (recolored in `applyTheme()`)
+    /// - these four fields sit directly on this page's own dark, custom
+    /// background, not inside a sheet with its own system chrome, and the
+    /// stock bezel rendered as an off-theme brownish box in that context
+    /// (a real, captain-reported bug, `fm/grandline-shift-project-detail-
+    /// theming`). Mirrors `ConsoleComposerViewController`'s identical fix for
+    /// its own intent/code fields - `isBordered`/`drawsBackground` off,
+    /// `wantsLayer` on with a masked, rounded layer so the field's own
+    /// background paint (not just its border) respects the corner radius.
+    private func styleDetailFormField(_ field: NSTextField) {
+        field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
+        field.drawsBackground = true
+        field.wantsLayer = true
+        field.layer?.masksToBounds = true
+        field.layer?.cornerRadius = 5
+        field.layer?.borderWidth = 1
+        field.heightAnchor.constraint(equalToConstant: 26).isActive = true
+    }
+
+    /// The detail form's "sunken field" fill - blends `chromeInkHex` into
+    /// `detailFormPanel`'s own `chromeBackgroundHex` fill rather than reusing
+    /// `backgroundHex` directly, so the field reads as a distinct control
+    /// even in the themes where those two tokens are numerically identical
+    /// (see `ConsoleComposerPopover.fieldFillColor(for:)`'s own doc comment
+    /// for the confirmed list of themes this matters for).
+    private static func detailFieldFillColor(for theme: HelmTheme) -> NSColor {
+        let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
+        return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
     }
 
     /// Refreshes the header + task list unconditionally, and the edit form's
@@ -1389,6 +1426,13 @@ final class ShiftController: NSViewController {
         detailMetaLabel.textColor = muted
         detailDescriptionLabel.textColor = muted
         detailFormPanel.applyTheme(theme)
+        let fieldFill = Self.detailFieldFillColor(for: theme)
+        for field in [detailNameField, detailDescriptionField, detailStartDateField, detailDueDateField] {
+            field.textColor = ink
+            field.backgroundColor = fieldFill
+            field.layer?.borderColor = line.withAlphaComponent(0.7).cgColor
+        }
+        detailStatusPopup.contentTintColor = ink
         detailTasksPanel.applyTheme(theme)
         detailTasksCountBadge.textColor = muted
         if case .detail(let projectID) = projectsView, let project = store.projects.first(where: { $0.id == projectID }) {
