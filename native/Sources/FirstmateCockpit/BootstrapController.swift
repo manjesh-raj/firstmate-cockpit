@@ -1533,7 +1533,7 @@ final class BootstrapController: NSViewController {
         }
 
         if let behind = state.commitsBehindOrigin, behind > 0 {
-            rows.append(buildBehindOriginBanner(behind))
+            rows.append(buildBehindOriginBanner(behind, commits: state.commitsBehindOriginList ?? []))
         }
 
         if !state.dirtyFiles.isEmpty {
@@ -1562,20 +1562,54 @@ final class BootstrapController: NSViewController {
         return section
     }
 
-    private func buildBehindOriginBanner(_ count: Int) -> NSView {
+    /// Caps how many individual commit rows the banner will ever render
+    /// directly - a genuinely large behind-count (e.g. after months away)
+    /// still shows a bounded list plus a "+N more" line, rather than letting
+    /// the banner's height grow unbounded.
+    private static let behindOriginCommitDisplayCap = 10
+
+    private func buildBehindOriginBanner(_ count: Int, commits: [DotfilesBehindCommit]) -> NSView {
         let title = NSTextField(labelWithString: "\(count) commit\(count == 1 ? "" : "s") behind origin")
         title.font = .systemFont(ofSize: 11.5, weight: .semibold)
         title.textColor = HelmTheme.nsColor(theme.ansiHex[3])
+
+        var innerViews: [NSView] = [title]
+        var lastCommitRow: NSView?
+
+        let shown = commits.prefix(Self.behindOriginCommitDisplayCap)
+        for commit in shown {
+            let row = NSTextField(wrappingLabelWithString: "\(commit.shortHash)  \(commit.subject)")
+            row.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+            row.textColor = HelmTheme.mutedInk(theme)
+            row.preferredMaxLayoutWidth = 500
+            dynamicLabels.append(row)
+            innerViews.append(row)
+            lastCommitRow = row
+        }
+        if commits.count > Self.behindOriginCommitDisplayCap {
+            let more = NSTextField(labelWithString: "+\(commits.count - Self.behindOriginCommitDisplayCap) more")
+            more.font = .systemFont(ofSize: 10.5, weight: .regular)
+            more.textColor = HelmTheme.mutedInk(theme)
+            dynamicLabels.append(more)
+            innerViews.append(more)
+            lastCommitRow = more
+        }
 
         let body = NSTextField(wrappingLabelWithString: "Run rebuild.sh will pull these from GitHub first.")
         body.font = .systemFont(ofSize: 10.5, weight: .regular)
         body.textColor = HelmTheme.mutedInk(theme)
         body.preferredMaxLayoutWidth = 500
+        innerViews.append(body)
 
-        let inner = NSStackView(views: [title, body])
+        let inner = NSStackView(views: innerViews)
         inner.orientation = .vertical
         inner.alignment = .leading
         inner.spacing = 4
+        // A little extra breathing room between the commit list and the
+        // explanatory line below it, so the two visually distinct groups
+        // (the "what's behind" list, the "what happens next" caption) don't
+        // read as one run-on paragraph.
+        if let lastCommitRow { inner.setCustomSpacing(8, after: lastCommitRow) }
         inner.translatesAutoresizingMaskIntoConstraints = false
 
         let banner = NSView()
