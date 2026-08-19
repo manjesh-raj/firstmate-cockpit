@@ -47,6 +47,16 @@ struct DotfilesRepoState {
     /// remote-tracking refs). `nil` when unknown - no network, no remote, or
     /// the fetch failed - never coerced to `0`.
     let commitsBehindOrigin: Int?
+    /// The actual commits behind `origin/<branch>` (short hash + subject),
+    /// newest first, same `git fetch` as `commitsBehindOrigin` - so the
+    /// captain can see *what* is behind, not just the count. `nil` under the
+    /// same conditions as `commitsBehindOrigin`; empty when the count is `0`.
+    let commitsBehindOriginList: [DotfilesBehindCommit]?
+}
+
+struct DotfilesBehindCommit: Equatable {
+    let shortHash: String
+    let subject: String
 }
 
 enum ManagedItemStatus: Equatable {
@@ -112,29 +122,42 @@ enum DotfilesSource {
         let statusOut = run("/usr/bin/git", ["-C", repoPath, "status", "--short"]).stdout
         let dirty = statusOut.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
         let branchName = branch.isEmpty ? nil : branch
+        let behind = behindOrigin(repoPath: repoPath, branch: branchName)
         return DotfilesRepoState(
             repoPath: repoPath,
             remoteURL: remote.isEmpty ? nil : remote,
             branch: branchName,
             dirtyFiles: dirty,
             flakeUsername: parseFlakeUsername(repoPath: repoPath),
-            commitsBehindOrigin: commitsBehindOrigin(repoPath: repoPath, branch: branchName)
+            commitsBehindOrigin: behind?.count,
+            commitsBehindOriginList: behind?.commits
         )
     }
 
     /// Fetches `origin/<branch>` for real (updating the local remote-tracking
-    /// ref, never the working tree or local branch) and counts how many
-    /// commits it has that `HEAD` doesn't. Returns `nil` on any failure - no
-    /// network, no `origin`, no such branch on the remote - rather than
-    /// trusting whatever stale remote-tracking ref happened to already be on
-    /// disk.
-    private static func commitsBehindOrigin(repoPath: String, branch: String?) -> Int? {
+    /// ref, never the working tree or local branch) and reads back both how
+    /// many commits it has that `HEAD` doesn't, and what those commits
+    /// actually are. Returns `nil` on any failure - no network, no `origin`,
+    /// no such branch on the remote - rather than trusting whatever stale
+    /// remote-tracking ref happened to already be on disk. Read-only: this
+    /// never touches the working tree, the local branch, or any ref besides
+    /// the fetched remote-tracking one.
+    private static func behindOrigin(repoPath: String, branch: String?) -> (count: Int, commits: [DotfilesBehindCommit])? {
         guard let branch else { return nil }
         let fetch = run("/usr/bin/git", ["-C", repoPath, "fetch", "origin", branch])
         guard fetch.status == 0 else { return nil }
         let countResult = run("/usr/bin/git", ["-C", repoPath, "rev-list", "--count", "HEAD..origin/\(branch)"])
         guard countResult.status == 0, let count = Int(countResult.stdout) else { return nil }
-        return count
+        let logResult = run("/usr/bin/git", ["-C", repoPath, "log", "--pretty=format:%h\u{1F}%s", "HEAD..origin/\(branch)"])
+        guard logResult.status == 0 else { return (count, []) }
+        let commits: [DotfilesBehindCommit] = logResult.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { line -> DotfilesBehindCommit? in
+                let parts = line.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { return nil }
+                return DotfilesBehindCommit(shortHash: String(parts[0]), subject: String(parts[1]))
+            }
+        return (count, commits)
     }
 
     /// Parses the live `user = "..."` line out of `<repoPath>/flake.nix` -
