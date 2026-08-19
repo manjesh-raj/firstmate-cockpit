@@ -170,7 +170,7 @@ final class AutomationController: NSViewController {
     private var steps: [AutomationStepState] = SetupStepKind.allCases.map { AutomationStepState(kind: $0) }
     private var isRunning = false
 
-    private let runButton = NSButton()
+    private let runButton = HelmButton(title: "", variant: .primary)
     private let progressSummaryLabel = NSTextField(wrappingLabelWithString: "")
     private let stepperStack = NSStackView()
     private var stepContentBoxes: [NSView] = []
@@ -286,7 +286,6 @@ final class AutomationController: NSViewController {
 
     private func buildRunSection() -> NSView {
         runButton.title = "Run Automation"
-        runButton.bezelStyle = .rounded
         runButton.target = self
         runButton.action = #selector(runAutomationClicked)
         runButton.setContentHuggingPriority(.required, for: .horizontal)
@@ -807,13 +806,11 @@ final class AutomationController: NSViewController {
     }
 
     private func buildRestoreConfigActions(isWaiting: Bool) -> NSView {
-        let chooseButton = NSButton(title: "Choose file\u{2026}", target: self, action: #selector(restoreConfigChooseFileClicked))
-        chooseButton.bezelStyle = .rounded
+        let chooseButton = HelmButton(title: "Choose file\u{2026}", variant: .primary, target: self, action: #selector(restoreConfigChooseFileClicked))
         chooseButton.controlSize = .small
         chooseButton.isEnabled = isWaiting
 
-        let skipButton = NSButton(title: "Skip", target: self, action: #selector(restoreConfigSkipClicked))
-        skipButton.bezelStyle = .rounded
+        let skipButton = HelmButton(title: "Skip", variant: .secondary, target: self, action: #selector(restoreConfigSkipClicked))
         skipButton.controlSize = .small
         skipButton.isEnabled = isWaiting
 

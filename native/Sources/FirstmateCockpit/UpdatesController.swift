@@ -55,12 +55,12 @@ private final class UpdateRow {
     let pillLabel = NSTextField(labelWithString: "")
     let spinner = NSProgressIndicator()
     let progressLabel = NSTextField(labelWithString: "Updating\u{2026}")
-    let checkButton = NSButton()
-    let updateButton = NSButton()
+    let checkButton = HelmButton(title: "Check", variant: .secondary, size: .small)
+    let updateButton = HelmButton(title: "Update", variant: .primary, size: .small)
     /// `.notInstalled`-only action, styled deliberately unlike `updateButton`
     /// (inline/link-style rather than a bordered rounded button) so it reads
     /// as "go elsewhere," not "click to install here" - see the file header.
-    let installInBootstrapButton = NSButton()
+    let installInBootstrapButton = HelmButton(title: "Install in Bootstrap \u{2192}", variant: .quiet, size: .small)
     let detailsButton = NSButton()
     let logField = NSTextField(wrappingLabelWithString: "")
     let logContainer = NSView()
@@ -620,29 +620,22 @@ final class UpdatesController: NSViewController {
 
     private func buildRow(_ row: UpdateRow) -> NSView {
         // Check / Update
-        row.checkButton.title = "Check"
-        row.checkButton.bezelStyle = .rounded
-        row.checkButton.controlSize = .small
         row.checkButton.target = self
         row.checkButton.action = #selector(checkTapped(_:))
         row.checkButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
 
-        row.updateButton.title = "Update"
-        row.updateButton.bezelStyle = .rounded
-        row.updateButton.controlSize = .small
         row.updateButton.target = self
         row.updateButton.action = #selector(updateTapped(_:))
         row.updateButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
         row.updateButton.isHidden = true
 
-        // `.notInstalled` only - inline/link-styled (bordered, no fill) so it
-        // visually reads as "navigate elsewhere," never confusable with the
-        // rounded, filled `updateButton` used for every other status.
-        row.installInBootstrapButton.title = "Install in Bootstrap \u{2192}"
-        row.installInBootstrapButton.bezelStyle = .inline
-        row.installInBootstrapButton.isBordered = false
-        row.installInBootstrapButton.controlSize = .small
-        row.installInBootstrapButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        // `.notInstalled` only - `.quiet` + an accent `tint`, so it reads as
+        // "navigate elsewhere" and is never confusable with the accent-filled
+        // `.primary` `updateButton` used for every other status. Its label
+        // colour used to be a hand-rolled `attributedTitle` in `applyThemeToRow`
+        // (`contentTintColor` does not colour a string title) - `tint` is that
+        // same idea, shared and contrast-corrected.
+        row.installInBootstrapButton.tint = .accent
         row.installInBootstrapButton.target = self
         row.installInBootstrapButton.action = #selector(installInBootstrapTapped(_:))
         row.installInBootstrapButton.identifier = NSUserInterfaceItemIdentifier(row.item.id)
@@ -936,14 +929,6 @@ final class UpdatesController: NSViewController {
             cardStyle: needsAttention, attentionHex: attentionHex, accentBar: needsAttention
         )
         row.progressLabel.textColor = HelmTheme.mutedInk(theme)
-        // `.isBordered = false` buttons don't pick up a text color from
-        // `contentTintColor` (that only tints an image) - an attributed
-        // title is the one way to make this link-styled button visually
-        // read as "accent-colored," distinct from the rounded `updateButton`.
-        row.installInBootstrapButton.attributedTitle = NSAttributedString(
-            string: row.installInBootstrapButton.title,
-            attributes: [.foregroundColor: HelmTheme.nsColor(theme.accentHex), .font: NSFont.systemFont(ofSize: 11, weight: .semibold)]
-        )
     }
 }
 

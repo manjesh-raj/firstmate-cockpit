@@ -36,11 +36,9 @@ final class ShiftSnoozeCustomController: NSViewController {
         picker.dateValue = initial
         picker.translatesAutoresizingMaskIntoConstraints = false
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let set = NSButton(title: "Snooze", target: self, action: #selector(confirm))
-        set.bezelStyle = .rounded
+        let set = HelmButton(title: "Snooze", variant: .primary, target: self, action: #selector(confirm))
         set.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)

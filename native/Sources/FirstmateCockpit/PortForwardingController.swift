@@ -71,16 +71,11 @@ final class PortForwardingController: NSViewController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         rowsStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
 
-        let addButton = NSButton(title: " Add Rule", target: self, action: #selector(addRuleClicked))
-        addButton.image = NSImage(systemSymbolName: "plus.circle", accessibilityDescription: "Add Rule")
-        addButton.imagePosition = .imageLeading
-        addButton.bezelStyle = .rounded
+        let addButton = HelmButton(title: "Add Rule", variant: .secondary, symbol: "plus.circle", target: self, action: #selector(addRuleClicked))
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
         save.keyEquivalent = "\r"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -171,7 +166,7 @@ final class PortForwardingController: NSViewController {
 /// `currentRule` back on Save rather than being told about every keystroke.
 private final class PortForwardRuleRowView: NSView {
 
-    private let kindPopup = NSPopUpButton()
+    private let kindPopup = HelmPopUpButton()
     private let bindField = NSTextField()
     private let listenField = NSTextField()
     private let arrow = NSTextField(labelWithString: "\u{2192}")

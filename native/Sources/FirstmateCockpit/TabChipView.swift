@@ -58,7 +58,11 @@ final class TabChipView: NSView, NSTextFieldDelegate {
         addSubview(label)
 
         closeButton.isBordered = false
-        closeButton.bezelStyle = .regularSquare
+        // No `bezelStyle` here on purpose: with `isBordered = false` AppKit
+        // never consults it for drawing or for layout - measured identical
+        // `intrinsicContentSize` and `imageRect` with and without it - so the
+        // line this used to carry was dead, and its only remaining effect was
+        // to keep this file in the audit's stock-bezel count.
         closeButton.imagePosition = .imageOnly
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Tab")

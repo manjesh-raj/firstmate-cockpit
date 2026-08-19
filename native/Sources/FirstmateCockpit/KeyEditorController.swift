@@ -44,7 +44,7 @@ final class KeyEditorController: NSViewController {
     private let publicKeyView = NSTextView()
     private let fingerprintLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private let saveButton = NSButton()
+    private let saveButton = HelmButton(title: "", variant: .primary)
 
     // MARK: Create-mode fields
 
@@ -200,8 +200,7 @@ final class KeyEditorController: NSViewController {
         typeSwitch.translatesAutoresizingMaskIntoConstraints = false
 
         configure(generatePassphraseField, placeholder: "Passphrase (optional)", value: nil)
-        let generate = NSButton(title: "Generate", target: self, action: #selector(generateKey))
-        generate.bezelStyle = .rounded
+        let generate = HelmButton(title: "Generate", variant: .primary, target: self, action: #selector(generateKey))
 
         let grid = NSGridView(views: [
             [rowLabel("Type"), typeSwitch],
@@ -239,16 +238,14 @@ final class KeyEditorController: NSViewController {
             importDropZone.heightAnchor.constraint(equalToConstant: 44),
         ])
 
-        let chooseFile = NSButton(title: "Import from Key File…", target: self, action: #selector(chooseImportFile))
-        chooseFile.bezelStyle = .rounded
+        let chooseFile = HelmButton(title: "Import from Key File…", variant: .secondary, target: self, action: #selector(chooseImportFile))
 
         importTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         importTextView.isEditable = true
         let pasteBox = labeledBox("Or paste the private key", view: scrollable(importTextView, height: 70))
 
         configure(importPassphraseField, placeholder: "Passphrase (if the key needs one)", value: nil)
-        let verify = NSButton(title: "Verify", target: self, action: #selector(verifyImport))
-        verify.bezelStyle = .rounded
+        let verify = HelmButton(title: "Verify", variant: .secondary, target: self, action: #selector(verifyImport))
         let verifyRow = NSStackView(views: [rowLabel("Passphrase"), importPassphraseField, verify])
         verifyRow.orientation = .horizontal
         verifyRow.spacing = 10
@@ -332,8 +329,7 @@ final class KeyEditorController: NSViewController {
         publicKeyView.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
         let box = scrollable(publicKeyView, height: 50)
 
-        let copy = NSButton(title: "Copy", target: self, action: #selector(copyPublicKey))
-        copy.bezelStyle = .rounded
+        let copy = HelmButton(title: "Copy", variant: .secondary, target: self, action: #selector(copyPublicKey))
         fingerprintLabel.font = .systemFont(ofSize: 11)
         mutedLabels.add(fingerprintLabel)
 
@@ -434,20 +430,16 @@ final class KeyEditorController: NSViewController {
     // MARK: Save / Delete / Cancel
 
     private func buildBottomBar(showDelete: Bool) -> NSView {
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
         saveButton.title = "Save"
-        saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
         saveButton.target = self
         saveButton.action = #selector(save)
 
         var views: [NSView] = []
         if showDelete {
-            let del = NSButton(title: "Delete", target: self, action: #selector(deleteKey))
-            del.bezelStyle = .rounded
-            del.contentTintColor = .systemRed
+            let del = HelmButton(title: "Delete", variant: .destructive, target: self, action: #selector(deleteKey))
             views.append(del)
         }
         let spacer = NSView()

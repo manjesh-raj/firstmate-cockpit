@@ -34,11 +34,11 @@ final class CommandEditorController: NSViewController, NSTextFieldDelegate {
 
     private let nameField = NSTextField()
     private let descriptionField = NSTextField()
-    private let categoryPopup = NSPopUpButton()
+    private let categoryPopup = HelmPopUpButton()
     private let subcategoryField = NSTextField()
     private let templateTextView = NSTextView()
     private let tagsField = NSTextField()
-    private let riskPopup = NSPopUpButton()
+    private let riskPopup = HelmPopUpButton()
 
     private let parametersStack = NSStackView()
     private struct ParameterRow {
@@ -129,19 +129,16 @@ final class CommandEditorController: NSViewController, NSTextFieldDelegate {
         parametersStack.translatesAutoresizingMaskIntoConstraints = false
         for param in prefill?.parameters ?? [] { addParameterRow(prefilled: param) }
 
-        let addParamButton = NSButton(title: "+ Add Parameter", target: self, action: #selector(addParameterClicked))
-        addParamButton.bezelStyle = .rounded
+        let addParamButton = HelmButton(title: "+ Add Parameter", variant: .secondary, target: self, action: #selector(addParameterClicked))
         addParamButton.controlSize = .small
 
         let paramsHeader = NSTextField(labelWithString: "Parameters")
         paramsHeader.font = .systemFont(ofSize: 12)
         paramsHeader.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
 
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked))
-        cancelButton.bezelStyle = .rounded
+        let cancelButton = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancelClicked))
         cancelButton.keyEquivalent = "\u{1b}"
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(saveClicked))
-        saveButton.bezelStyle = .rounded
+        let saveButton = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(saveClicked))
         saveButton.keyEquivalent = "\r"
         let bottomSpacer = NSView()
         bottomSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -217,7 +214,7 @@ final class CommandEditorController: NSViewController, NSTextFieldDelegate {
         labelField.stringValue = param?.label ?? ""
         labelField.translatesAutoresizingMaskIntoConstraints = false
 
-        let kindPopup = NSPopUpButton()
+        let kindPopup = HelmPopUpButton()
         kindPopup.translatesAutoresizingMaskIntoConstraints = false
         for kind in CommandParameterKind.allCases { kindPopup.addItem(withTitle: kind.rawValue) }
         kindPopup.selectItem(at: CommandParameterKind.allCases.firstIndex(of: param?.kind ?? .string) ?? 0)
@@ -236,8 +233,7 @@ final class CommandEditorController: NSViewController, NSTextFieldDelegate {
         optionsField.stringValue = (param?.options ?? []).joined(separator: ", ")
         optionsField.translatesAutoresizingMaskIntoConstraints = false
 
-        let removeButton = NSButton(title: "\u{2715}", target: self, action: #selector(removeParameterClicked(_:)))
-        removeButton.bezelStyle = .rounded
+        let removeButton = HelmButton(title: "\u{2715}", variant: .quiet, target: self, action: #selector(removeParameterClicked(_:)))
         removeButton.controlSize = .small
         removeButton.translatesAutoresizingMaskIntoConstraints = false
 

@@ -388,14 +388,12 @@ final class ReviewController: NSViewController {
         let (checksLabel, checksColorHex) = checksVisuals(pr.checks)
         let checksPill = pillLabelView(text: checksLabel, colorHex: checksColorHex)
 
-        let reviewButton = NSButton(title: "Review", target: self, action: #selector(reviewPR(_:)))
-        reviewButton.bezelStyle = .rounded
+        let reviewButton = HelmButton(title: "Review", variant: .secondary, target: self, action: #selector(reviewPR(_:)))
         reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
 
         var trailing: [NSView] = [checksPill, reviewButton]
         if pr.source == "work", let taskID = pr.taskID {
-            let mergeButton = NSButton(title: "Merge", target: self, action: #selector(mergePR(_:)))
-            mergeButton.bezelStyle = .rounded
+            let mergeButton = HelmButton(title: "Merge", variant: .primary, target: self, action: #selector(mergePR(_:)))
             mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
             trailing.append(mergeButton)
         }

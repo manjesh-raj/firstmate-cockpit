@@ -1001,10 +1001,10 @@ final class ShiftController: NSViewController {
     private let detailFormPanel = HelmCard()
     private let detailNameField = NSTextField()
     private let detailDescriptionField = NSTextField()
-    private let detailStatusPopup = NSPopUpButton()
+    private let detailStatusPopup = HelmPopUpButton()
     private let detailStartDateField = NSTextField()
     private let detailDueDateField = NSTextField()
-    private let detailSaveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let detailSaveButton = HelmButton(title: "Save", variant: .primary, target: nil, action: nil)
 
     private let detailTasksPanel = HelmCard()
     private let detailTasksHeader = NSTextField(labelWithString: "Tasks")
@@ -1163,7 +1163,6 @@ final class ShiftController: NSViewController {
         grid.column(at: 0).width = 100
         grid.column(at: 1).xPlacement = .fill
 
-        detailSaveButton.bezelStyle = .rounded
         detailSaveButton.target = self
         detailSaveButton.action = #selector(detailSaveClicked)
         detailSaveButton.translatesAutoresizingMaskIntoConstraints = false

@@ -48,7 +48,7 @@ private final class GitHubSyncRow {
     let pillLabel = NSTextField(labelWithString: "")
     let spinner = NSProgressIndicator()
     let progressLabel = NSTextField(labelWithString: "")
-    let syncButton = NSButton()
+    let syncButton = HelmButton(title: "", variant: .secondary)
     let detailsButton = NSButton()
     let logField = NSTextField(wrappingLabelWithString: "")
     let logContainer = NSView()
@@ -189,12 +189,11 @@ final class GitHubSyncController: NSViewController {
 
     // MARK: Sync All
 
-    private let syncAllButton = NSButton()
+    private let syncAllButton = HelmButton(title: "", variant: .primary)
     private let syncAllSummaryLabel = NSTextField(wrappingLabelWithString: "")
 
     private func buildSyncAllSection() -> NSView {
         syncAllButton.title = "Sync All"
-        syncAllButton.bezelStyle = .rounded
         syncAllButton.target = self
         syncAllButton.action = #selector(syncAllTapped)
         syncAllButton.setContentHuggingPriority(.required, for: .horizontal)
@@ -267,7 +266,6 @@ final class GitHubSyncController: NSViewController {
 
     private func buildRow(_ row: GitHubSyncRow) -> NSView {
         row.syncButton.title = "Sync now"
-        row.syncButton.bezelStyle = .rounded
         row.syncButton.controlSize = .small
         row.syncButton.target = self
         row.syncButton.action = #selector(syncTapped(_:))

@@ -5,6 +5,9 @@
 // that phase fixed (the full-app UI audit's §5.7 shared pill, §5.3 system
 // text colours, and §7 item 7's `HelmTheme.mutedInk` constant) cannot
 // silently regress the next time a theme or a `HelmTint` is added.
+// `fm/grandline-design-system-phase2` added `HelmButton`'s two checks (every
+// variant's label against its own fill, and a source guard against the stock
+// bezel coming back) for the same reason.
 // `FM_RUN_CONTRAST_TESTS=1 .build/debug/FirstmateCockpit`.
 //
 // It is the audit's own probe made permanent: the same WCAG maths
@@ -20,6 +23,19 @@
 
 import AppKit
 import Foundation
+
+/// `HelmButton.Variant`'s cases with the one fact the contrast sweep needs
+/// that the enum itself does not carry: whether the variant paints a fill of
+/// its own (so its label is scored against that) or is transparent (so its
+/// label is scored against the surfaces it can sit on).
+private enum HelmButtonVariantsUnderTest {
+    static let all: [(variant: HelmButton.Variant, name: String, paintsFill: Bool)] = [
+        (.primary, "primary", true),
+        (.secondary, "secondary", true),
+        (.quiet, "quiet", false),
+        (.destructive, "destructive", true),
+    ]
+}
 
 enum HelmContrastSelfTest {
     /// Every hue a tinted component can be given, by the name it reads as in
@@ -41,6 +57,8 @@ enum HelmContrastSelfTest {
         checkIconTiles(&ok)
         checkMutedInk(&ok)
         checkNoSystemTextColors(&ok)
+        checkButtonVariants(&ok)
+        checkNoStockBezels(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -182,6 +200,137 @@ enum HelmContrastSelfTest {
         } else {
             for o in offenders { print("  FAIL \(o)") }
             print("  \(offenders.count) system-colour text site(s) - use HelmTheme.mutedInk / chromeInkHex instead")
+            ok = false
+        }
+    }
+
+    // MARK: 5. `HelmButton`'s four variants (audit §3.2 "Buttons", §6.3 #3)
+
+    /// Every variant's label has to clear the text floor against the fill that
+    /// variant actually paints, in every palette - including the two the audit
+    /// singled out as the risky ones:
+    ///
+    /// - `.primary` is an opaque `accentHex` fill with a `selectionTextHex`
+    ///   label. That pairing is borrowed from SwiftTerm's own selected-text
+    ///   tone, so it *should* be safe by construction - this asserts it rather
+    ///   than assuming it, which is the whole point of Phase 0's rule.
+    /// - `.destructive` puts a tint hue's own label on a wash of itself, which
+    ///   is exactly the shape §5.7 measured failing in 44 of 72 pairs. It goes
+    ///   through `HelmContrast.tintedSurface`; this proves that holds.
+    private static func checkButtonVariants(_ ok: inout Bool) {
+        print("\n-- HelmButton variants (target \(HelmContrast.textTarget):1, label vs its own fill) --")
+        // The system colours the audit measured stock buttons painting. A
+        // variant fill must never resolve to one of these in any theme.
+        let systemChrome = [NSColor.controlAccentColor,
+                            NSColor.selectedContentBackgroundColor].map(HelmContrast.components)
+        for theme in HelmTheme.allThemes {
+            var cells: [String] = []
+            for variant in HelmButtonVariantsUnderTest.all {
+                let p = HelmButton.palette(variant: variant.variant, tint: nil, theme: theme)
+                // `.quiet` paints no fill of its own, so score its label
+                // against both surfaces it can sit on, like a pill.
+                let backdrops: [(String, NSColor)] = variant.paintsFill
+                    ? [("fill", p.fill)]
+                    : [("card", HelmTheme.nsColor(theme.chromeBackgroundHex)),
+                       ("page", HelmTheme.nsColor(theme.backgroundHex))]
+                var worst = Double.greatestFiniteMagnitude
+                for (name, backdrop) in backdrops {
+                    let r = HelmContrast.ratio(p.label, backdrop)
+                    worst = min(worst, r)
+                    if r < HelmContrast.textTarget - 0.01 {
+                        print("  FAIL \(theme.id) .\(variant.name) label on \(name): \(fmt(r)):1")
+                        ok = false
+                    }
+                }
+                if variant.paintsFill {
+                    let fill = HelmContrast.components(p.fill)
+                    for system in systemChrome where abs(fill.0 - system.0) < 0.02
+                        && abs(fill.1 - system.1) < 0.02 && abs(fill.2 - system.2) < 0.02 {
+                        print("  FAIL \(theme.id) .\(variant.name): fill is macOS system chrome, not the palette")
+                        ok = false
+                    }
+                }
+                cells.append("\(variant.name) \(fmt(worst))")
+            }
+            // The one hard identity: a primary action is the theme's accent.
+            let primaryFill = HelmButton.palette(variant: .primary, tint: nil, theme: theme).fill
+            if HelmContrast.ratio(primaryFill, HelmTheme.nsColor(theme.accentHex)) > 1.01 {
+                print("  FAIL \(theme.id): .primary fill is not accentHex")
+                ok = false
+            }
+            print("  \(pad(theme.id, 20)) \(cells.joined(separator: "  "))")
+        }
+        // A tinted label (the "\u{2606} Favorite" / "Install in Bootstrap"
+        // emphasis three pages used to hand-roll) has to clear the floor too.
+        print("  -- tinted labels on .secondary / .quiet --")
+        for theme in HelmTheme.allThemes {
+            for (name, hue) in hues {
+                for variant in [HelmButton.Variant.secondary, .quiet] {
+                    let p = HelmButton.palette(variant: variant, tint: tint(named: name), theme: theme)
+                    let backdrop = variant == .secondary
+                        ? p.fill : HelmTheme.nsColor(theme.chromeBackgroundHex)
+                    let r = HelmContrast.ratio(p.label, backdrop)
+                    if r < HelmContrast.textTarget - 0.01 {
+                        print("  FAIL \(theme.id) .\(variant) tint \(name): \(fmt(r)):1")
+                        ok = false
+                    }
+                    _ = hue
+                }
+            }
+        }
+        print("  OK - all \(HelmTheme.allThemes.count) themes x 4 variants, plus every tint on .secondary/.quiet")
+    }
+
+    /// `HelmTint` by the name `hues` uses, so the tinted-label sweep above can
+    /// ask for the real enum case rather than a hex.
+    private static func tint(named name: String) -> HelmTint {
+        switch name {
+        case "red": return .critical
+        case "green": return .good
+        case "amber": return .warn
+        case "blue": return .info
+        case "violet": return .violet
+        case "accent": return .accent
+        default: return .neutral
+        }
+    }
+
+    // MARK: 6. The stock bezel must not come back (audit §3.2, §7 Phase 2)
+
+    /// The audit counted 124 `bezelStyle` sites across 29 files; Phase 2 left
+    /// exactly one, and it is not a button. A new one is almost always someone
+    /// reaching for `NSButton` instead of `HelmButton`, which is invisible in
+    /// review and only shows up as one grey control on an otherwise themed
+    /// page - so it fails here instead.
+    private static func checkNoStockBezels(_ ok: inout Bool) {
+        print("\n-- stock bezels (must not appear in Sources/) --")
+        let sourcesDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil),
+              files.contains(where: { $0.lastPathComponent == "HelmTheme.swift" }) else {
+            print("  SKIP - sources not present next to this binary (\(sourcesDir.path))")
+            return
+        }
+        // The one allowed site, with the reason it is allowed: this is
+        // `NSTextField.bezelStyle` on `TabChipView`'s inline-rename field - a
+        // different property on a different class, not a button at all.
+        let allowed: Set<String> = ["TabChipView.swift:label.bezelStyle = .roundedBezel"]
+        var offenders: [String] = []
+        for file in files where file.pathExtension == "swift" {
+            if file.lastPathComponent == "HelmContrastSelfTest.swift" { continue }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("//") || trimmed.hasPrefix("///") { continue }
+                guard trimmed.contains("bezelStyle") else { continue }
+                if allowed.contains("\(file.lastPathComponent):\(trimmed)") { continue }
+                offenders.append("\(file.lastPathComponent):\(n + 1) \(trimmed)")
+            }
+        }
+        if offenders.isEmpty {
+            print("  OK - no stock bezels (1 documented NSTextField exception allowed)")
+        } else {
+            for o in offenders { print("  FAIL \(o)") }
+            print("  \(offenders.count) stock-bezel site(s) - use HelmButton instead")
             ok = false
         }
     }

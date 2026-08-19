@@ -72,17 +72,13 @@ final class SnippetEditorController: NSViewController {
         mutedLabels.add(caption)
         caption.translatesAutoresizingMaskIntoConstraints = false
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.bezelStyle = .rounded
+        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Save", target: self, action: #selector(save))
-        save.bezelStyle = .rounded
+        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
         save.keyEquivalent = "\r"
         var bottomViews: [NSView] = []
         if editing != nil {
-            let del = NSButton(title: "Delete", target: self, action: #selector(deleteSnippet))
-            del.bezelStyle = .rounded
-            del.contentTintColor = .systemRed
+            let del = HelmButton(title: "Delete", variant: .destructive, target: self, action: #selector(deleteSnippet))
             bottomViews.append(del)
         }
         let spacer = NSView()
