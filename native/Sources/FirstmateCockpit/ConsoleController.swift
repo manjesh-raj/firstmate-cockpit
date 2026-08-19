@@ -917,7 +917,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadEmptyStateView.addSubview(sreLeadEmptyStateButton)
 
         NSLayoutConstraint.activate([
-            sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
             sreLeadEmptyStateView.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
             sreLeadEmptyStateView.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
             sreLeadEmptyStateView.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
@@ -1204,7 +1204,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         chat.setInputEnabled(false)
         sreLeadPane.addSubview(chat)
         NSLayoutConstraint.activate([
-            chat.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            chat.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
             chat.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
             chat.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
             chat.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
