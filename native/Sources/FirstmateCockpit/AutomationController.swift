@@ -175,6 +175,13 @@ final class AutomationController: NSViewController {
     private let stepperStack = NSStackView()
     private var stepContentBoxes: [NSView] = []
     private var cardBackgroundViews: [NSView] = []
+    /// A drifted step (`.failed`/`.waitingForCaptain`) gets the notification-
+    /// card-style left accent bar (`fm/grandline-setup-attention-row-style`)
+    /// - tracked alongside which theme-derived hex it should show, since a
+    /// live theme switch calls `applyTheme()` alone (never `rebuildStepper()`,
+    /// see `ThemeManager.shared.observe` below) and the bar's color would
+    /// otherwise go stale after that switch.
+    private var stepAccentBars: [(bar: NSView, hex: (HelmTheme) -> String)] = []
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 620, height: 720))
@@ -648,6 +655,25 @@ final class AutomationController: NSViewController {
 
         let contentBox = stepContentBox(bodyViews: bodyViews)
 
+        // Only `.failed`/`.waitingForCaptain` genuinely need eyes on them -
+        // `.pending`/`.checking`/`.running`/`.done`/`.skipped` keep the
+        // box's existing plain look untouched
+        // (`fm/grandline-setup-attention-row-style`).
+        let attentionHex: ((HelmTheme) -> String)?
+        switch status {
+        case .failed: attentionHex = { $0.ansiHex[1] }
+        case .waitingForCaptain: attentionHex = { $0.ansiHex[3] }
+        case .pending, .checking, .running, .done, .skipped: attentionHex = nil
+        }
+        let stepAccentBar = NSView()
+        ToolRowLayout.attachAccentBar(stepAccentBar, to: contentBox, verticalInset: 8)
+        if let attentionHex {
+            ToolRowLayout.setAccentBar(stepAccentBar, colorHex: attentionHex(theme))
+            stepAccentBars.append((bar: stepAccentBar, hex: attentionHex))
+        } else {
+            ToolRowLayout.setAccentBar(stepAccentBar, colorHex: nil)
+        }
+
         let bodyStack = NSStackView(views: [contentBox])
         bodyStack.orientation = .vertical
         bodyStack.alignment = .leading
@@ -753,7 +779,14 @@ final class AutomationController: NSViewController {
             innerStack.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -6),
         ])
 
-        applyChipTheme(chip: chip, dot: dot, label: label, row: row)
+        // A fresh chip every call (this whole grid is torn down and rebuilt
+        // on every status change, see `rebuildStepper`'s doc comment), so a
+        // brand-new accent bar here needs no idempotency guard - `build()`'s
+        // `superview !== ...` dance is only needed for a persistent, reused
+        // container.
+        let accentBar = NSView()
+        ToolRowLayout.attachAccentBar(accentBar, to: chip, verticalInset: 4, width: 2.5)
+        applyChipTheme(chip: chip, dot: dot, label: label, accentBar: accentBar, row: row)
         return chip
     }
 
@@ -761,14 +794,19 @@ final class AutomationController: NSViewController {
     /// done, a highlighted accent-bordered tint for the one currently
     /// running, muted/plain for pending" - plus a fourth (critical) for a
     /// genuine check/install failure, which the brief's three named states
-    /// don't cover but this page still needs to represent honestly.
-    private func applyChipTheme(chip: NSView, dot: NSView, label: NSTextField, row: ToolRowState) {
+    /// don't cover but this page still needs to represent honestly. The
+    /// failure case is also the one that gets the notification-card-style
+    /// left accent bar (`fm/grandline-setup-attention-row-style`) - a
+    /// pending/done/running chip already reads calmly via its own fill/dot
+    /// color and shouldn't grow extra chrome.
+    private func applyChipTheme(chip: NSView, dot: NSView, label: NSTextField, accentBar: NSView, row: ToolRowState) {
         let hex: String
         var borderHex: String?
+        let isFailed = row.status == .checkFailed || row.status == .updateFailed
         if row.isCurrent {
             hex = theme.accentHex
             borderHex = theme.accentHex
-        } else if row.status == .checkFailed || row.status == .updateFailed {
+        } else if isFailed {
             hex = theme.ansiHex[1]
         } else if row.status == .upToDate || row.status == .updateAvailable {
             hex = theme.ansiHex[2]
@@ -785,6 +823,7 @@ final class AutomationController: NSViewController {
             chip.layer?.borderWidth = 0
         }
         label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        ToolRowLayout.setAccentBar(accentBar, colorHex: isFailed ? theme.ansiHex[1] : nil)
     }
 
     private func buildRestoreConfigActions(isWaiting: Bool) -> NSView {
@@ -814,6 +853,7 @@ final class AutomationController: NSViewController {
     private func rebuildStepper() {
         guard isViewLoaded else { return }
         stepContentBoxes.removeAll()
+        stepAccentBars.removeAll()
         dynamicLabels.removeAll()
         for v in stepperStack.arrangedSubviews {
             stepperStack.removeArrangedSubview(v)
@@ -866,6 +906,9 @@ final class AutomationController: NSViewController {
         }
         for label in dynamicLabels {
             label.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        }
+        for (bar, hex) in stepAccentBars {
+            ToolRowLayout.setAccentBar(bar, colorHex: hex(theme))
         }
     }
 }

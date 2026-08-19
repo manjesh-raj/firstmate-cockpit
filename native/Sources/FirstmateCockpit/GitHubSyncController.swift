@@ -459,7 +459,19 @@ final class GitHubSyncController: NSViewController {
 
     private func applyThemeToRow(_ row: GitHubSyncRow) {
         let failed = row.status == .checkFailed || row.status == .syncFailed || row.status.isDiverged
-        ToolRowLayout.applyTheme(row.toolRowViews, theme: theme, detailFailed: failed)
+        // "Needs attention" = the existing `failed`/diverged signal above,
+        // plus `showsSyncButton`'s own `.behind` case - a fork genuinely
+        // behind upstream is worth a look even before any sync attempt has
+        // failed (`fm/grandline-setup-attention-row-style`). Both
+        // predicates already exist; this only composes them, no new
+        // detection. `.inSync`/`.notAFork`/`.unknown` (and a busy
+        // `.checking`/`.syncing`) keep today's flat/compact look.
+        let needsAttention = failed || row.status.showsSyncButton
+        let attentionHex = needsAttention ? pillVisuals(row.status).1 : nil
+        ToolRowLayout.applyTheme(
+            row.toolRowViews, theme: theme, detailFailed: failed,
+            cardStyle: needsAttention, attentionHex: attentionHex, accentBar: needsAttention
+        )
         row.progressLabel.textColor = HelmTheme.mutedInk(theme)
     }
 

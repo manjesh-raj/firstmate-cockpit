@@ -1422,6 +1422,16 @@ final class BootstrapController: NSViewController {
             trailingViews.append(button)
         }
 
+        // Every row this function ever builds is already a drifted item -
+        // `rebuildDriftSection` only calls it for `driftedKinds`, never for
+        // a step that still matches - so unlike Updates/GitHub Sync/
+        // Automation's dense checklists, there's no "mix of healthy and
+        // attention rows" to distinguish here: 100% of what's shown belongs
+        // in the notification-card treatment
+        // (`fm/grandline-setup-attention-row-style`). This card is rebuilt
+        // fresh on every `rebuildDriftSection()` call (see `clearStack`
+        // above), so it's safe to decide `cardStyle` at `build()` time too,
+        // unlike a persistent mutate-in-place row.
         let row = ToolRowLayout.build(
             views,
             iconSymbol: kind.symbol,
@@ -1429,10 +1439,14 @@ final class BootstrapController: NSViewController {
             name: kind.title,
             trailingViews: trailingViews,
             identifier: "drift-\(kind.title)",
-            showDetails: false
+            showDetails: false,
+            cardStyle: true
         )
         views.detailLabel.stringValue = driftDetail(for: kind)
-        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: true)
+        ToolRowLayout.applyTheme(
+            views, theme: theme, detailFailed: true,
+            cardStyle: true, attentionHex: theme.ansiHex[1], accentBar: true
+        )
         return row
     }
 

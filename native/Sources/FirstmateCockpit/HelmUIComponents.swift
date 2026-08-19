@@ -189,6 +189,53 @@ enum ToolRowLayout {
         let logField: NSTextField
         let logContainer: NSView
         let rowContainer: HoverHighlightView
+        /// The colored left accent strip a "needs attention" row shows
+        /// (`fm/grandline-setup-attention-row-style`) - a stored default so
+        /// every pre-existing `Views(...)` call site keeps compiling
+        /// unchanged. Geometry is wired up once in `build()` (idempotent,
+        /// hidden by default); `applyTheme(accentBar:)` only ever flips its
+        /// color/visibility, never its position, so it's safe to toggle on a
+        /// persistent, mutate-in-place row (Updates/GitHub Sync) as well as
+        /// a torn-down-and-rebuilt one (Bootstrap/Automation).
+        let accentBar: NSView = NSView()
+    }
+
+    /// Adds (idempotently, based on `bar`'s current superview) a colored
+    /// left accent strip flush against `container`'s leading edge - the
+    /// same colored-strip idiom `NotificationRowView`/`ShiftTaskRowView`
+    /// use to flag "this one needs a look" (`NotificationCenterPopover.
+    /// swift`). Exposed as a standalone helper, not baked only into
+    /// `Views.rowContainer`, so a page with its own bespoke small container
+    /// - `AutomationController`'s software-checklist chips, which don't use
+    /// `ToolRowLayout` at all - can reuse the exact same visual idiom
+    /// instead of hand-rolling a second one. Callers own `bar`'s lifetime (a
+    /// fresh view for a page that rebuilds every render, or a persistent
+    /// per-row view for a page that mutates rows in place) - this never
+    /// allocates the bar itself, so there's no shared mutable registry to
+    /// leak or collide.
+    static func attachAccentBar(_ bar: NSView, to container: NSView, verticalInset: CGFloat = 6, width: CGFloat = 3) {
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = width / 2
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        if bar.superview !== container {
+            container.addSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                bar.widthAnchor.constraint(equalToConstant: width),
+                bar.topAnchor.constraint(equalTo: container.topAnchor, constant: verticalInset),
+                bar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -verticalInset),
+            ])
+        }
+    }
+
+    /// Shows `bar` tinted `colorHex`, or hides it when `colorHex` is `nil` -
+    /// the one place that decides "does this row/chip currently need eyes
+    /// on it."
+    static func setAccentBar(_ bar: NSView, colorHex: String?) {
+        bar.isHidden = colorHex == nil
+        if let colorHex {
+            bar.layer?.backgroundColor = HelmTheme.nsColor(colorHex).cgColor
+        }
     }
 
     /// Assembles `views` into one row and returns the top-level view to place
@@ -334,6 +381,14 @@ enum ToolRowLayout {
                 column.bottomAnchor.constraint(equalTo: views.rowContainer.bottomAnchor, constant: -verticalInset),
             ])
         }
+        // Always wired up (hidden by default) regardless of `cardStyle` -
+        // `applyTheme(accentBar:)` is what decides visibility/color, and it
+        // needs to be able to flip a persistent, mutate-in-place row
+        // (Updates/GitHub Sync, built exactly once) into/out of "needs
+        // attention" on every status change, long after this `build()` call
+        // returns.
+        attachAccentBar(views.accentBar, to: views.rowContainer)
+        views.accentBar.isHidden = true
         return views.rowContainer
     }
 
@@ -370,7 +425,25 @@ enum ToolRowLayout {
     /// the card's border instead of the default neutral line - a row with a
     /// real, data-backed "needs attention" state (e.g. Vault's launcher
     /// rows) can call this out without a separate one-off view.
-    static func applyTheme(_ views: Views, theme: HelmTheme, detailFailed: Bool, cardStyle: Bool = false, attentionHex: String? = nil) {
+    ///
+    /// `accentBar` (default `false`, so every pre-existing caller - Vault
+    /// included - is unaffected) additionally shows the colored left accent
+    /// strip (`attachAccentBar`/`setAccentBar`) whenever `cardStyle` is also
+    /// true and `attentionHex` is set - a page whose rows are mostly
+    /// "fine" (Updates/Bootstrap/Automation/GitHub Sync's dense checklists,
+    /// `fm/grandline-setup-attention-row-style`) passes this only for the
+    /// row(s) actually flagged, so a healthy row never grows the fill/
+    /// border/bar treatment at all: this is purely additive on top of
+    /// `cardStyle`'s existing fill/border, not a new visual mode of its own.
+    /// Since this only ever touches `views.rowContainer`'s colors/`
+    /// accentBar`'s color+visibility (never `column`'s already-baked
+    /// padding constraints from `build()`), it's safe to call repeatedly on
+    /// a persistent, mutate-in-place row whose attention state changes
+    /// after its one-time `build()` call - the row won't gain the bigger
+    /// card padding `build(cardStyle: true)` would have given it if that
+    /// had been known up front, but the fill/border/bar signal is real and
+    /// live either way.
+    static func applyTheme(_ views: Views, theme: HelmTheme, detailFailed: Bool, cardStyle: Bool = false, attentionHex: String? = nil, accentBar: Bool = false) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -392,6 +465,7 @@ enum ToolRowLayout {
             views.rowContainer.hoverColor = line.withAlphaComponent(0.18)
             views.rowContainer.layer?.borderWidth = 0
         }
+        setAccentBar(views.accentBar, colorHex: (cardStyle && accentBar) ? attentionHex : nil)
     }
 
     /// Toggles the chevron image, the log container's visibility, and the
