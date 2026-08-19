@@ -59,7 +59,7 @@ final class ShiftController: NSViewController {
     /// consolidated destination (the captain's phase-1 decision, restated in
     /// AGENTS.md) while still giving Weekly Review "its own view" rather than
     /// squeezing it into the daily dashboard.
-    private enum ShiftTopLevelView { case dashboard, weeklyReview }
+    private enum ShiftTopLevelView { case dashboard, weeklyReview, commandLibrary }
     private var topLevelView: ShiftTopLevelView = .dashboard
     private let dashboardTab = HoverHighlightView()
     private let dashboardTabLabel = NSTextField(labelWithString: "My Tasks")
@@ -67,6 +67,18 @@ final class ShiftController: NSViewController {
     private let reviewTabLabel = NSTextField(labelWithString: "Weekly Review")
     private let dashboardContainer = NSStackView()
     private let weeklyReviewContainer = NSStackView()
+
+    // MARK: DevOps Commands (fm/grandline-devops-command-library, Phase 1)
+
+    /// A third tab alongside My Tasks/Weekly Review - see AGENTS.md's "Shift"
+    /// section. Owns its own store: Phase 1 has no other consumer of the
+    /// command library (search-palette/`⌘⇧P` integration is explicitly
+    /// Phase 3 per the design doc), so there's no need to thread this through
+    /// `AppShellController`'s init chain the way the shared `ShiftStore` is.
+    private let commandLibraryStore = CommandLibraryStore()
+    private lazy var commandLibraryView = CommandLibraryPageView(store: commandLibraryStore)
+    private let commandsTab = HoverHighlightView()
+    private let commandsTabLabel = NSTextField(labelWithString: "DevOps Commands")
 
     private let reviewGreeting = NSTextField(labelWithString: "")
     private let reviewSubtitle = NSTextField(labelWithString: "What got done, what got pushed back, what's coming.")
@@ -159,6 +171,8 @@ final class ShiftController: NSViewController {
         dashboardContainer.addArrangedSubview(projectsSection)
 
         let weeklyReviewSection = buildWeeklyReviewSection()
+        commandLibraryView.view.translatesAutoresizingMaskIntoConstraints = false
+        commandLibraryView.view.isHidden = true
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
@@ -168,6 +182,7 @@ final class ShiftController: NSViewController {
         contentStack.addArrangedSubview(tabRow)
         contentStack.addArrangedSubview(dashboardContainer)
         contentStack.addArrangedSubview(weeklyReviewSection)
+        contentStack.addArrangedSubview(commandLibraryView.view)
 
         content.addSubview(contentStack)
         NSLayoutConstraint.activate([
@@ -180,6 +195,7 @@ final class ShiftController: NSViewController {
             tasksRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             projectsSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             weeklyReviewSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            commandLibraryView.view.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
 
         scroll.documentView = content
@@ -526,7 +542,8 @@ final class ShiftController: NSViewController {
     private func buildTabRow() -> NSView {
         let dashboardRow = tabItem(dashboardTab, label: dashboardTabLabel, action: #selector(dashboardTabClicked))
         let reviewRow = tabItem(reviewTab, label: reviewTabLabel, action: #selector(reviewTabClicked))
-        let row = NSStackView(views: [dashboardRow, reviewRow])
+        let commandsRow = tabItem(commandsTab, label: commandsTabLabel, action: #selector(commandsTabClicked))
+        let row = NSStackView(views: [dashboardRow, reviewRow, commandsRow])
         row.orientation = .horizontal
         row.spacing = 6
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -552,12 +569,15 @@ final class ShiftController: NSViewController {
 
     @objc private func dashboardTabClicked() { switchTopLevelView(.dashboard) }
     @objc private func reviewTabClicked() { switchTopLevelView(.weeklyReview) }
+    @objc private func commandsTabClicked() { switchTopLevelView(.commandLibrary) }
 
     private func switchTopLevelView(_ view: ShiftTopLevelView) {
         topLevelView = view
         dashboardContainer.isHidden = view != .dashboard
         weeklyReviewContainer.isHidden = view != .weeklyReview
+        commandLibraryView.view.isHidden = view != .commandLibrary
         if view == .weeklyReview { renderWeeklyReview() }
+        if view == .commandLibrary { commandLibraryView.reloadAndRender() }
         applyTheme()
     }
 
@@ -804,6 +824,7 @@ final class ShiftController: NSViewController {
 
         renderProjectsSection()
         if topLevelView == .weeklyReview { renderWeeklyReview() }
+        if topLevelView == .commandLibrary { commandLibraryView.reloadAndRender() }
 
         applyTheme()
     }
@@ -1369,12 +1390,14 @@ final class ShiftController: NSViewController {
         for (container, label, isActive) in [
             (dashboardTab, dashboardTabLabel, topLevelView == .dashboard),
             (reviewTab, reviewTabLabel, topLevelView == .weeklyReview),
+            (commandsTab, commandsTabLabel, topLevelView == .commandLibrary),
         ] {
             container.normalColor = isActive ? accentTint : .clear
             container.hoverColor = isActive ? accentTint : line.withAlphaComponent(0.25)
             label.textColor = isActive ? accent : muted
             label.font = .systemFont(ofSize: 12, weight: isActive ? .semibold : .medium)
         }
+        commandLibraryView.applyTheme(theme)
 
         reviewGreeting.textColor = ink
         reviewSubtitle.textColor = muted
