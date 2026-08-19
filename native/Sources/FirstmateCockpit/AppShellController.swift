@@ -254,11 +254,18 @@ final class AppShellController: NSViewController {
         // computed "needs you" count straight to its rail icon - no new
         // signal invented here, just the counts these two pages already
         // render every time they refresh.
+        // fm/grandline-notification-center: these two signals already
+        // recompute on every Overview/Review refresh (page visit, manual
+        // refresh, and the `refreshIfNeeded()` calls just below) - piggy-
+        // backing on the existing count callbacks means no new detection
+        // logic and no new poll for either signal.
         overview.onNeedsDecisionCountChanged = { [weak self] count in
             self?.rail.setBadgeCount(count, for: .overview)
+            NotificationSources.setFleetDecisions(count: count) { self?.show(.overview) }
         }
         review.onOpenPRCountChanged = { [weak self] count in
             self?.rail.setBadgeCount(count, for: .review)
+            NotificationSources.setPRReady(count: count) { self?.show(.review) }
         }
         // Trigger both pages' own refresh once at launch so the badges have
         // a real count before the captain ever visits Overview or Review -
@@ -519,12 +526,38 @@ final class AppShellController: NSViewController {
             blockViewOptIn: host.blockViewOptIn
         )
 
+        // fm/grandline-notification-center: reassigned on every call (not
+        // just the first) so a renamed host label is always current in the
+        // notification's own subtext - cheap, and `host.label` is only read
+        // at the moment a reply actually lands, not cached earlier than
+        // that either.
+        let hostID = host.id
+        let hostLabel = host.label
+        controller.onSRELeadReplyWhileBackground = { [weak self, weak controller] tab in
+            guard let self else { return }
+            NotificationSources.setSRELeadReply(tabID: tab.id, tabName: tab.name, hostLabel: hostLabel) { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.hideAllDestinations()
+                controller.view.isHidden = false
+                self.topBar.setTitle(hostLabel)
+                self.activeHostID = hostID
+                self.rail.setActiveHost(hostID)
+                controller.selectAndFocusTab(id: tab.id)
+            }
+        }
+
         hideAllDestinations()
         controller.view.isHidden = false
         topBar.setTitle(host.label)
         activeHostID = host.id
         rail.setActiveHost(host.id)
         controller.focusCurrentTab()
+        // fm/grandline-notification-center: this page coming back on screen
+        // (via the rail icon or the Hosts list, not necessarily through a
+        // notification click) also counts as "the captain is looking at the
+        // currently-selected tab now" - clears its own SRE Lead unread
+        // entry, if any, the same as an in-page tab switch already does.
+        controller.markCurrentTabAsRead()
     }
 
     /// A host was deleted from the store - tear down its dedicated page

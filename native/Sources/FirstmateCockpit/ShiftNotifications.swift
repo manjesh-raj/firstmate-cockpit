@@ -22,6 +22,16 @@ final class ShiftNotificationScheduler {
     private let store: ShiftStore
     private var timer: Timer?
 
+    /// `fm/grandline-notification-center`: fired on every poll with the
+    /// current due-or-overdue counts (signal #8) - feeds the in-app
+    /// Notification Center the same due-detection this scheduler already
+    /// runs for the OS banner below, rather than a second implementation of
+    /// "is this due." Unlike the banner's own once-per-distinct-due-Date
+    /// dedup, this reflects the live count every poll (`nil`/0 clears it),
+    /// since the in-app entry's own clear rule is "clears when completed,"
+    /// not "clears once you've been told."
+    var onDueCountsChanged: ((Int, Int) -> Void)?
+
     /// Each due item is notified once per distinct due `Date` - if a task's
     /// due date/time changes (edited, or pushed back), the new value is a
     /// fresh key and can notify again; snoozing/editing to the *same* value
@@ -86,9 +96,11 @@ final class ShiftNotificationScheduler {
         let now = Date()
         let horizon = now.addingTimeInterval(lookahead)
 
+        var dueTaskCount = 0
         for task in store.activeTasks {
             guard let due = ShiftDateFormatting.dateTime(from: task.dueDate, time: task.dueTime) else { continue }
             guard due <= horizon else { continue }
+            dueTaskCount += 1
             guard notifiedTaskDueAt[task.id] != due else { continue }
             notifiedTaskDueAt[task.id] = due
             notify(
@@ -98,9 +110,11 @@ final class ShiftNotificationScheduler {
             )
         }
 
+        var dueFollowUpCount = 0
         for followUp in store.followUps where followUp.status == .pending {
             guard let due = ShiftDateFormatting.dateTime(from: followUp.followUpAt, time: followUp.followUpTime) else { continue }
             guard due <= horizon else { continue }
+            dueFollowUpCount += 1
             guard notifiedFollowUpDueAt[followUp.id] != due else { continue }
             notifiedFollowUpDueAt[followUp.id] = due
             notify(
@@ -109,6 +123,8 @@ final class ShiftNotificationScheduler {
                 identifier: "shift.followup.\(followUp.id)"
             )
         }
+
+        onDueCountsChanged?(dueTaskCount, dueFollowUpCount)
     }
 
     private func notify(title: String, body: String, identifier: String) {

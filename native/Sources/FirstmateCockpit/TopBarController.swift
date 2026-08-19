@@ -12,6 +12,12 @@
 // `UnifiedSearch.swift`) via `AppShellController.onSearchTapped`. Plain
 // find-in-terminal is unaffected - still reachable via the console toolbar's
 // own magnifying-glass icon and the Edit menu's `⌘F`.
+//
+// `fm/grandline-notification-center` adds the bell between `searchPill` and
+// `themeButton` - the captain-approved design doc's own annotated
+// screenshot places it exactly there. `notificationCenter` (`Notification
+// CenterPopover.swift`) owns the badge count and the dropdown panel; this
+// controller only positions the bell button itself and re-themes it.
 
 import AppKit
 
@@ -20,6 +26,8 @@ final class TopBarController: NSViewController {
     static let height: CGFloat = 52
 
     var onSearchTapped: (() -> Void)?
+
+    let notificationCenter = NotificationCenterController()
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let searchPill = PillButton(icon: "magnifyingglass", text: "Search", badgeText: "⌘K")
@@ -53,6 +61,7 @@ final class TopBarController: NSViewController {
 
         root.addSubview(titleLabel)
         root.addSubview(searchPill)
+        root.addSubview(notificationCenter.bell)
         root.addSubview(themeButton)
         root.addSubview(separator)
 
@@ -70,7 +79,12 @@ final class TopBarController: NSViewController {
             themeButton.widthAnchor.constraint(equalToConstant: 34),
             themeButton.heightAnchor.constraint(equalToConstant: 34),
 
-            searchPill.trailingAnchor.constraint(equalTo: themeButton.leadingAnchor, constant: -10),
+            notificationCenter.bell.trailingAnchor.constraint(equalTo: themeButton.leadingAnchor, constant: -10),
+            notificationCenter.bell.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            notificationCenter.bell.widthAnchor.constraint(equalToConstant: 34),
+            notificationCenter.bell.heightAnchor.constraint(equalToConstant: 34),
+
+            searchPill.trailingAnchor.constraint(equalTo: notificationCenter.bell.leadingAnchor, constant: -10),
             searchPill.centerYAnchor.constraint(equalTo: root.centerYAnchor),
         ])
 
@@ -103,6 +117,8 @@ final class TopBarController: NSViewController {
         themeButton.layer?.backgroundColor = surface.cgColor
         themeButton.layer?.borderWidth = 1
         themeButton.layer?.borderColor = line.withAlphaComponent(0.5).cgColor
+
+        notificationCenter.bell.applyTheme(ink: ink, line: line, surface: surface)
 
         searchPill.applyTheme(faint: ink.withAlphaComponent(0.55), line: line, surface: surface)
     }

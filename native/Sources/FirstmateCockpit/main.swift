@@ -160,10 +160,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.console.stepFontSize(by: delta)
         }
 
-        // Settings > Terminal's "Bell & notifications" toggle (Fix 3): start
-        // the background poll now if it was already on from a previous
-        // launch, and again whenever the toggle flips.
+        // Settings > Terminal's "Bell & notifications" toggle (Fix 3): this
+        // only ever gates whether a macOS banner is ALSO posted for a
+        // needs-decision/blocked task - see `FleetNotifier.setEnabled`'s own
+        // comment. `FleetNotifier.shared.start()` below always runs
+        // regardless, since the in-app Notification Center
+        // (`fm/grandline-notification-center`) must stay current whether or
+        // not the captain wants OS banners too.
         FleetNotifier.shared.setEnabled(AppSettings.shared.notifyOnNeedsDecision)
+        FleetNotifier.shared.onNavigateToOverview = { [weak self] in self?.appShell.show(.overview) }
+        FleetNotifier.shared.start()
+
+        // fm/grandline-notification-center: the slow background poll for the
+        // four signals that otherwise only ever recompute on a page visit
+        // (tool updates, GitHub Sync drift, Vault attention, Bootstrap
+        // setup drift) - see `BackgroundSignalsPoller.swift`'s header for
+        // the cadence tradeoff.
+        BackgroundSignalsPoller.shared.onNavigateToUpdates = { [weak self] in self?.appShell.show(.updates) }
+        BackgroundSignalsPoller.shared.onNavigateToGitHubSync = { [weak self] in self?.appShell.show(.githubSync) }
+        BackgroundSignalsPoller.shared.onNavigateToVault = { [weak self] in self?.appShell.show(.vault) }
+        BackgroundSignalsPoller.shared.onNavigateToBootstrap = { [weak self] in self?.appShell.show(.bootstrap) }
+        BackgroundSignalsPoller.shared.start()
 
         // Phase 5 (cockpit-shift-power-features): search palette + menu bar
         // popover + global quick capture + due-item notifications. All four
@@ -194,6 +211,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // silently failing later.
         shiftHotkey.requestPermissionIfNeeded()
         shiftHotkey.start()
+        // fm/grandline-notification-center: feeds the same due-detection
+        // `poll()` already computes for the OS banner into the in-app
+        // Notification Center too, rather than only firing a one-shot
+        // banner with no record afterward.
+        shiftNotifications.onDueCountsChanged = { [weak self] taskCount, followUpCount in
+            NotificationSources.setShiftDue(taskCount: taskCount, followUpCount: followUpCount) {
+                self?.appShell.showShiftDestination()
+            }
+        }
         shiftNotifications.start()
 
         // fm/grandline-dictation-mvp: unlike `shiftHotkey` above, Dictation
@@ -299,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.shutdownAllHostConsoles()
         shiftHotkey.stop()
         shiftNotifications.stop()
+        BackgroundSignalsPoller.shared.stop()
         dictationHotkey.stop()
         appLock.stop()
     }
@@ -920,6 +947,20 @@ if ProcessInfo.processInfo.environment["FM_RUN_CONSOLE_COMMAND_COMPOSER_TESTS"] 
 // QuotaDataSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_QUOTA_DATA_TESTS"] == "1" {
     exit(QuotaDataSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-notification-center`: pure store logic (add/clear/dismiss/
+// dedup/badge count) - see GrandLineNotificationCenterSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_NOTIFICATION_CENTER_TESTS"] == "1" {
+    exit(GrandLineNotificationCenterSelfTest.run() ? 0 : 1)
+}
+
+// The trickiest of the nine signals - SRE Lead replying on a tab you're not
+// looking at - driven against a real `ConsoleController`, same convention as
+// `SRELeadPerTabSelfTest.swift`. See NotificationCenterSRELeadSelfTest.swift's
+// header.
+if ProcessInfo.processInfo.environment["FM_RUN_NOTIFICATION_CENTER_SRE_LEAD_TESTS"] == "1" {
+    exit(NotificationCenterSRELeadSelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared
