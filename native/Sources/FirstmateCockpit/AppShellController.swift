@@ -249,6 +249,12 @@ final class AppShellController: NSViewController {
         vault.onRunCommandTracked = { [weak self] label, command, completion in
             self?.runInConsole(label: label, command: command, completion: completion)
         }
+        // fm/grandline-devops-command-library-phase2: the Command Library's
+        // "Send to Terminal" types straight into whichever console tab is
+        // currently in front - not a new one-shot command tab (`runInConsole`
+        // above), the exact same "type this into the active tab" behavior
+        // Snippets' own "Run" already uses.
+        shift.onSendCommandToTerminal = { [weak self] text in self?.console.sendCommandLibraryTextToActiveTab(text) }
 
         // fm/grandline-sidebar-badges: forward each page's own already-
         // computed "needs you" count straight to its rail icon - no new

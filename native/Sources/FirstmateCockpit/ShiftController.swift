@@ -80,6 +80,12 @@ final class ShiftController: NSViewController {
     private let commandsTab = HoverHighlightView()
     private let commandsTabLabel = NSTextField(labelWithString: "DevOps Commands")
 
+    /// Phase 2 (fm/grandline-devops-command-library-phase2) - forward-don't-
+    /// own, same convention as every other page's `onRunCommand`/`onRun`:
+    /// `ShiftController` knows nothing about the console, `AppShellController`
+    /// wires this to `ConsoleController.sendCommandLibraryTextToActiveTab`.
+    var onSendCommandToTerminal: ((String) -> Void)?
+
     private let reviewGreeting = NSTextField(labelWithString: "")
     private let reviewSubtitle = NSTextField(labelWithString: "What got done, what got pushed back, what's coming.")
     private let reviewStatsRow = NSStackView()
@@ -173,6 +179,11 @@ final class ShiftController: NSViewController {
         let weeklyReviewSection = buildWeeklyReviewSection()
         commandLibraryView.view.translatesAutoresizingMaskIntoConstraints = false
         commandLibraryView.view.isHidden = true
+        commandLibraryView.onSendToTerminal = { [weak self] text in self?.onSendCommandToTerminal?(text) }
+        commandLibraryView.onPresentEditor = { [weak self] editor in
+            guard let self else { return }
+            self.presentAsSheet(editor)
+        }
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading

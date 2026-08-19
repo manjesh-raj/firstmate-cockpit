@@ -769,6 +769,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         currentTab?.terminal.send(txt: snippet.command + "\n")
     }
 
+    /// The DevOps Command Library's "Send to Terminal" action (fm/grandline-
+    /// devops-command-library-phase2) - same shape as `runSnippetInActiveTab`
+    /// above, since it's the identical "type this into whichever tab is
+    /// currently in front" behavior, just for an already-substituted command
+    /// string instead of a saved `Snippet`.
+    func sendCommandLibraryTextToActiveTab(_ text: String) {
+        currentTab?.terminal.send(txt: text + "\n")
+    }
+
     /// Delete a tab's materialized key scratch dir, if it has one. Called
     /// before every (re)start, on close, and on quit - never left for a crash
     /// to clean up.
