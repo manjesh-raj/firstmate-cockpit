@@ -161,16 +161,24 @@ enum SRELeadPerTabSelfTest {
         // explicitly first to establish the known "started tab is current" state).
         controller.debugSelectTab(tabA)
         guard controller.debugSRELeadShowingEmptyState() == false else { return "tab A (started) incorrectly showed the empty state" }
+        guard controller.debugSRELeadPaneOpen() else { return "tab A has an active session - the pane must be open, not closed" }
         guard (controller.debugSRELeadChatTexts(forTabID: tabA) ?? []).contains(where: { $0.contains("SRE Lead is ready") }) else {
             return "tab A's own transcript should already contain the ready status message"
         }
 
+        // Bug 1 (`fm/grandline-sre-lead-polish`): switching to a tab with no
+        // `sreLead` state at all must show the pane fully CLOSED - not just
+        // the empty state rendered inside a still-open pane. Asserting on
+        // the width constraint directly (not just the empty-state flag) is
+        // what actually catches the regression this fix targets.
         controller.debugSelectTab(tabB)
         guard controller.debugSRELeadShowingEmptyState() == true else { return "tab B (never started) should show the empty state, not tab A's chat or a blank pane" }
         guard controller.debugSRELeadPhase(forTabID: tabB) == nil else { return "tab B should have no SRE Lead state at all" }
+        guard !controller.debugSRELeadPaneOpen() else { return "tab B has no SRE Lead state - the pane must be fully closed, not open showing the empty state" }
 
         controller.debugSelectTab(tabA)
         guard controller.debugSRELeadShowingEmptyState() == false else { return "switching back to tab A should show its chat again, not the empty state" }
+        guard controller.debugSRELeadPaneOpen() else { return "switching back to tab A should reopen the pane" }
         guard (controller.debugSRELeadChatTexts(forTabID: tabA) ?? []).contains(where: { $0.contains("SRE Lead is ready") }) else {
             return "tab A's prior transcript should still be intact after switching away and back"
         }
