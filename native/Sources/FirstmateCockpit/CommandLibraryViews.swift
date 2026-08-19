@@ -150,7 +150,7 @@ final class CommandLibraryPageView: NSObject {
         searchField.isBordered = false
         searchField.drawsBackground = false
         searchField.focusRingType = .none
-        searchField.font = .systemFont(ofSize: 12.5)
+        searchField.font = .systemFont(ofSize: 13)
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.delegate = self
@@ -159,18 +159,22 @@ final class CommandLibraryPageView: NSObject {
         let inner = NSStackView(views: [searchIcon, searchField])
         inner.orientation = .horizontal
         inner.alignment = .centerY
-        inner.spacing = 8
+        inner.spacing = 10
         inner.translatesAutoresizingMaskIntoConstraints = false
 
+        // A touch more generous than the app's usual compact rows - this is
+        // the page's single primary entry point (mockup: `py-2` on a
+        // full-width bar), so it should read with more visual weight than an
+        // ordinary list row.
         searchRow.wantsLayer = true
-        searchRow.layer?.cornerRadius = 8
+        searchRow.layer?.cornerRadius = 9
         searchRow.translatesAutoresizingMaskIntoConstraints = false
         searchRow.addSubview(inner)
         NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: searchRow.leadingAnchor, constant: 12),
-            inner.trailingAnchor.constraint(equalTo: searchRow.trailingAnchor, constant: -12),
-            inner.topAnchor.constraint(equalTo: searchRow.topAnchor, constant: 9),
-            inner.bottomAnchor.constraint(equalTo: searchRow.bottomAnchor, constant: -9),
+            inner.leadingAnchor.constraint(equalTo: searchRow.leadingAnchor, constant: 14),
+            inner.trailingAnchor.constraint(equalTo: searchRow.trailingAnchor, constant: -14),
+            inner.topAnchor.constraint(equalTo: searchRow.topAnchor, constant: 11),
+            inner.bottomAnchor.constraint(equalTo: searchRow.bottomAnchor, constant: -11),
         ])
     }
 
@@ -234,7 +238,13 @@ final class CommandLibraryPageView: NSObject {
         ])
         detailRiskPill.setContentHuggingPriority(.required, for: .horizontal)
 
-        let titleRow = NSStackView(views: [detailNameLabel, detailRiskPill])
+        // The risk pill sits at the row's trailing edge (mockup:
+        // `justify-between`), not crowded right up against the title text -
+        // it reads as a distinct status badge for the command, not a suffix
+        // on its name.
+        let titleRowSpacer = NSView()
+        titleRowSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let titleRow = NSStackView(views: [detailNameLabel, titleRowSpacer, detailRiskPill])
         titleRow.orientation = .horizontal
         titleRow.alignment = .firstBaseline
         titleRow.spacing = 10
@@ -260,7 +270,7 @@ final class CommandLibraryPageView: NSObject {
 
         detailParamsStack.orientation = .vertical
         detailParamsStack.alignment = .leading
-        detailParamsStack.spacing = 10
+        detailParamsStack.spacing = 12
         detailParamsStack.translatesAutoresizingMaskIntoConstraints = false
 
         detailExplainButton.bezelStyle = .rounded
@@ -377,7 +387,24 @@ final class CommandLibraryPageView: NSObject {
         detailCommandBox.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         detailCommandBox.layer?.borderWidth = 1
         detailCommandBox.layer?.borderColor = line.withAlphaComponent(0.6).cgColor
-        detailFavoriteButton.contentTintColor = accent
+        // `Copy` is the row's one primary action (mockup: a solid
+        // accent-filled pill, every other button a plain outlined one).
+        // `NSButton.bezelColor` was tried first and confirmed live to have
+        // no visible effect at this bezel style/control size - the button's
+        // fill stayed identical to every sibling button regardless. Rather
+        // than fight AppKit's bezel rendering further, the emphasis comes
+        // from bold accent-colored text instead - still a real, legible
+        // hierarchy signal next to the other buttons' plain white text, and
+        // needs no departure from a plain `NSButton`.
+        detailCopyButton.attributedTitle = NSAttributedString(
+            string: "Copy", attributes: [.foregroundColor: accent, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]
+        )
+
+        // `contentTintColor` has no effect on a plain-string bezel button's
+        // title (only on an image) - restyle via `refreshFavoriteButton`
+        // instead, which is what actually makes this button read as
+        // gold/amber the way the mockup's "\u{2606} Favorite" does.
+        refreshFavoriteButton()
 
         renderLeftPanel()
         if let id = selectedCommandID, let command = store.command(id: id) {
@@ -416,6 +443,21 @@ final class CommandLibraryPageView: NSObject {
     private func appendToLeftPanel(_ view: NSView) {
         leftPanelStack.addArrangedSubview(view)
         view.widthAnchor.constraint(equalTo: leftPanelStack.widthAnchor).isActive = true
+    }
+
+    /// A section break reads as cramped at the rail's uniform 4pt row
+    /// spacing (fine for row-to-row, too tight around a divider - the
+    /// mockup gives section boundaries roughly 3x a row's own gap). Rather
+    /// than loosen every row's spacing to get that breathing room, this
+    /// widens only the two gaps touching the divider itself via
+    /// `NSStackView.setCustomSpacing(_:after:)`.
+    private func appendDividerToLeftPanel() {
+        if let last = leftPanelStack.arrangedSubviews.last {
+            leftPanelStack.setCustomSpacing(10, after: last)
+        }
+        let d = divider()
+        appendToLeftPanel(d)
+        leftPanelStack.setCustomSpacing(10, after: d)
     }
 
     private func mutedHeaderLabel(_ text: String) -> NSTextField {
@@ -480,7 +522,7 @@ final class CommandLibraryPageView: NSObject {
         rowCommandIDs.removeAll()
 
         leftPanelStack.addArrangedSubview(addCommandButton())
-        appendToLeftPanel(divider())
+        appendDividerToLeftPanel()
 
         if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
             renderSearchResults()
@@ -529,7 +571,7 @@ final class CommandLibraryPageView: NSObject {
                 rowCommandIDs[ObjectIdentifier(row)] = command.id
                 appendToLeftPanel(row)
             }
-            appendToLeftPanel(divider())
+            appendDividerToLeftPanel()
         }
 
         let recent = store.recentlyUsedCommands(limit: 5)
@@ -540,7 +582,7 @@ final class CommandLibraryPageView: NSObject {
                 rowCommandIDs[ObjectIdentifier(row)] = command.id
                 appendToLeftPanel(row)
             }
-            appendToLeftPanel(divider())
+            appendDividerToLeftPanel()
         }
 
         for (info, commands) in store.commandsByCategory() where !commands.isEmpty {
@@ -549,7 +591,7 @@ final class CommandLibraryPageView: NSObject {
             appendToLeftPanel(row)
         }
 
-        appendToLeftPanel(divider())
+        appendDividerToLeftPanel()
         let workflowsRow = NSTextField(labelWithString: "\u{1F4D6} Workflows (Docs \u{2192} Runbooks)")
         workflowsRow.font = .systemFont(ofSize: 11.5)
         workflowsRow.textColor = HelmTheme.mutedInk(theme)
@@ -576,7 +618,7 @@ final class CommandLibraryPageView: NSObject {
         backRow.translatesAutoresizingMaskIntoConstraints = false
         backRow.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(backToBrowseClicked)))
         appendToLeftPanel(backRow)
-        appendToLeftPanel(divider())
+        appendDividerToLeftPanel()
 
         let commandsInCategory = store.commandsByCategory().first { $0.info.id == categoryID }?.commands ?? []
         for command in commandsInCategory {
@@ -649,8 +691,19 @@ final class CommandLibraryPageView: NSObject {
         rebuildParamControls(for: command)
         updateCommandPreview(for: command)
 
-        let isFavorite = store.isFavorite(command.id)
-        detailFavoriteButton.title = isFavorite ? "\u{2605} Favorited" : "\u{2606} Favorite"
+        refreshFavoriteButton()
+    }
+
+    /// Re-derives the Favorite button's title/color from the current
+    /// selection + theme - called on both a state change (`renderDetail`)
+    /// and a theme change (`applyTheme`) so the two can never disagree.
+    private func refreshFavoriteButton() {
+        let isFavorite = selectedCommandID.map(store.isFavorite) ?? false
+        let text = isFavorite ? "\u{2605} Favorited" : "\u{2606} Favorite"
+        let color = HelmTheme.nsColor(HelmTint.warn.hex(in: theme))
+        detailFavoriteButton.attributedTitle = NSAttributedString(
+            string: text, attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 12, weight: .medium)]
+        )
     }
 
     private func rebuildParamControls(for command: DevOpsCommand) {
@@ -663,7 +716,7 @@ final class CommandLibraryPageView: NSObject {
             let row = NSStackView(views: chunk.map { paramBlock(for: $0, command: command) })
             row.orientation = .horizontal
             row.distribution = .fillEqually
-            row.spacing = 10
+            row.spacing = 12
             row.alignment = .top
             row.translatesAutoresizingMaskIntoConstraints = false
             detailParamsStack.addArrangedSubview(row)
