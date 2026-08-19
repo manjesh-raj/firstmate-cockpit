@@ -915,6 +915,13 @@ if ProcessInfo.processInfo.environment["FM_RUN_CONSOLE_COMMAND_COMPOSER_TESTS"] 
     exit(ConsoleCommandComposerSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-quota-percent-fix`: same convention, for `QuotaSource.parse`
+// against `quota-axi`'s real `percentRemaining`-keyed output - see
+// QuotaDataSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_QUOTA_DATA_TESTS"] == "1" {
+    exit(QuotaDataSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
