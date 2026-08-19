@@ -406,7 +406,7 @@ final class FleetController: NSViewController {
             inFlightSectionView.isHidden = false
         }
 
-        rowContainers.removeAll()
+        accentRows.removeAll()
         emptyStateLabels.removeAll()
 
         let working = snapshot.tasks.filter { $0.status == "working" }
@@ -535,101 +535,53 @@ final class FleetController: NSViewController {
 
     private var emptyStateLabels: [(NSView, NSImageView, NSTextField, NSTextField)] = []
 
+    /// One "In flight" row, built from the app's shared `HelmAccentRow`
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 2). The audit (§4.2)
+    /// found this row already had the badge and the status pill but neither
+    /// the accent bar nor the kicker, so it read as almost - but not quite -
+    /// the same object as a notification card or a Shift task; converging it
+    /// was called "nearly free". The tint, glyph and pill text still come
+    /// from `taskVisuals` below, i.e. from the crew state, unchanged.
+    ///
+    /// `hover: false` and no `onClick`: these rows are a read-only readout,
+    /// exactly as before this migration.
     private func taskRowView(_ task: FleetTask) -> NSView {
-        let (symbol, colorHex, pillLabel) = taskVisuals(task)
-
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
-        iconView.contentTintColor = HelmTheme.nsColor(colorHex)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-
-        let idLabel = NSTextField(labelWithString: task.id)
-        idLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        idLabel.lineBreakMode = .byTruncatingTail
-        idLabel.maximumNumberOfLines = 1
-
-        let subBits = [task.repo, task.detail.isEmpty ? "source: \(task.source)" : task.detail].compactMap { $0 }.filter { !$0.isEmpty }
-        let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
-        subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.textColor = HelmTheme.mutedInk(theme)
-        subLabel.lineBreakMode = .byTruncatingTail
-        subLabel.maximumNumberOfLines = 1
-
-        let textStack = NSStackView(views: [idLabel, subLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let pill = pillLabelView(text: pillLabel, colorHex: colorHex)
-
-        let row = NSStackView(views: [iconView, textStack, pill])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        // Keep the icon and status pill at their natural size and let the
-        // title/subtitle text truncate first under narrow widths, so the pill
-        // never gets squeezed into wrapping onto a second line.
-        iconView.setContentHuggingPriority(.required, for: .horizontal)
-        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
-        pill.setContentHuggingPriority(.required, for: .horizontal)
-        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        return wrapRow(row, minHeight: 38)
+        let visuals = taskVisuals(task)
+        let row = HelmAccentRow(hover: false)
+        let detail = task.detail.isEmpty ? "source: \(task.source)" : task.detail
+        row.configure(HelmAccentRow.Content(
+            tint: visuals.tint,
+            // The repo is this row's "which thing is this about" line, the
+            // same job the project name does on a Shift task row.
+            kicker: task.repo ?? task.kind,
+            title: task.id,
+            meta: detail,
+            badgeSymbol: visuals.symbol,
+            chipText: visuals.label
+        ), theme: theme)
+        accentRows.append(row)
+        return row
     }
 
-    private func taskVisuals(_ task: FleetTask) -> (symbol: String, colorHex: String, label: String) {
+    /// Live `HelmAccentRow`s, so a theme change re-tints them. They are
+    /// rebuilt on every `render()`, so this is cleared alongside the stack.
+    private var accentRows: [HelmAccentRow] = []
+
+    /// Returns a `HelmTint` rather than a raw hex: the row's accent bar,
+    /// badge and chip are all resolved from it by `HelmAccentRow`, and the
+    /// chip in particular now goes through `ToolRowLayout.pill`'s
+    /// contrast-corrected path (audit §5.7) instead of this file's own
+    /// hue-on-a-wash-of-itself pill, which was another instance of that bug.
+    private func taskVisuals(_ task: FleetTask) -> (symbol: String, tint: HelmTint, label: String) {
         switch task.status {
-        case "needs_decision": return ("exclamationmark.triangle.fill", theme.ansiHex[3], "needs you")
-        case "blocked": return ("xmark.octagon.fill", theme.ansiHex[1], "blocked")
-        case "failed": return ("xmark.octagon.fill", theme.ansiHex[1], "failed")
-        case "done": return ("checkmark.circle.fill", theme.ansiHex[2], "done")
-        case "working": return ("clock.fill", theme.accentHex, "working")
-        default: return ("circle.dashed", theme.chromeInkHex, "idle")
+        case "needs_decision": return ("exclamationmark.triangle.fill", .warn, "needs you")
+        case "blocked": return ("xmark.octagon.fill", .critical, "blocked")
+        case "failed": return ("xmark.octagon.fill", .critical, "failed")
+        case "done": return ("checkmark.circle.fill", .good, "done")
+        case "working": return ("clock.fill", .accent, "working")
+        default: return ("circle.dashed", .neutral, "idle")
         }
     }
-
-    private func pillLabelView(text: String, colorHex: String) -> NSView {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 10, weight: .semibold)
-        label.textColor = HelmTheme.nsColor(colorHex)
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 8
-        container.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 7),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -7),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
-        ])
-        return container
-    }
-
-    private func wrapRow(_ row: NSStackView, minHeight: CGFloat) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 9
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -6),
-            container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight),
-        ])
-        rowContainers.append(container)
-        return container
-    }
-
-    private var rowContainers: [NSView] = []
 
     // MARK: Actions
 
@@ -683,10 +635,8 @@ final class FleetController: NSViewController {
             titleLabel.textColor = ink
             bodyLabel.textColor = muted
         }
-        for container in rowContainers {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
-        }
+        // Each row owns its own tint-derived chrome; it only needs the new
+        // theme handed to it.
+        for row in accentRows { row.applyTheme(theme) }
     }
 }

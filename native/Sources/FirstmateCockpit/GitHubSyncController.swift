@@ -282,7 +282,8 @@ final class GitHubSyncController: NSViewController {
             iconSymbol: "point.3.connected.trianglepath.dotted",
             tint: .neutral,
             name: row.repo.fullName,
-            trailingViews: [row.pill, row.syncButton, row.spinner, row.progressLabel],
+            statusViews: [row.pill, row.spinner, row.progressLabel],
+            trailingViews: [row.syncButton],
             detailsTarget: self,
             detailsAction: #selector(detailsTapped(_:)),
             identifier: row.repo.fullName

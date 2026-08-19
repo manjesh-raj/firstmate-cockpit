@@ -653,7 +653,11 @@ final class UpdatesController: NSViewController {
             iconSymbol: row.item.kind.symbol,
             tint: categoryTint(for: row.item.category),
             name: row.item.name,
-            trailingViews: [row.pill, row.checkButton, row.updateButton, row.installInBootstrapButton, row.spinner, row.progressLabel],
+            // Status column: the pill, and the spinner/label that replace
+            // it while a check or update runs. Actions stay in their own
+            // trailing column (audit §5.4).
+            statusViews: [row.pill, row.spinner, row.progressLabel],
+            trailingViews: [row.checkButton, row.updateButton, row.installInBootstrapButton],
             detailsTarget: self,
             detailsAction: #selector(detailsTapped(_:)),
             identifier: row.item.id

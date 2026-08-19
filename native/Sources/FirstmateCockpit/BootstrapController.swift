@@ -751,7 +751,6 @@ final class BootstrapController: NSViewController {
             iconSymbol: step.kind.symbol,
             tint: .neutral,
             name: step.kind.title,
-            trailingViews: [views.pill],
             identifier: step.kind.title,
             showDetails: false
         )
@@ -1378,7 +1377,7 @@ final class BootstrapController: NSViewController {
 
         ToolRowLayout.pill(text: "Drifted", colorHex: theme.ansiHex[1], into: views.pill, label: views.pillLabel, theme: theme)
 
-        var trailingViews: [NSView] = [views.pill]
+        var trailingViews: [NSView] = []
         if let (title, action) = driftRemedy(for: kind) {
             let button = HelmButton(title: title, variant: .secondary, target: self, action: action)
             button.controlSize = .small
@@ -1668,7 +1667,6 @@ final class BootstrapController: NSViewController {
             iconSymbol: "link",
             tint: .neutral,
             name: item.label,
-            trailingViews: [views.pill],
             identifier: item.path,
             showDetails: false
         )
@@ -1737,7 +1735,7 @@ final class BootstrapController: NSViewController {
             iconSymbol: "doc.text",
             tint: .neutral,
             name: item.label,
-            trailingViews: [views.pill, button],
+            trailingViews: [button],
             identifier: item.path,
             showDetails: false
         )
@@ -1860,7 +1858,7 @@ final class BootstrapController: NSViewController {
             iconSymbol: row.item.kind.symbol,
             tint: DependencyCatalog.tint(for: row.item.category),
             name: row.item.name,
-            trailingViews: [views.pill, button],
+            trailingViews: [button],
             detailsTarget: self,
             detailsAction: #selector(softwareDetailsTapped(_:)),
             identifier: row.item.id
