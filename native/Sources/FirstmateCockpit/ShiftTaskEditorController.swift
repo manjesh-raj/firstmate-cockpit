@@ -204,6 +204,15 @@ private final class TaskFieldCardView: NSView {
 
 final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
+    /// This sheet's fixed width - `ShiftFollowUpEditorController`/
+    /// `ShiftProjectEditorController` pick one fixed literal frame size and
+    /// leave it, which works for them since their content never changes
+    /// shape enough to expose the bug below; this sheet's due-date toggle,
+    /// natural-language "Detected:" row, and tag chips all show/hide real
+    /// content, so its height has to track that instead. See
+    /// `resizeToFitContent()`.
+    private static let sheetWidth: CGFloat = 520
+
     private let editing: ShiftTask?
     private let projects: [ShiftProject]
     /// Pre-selects the Project card for a brand-new task opened from inside
@@ -284,8 +293,14 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 780))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.sheetWidth, height: 780))
         root.wantsLayer = true
+        // A fixed width, rather than just an initial-frame guess, is what
+        // makes `resizeToFitContent()`'s `fittingSize` read below reliable -
+        // without it, Auto Layout has to also guess a width when computing
+        // the fitting height, which text wrapping/`ChipFlowView`'s own
+        // wrap-to-width layout would otherwise make unstable.
+        root.widthAnchor.constraint(equalToConstant: Self.sheetWidth).isActive = true
         view = root
         // The fix for the real theming bug (see this file's header): an
         // explicit `HelmTheme`-derived background, not just a forced
@@ -523,6 +538,59 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             attachmentWell.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
+
+        resizeToFitContent()
+    }
+
+    /// The real fix for two captain-reported layout bugs
+    /// (fm/grandline-task-editor-layout-fix): a large dead gap between "Set
+    /// due date" and "TAGS" with the toggle off, and dead space below the
+    /// footer with it on. Root cause: `root`'s frame height used to be a
+    /// hardcoded literal (780) that didn't track this sheet's actual content
+    /// height (~605-620pt, measured live) - `presentAsSheet` reads that
+    /// literal frame size verbatim (it does not itself resize the sheet to
+    /// fit Auto Layout content), so the sheet was always ~140-160pt taller
+    /// than its content needed. With `stack`'s top and bottom both pinned as
+    /// required constraints to `root`'s edges, that ~140pt of slack still
+    /// had to go SOMEWHERE for the constraint system to be satisfiable - and
+    /// since `stack`'s distribution is the vertical-stack default,
+    /// `.gravityAreas` (never set explicitly), which has no defined rule for
+    /// *which* arranged subview absorbs leftover space (see AGENTS.md's
+    /// NSStackView gravityAreas gotcha), Auto Layout's own tie-breaking
+    /// picked a different, sibling-content-dependent spot each time: with
+    /// the due-date picker hidden, `dueCard` (an unconstrained-height plain
+    /// `NSView`) was the path of least resistance and silently stretched to
+    /// ~190pt (natural ~53pt) - the dead gap before "TAGS"; with the picker
+    /// visible, `dueCard` resolved to its natural size and the same ~137pt
+    /// instead landed as trailing space after the footer, since nothing else
+    /// in the graph offered a cheaper place to put it. Confirmed live via a
+    /// temporary debug probe (`FM_DEBUG_TASK_EDITOR_LAYOUT`, reverted before
+    /// commit) dumping every arranged subview's real frame in both states.
+    ///
+    /// Fix: never let `root`'s frame drift from what its content actually
+    /// needs. `root`'s width is now a real, required constraint (520pt, see
+    /// `sheetWidth`) rather than just an initial-frame guess, which makes
+    /// `fittingSize`'s height read stable and correct (text wrapping and
+    /// `ChipFlowView`'s wrap-to-width tag layout both depend on a real,
+    /// fixed width to size themselves). This is called once at the end of
+    /// `loadView()` (fixes the initial-open case for both a fresh task and
+    /// editing an existing one, due-off or due-on) and again from every
+    /// action that can change how much this sheet actually shows - the due
+    /// toggle, the natural-language "Detected:" row appearing/dismissing,
+    /// and a tag chip being added/removed - so the sheet's height keeps
+    /// tracking real content instead of drifting back into a mismatch (and
+    /// therefore back into `gravityAreas` needing to inject slack again) as
+    /// the captain interacts with the form.
+    private func resizeToFitContent() {
+        view.layoutSubtreeIfNeeded()
+        let height = view.fittingSize.height
+        guard height > 0 else { return }
+        let size = NSSize(width: Self.sheetWidth, height: height)
+        if let window = view.window {
+            window.setContentSize(size)
+        } else {
+            view.setFrameSize(size)
+        }
     }
 
     override func viewDidAppear() {
@@ -695,7 +763,9 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         guard field === titleField else { return }
         guard !dueManuallyEdited else { return }
         guard let parsed = ShiftDateParser.parse(titleField.stringValue) else {
+            let wasHidden = detectedRow.isHidden
             detectedRow.isHidden = true
+            if !wasHidden { resizeToFitContent() }
             return
         }
         dueSwitch.state = .on
@@ -715,12 +785,16 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         }
         let (dateStr, timeStr) = ShiftDateFormatting.components(from: dueDatePicker.dateValue)
         detectedLabel.stringValue = "Detected: \(ShiftDateFormatting.friendly(dateStr, time: parsed.hasTime ? timeStr : nil))"
+        let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = false
+        if wasHidden { resizeToFitContent() }
     }
 
     @objc private func dismissDetected() {
+        let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = true
         dueManuallyEdited = true
+        if !wasHidden { resizeToFitContent() }
     }
 
     @objc private func hasDueToggled() {
@@ -729,11 +803,14 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         dueDatePicker.isEnabled = on
         dueDatePicker.isHidden = !on
         detectedRow.isHidden = true
+        resizeToFitContent()
     }
 
     @objc private func dueDatePickerChanged() {
         dueManuallyEdited = true
+        let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = true
+        if !wasHidden { resizeToFitContent() }
     }
 
     // MARK: Tags
@@ -775,6 +852,13 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             return chip
         }
         tagsChipsFlow.setChips(chips)
+        // A harmless no-op the first time this runs, from inside `loadView()`
+        // itself (before the stack/window exist) - `loadView()`'s own final
+        // `resizeToFitContent()` call supersedes it. Needed for every later
+        // call, once a tag is added/removed after the sheet is already
+        // showing, since `ChipFlowView`'s wrap-to-width height changes with
+        // the chip count.
+        resizeToFitContent()
     }
 
     // MARK: Attachment
