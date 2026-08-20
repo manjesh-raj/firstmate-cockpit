@@ -58,7 +58,7 @@ import AppKit
 //      often the wrong side of light/dark), and then the whole thing
 //      self-heals on the next unrelated theme switch - so a theme-sweep
 //      verification pass cannot catch it, only a first-load measurement can.
-//      This has now been confirmed THREE times in this codebase and is the
+//      This has now been confirmed FOUR times in this codebase and is the
 //      single most repeated bug class here:
 //        - `IconRailController.restyleMark` (needed a second `restyle` call
 //          at the end of `loadView`, since `mark`'s layer did not exist yet);
@@ -68,7 +68,13 @@ import AppKit
 //          DETAILS/TAGS/DESCRIPTION/ATTACHMENT kickers rendered in
 //          `.labelColor` - *brighter* than the body text they label - until
 //          any theme switch fixed them; audit §5.1,
-//          `fm/grandline-design-audit-phase0`).
+//          `fm/grandline-design-audit-phase0`);
+//        - `HelmFormSheet` (Phase 6). Structurally guaranteed for a shared
+//          scaffold rather than merely likely: the sheet registers its
+//          observation in `init`, and every row - and therefore every entry
+//          in the registries that closure iterates - is added by the caller
+//          afterwards, so the first firing ALWAYS finds them empty. Hence
+//          `refreshTheme()`, which every editor's `loadView` ends with.
 //      The re-apply is one line and costs nothing, so prefer it by default
 //      in any `loadView` whose theme closure touches a collection or a view
 //      built after the `observe` call.

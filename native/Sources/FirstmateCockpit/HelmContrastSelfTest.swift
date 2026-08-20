@@ -65,6 +65,8 @@ enum HelmContrastSelfTest {
         checkStatTileRecipe(&ok)
         checkEmptyStateRecipe(&ok)
         checkSegmentedTabsRecipe(&ok)
+        checkFieldRecipe(&ok)
+        checkNoReDerivedFieldChrome(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -658,6 +660,132 @@ enum HelmContrastSelfTest {
             }
         }
         print("  OK - bordered capsule, one pill radius / label size per size, inactive in mutedInk, worst active label contrast \(fmt(worst.ratio)) (\(worst.label))")
+    }
+
+    // MARK: 12. One sunken-field recipe (audit §3.2 "Sunken form field", §6.3's
+    //            `HelmField` extraction, Phase 6)
+
+    /// Every field shape - single-line, secure, multi-line, date picker, field
+    /// card, toggle row - resolves to one radius, one border width and one
+    /// fill, in every theme; and that fill is visibly distinct from *both*
+    /// page surfaces.
+    ///
+    /// The distinctness assertion is the load-bearing one, and it is why the
+    /// fill blends toward ink rather than using a token straight:
+    /// `chromeBackgroundHex == backgroundHex` in three of the twelve palettes
+    /// (`gruvbox-light`, `tokyo-night-dark`, `tokyo-night-light`), so a field
+    /// painted with either token bare would have no visible boundary at all in
+    /// exactly those three - which is a real bug this app has already shipped
+    /// once, in the Compose popover.
+    private static func checkFieldRecipe(_ ok: inout Bool) {
+        print("\n-- form fields (one recipe + a visible boundary, all themes) --")
+        var worstInk = (ratio: Double.greatestFiniteMagnitude, label: "")
+        var worstMuted = (ratio: Double.greatestFiniteMagnitude, label: "")
+        var worstEdge = (ratio: Double.greatestFiniteMagnitude, label: "")
+        for theme in HelmTheme.allThemes {
+            let text = HelmTextField(placeholder: "Placeholder")
+            let secure = HelmSecureTextField(placeholder: "Placeholder")
+            let multi = HelmTextView(height: 80)
+            let picker = HelmDatePicker()
+            let card = HelmFieldCard(label: "Priority", accessory: HelmDotAccessory())
+            let toggle = HelmToggleRow(title: "Something", subtitle: "Explains itself")
+            text.applyTheme(theme)
+            secure.applyTheme(theme)
+            multi.applyTheme(theme)
+            picker.applyTheme(theme)
+            card.applyTheme(theme)
+            toggle.applyTheme(theme)
+
+            let shapes: [(String, NSView)] = [
+                ("text", text.chromeView), ("secure", secure.chromeView), ("textview", multi.chromeView),
+                ("datepicker", picker.chromeView), ("card", card.chromeView), ("toggle", toggle.chromeView),
+            ]
+            var problems: [String] = []
+            let expected = HelmField.fill(theme)
+            for (name, view) in shapes {
+                let g = HelmField.geometry(of: view)
+                // The field card and the toggle row are row-shaped surfaces, so
+                // they carry `rRow`; everything else is a control at `rControl`.
+                let wantRadius = (name == "card" || name == "toggle") ? HelmMetrics.rRow : HelmField.cornerRadius
+                if abs(g.radius - wantRadius) > 0.01 { problems.append("\(name) radius \(g.radius)") }
+                if abs(g.borderWidth - 1) > 0.01 { problems.append("\(name) border width \(g.borderWidth)") }
+                guard let fill = g.fill else { problems.append("\(name) no fill"); continue }
+                if HelmContrast.ratio(fill, expected) > 1.01 { problems.append("\(name) fill is not HelmField.fill") }
+            }
+
+            // The fill has to be visibly separate from whichever surface the
+            // field lands on. 1.05:1 is a deliberately low bar - a field's
+            // boundary is also carried by its border - but it catches "the fill
+            // is literally the background", which is the real failure mode.
+            for (surfaceName, hex) in [("chrome", theme.chromeBackgroundHex), ("page", theme.backgroundHex)] {
+                let r = HelmContrast.ratio(expected, HelmTheme.nsColor(hex))
+                if r < worstEdge.ratio { worstEdge = (r, "\(theme.id) vs \(surfaceName)") }
+                if r < 1.02 { problems.append("fill indistinguishable from \(surfaceName) (\(fmt(r)))") }
+            }
+
+            let inkRatio = HelmContrast.ratio(HelmField.ink(theme), expected)
+            if inkRatio < worstInk.ratio { worstInk = (inkRatio, theme.id) }
+            if inkRatio < HelmContrast.textTarget - 0.01 {
+                problems.append("field text contrast \(fmt(inkRatio))")
+            }
+            let mutedRatio = HelmContrast.ratio(HelmField.mutedInk(theme), expected)
+            if mutedRatio < worstMuted.ratio { worstMuted = (mutedRatio, theme.id) }
+            if mutedRatio < HelmContrast.textTarget - 0.01 {
+                problems.append("field muted text contrast \(fmt(mutedRatio))")
+            }
+
+            if !problems.isEmpty {
+                print("  FAIL \(theme.id): \(problems.joined(separator: ", "))")
+                ok = false
+            }
+        }
+        print("  OK - one fill / one border / radius \(HelmField.cornerRadius) control + \(HelmMetrics.rRow) row, worst field text \(fmt(worstInk.ratio)) (\(worstInk.label)), worst field muted \(fmt(worstMuted.ratio)) (\(worstMuted.label)), worst fill-vs-surface \(fmt(worstEdge.ratio)) (\(worstEdge.label))")
+    }
+
+    // MARK: 13. The sunken fill must stay defined once (audit §3.2, Phase 6)
+
+    /// The audit found this recipe hand-rolled three times, each copy carrying
+    /// a doc comment pointing at the others. A fourth is invisible in review
+    /// and only shows up as one field that drifts on some themes - so it fails
+    /// here instead. Also catches an `NSScrollView` reaching back for AppKit's
+    /// own `.bezelBorder` frame, which is the same system chrome `HelmButton`
+    /// removed from every push button.
+    private static func checkNoReDerivedFieldChrome(_ ok: inout Bool) {
+        print("\n-- re-derived field chrome (must not appear in Sources/) --")
+        let sourcesDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil),
+              files.contains(where: { $0.lastPathComponent == "HelmTheme.swift" }) else {
+            print("  SKIP - sources not present next to this binary (\(sourcesDir.path))")
+            return
+        }
+        let banned = [
+            "blended(withFraction: 0.08, of: ink)",
+            "fieldFillColor",
+            "styleSunkenField",
+            "styleDetailFormField",
+            "borderType = .bezelBorder",
+        ]
+        var offenders: [String] = []
+        for file in files where file.pathExtension == "swift" {
+            // `HelmForm.swift` is where the one definition lives; this file
+            // names the banned strings in prose above.
+            if ["HelmForm.swift", "HelmContrastSelfTest.swift"].contains(file.lastPathComponent) { continue }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("//") { continue }
+                for token in banned where line.contains(token) {
+                    offenders.append("\(file.lastPathComponent):\(n + 1) \(token)")
+                }
+            }
+        }
+        if offenders.isEmpty {
+            print("  OK - one HelmField.fill, no re-derived sunken chrome, no scroll-view bezels")
+        } else {
+            for o in offenders { print("  FAIL \(o)") }
+            print("  \(offenders.count) re-derived field-chrome site(s) - use HelmField instead")
+            ok = false
+        }
     }
 
     // MARK: Helpers

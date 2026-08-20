@@ -715,7 +715,11 @@ final class HelmButton: NSButton {
             // `backgroundHex`, which is numerically identical to
             // `chromeBackgroundHex` in gruvbox-light / tokyo-night-dark /
             // tokyo-night-light and would leave the control invisible there.
-            let fill = Self.controlFill(theme)
+            // The one sunken-control fill, defined once in `HelmField`
+            // (Phase 6) - a `.secondary` button and a text field beside it are
+            // the same surface, and were already meant to be before there was
+            // a component to say so.
+            let fill = HelmField.fill(theme)
             return Palette(fill: fill,
                            hoverFill: fill.hoverShifted(by: 0.07, forMode: theme.mode),
                            pressedFill: fill.hoverShifted(by: 0.12, forMode: theme.mode),
@@ -727,7 +731,7 @@ final class HelmButton: NSButton {
                            // every other tone in this file gets rather than
                            // being assumed safe.
                            label: Self.label(tint: tint, over: fill, theme: theme)
-                               ?? Self.legible(ink, over: fill))
+                               ?? HelmContrast.legible(ink, over: fill))
 
         case .quiet:
             let fill = NSColor.clear
@@ -757,38 +761,6 @@ final class HelmButton: NSButton {
                            border: HelmTheme.nsColor(redHex).withAlphaComponent(0.45),
                            label: resolved.foreground)
         }
-    }
-
-    /// The shared sunken-control fill, and the single definition of it.
-    /// `ConsoleComposerPopover`, `ShiftController`'s project-detail form and
-    /// `ShiftTaskEditorController` each carried a byte-identical private copy
-    /// (audit §3.2, "Sunken form field - 3 byte-identical copies"); their
-    /// consolidation into a real `HelmField` is Phase 6, but every button and
-    /// popup this phase touches already reads it from here.
-    static func controlFill(_ theme: HelmTheme) -> NSColor {
-        let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
-    }
-
-    /// `base` if it already clears the text floor against `surface`, else
-    /// `base` blended toward whichever of white/black it can reach the most
-    /// contrast against, by the smallest step that clears it.
-    ///
-    /// The direction has to be chosen by evaluating both endpoints rather than
-    /// assumed from the theme's mode - a tone already close to one extreme has
-    /// almost no headroom left in that direction. Same reasoning as the
-    /// vendored `NSColor.legibleColor(against:)` truecolor patch
-    /// (`Vendor/SwiftTerm/README.md`, "Second patch").
-    static func legible(_ base: NSColor, over surface: NSColor) -> NSColor {
-        if HelmContrast.ratio(base, surface) >= HelmContrast.textTarget { return base }
-        let endpoint: NSColor = HelmContrast.relativeLuminance(HelmContrast.components(surface)) > 0.35
-            ? .black : .white
-        for step in stride(from: 0.05, through: 1.0, by: 0.05) {
-            guard let blended = base.blended(withFraction: CGFloat(step), of: endpoint) else { break }
-            if HelmContrast.ratio(blended, surface) >= HelmContrast.textTarget { return blended }
-        }
-        return endpoint
     }
 
     /// A tinted label, contrast-corrected against the surface it lands on -

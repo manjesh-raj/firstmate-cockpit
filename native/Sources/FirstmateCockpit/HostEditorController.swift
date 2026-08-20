@@ -4,10 +4,8 @@
 // Termius "New Host" fields - Label, Address, Port, Username, a credentials
 // section, and the A3 icon/colour pickers. Add, edit, and delete all route
 // back to the caller via closures; this view knows nothing about the host
-// store. Nav-redesign task, item 3: presented as its own top-level window
-// (`AppDelegate.presentHostEditor`) with the same visual weight as Settings,
-// not a sheet on the ~240pt Hosts panel - only the presentation container
-// changed, every field and the inline "+ New Key…" flow below are unchanged.
+// store. Presented as its own top-level window (`AppDelegate.presentHostEditor`)
+// with the same visual weight as Settings, not a sheet on the Hosts panel.
 //
 // Phase 2 replaces the raw "key file path" field with a "Choose a key" popup
 // sourced from the saved-keys Keychain (`SSHKeyStore`) - the host now carries
@@ -16,34 +14,46 @@
 // Phase 3 (Section B1/B2/B4, Section D Phase 3) adds: Group + Tags (B4);
 // Agent Forwarding and Jump Via (B1); a "Port Forwarding\u{2026}" button that
 // opens `PortForwardingController` as a nested sheet (B1); and a Startup
-// Snippet popup sourced from `SnippetStore`, matching the key popup's shape
-// (B2/B5).
+// Snippet popup sourced from `SnippetStore` (B2/B5).
 //
-// Fix 5 adds a "+ New Key…" entry at the bottom of the key popup, so a key
+// Fix 5 adds a "+ New Key…" entry at the bottom of the key chooser, so a key
 // can be created without leaving this form: it opens the Phase-2
 // `KeyEditorController` sheet, persists through `SSHKeyStore.addNew` on
-// save, and rebuilds the popup selecting the new key. This is why the popup
-// now holds a live `SSHKeyStore` rather than a one-time snapshot of `keys` -
-// unlike the icon/colour catalogues, it has to reflect a key created while
-// this very sheet is still open.
+// save, and rebuilds the chooser selecting the new key. This is why it holds a
+// live `SSHKeyStore` rather than a one-time snapshot of `keys` - unlike the
+// icon/colour catalogues, it has to reflect a key created while this very sheet
+// is still open.
+//
+// Phase 6 of the full-app UI audit moved the form onto the shared scaffold
+// (`HelmForm.swift`, the scrolling variant). This was the biggest of the six
+// migrations: a flat 15-row `NSGridView` with a 130pt label column, 7 stock
+// bezeled fields, 2 stock popups and 2 unlabelled checkboxes sitting in empty
+// grid cells became four kickered sections of the same field language the task
+// editor uses. **The window presentation is unchanged** - it is still a
+// top-level window, `closeEditor()` still closes it directly (`dismiss(self)`
+// is a documented no-op here, see that method), and the capped/centred column
+// is still built from inequalities rather than a required `==` width tie
+// (AGENTS.md's host-editor gotcha (3)), now inside `HelmFormSheet.cappedColumn`.
+// Every field, every validation rule and the inline "+ New Key…" flow behave
+// exactly as before.
 
 import AppKit
 
 final class HostEditorController: NSViewController {
 
-    /// Fix 2 (third round): the form's content column never grows past this,
-    /// regardless of window width - a typical macOS dialog reading width,
-    /// centered in whatever space the window actually has (see `loadView`).
+    /// The form's content column never grows past this, regardless of window
+    /// width - a typical macOS dialog reading width, centred in whatever space
+    /// the window actually has.
     private static let maxContentWidth: CGFloat = 520
 
     /// The host being edited; `nil` for a brand-new host.
     private let editing: Host?
 
-    /// The saved-keys Keychain (Phase 2) - read to populate the "Choose a
-    /// key" popup, and written to by the inline "+ New Key…" flow (Fix 5).
+    /// The saved-keys Keychain (Phase 2) - read to populate the key chooser,
+    /// and written to by the inline "+ New Key…" flow (Fix 5).
     private let keyStore: SSHKeyStore
 
-    /// Saved snippets to offer in the "Startup snippet" popup - a snapshot
+    /// Saved snippets to offer in the startup-snippet chooser - a snapshot
     /// taken when the sheet opens (matches how the icon/colour catalogues
     /// are snapshotted too; a snippet added while this sheet is open won't
     /// appear until reopened - unlike `keyStore`, nothing in this sheet can
@@ -58,10 +68,6 @@ final class HostEditorController: NSViewController {
     /// label can silently connect to the wrong one.
     private let existingLabels: Set<String>
 
-    /// The key popup's "+ New Key…" sentinel item, used to detect that
-    /// selection (rather than a real key) in `keyPopupChanged`.
-    private var newKeyMenuItem: NSMenuItem!
-
     /// Called with the assembled host on Save. The caller persists it.
     var onSave: ((Host) -> Void)?
     /// Called with the host id on Delete (only offered when editing).
@@ -69,22 +75,33 @@ final class HostEditorController: NSViewController {
 
     // MARK: Fields
 
-    private let labelField = NSTextField()
-    private let addressField = NSTextField()
-    private let portField = NSTextField()
-    private let usernameField = NSTextField()
-    private let passwordField = NSSecureTextField()
-    private let keyPopup = HelmPopUpButton()
-    private let groupField = NSTextField()
-    private let tagsField = NSTextField()
-    private let agentForwardCheckbox = NSButton(checkboxWithTitle: "Forward SSH agent (-A)", target: nil, action: nil)
+    private let labelField = HelmTextField(placeholder: "Name this host", style: .lead)
+    private let addressField = HelmTextField(placeholder: "hostname or IP")
+    private let portField = HelmTextField(placeholder: "22")
+    private let usernameField = HelmTextField(placeholder: "Username")
+    private let passwordField = HelmSecureTextField(placeholder: "Session only")
+    private let keyCard = HelmFieldCard(label: "Key")
+    private let groupField = HelmTextField(placeholder: "e.g. Production")
+    private let tagsField = HelmTextField(placeholder: "e.g. prod, us-east")
+    private lazy var agentForwardRow = HelmToggleRow(
+        title: "Forward SSH agent",
+        subtitle: "Passes -A to ssh, so the remote host can use this machine's agent."
+    )
     /// Block view Stage 0 opt-in (`fm/cockpit-block-view-stage0`) - see
     /// `Host.blockViewOptIn`'s doc comment. Only meaningful when
-    /// `FM_BLOCK_VIEW_ENABLED` is also set; the caption below says so.
-    private let blockViewCheckbox = NSButton(checkboxWithTitle: "Render command blocks (Stage 0, needs FM_BLOCK_VIEW_ENABLED)", target: nil, action: nil)
-    private let jumpViaField = NSTextField()
+    /// `FM_BLOCK_VIEW_ENABLED` is also set, which the subtitle says.
+    private lazy var blockViewRow = HelmToggleRow(
+        title: "Render command blocks",
+        subtitle: "Stage 0 - also needs FM_BLOCK_VIEW_ENABLED in the environment."
+    )
+    private let jumpViaField = HelmTextField(placeholder: "Host label or user@bastion")
     private let portForwardingButton = HelmButton(title: "", variant: .secondary)
-    private let snippetPopup = HelmPopUpButton()
+    private let snippetCard = HelmFieldCard(label: "Startup snippet")
+
+    /// The key chooser's current selection: `nil` is "None (use system ssh
+    /// agent)", the same meaning index 0 carried when this was a popup.
+    private var selectedKeyID: UUID?
+    private var selectedSnippetID: UUID?
 
     /// Edited in the nested `PortForwardingController` sheet, carried here
     /// until Save.
@@ -106,6 +123,8 @@ final class HostEditorController: NSViewController {
         self.portForwards = host?.portForwards ?? []
         self.selectedIcon = host?.iconSymbol ?? HostCatalog.defaultIcon
         self.selectedAccent = host?.accentHex ?? HostCatalog.defaultAccent
+        self.selectedKeyID = host?.keyID
+        self.selectedSnippetID = host?.startupSnippetID
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -114,180 +133,74 @@ final class HostEditorController: NSViewController {
     // MARK: Layout
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 760))
-        root.autoresizingMask = [.width, .height]
-        root.wantsLayer = true
-        view = root
-        // Fix 8 (fixes4): this window (and the Port Forwarding / "+ New Key"
-        // sheets presented on top of it) never forced its appearance to the
-        // active Helm theme, so `.secondaryLabelColor`/`.tertiaryLabelColor`
-        // below resolved against the *system* light/dark setting instead -
-        // wrong-direction (e.g. light-mode dark text on a dark Helm
-        // background) whenever the two disagree. Same root cause as the
-        // Overview dashboard's low-contrast PR text; same fix.
-        ThemeManager.shared.observe { [weak root] theme in
-            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
-            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        let form = HelmFormSheet(title: editing == nil ? "New Host" : "Edit Host",
+                                 scrolls: true,
+                                 maxContentWidth: Self.maxContentWidth)
+        form.autoresizingMask = [.width, .height]
+        form.setFrameSize(NSSize(width: 640, height: 780))
+        view = form
+        form.onApplyTheme = { [weak self] _ in
+            // The icon/colour swatches carry the host's own chosen accent, not
+            // a theme token, but their *unselected* tint is `mutedInk` - so
+            // they still have to be re-derived on a theme change.
+            self?.styleIconButtons()
+            self?.styleColorButtons()
         }
 
-        let title = NSTextField(labelWithString: editing == nil ? "New Host" : "Edit Host")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        labelField.stringValue = editing?.label ?? ""
+        form.addLead(labelField)
 
-        configure(labelField, placeholder: "Label (e.g. Prod bastion)", value: editing?.label)
-        configure(addressField, placeholder: "Address (hostname or IP)", value: editing?.address)
-        configure(portField, placeholder: "22", value: editing.map { String($0.port) } ?? "22")
+        form.addSection("Connection")
+        addressField.stringValue = editing?.address ?? ""
+        portField.stringValue = editing.map { String($0.port) } ?? "22"
         portField.formatter = intFormatter()
-        configure(usernameField, placeholder: "Username", value: editing?.username)
-        configure(passwordField, placeholder: "Password (optional)", value: editing?.password)
-        keyPopup.translatesAutoresizingMaskIntoConstraints = false
-        keyPopup.target = self
-        keyPopup.action = #selector(keyPopupChanged)
-        buildKeyPopup()
-
-        let credCaption = caption("Password is used for this session only and never written to disk. "
-            + "A chosen key is resolved from the Keychain at connect time (see the Keys screen, ⌘⇧K); "
+        usernameField.stringValue = editing?.username ?? ""
+        passwordField.stringValue = editing?.password ?? ""
+        form.addFieldColumns([("Address", addressField), ("Port", portField)])
+        form.addFieldColumns([("Username", usernameField), ("Password", passwordField)])
+        buildKeyChooser()
+        form.addRow(keyCard)
+        form.addCaption("Password is used for this session only and never written to disk. "
+            + "A chosen key is resolved from the Keychain at connect time (see the SSH Keys tab, \u{2318}\u{21e7}K); "
             + "with no key set, ssh falls back to the system agent.")
 
-        let iconRow = buildIconPicker()
-        let colorRow = buildColorPicker()
+        form.addSection("Appearance")
+        form.addRow(form.labelledField("Icon", buildIconPicker()))
+        form.addRow(form.labelledField("Colour", buildColorPicker()))
 
-        configure(groupField, placeholder: "Group (e.g. Production)", value: editing?.group)
-        configure(tagsField, placeholder: "Tags, comma separated (e.g. prod, us-east)", value: editing?.tags.joined(separator: ", "))
+        form.addSection("Organisation")
+        groupField.stringValue = editing?.group ?? ""
+        tagsField.stringValue = editing?.tags.joined(separator: ", ") ?? ""
+        form.addFieldColumns([("Group", groupField), ("Tags, comma separated", tagsField)])
 
-        agentForwardCheckbox.target = self
-        agentForwardCheckbox.action = #selector(agentForwardToggled)
-        agentForwardCheckbox.state = (editing?.agentForward ?? false) ? .on : .off
-        agentForwardCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
-        blockViewCheckbox.target = self
-        blockViewCheckbox.action = #selector(blockViewToggled)
-        blockViewCheckbox.state = (editing?.blockViewOptIn ?? false) ? .on : .off
-        blockViewCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
-        configure(jumpViaField, placeholder: "Jump via (host label or user@bastion)", value: editing?.jumpVia)
-
+        form.addSection("Advanced")
+        agentForwardRow.isOn = editing?.agentForward ?? false
+        blockViewRow.isOn = editing?.blockViewOptIn ?? false
+        form.addRow(agentForwardRow)
+        form.addRow(blockViewRow)
+        jumpViaField.stringValue = editing?.jumpVia ?? ""
+        form.addField("Jump via", jumpViaField)
         portForwardingButton.target = self
         portForwardingButton.action = #selector(editPortForwarding)
-        portForwardingButton.translatesAutoresizingMaskIntoConstraints = false
         updatePortForwardingButtonTitle()
-
-        buildSnippetPopup()
-
-        let jumpCaption = caption("Chains through another saved host's own jump host automatically. "
+        let forwardingRow = NSStackView(views: [portForwardingButton, NSView()])
+        forwardingRow.orientation = .horizontal
+        forwardingRow.distribution = .fill
+        forwardingRow.translatesAutoresizingMaskIntoConstraints = false
+        forwardingRow.arrangedSubviews[1].setContentHuggingPriority(.defaultLow, for: .horizontal)
+        form.addRow(form.labelledField("Port forwarding", forwardingRow))
+        buildSnippetChooser()
+        form.addRow(snippetCard)
+        form.addCaption("Jumping chains through another saved host's own jump host automatically. "
             + "Agent forwarding and port-forwarding rules apply to this host's own connection.")
 
-        let grid = NSGridView(views: [
-            [rowLabel("Label"), labelField],
-            [rowLabel("Address"), addressField],
-            [rowLabel("Port"), portField],
-            [rowLabel("Username"), usernameField],
-            [rowLabel("Password"), passwordField],
-            [rowLabel("Key"), keyPopup],
-            [rowLabel("Icon"), iconRow],
-            [rowLabel("Color"), colorRow],
-            [rowLabel("Group"), groupField],
-            [rowLabel("Tags"), tagsField],
-            [rowLabel(""), agentForwardCheckbox],
-            [rowLabel(""), blockViewCheckbox],
-            [rowLabel("Jump via"), jumpViaField],
-            [rowLabel("Forwarding"), portForwardingButton],
-            [rowLabel("Startup snippet"), snippetPopup],
-        ])
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = 12
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 130
-        grid.column(at: 1).xPlacement = .fill
+        form.setFooter(target: self,
+                       confirmTitle: editing == nil ? "Create Host" : "Save",
+                       confirm: #selector(save),
+                       cancel: #selector(cancel),
+                       delete: editing == nil ? nil : (title: "Delete", action: #selector(deleteHost)))
 
-        // Bottom bar: Delete on the left (editing only), Cancel + Save on the right.
-        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}" // Esc
-        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
-        save.keyEquivalent = "\r" // Return
-        var bottomViews: [NSView] = []
-        if editing != nil {
-            let del = HelmButton(title: "Delete", variant: .destructive, target: self, action: #selector(deleteHost))
-            bottomViews.append(del)
-        }
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        bottomViews += [spacer, cancel, save]
-        let bottom = NSStackView(views: bottomViews)
-        bottom.orientation = .horizontal
-        bottom.spacing = 10
-
-        let stack = NSStackView(views: [title, grid, credCaption, jumpCaption, bottom])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 16
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        // Fix 2 (third round): `stack` used to be pinned to `root` on all
-        // four edges. The trailing pin made every field stretch to the full
-        // window width (the reported "~2000pt fields"). The bottom pin
-        // forced `stack`'s height to exactly fill the window, and since
-        // nothing below the grid has a fixed height, Auto Layout resolved
-        // that slack by inflating a single row inside `grid` instead of the
-        // visible bottom margin - verified with a live frame dump (temporary
-        // debug probe, reverted before commit): at content width 900 the
-        // "Icon" row's controls measured only 28pt tall but the next row
-        // ("Color") didn't start until 237pt further down - not a rowSpacing
-        // bug, just that one row silently absorbing all the forced slack.
-        //
-        // The fix caps and centers `stack` with `<=`/`>=`/centerX rather than
-        // an exact-fill `==`, and drops it into a scroll view (matching
-        // `SettingsController`'s `FlippedView` + `NSScrollView` pattern) so
-        // height is never force-stretched either. This distinction mattered
-        // in practice: an earlier attempt centered `stack` with a required
-        // `==` width tie (content-width minus margins) capped by a `<=520`,
-        // and that combination made AppKit's window-auto-fit-to-content
-        // machinery (installed the moment `contentViewController` is
-        // assigned) treat 568pt - the exact width where that tie has zero
-        // slack - as the window's "true" size, snapping back to it within
-        // one layout pass even after an explicit user resize. Swapping that
-        // one `==` for inequalities removed the trap: verified live that the
-        // window now holds any width the user drags it to. AppKit still
-        // enforces 568pt (520 + 24pt margin per side) as a hard floor - a
-        // window narrower than that would clip the capped column - which is
-        // exactly why `presentHostEditor`'s `contentMinSize` gives it a hair
-        // of headroom above that floor rather than matching it exactly.
-        let content = FlippedView()
-        content.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
-            stack.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxContentWidth),
-            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            credCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            jumpCaption.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-
-        let scroll = NSScrollView()
-        scroll.documentView = content
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: root.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            // `scroll.contentView` (the clip view), not `scroll` itself: a
-            // non-overlay vertical scroller (e.g. "Show scroll bars: Always"
-            // in System Settings, the default with a mouse attached)
-            // reserves a real ~15pt track that narrows the clip view without
-            // narrowing `scroll`'s own frame - pinning to `scroll.widthAnchor`
-            // would let the form's trailing edge (fields, swatches, the
-            // Cancel/Save row) render underneath that track.
-            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-        ])
+        form.refreshTheme()
     }
 
     override func viewDidAppear() {
@@ -296,28 +209,6 @@ final class HostEditorController: NSViewController {
     }
 
     // MARK: Field helpers
-
-    private func configure(_ field: NSTextField, placeholder: String, value: String?) {
-        field.placeholderString = placeholder
-        field.stringValue = value ?? ""
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.lineBreakMode = .byTruncatingTail
-    }
-
-    private func rowLabel(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12)
-        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
-        return l
-    }
-
-    private func caption(_ text: String) -> NSTextField {
-        let l = NSTextField(wrappingLabelWithString: text)
-        l.font = .systemFont(ofSize: 11)
-        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
-        l.translatesAutoresizingMaskIntoConstraints = false
-        return l
-    }
 
     private func intFormatter() -> NumberFormatter {
         let f = NumberFormatter()
@@ -328,61 +219,42 @@ final class HostEditorController: NSViewController {
         return f
     }
 
-    // MARK: Key popup (Phase 2, + Fix 5's inline "New Key…")
+    // MARK: Key chooser (Phase 2, + Fix 5's inline "New Key…")
 
     /// "None" plus every saved key (by label), then a separator and
-    /// "+ New Key…" (Fix 5). Real-key selection carries the key's `UUID` as
-    /// `representedObject` so `save()` reads it back directly; the "+ New
-    /// Key…" item is identified by identity (`newKeyMenuItem`), not by a
-    /// representedObject, since it isn't a key. Re-callable so a key created
-    /// inline can be spliced into the same live popup - `selectedID` picks
-    /// up where `editing?.keyID` otherwise would.
-    private func buildKeyPopup(selecting selectedID: UUID? = nil) {
-        keyPopup.removeAllItems()
-        keyPopup.addItem(withTitle: "None (use system ssh agent)")
-        for key in keyStore.keys {
-            keyPopup.addItem(withTitle: "\(key.label) (\(key.type.displayName))")
-            keyPopup.lastItem?.representedObject = key.id
+    /// "+ New Key…" (Fix 5). Re-callable so a key created inline can be
+    /// spliced into the same card - `selectedID` picks up where
+    /// `editing?.keyID` otherwise would.
+    private func buildKeyChooser(selecting selectedID: UUID? = nil) {
+        let ids: [UUID?] = [nil] + keyStore.keys.map { $0.id }
+        let titles = ["None (use system ssh agent)"] + keyStore.keys.map { "\($0.label) (\($0.type.displayName))" }
+        let target = selectedID ?? selectedKeyID
+        let index = target.flatMap { ids.firstIndex(of: $0) } ?? 0
+        selectedKeyID = ids.indices.contains(index) ? ids[index] : nil
+        keyCard.configureChoices(titles,
+                                 selectedIndex: index,
+                                 extra: [HelmFieldCard.ExtraItem(title: "+ New Key\u{2026}") { [weak self] in
+                                     self?.presentNewKeySheet()
+                                 }]) { [weak self] chosen in
+            self?.selectedKeyID = ids.indices.contains(chosen) ? ids[chosen] : nil
         }
-        keyPopup.menu?.addItem(.separator())
-        let newItem = NSMenuItem(title: "+ New Key…", action: nil, keyEquivalent: "")
-        keyPopup.menu?.addItem(newItem)
-        newKeyMenuItem = newItem
-
-        let target = selectedID ?? editing?.keyID
-        if let target, let item = keyPopup.itemArray.first(where: { ($0.representedObject as? UUID) == target }) {
-            keyPopup.select(item)
-        } else {
-            keyPopup.selectItem(at: 0)
-        }
-    }
-
-    /// The popup's selection changed - only the "+ New Key…" sentinel needs
-    /// handling here; picking a real key (or "None") just sits there until
-    /// `save()` reads it.
-    @objc private func keyPopupChanged() {
-        guard keyPopup.selectedItem === newKeyMenuItem else { return }
-        presentNewKeySheet()
     }
 
     /// Fix 5: create a key without leaving the host form. Opens the same
-    /// Phase-2 sheet the Keys screen uses; on save, persists through
-    /// `SSHKeyStore.addNew` and rebuilds the popup with the new key selected.
-    /// On cancel (or a Keychain failure), reverts the popup to whatever was
-    /// selected before "+ New Key…" was picked, so it never sticks on the
-    /// sentinel item.
+    /// Phase-2 sheet the SSH Keys tab uses; on save, persists through
+    /// `SSHKeyStore.addNew` and rebuilds the chooser with the new key selected.
+    /// On cancel (or a Keychain failure) the previous selection is left alone -
+    /// unlike the old popup, picking "+ New Key…" from a menu never moves the
+    /// card's own selection in the first place, so there is nothing to revert.
     private func presentNewKeySheet() {
-        let previousIndex = keyPopup.indexOfSelectedItem
         let editor = KeyEditorController(key: nil)
-        editor.onCancel = { [weak self] in self?.keyPopup.selectItem(at: previousIndex) }
         editor.onSave = { [weak self] newKey, privateKeyData, passphrase in
             guard let self else { return }
             do {
                 try self.keyStore.addNew(newKey, privateKeyData: privateKeyData, passphrase: passphrase)
-                self.buildKeyPopup(selecting: newKey.id)
+                self.buildKeyChooser(selecting: newKey.id)
             } catch {
                 self.presentKeyStoreError(error, label: newKey.label)
-                self.keyPopup.selectItem(at: previousIndex)
             }
         }
         presentAsSheet(editor)
@@ -396,22 +268,17 @@ final class HostEditorController: NSViewController {
         alert.runModal()
     }
 
-    // MARK: Snippet popup + port forwarding (Phase 3)
+    // MARK: Snippet chooser + port forwarding (Phase 3)
 
     /// "None" plus every saved snippet, by label - the same shape as
-    /// `buildKeyPopup`, so a startup snippet is picked the same way a key is.
-    private func buildSnippetPopup() {
-        snippetPopup.translatesAutoresizingMaskIntoConstraints = false
-        snippetPopup.addItem(withTitle: "None")
-        for snippet in snippets {
-            snippetPopup.addItem(withTitle: snippet.label)
-            snippetPopup.lastItem?.representedObject = snippet.id
-        }
-        if let id = editing?.startupSnippetID,
-           let item = snippetPopup.itemArray.first(where: { ($0.representedObject as? UUID) == id }) {
-            snippetPopup.select(item)
-        } else {
-            snippetPopup.selectItem(at: 0)
+    /// `buildKeyChooser`, so a startup snippet is picked the same way a key is.
+    private func buildSnippetChooser() {
+        let ids: [UUID?] = [nil] + snippets.map { $0.id }
+        let titles = ["None"] + snippets.map { $0.label }
+        let index = selectedSnippetID.flatMap { ids.firstIndex(of: $0) } ?? 0
+        selectedSnippetID = ids.indices.contains(index) ? ids[index] : nil
+        snippetCard.configureChoices(titles, selectedIndex: index) { [weak self] chosen in
+            self?.selectedSnippetID = ids.indices.contains(chosen) ? ids[chosen] : nil
         }
     }
 
@@ -419,14 +286,6 @@ final class HostEditorController: NSViewController {
         portForwardingButton.title = portForwards.isEmpty
             ? "Port Forwarding\u{2026}"
             : "Port Forwarding (\(portForwards.count))\u{2026}"
-    }
-
-    @objc private func agentForwardToggled() {
-        // Nothing to react to beyond the checkbox's own state; read at Save.
-    }
-
-    @objc private func blockViewToggled() {
-        // Nothing to react to beyond the checkbox's own state; read at Save.
     }
 
     /// Open the rules sheet on top of this one (a sheet-on-sheet, which
@@ -446,12 +305,13 @@ final class HostEditorController: NSViewController {
     private func buildIconPicker() -> NSView {
         let stack = NSStackView()
         stack.orientation = .horizontal
-        stack.spacing = 4
+        stack.spacing = HelmMetrics.s1
+        stack.translatesAutoresizingMaskIntoConstraints = false
         for symbol in HostCatalog.icons {
             let b = NSButton(title: "", target: self, action: #selector(pickIcon(_:)))
             b.isBordered = false
             b.wantsLayer = true
-            b.layer?.cornerRadius = 6
+            b.layer?.cornerRadius = HelmMetrics.rChip
             b.imageScaling = .scaleProportionallyDown
             b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)
             b.identifier = NSUserInterfaceItemIdentifier(symbol)
@@ -470,7 +330,8 @@ final class HostEditorController: NSViewController {
     private func buildColorPicker() -> NSView {
         let stack = NSStackView()
         stack.orientation = .horizontal
-        stack.spacing = 6
+        stack.spacing = HelmMetrics.s2 - 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
         for hex in HostCatalog.accents {
             let b = NSButton(title: "", target: self, action: #selector(pickColor(_:)))
             b.isBordered = false
@@ -514,10 +375,11 @@ final class HostEditorController: NSViewController {
 
     /// Selected swatch gets a ring so the choice is obvious.
     private func styleColorButtons() {
+        let ring = HelmTheme.nsColor(ThemeManager.shared.theme.chromeInkHex)
         for b in colorButtons {
             let isSel = b.identifier?.rawValue == selectedAccent
             b.layer?.borderWidth = isSel ? 2.5 : 0
-            b.layer?.borderColor = NSColor.labelColor.cgColor
+            b.layer?.borderColor = ring.cgColor
         }
     }
 
@@ -549,19 +411,19 @@ final class HostEditorController: NSViewController {
         host.username = usernameField.stringValue.trimmingCharacters(in: .whitespaces)
         let pw = passwordField.stringValue
         host.password = pw.isEmpty ? nil : pw
-        host.keyID = keyPopup.selectedItem?.representedObject as? UUID
+        host.keyID = selectedKeyID
         let group = groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         host.group = group.isEmpty ? nil : group
         host.tags = tagsField.stringValue
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        host.agentForward = agentForwardCheckbox.state == .on
-        host.blockViewOptIn = blockViewCheckbox.state == .on
+        host.agentForward = agentForwardRow.isOn
+        host.blockViewOptIn = blockViewRow.isOn
         let jumpVia = jumpViaField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         host.jumpVia = jumpVia.isEmpty ? nil : jumpVia
         host.portForwards = portForwards
-        host.startupSnippetID = snippetPopup.selectedItem?.representedObject as? UUID
+        host.startupSnippetID = selectedSnippetID
         host.iconSymbol = selectedIcon
         host.accentHex = selectedAccent
 

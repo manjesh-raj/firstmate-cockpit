@@ -279,7 +279,18 @@ enum BackupUI {
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: 220))
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        // Phase 6 of the UI audit: the shared sunken chrome rather than
+        // AppKit's own `.bezelBorder`. Applied once with the current theme and
+        // never observed - this view only exists for the lifetime of a modal
+        // `NSAlert`, during which no theme change can reach it.
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        let theme = ThemeManager.shared.theme
+        HelmField.makeSunken(scroll)
+        HelmField.applySunken(to: scroll, theme: theme)
+        textView.drawsBackground = true
+        textView.backgroundColor = HelmField.fill(theme)
+        textView.textColor = HelmField.ink(theme)
         return scroll
     }
 
