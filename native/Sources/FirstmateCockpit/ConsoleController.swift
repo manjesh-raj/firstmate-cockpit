@@ -109,6 +109,52 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private let tabBar = HelmPageToolbar()
     private let content = NSView()
     private let tabsStack = NSStackView()
+
+    /// The bordered-terminal-card chrome (`fm/grandline-sre-lead-app-feel`) -
+    /// see `ConsoleCardChrome.swift`'s header for the whole mechanism and why
+    /// it is drawn over the terminal rather than wrapped around it. Always the
+    /// topmost subview of `content`, hidden unless the current tab has SRE
+    /// Lead active.
+    private let cardChrome = ConsoleCardChrome(frame: .zero)
+
+    /// The workspace margin: how far the drawn card sits from `content`'s
+    /// edges, and the gap between the terminal card and the SRE Lead panel.
+    /// Zero on the shared Firstmate console, which can never show the card -
+    /// see `terminalInset`.
+    private var cardMargin: CGFloat { isFirstmateConsole ? 0 : HelmMetrics.s3 }
+
+    /// Breathing room between the card's drawn border and the terminal's own
+    /// first glyph column, the mockup's `.terminal { padding }`. Without it
+    /// the 1pt border lands directly on the leading edge of the first
+    /// character cell - seen in a real render, where it clipped the left edge
+    /// of every line's first glyph.
+    private var cardInnerPadding: CGFloat { isFirstmateConsole ? 0 : HelmMetrics.s2 }
+
+    /// How far every terminal on this page is inset from `content`, for the
+    /// whole controller's lifetime.
+    ///
+    /// **Fixed, never toggled - that is the point.** This is what gives the
+    /// card its margin *and* its inner padding, and the only way to have
+    /// either without ever changing a `TerminalView`'s frame
+    /// (`ConsoleCardChrome.swift`'s header, and the scrollback-truncation bug
+    /// `fm/cockpit-sre-lead-ux-fixes` fixed) is for the inset to exist from
+    /// the moment the terminal is created and stay put. With SRE Lead closed
+    /// the band is `content`'s own `backgroundHex` - the terminal's own
+    /// background colour - so it reads as ordinary terminal padding rather
+    /// than a card.
+    ///
+    /// The cost is real and bounded: 20pt each side of a ~9.5pt cell is about
+    /// 4 of ~145 columns on a laptop-width window, and no output is ever
+    /// hidden - the terminal simply lays out at the narrower width from the
+    /// start, rather than being reflowed into it later.
+    ///
+    /// **Zero on the shared Firstmate console.** SRE Lead is a dedicated-host-
+    /// page-only affordance (`buildTabBar` only builds its button when
+    /// `!isFirstmateConsole`), so that console can never show the card and has
+    /// no reason to pay for its margin. That keeps the Shell tab and - the one
+    /// that actually matters - the tmux/herdr Mirror tab byte-for-byte
+    /// flush and at their full column count, exactly as before this change.
+    private var terminalInset: CGFloat { cardMargin + cardInnerPadding }
     /// Every toolbar glyph is a bordered icon square now
     /// (`HelmPageToolbar.iconButton`, i.e. `HelmButton(.secondary)`), not a
     /// bare borderless image button. That was the audit's "two icon-button
@@ -157,9 +203,39 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// label view, see `SRELeadPhase.swift`'s header.
     private var sreLeadButton: HelmButton?
 
+    /// The full-height strip overlaying `content`'s trailing edge. It is the
+    /// **clipping backdrop**, not the visible panel: transparent, so the
+    /// workspace floor and the pane card's own drop shadow (both painted by
+    /// `cardChrome` underneath) show through its padding, and clipping so the
+    /// card inside it is cut off cleanly while the width animates from zero.
     private let sreLeadPane = NSView()
-    private let sreLeadPaneSeparator = NSView()
+    /// The visible SRE Lead panel - a real `HelmCard` surface (fill, 1pt
+    /// border, `rPanel` radius) that clips its own children, so the header and
+    /// the chat below it inherit the card's rounded corners with no
+    /// per-child corner masking (`fm/grandline-sre-lead-app-feel`).
+    ///
+    /// This replaced the 3pt `accentHex` separator bar that used to run down
+    /// the pane's leading edge. That bar existed because `chromeBackgroundHex
+    /// == backgroundHex` in three of the twelve palettes, so the pane's fill
+    /// alone could not prove it was a separate surface from the terminal
+    /// (`fm/grandline-sre-lead-polish`). That reasoning is satisfied more
+    /// strongly here and in every theme: the two panels are now separated by a
+    /// real `HelmMetrics.s3` gap of workspace floor with a 1pt outline on each
+    /// side of it, which no palette can collapse - a fill coincidence cannot
+    /// hide two borders and the space between them.
+    private let sreLeadCard = NSView()
     private let sreLeadHeader = NSView()
+    /// The panel's identity block, mirroring the reference mockup's `sre-head`:
+    /// the same `sparkles` glyph in a tinted tile that `SRELeadChatView`
+    /// already puts on every assistant reply, so the panel and its messages
+    /// read as one agent rather than two unrelated treatments.
+    private let sreLeadHeaderIcon = IconTileView(size: HelmMetrics.tileSmall, cornerRadius: HelmMetrics.rChip)
+    /// Live phase readout ("Ready" / "Starting…" / "Failed"), the mockup's
+    /// `status` chip. Uses the shared `ToolRowLayout.pill`, so its hue is
+    /// contrast-corrected against the card fill like every other pill in the
+    /// app rather than being a raw tint used as text (Phase 0's rule).
+    private let sreLeadStatusPill = NSView()
+    private let sreLeadStatusLabel = NSTextField(labelWithString: "")
     /// Separates the header bar from the body below it - needed once the
     /// pane's body switched from `backgroundHex` to `chromeBackgroundHex`
     /// (matching the header's own long-standing fill) so the two don't read
@@ -204,6 +280,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         content.wantsLayer = true
         root.addSubview(content)
 
+        // Added before any tab exists, and kept topmost: every terminal /
+        // block container below is inserted with `positioned: .below,
+        // relativeTo: cardChrome`, so a tab opened later can never end up
+        // drawing over the card's own border.
+        cardChrome.pad = cardMargin
+        cardChrome.isHidden = true
+        content.addSubview(cardChrome)
+
         buildSRELeadPane()
         root.addSubview(sreLeadPane)
 
@@ -240,6 +324,11 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            cardChrome.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            cardChrome.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            cardChrome.topAnchor.constraint(equalTo: content.topAnchor),
+            cardChrome.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
             sreLeadPane.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             sreLeadPane.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
@@ -403,12 +492,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // captain wants is the shell tab's default here; we just give it history.
         // (The Mirror tab runs tmux on the alternate screen and pages inherently.)
         term.terminal?.changeScrollback(scrollbackLines)
-        content.addSubview(term)
+        // `terminalInset` on all four sides, fixed for this controller's whole
+        // lifetime - see its own doc comment. Nothing here ever changes when
+        // SRE Lead opens or closes, which is the entire reason the card look
+        // can exist at all without reflowing this buffer.
+        let inset = terminalInset
+        content.addSubview(term, positioned: .below, relativeTo: cardChrome)
         NSLayoutConstraint.activate([
-            term.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            term.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            term.topAnchor.constraint(equalTo: content.topAnchor),
-            term.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            term.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: inset),
+            term.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -inset),
+            term.topAnchor.constraint(equalTo: content.topAnchor, constant: inset),
+            term.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -inset),
         ])
         theme.apply(to: term)
         return term
@@ -458,12 +552,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             let container = BlockContainerView(frame: .zero)
             container.applyTheme(theme)
             container.isHidden = true
-            content.addSubview(container)
+            // Same insets as the terminal it stands in for, so the card's
+            // drawn border sits the same distance outside this panel too.
+            let inset = terminalInset
+            content.addSubview(container, positioned: .below, relativeTo: cardChrome)
             NSLayoutConstraint.activate([
-                container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                container.topAnchor.constraint(equalTo: content.topAnchor),
-                container.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+                container.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: inset),
+                container.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -inset),
+                container.topAnchor.constraint(equalTo: content.topAnchor, constant: inset),
+                container.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -inset),
             ])
             tab.blockContainer = container
         }
@@ -843,21 +940,32 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadPane.wantsLayer = true
         sreLeadPane.clipsToBounds = true
 
-        sreLeadPaneSeparator.translatesAutoresizingMaskIntoConstraints = false
-        sreLeadPaneSeparator.wantsLayer = true
-        sreLeadPane.addSubview(sreLeadPaneSeparator)
+        sreLeadCard.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadCard.wantsLayer = true
+        // The card clips, which is what gives every child below rounded
+        // corners for free. A layer that masks cannot also cast a shadow, so
+        // this card's elevation is drawn by `cardChrome` underneath instead -
+        // see `ConsoleCardChrome.paneCardRect`.
+        sreLeadCard.clipsToBounds = true
+        sreLeadPane.addSubview(sreLeadCard)
 
         sreLeadHeader.translatesAutoresizingMaskIntoConstraints = false
         sreLeadHeader.wantsLayer = true
-        sreLeadPane.addSubview(sreLeadHeader)
+        sreLeadCard.addSubview(sreLeadHeader)
 
         sreLeadHeaderDivider.translatesAutoresizingMaskIntoConstraints = false
         sreLeadHeaderDivider.wantsLayer = true
-        sreLeadPane.addSubview(sreLeadHeaderDivider)
+        sreLeadCard.addSubview(sreLeadHeaderDivider)
 
-        sreLeadHeaderLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        sreLeadHeaderIcon.configure(symbol: "sparkles", tint: .accent, pointSize: 12)
+        sreLeadHeader.addSubview(sreLeadHeaderIcon)
+
+        sreLeadHeaderLabel.font = HelmType.rowTitle()
         sreLeadHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
+        sreLeadHeaderLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         sreLeadHeader.addSubview(sreLeadHeaderLabel)
+
+        sreLeadHeader.addSubview(sreLeadStatusPill)
 
         sreLeadGeneratePostmortemButton.translatesAutoresizingMaskIntoConstraints = false
         sreLeadGeneratePostmortemButton.title = ""
@@ -872,29 +980,37 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadHeader.addSubview(sreLeadGeneratePostmortemButton)
 
         NSLayoutConstraint.activate([
-            sreLeadPaneSeparator.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
-            sreLeadPaneSeparator.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
-            sreLeadPaneSeparator.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
-            // Widened from the original 1pt and re-tinted with the theme's
-            // accent color (was `chromeLineHex`) so the terminal/pane
-            // boundary reads as a deliberate, unmissable seam in every Helm
-            // theme, not a hairline easy to miss (`fm/grandline-sre-lead-polish`).
-            sreLeadPaneSeparator.widthAnchor.constraint(equalToConstant: 3),
+            // The card fills the backdrop apart from the workspace padding.
+            // Its leading edge sits flush with the backdrop's, so the gap
+            // between the two panels is entirely the terminal card's own
+            // trailing inset (`ConsoleCardChrome.terminalCardRect`) - one
+            // `HelmMetrics.s3` gap, not two stacked halves of one.
+            sreLeadCard.leadingAnchor.constraint(equalTo: sreLeadPane.leadingAnchor),
+            sreLeadCard.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor, constant: -HelmMetrics.s3),
+            sreLeadCard.topAnchor.constraint(equalTo: sreLeadPane.topAnchor, constant: HelmMetrics.s3),
+            sreLeadCard.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor, constant: -HelmMetrics.s3),
 
-            sreLeadHeader.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
-            sreLeadHeader.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
-            sreLeadHeader.topAnchor.constraint(equalTo: sreLeadPane.topAnchor),
-            sreLeadHeader.heightAnchor.constraint(equalToConstant: 32),
+            sreLeadHeader.leadingAnchor.constraint(equalTo: sreLeadCard.leadingAnchor),
+            sreLeadHeader.trailingAnchor.constraint(equalTo: sreLeadCard.trailingAnchor),
+            sreLeadHeader.topAnchor.constraint(equalTo: sreLeadCard.topAnchor),
+            sreLeadHeader.heightAnchor.constraint(equalToConstant: 46),
 
-            sreLeadHeaderDivider.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
-            sreLeadHeaderDivider.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            sreLeadHeaderDivider.leadingAnchor.constraint(equalTo: sreLeadCard.leadingAnchor),
+            sreLeadHeaderDivider.trailingAnchor.constraint(equalTo: sreLeadCard.trailingAnchor),
             sreLeadHeaderDivider.topAnchor.constraint(equalTo: sreLeadHeader.bottomAnchor),
             sreLeadHeaderDivider.heightAnchor.constraint(equalToConstant: 1),
 
-            sreLeadHeaderLabel.leadingAnchor.constraint(equalTo: sreLeadHeader.leadingAnchor, constant: 12),
+            sreLeadHeaderIcon.leadingAnchor.constraint(equalTo: sreLeadHeader.leadingAnchor, constant: HelmMetrics.s3),
+            sreLeadHeaderIcon.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
+
+            sreLeadHeaderLabel.leadingAnchor.constraint(equalTo: sreLeadHeaderIcon.trailingAnchor, constant: HelmMetrics.s2),
             sreLeadHeaderLabel.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
 
-            sreLeadGeneratePostmortemButton.trailingAnchor.constraint(equalTo: sreLeadHeader.trailingAnchor, constant: -10),
+            sreLeadStatusPill.leadingAnchor.constraint(greaterThanOrEqualTo: sreLeadHeaderLabel.trailingAnchor, constant: HelmMetrics.s2),
+            sreLeadStatusPill.trailingAnchor.constraint(equalTo: sreLeadGeneratePostmortemButton.leadingAnchor, constant: -HelmMetrics.s2),
+            sreLeadStatusPill.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
+
+            sreLeadGeneratePostmortemButton.trailingAnchor.constraint(equalTo: sreLeadHeader.trailingAnchor, constant: -HelmMetrics.s3),
             sreLeadGeneratePostmortemButton.centerYAnchor.constraint(equalTo: sreLeadHeader.centerYAnchor),
             sreLeadGeneratePostmortemButton.widthAnchor.constraint(equalToConstant: 22),
             sreLeadGeneratePostmortemButton.heightAnchor.constraint(equalToConstant: 22),
@@ -907,7 +1023,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadEmptyStateView.translatesAutoresizingMaskIntoConstraints = false
         sreLeadEmptyStateView.wantsLayer = true
         sreLeadEmptyStateView.isHidden = true
-        sreLeadPane.addSubview(sreLeadEmptyStateView)
+        sreLeadCard.addSubview(sreLeadEmptyStateView)
 
         sreLeadEmptyStateLabel.font = .systemFont(ofSize: 12)
         sreLeadEmptyStateLabel.alignment = .center
@@ -924,10 +1040,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         sreLeadEmptyStateView.addSubview(sreLeadEmptyStateButton)
 
         NSLayoutConstraint.activate([
-            sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
-            sreLeadEmptyStateView.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            sreLeadEmptyStateView.leadingAnchor.constraint(equalTo: sreLeadCard.leadingAnchor),
+            sreLeadEmptyStateView.trailingAnchor.constraint(equalTo: sreLeadCard.trailingAnchor),
             sreLeadEmptyStateView.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
-            sreLeadEmptyStateView.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+            sreLeadEmptyStateView.bottomAnchor.constraint(equalTo: sreLeadCard.bottomAnchor),
 
             sreLeadEmptyStateLabel.leadingAnchor.constraint(equalTo: sreLeadEmptyStateView.leadingAnchor, constant: 20),
             sreLeadEmptyStateLabel.trailingAnchor.constraint(equalTo: sreLeadEmptyStateView.trailingAnchor, constant: -20),
@@ -1145,7 +1261,45 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tab.sreLead?.chatView?.isHidden = (tab !== current)
         }
         sreLeadEmptyStateView.isHidden = (current.sreLead?.chatView != nil)
+        updateSRELeadStatusPill(phase: current.sreLead?.phase ?? .notStarted)
         setSRELeadPaneOpen(current.sreLead != nil)
+    }
+
+    /// The panel header's phase chip. `.notStarted` never renders - the panel
+    /// is only ever visible for a tab that has SRE Lead state at all, so
+    /// there is no state where "not started" is the honest label for what the
+    /// captain is looking at.
+    private func updateSRELeadStatusPill(phase: SRELeadPhase) {
+        let text: String
+        switch phase {
+        case .notStarted: text = ""
+        case .starting: text = "Starting\u{2026}"
+        case .ready: text = "Ready"
+        case .failed: text = "Failed"
+        }
+        sreLeadStatusPill.isHidden = text.isEmpty
+        guard !text.isEmpty else { return }
+        ToolRowLayout.pill(text: text.uppercased(),
+                           colorHex: (phase.tint ?? .neutral).hex(in: theme),
+                           into: sreLeadStatusPill,
+                           label: sreLeadStatusLabel,
+                           theme: theme)
+    }
+
+    /// Turns the bordered-terminal-card look on exactly when the pane is up -
+    /// one condition, evaluated in one place, for the one thing it decides.
+    ///
+    /// This is deliberately **not** a frame change: `terminalInset` is already
+    /// permanent, so all that happens here is that a decorative overlay
+    /// becomes visible and repaints (`ConsoleCardChrome.swift`'s header). No
+    /// `TerminalView` is touched, which is what keeps a captain's scrollback
+    /// intact across a toggle - covered by `SRELeadPerTabSelfTest`'s
+    /// `scrollbackSurvivesSRELeadToggle` case.
+    private func updateTerminalCardStyle(carded: Bool) {
+        cardChrome.pad = cardMargin
+        cardChrome.paneStripWidth = carded ? sreLeadPaneWidth : nil
+        cardChrome.isHidden = !carded
+        cardChrome.needsDisplay = true
     }
 
     /// The pane header's "Generate Postmortem" button is only ever shown
@@ -1224,18 +1378,24 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             self.updateGeneratePostmortemButton()
         }
         chat.setInputEnabled(false)
-        sreLeadPane.addSubview(chat)
+        sreLeadCard.addSubview(chat)
         NSLayoutConstraint.activate([
-            chat.leadingAnchor.constraint(equalTo: sreLeadPaneSeparator.trailingAnchor),
-            chat.trailingAnchor.constraint(equalTo: sreLeadPane.trailingAnchor),
+            chat.leadingAnchor.constraint(equalTo: sreLeadCard.leadingAnchor),
+            chat.trailingAnchor.constraint(equalTo: sreLeadCard.trailingAnchor),
             chat.topAnchor.constraint(equalTo: sreLeadHeaderDivider.bottomAnchor),
-            chat.bottomAnchor.constraint(equalTo: sreLeadPane.bottomAnchor),
+            chat.bottomAnchor.constraint(equalTo: sreLeadCard.bottomAnchor),
         ])
         chat.applyTheme(theme)
         return chat
     }
 
     private func setSRELeadPaneOpen(_ open: Bool) {
+        // The card look and the pane are the same state, so they are switched
+        // together. The chrome snaps to its final geometry rather than
+        // interpolating with the 0.18s slide - the terminal card's trailing
+        // edge is simply already where the pane is about to arrive, which
+        // reads as the panel sliding into a space made for it.
+        updateTerminalCardStyle(carded: open)
         sreLeadPaneWidthConstraint.constant = open ? sreLeadPaneWidth : 0
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
@@ -1534,7 +1694,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tab.blockContainer?.applyTheme(theme)
         }
 
-        let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
@@ -1558,22 +1717,28 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // `HelmTheme.allThemes`: `chromeBackgroundHex` differs from
         // `backgroundHex` in 9 of them, but is numerically IDENTICAL in
         // `gruvbox-light`/`tokyo-night-dark`/`tokyo-night-light` - so the
-        // fill alone can't be the only thing carrying this distinction. The
-        // widened, `accentHex`-tinted `sreLeadPaneSeparator` below is what
-        // makes the boundary unmistakable in every theme regardless of
-        // whether the two fills happen to match, since every theme's accent
-        // is a deliberately bold, saturated color far from either
-        // background/chrome-background shade - never rely on the fill pair
-        // alone to prove this distinction in a future change here.
+        // fill alone can't be the only thing carrying this distinction. What
+        // carries it in every theme now is structural rather than tonal: a
+        // real workspace gap with a 1pt outline down each side of it (see
+        // `sreLeadCard`'s doc comment). Never go back to relying on the fill
+        // pair alone here.
+        //
+        // `sreLeadPane` itself is transparent: it is only the clipping
+        // backdrop, and `cardChrome` paints the floor and this card's shadow
+        // through it.
         let paneBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        let accent = HelmTheme.nsColor(theme.accentHex)
-        sreLeadPane.layer?.backgroundColor = paneBg.cgColor
-        sreLeadPaneSeparator.layer?.backgroundColor = accent.cgColor
-        sreLeadHeader.layer?.backgroundColor = chromeBg.cgColor
-        sreLeadHeaderDivider.layer?.backgroundColor = line.cgColor
+        sreLeadPane.layer?.backgroundColor = NSColor.clear.cgColor
+        HelmCard.applyCardSurface(to: sreLeadCard, theme: theme, cornerRadius: HelmMetrics.rPanel)
+        // Transparent, so the card's own fill shows through - the header used
+        // to paint `chromeBackgroundHex` itself, which is the same colour but
+        // would square off the card's top corners inside its clip.
+        sreLeadHeader.layer?.backgroundColor = NSColor.clear.cgColor
+        sreLeadHeaderDivider.layer?.backgroundColor = line.withAlphaComponent(HelmCard.dividerAlpha).cgColor
+        sreLeadHeaderIcon.applyTheme(theme)
         sreLeadHeaderLabel.textColor = ink
         sreLeadGeneratePostmortemButton.contentTintColor = ink
         sreLeadEmptyStateView.layer?.backgroundColor = paneBg.cgColor
+        cardChrome.applyTheme(theme)
         sreLeadEmptyStateLabel.textColor = HelmTheme.mutedInk(theme)
         // Every started tab's own chat, not just the current one - each is a
         // real, independent view that needs to stay in sync with the active

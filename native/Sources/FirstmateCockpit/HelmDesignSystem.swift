@@ -410,6 +410,35 @@ final class HelmCard: NSView {
     /// The header/body divider opacity - one step fainter than the card's own
     /// outline, so the card reads as one object rather than two stacked ones.
     static let dividerAlpha: CGFloat = 0.5
+
+    // MARK: Elevation
+
+    /// The app's one floating-card elevation, for a card that genuinely sits
+    /// *above* another surface rather than on the page background.
+    ///
+    /// Deliberately not applied by `applyCardSurface` above: an ordinary
+    /// `HelmCard` on a page is flat, and every one of the 39 cards this design
+    /// system shipped is flat on purpose - a shadow on all of them would read
+    /// as noise, and `applyCardSurface` sets `cornerRadius` on the view's own
+    /// layer, which a caller then usually pairs with clipping (`masksToBounds`
+    /// kills a layer shadow outright). So elevation is opt-in, and its one
+    /// caller today is Console's SRE-Lead-active layout
+    /// (`ConsoleCardChrome`), where the terminal card and the SRE Lead pane
+    /// really are two panels floating over a workspace floor.
+    ///
+    /// **Weighted by mode, not one constant.** A black shadow over a
+    /// near-black floor (every dark palette's `backgroundHex`) barely
+    /// registers, so dark themes get the stronger alpha; a light palette needs
+    /// far less to read as depth without looking smudged. Offset is
+    /// **negative** y because this is used from an unflipped `draw(_:)`
+    /// context, where -y is visually downward.
+    static func elevation(for theme: HelmTheme) -> NSShadow {
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(theme.mode == .dark ? 0.45 : 0.24)
+        shadow.shadowBlurRadius = 16
+        shadow.shadowOffset = NSSize(width: 0, height: -5)
+        return shadow
+    }
 }
 
 // MARK: - HelmButton
