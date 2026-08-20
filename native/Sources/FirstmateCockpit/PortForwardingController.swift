@@ -29,6 +29,9 @@ final class PortForwardingController: NSViewController {
     /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
     /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
     private let mutedLabels = MutedInkLabels()
+    /// The rules list's scroll view, kept so its sunken chrome can be
+    /// recoloured on a theme change.
+    private var rulesScroll: NSScrollView?
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 420))
@@ -45,6 +48,7 @@ final class PortForwardingController: NSViewController {
             self?.rowsStack.arrangedSubviews
                 .compactMap { $0 as? PortForwardRuleRowView }
                 .forEach { $0.applyTheme(theme) }
+            if let scroll = self?.rulesScroll { HelmField.applySunken(to: scroll, theme: theme) }
         }
 
         let title = NSTextField(labelWithString: "Port Forwarding")
@@ -66,9 +70,17 @@ final class PortForwardingController: NSViewController {
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        // Phase 6 of the UI audit: the shared sunken chrome, not AppKit's own
+        // `.bezelBorder` frame. This sheet opens on top of the Host editor,
+        // which is now entirely `HelmField`-chromed, so a grey system frame
+        // here would be the one stale box in the stack.
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        HelmField.makeSunken(scroll)
         scroll.documentView = rowsStack
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        rulesScroll = scroll
+        HelmField.applySunken(to: scroll, theme: ThemeManager.shared.theme)
         rowsStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
 
         let addButton = HelmButton(title: "Add Rule", variant: .secondary, symbol: "plus.circle", target: self, action: #selector(addRuleClicked))

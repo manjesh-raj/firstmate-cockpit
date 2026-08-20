@@ -2,10 +2,16 @@
 //
 // New/Edit Follow-up sheet (cockpit-shift-create-edit, phase 2 of Shift).
 // Fields per the brief: Title, follow-up date/time, Priority, optional
-// Notes, related Task, related Project. Same sheet shape as
-// `ShiftTaskEditorController.swift`, just a smaller field set and no
-// natural-language date detection (not asked for on this form - that's
-// specific to the Task title field per the brief).
+// Notes, related Task, related Project. No natural-language date detection -
+// that is specific to the Task title field per the brief.
+//
+// Phase 6 of the full-app UI audit moved it onto the shared form scaffold
+// (`HelmForm.swift`). This is the sheet the audit used as its own example of
+// the split (§4.7, `helm-dark-sheet-followup-editor.png` next to
+// `helm-dark-sheet-task-editor.png`): Priority was a clickable field card in
+// the task editor and a stock `NSPopUpButton` here, one rail click apart. All
+// three popups are `HelmFieldCard`s now, and the `NSGridView` label column is
+// gone. The field set, the validation and what Save writes are unchanged.
 
 import AppKit
 
@@ -18,133 +24,98 @@ final class ShiftFollowUpEditorController: NSViewController {
     /// Called with the assembled follow-up on Save.
     var onSave: ((ShiftFollowUp) -> Void)?
 
-    private let titleField = NSTextField()
-    private let followUpDatePicker = NSDatePicker()
-    private let priorityPopup = HelmPopUpButton()
-    private let notesView = NSTextView()
-    private let taskPopup = HelmPopUpButton()
-    private let projectPopup = HelmPopUpButton()
+    private let titleField = HelmTextField(placeholder: "What needs checking on?", style: .lead)
+    private let followUpDatePicker = HelmDatePicker()
+    private let priorityDot = HelmDotAccessory()
+    private lazy var priorityCard = HelmFieldCard(label: "Priority", accessory: priorityDot)
+    private let taskCard = HelmFieldCard(label: "Related task")
+    private let projectCard = HelmFieldCard(label: "Related project")
+    private let notesView = HelmTextView(height: 90)
 
+    private var selectedPriority: ShiftPriority
     /// index 0 is always "None"; index n+1 is `tasks[n]` / `projects[n]`.
     private var taskIDs: [String?] = []
     private var projectIDs: [String?] = []
+    private var selectedTaskIndex = 0
+    private var selectedProjectIndex = 0
 
     init(followUp: ShiftFollowUp?, tasks: [ShiftTask], projects: [ShiftProject]) {
         self.editing = followUp
         self.tasks = tasks
         self.projects = projects
+        self.selectedPriority = followUp?.priority ?? .normal
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 420))
-        root.wantsLayer = true
-        view = root
-        // Fix for a real theming bug (fm/grandline-task-editor-redesign):
-        // forcing `.appearance` alone doesn't paint anything - a plain
-        // `NSView` with no `wantsLayer`/`layer.backgroundColor` shows
-        // through to the sheet's default (light) window backing regardless
-        // of the forced appearance. Same fix as `HostEditorController.
-        // loadView()` and `ShiftTaskEditorController.loadView()`.
-        ThemeManager.shared.observe { [weak root] theme in
-            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
-            root?.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        }
+        let form = HelmFormSheet(title: editing == nil ? "New Follow-up" : "Edit Follow-up")
+        view = form
+        form.onApplyTheme = { [weak self] theme in self?.applyExtraTheme(theme) }
 
-        let title = NSTextField(labelWithString: editing == nil ? "New Follow-up" : "Edit Follow-up")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
-
-        titleField.placeholderString = "Title"
         titleField.stringValue = editing?.title ?? ""
-        titleField.translatesAutoresizingMaskIntoConstraints = false
+        form.addLead(titleField)
 
-        followUpDatePicker.datePickerStyle = .textFieldAndStepper
-        followUpDatePicker.datePickerElements = [.yearMonthDay, .hourMinute]
-        followUpDatePicker.translatesAutoresizingMaskIntoConstraints = false
+        form.addSection("Details")
         let existing = ShiftDateFormatting.dateTime(from: editing?.followUpAt, time: editing?.followUpTime)
         followUpDatePicker.dateValue = existing
             ?? Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date())
             ?? Date()
 
-        priorityPopup.translatesAutoresizingMaskIntoConstraints = false
-        for p in ShiftPriority.allCases { priorityPopup.addItem(withTitle: p.rawValue.capitalized) }
-        priorityPopup.selectItem(at: ShiftPriority.allCases.firstIndex(of: editing?.priority ?? .normal) ?? 1)
+        priorityCard.configureChoices(ShiftPriority.allCases.map { $0.rawValue.capitalized },
+                                      selectedIndex: ShiftPriority.allCases.firstIndex(of: selectedPriority) ?? 1) { [weak self] index in
+            guard let self, ShiftPriority.allCases.indices.contains(index) else { return }
+            self.selectedPriority = ShiftPriority.allCases[index]
+            self.updatePriorityDot(ThemeManager.shared.theme)
+        }
+        form.addColumns([labelledDatePicker(form), priorityCard])
 
-        taskPopup.translatesAutoresizingMaskIntoConstraints = false
+        form.addSection("Related")
         taskIDs = [nil] + tasks.map { $0.id }
-        taskPopup.addItem(withTitle: "None")
-        for t in tasks { taskPopup.addItem(withTitle: t.title) }
-        if let tid = editing?.relatedTaskID, let idx = taskIDs.firstIndex(of: tid) {
-            taskPopup.selectItem(at: idx)
-        } else {
-            taskPopup.selectItem(at: 0)
+        selectedTaskIndex = editing?.relatedTaskID.flatMap { taskIDs.firstIndex(of: $0) } ?? 0
+        taskCard.configureChoices(["None"] + tasks.map { $0.title }, selectedIndex: selectedTaskIndex) { [weak self] index in
+            self?.selectedTaskIndex = index
         }
-
-        projectPopup.translatesAutoresizingMaskIntoConstraints = false
         projectIDs = [nil] + projects.map { $0.id }
-        projectPopup.addItem(withTitle: "None")
-        for p in projects { projectPopup.addItem(withTitle: p.name) }
-        if let pid = editing?.projectID, let idx = projectIDs.firstIndex(of: pid) {
-            projectPopup.selectItem(at: idx)
-        } else {
-            projectPopup.selectItem(at: 0)
+        selectedProjectIndex = editing?.projectID.flatMap { projectIDs.firstIndex(of: $0) } ?? 0
+        projectCard.configureChoices(["None"] + projects.map { $0.name }, selectedIndex: selectedProjectIndex) { [weak self] index in
+            self?.selectedProjectIndex = index
         }
+        form.addColumns([taskCard, projectCard])
 
+        form.addSection("Notes")
         notesView.string = editing?.notes ?? ""
-        notesView.font = .systemFont(ofSize: 12)
-        notesView.isRichText = false
-        notesView.textContainerInset = NSSize(width: 6, height: 6)
-        let notesScroll = NSScrollView()
-        notesScroll.borderType = .bezelBorder
-        notesScroll.hasVerticalScroller = true
-        notesScroll.documentView = notesView
-        notesScroll.translatesAutoresizingMaskIntoConstraints = false
+        form.addRow(notesView)
 
-        let grid = NSGridView(views: [
-            [rowLabel("Follow up"), followUpDatePicker],
-            [rowLabel("Priority"), priorityPopup],
-            [rowLabel("Task"), taskPopup],
-            [rowLabel("Project"), projectPopup],
-        ])
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = 12
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 90
-        grid.column(at: 1).xPlacement = .fill
+        form.setFooter(target: self,
+                       confirmTitle: editing == nil ? "Create Follow-up" : "Save",
+                       confirm: #selector(save),
+                       cancel: #selector(cancel))
 
-        let notesLabel = rowLabel("Notes")
+        form.refreshTheme()
+        form.sizeToFitContent()
+    }
 
-        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let save = HelmButton(title: "Save", variant: .primary, target: self, action: #selector(save))
-        save.keyEquivalent = "\r"
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let bottom = NSStackView(views: [spacer, cancel, save])
-        bottom.orientation = .horizontal
-        bottom.spacing = 10
+    /// The date picker inside the scaffold's own label-over-control wrapper,
+    /// so it sits on the same rhythm as the Priority card beside it.
+    private func labelledDatePicker(_ form: HelmFormSheet) -> NSView {
+        followUpDatePicker.heightAnchor.constraint(equalToConstant: HelmField.controlHeight).isActive = true
+        return form.labelledField("Follow up", followUpDatePicker)
+    }
 
-        let stack = NSStackView(views: [title, titleField, grid, notesLabel, notesScroll, bottom])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(stack)
+    private func applyExtraTheme(_ theme: HelmTheme) {
+        updatePriorityDot(theme)
+    }
 
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
-            titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            notesScroll.heightAnchor.constraint(equalToConstant: 90),
-            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
+    private func updatePriorityDot(_ theme: HelmTheme) {
+        let tint: HelmTint
+        switch selectedPriority {
+        case .high: tint = .critical
+        case .normal: tint = .info
+        case .low: tint = .neutral
+        }
+        priorityDot.setColor(HelmTheme.nsColor(tint.hex(in: theme)))
     }
 
     override func viewDidAppear() {
@@ -161,12 +132,12 @@ final class ShiftFollowUpEditorController: NSViewController {
         }
         var followUp = editing ?? ShiftFollowUp.fresh()
         followUp.title = titleText
-        followUp.priority = ShiftPriority.allCases[priorityPopup.indexOfSelectedItem]
+        followUp.priority = selectedPriority
         let (dateStr, timeStr) = ShiftDateFormatting.components(from: followUpDatePicker.dateValue)
         followUp.followUpAt = dateStr
         followUp.followUpTime = timeStr
-        followUp.relatedTaskID = taskIDs[taskPopup.indexOfSelectedItem]
-        followUp.projectID = projectIDs[projectPopup.indexOfSelectedItem]
+        followUp.relatedTaskID = taskIDs.indices.contains(selectedTaskIndex) ? taskIDs[selectedTaskIndex] : nil
+        followUp.projectID = projectIDs.indices.contains(selectedProjectIndex) ? projectIDs[selectedProjectIndex] : nil
         let notes = notesView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         followUp.notes = notes.isEmpty ? nil : notes
         onSave?(followUp)
@@ -175,12 +146,5 @@ final class ShiftFollowUpEditorController: NSViewController {
 
     @objc private func cancel() {
         dismiss(self)
-    }
-
-    private func rowLabel(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12)
-        l.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
-        return l
     }
 }

@@ -261,13 +261,35 @@ enum HelmContrast {
                              washAlpha: washSteps.last ?? 0.04)
     }
 
+    /// `base` if it already clears the text floor against `surface`, else
+    /// `base` blended toward whichever of white/black it can reach the most
+    /// contrast against, by the smallest step that clears it.
+    ///
+    /// The direction has to be chosen by evaluating both endpoints rather than
+    /// assumed from the theme's mode - a tone already close to one extreme has
+    /// almost no headroom left in that direction. Same reasoning as the
+    /// vendored `NSColor.legibleColor(against:)` truecolor patch
+    /// (`Vendor/SwiftTerm/README.md`, "Second patch").
+    ///
+    /// Lived on `HelmButton` until Phase 6, which needed it from `HelmField`
+    /// as well; this is where a contrast correction belongs.
+    static func legible(_ base: NSColor, over surface: NSColor) -> NSColor {
+        if ratio(base, surface) >= textTarget { return base }
+        let endpoint: NSColor = relativeLuminance(components(surface)) > 0.35 ? .black : .white
+        for step in stride(from: 0.05, through: 1.0, by: 0.05) {
+            guard let blended = base.blended(withFraction: CGFloat(step), of: endpoint) else { break }
+            if ratio(blended, surface) >= textTarget { return blended }
+        }
+        return endpoint
+    }
+
     /// A tint hue used as **text** on an already-known opaque fill, corrected
     /// to clear `textTarget` by the smallest blend toward the theme's own ink.
     ///
     /// The counterpart to `tintedSurface` for the case where the fill is
     /// already decided and only the label can move - a `HelmButton`'s tinted
     /// label, a `HelmStatTile`'s tinted metric. Blending toward `chromeInkHex`
-    /// rather than toward black/white (which is what `HelmButton.legible`
+    /// rather than toward black/white (which is what `legible`
     /// does) preserves as much of the hue as the floor allows, so an "overdue"
     /// number still reads red rather than collapsing to near-ink.
     ///
@@ -302,7 +324,7 @@ enum HelmContrast {
         // back to the black/white correction against the worst surface, which
         // always can.
         let worst = surfaces.min { ratio(ink, $0) < ratio(ink, $1) } ?? (surfaces.first ?? .white)
-        return HelmButton.legible(ink, over: worst)
+        return legible(ink, over: worst)
     }
 
     /// Smallest `t` in `[0, 1]` such that `mix(toward, from, t)` clears

@@ -90,7 +90,7 @@
 // `intentScroll` never had a background fill of its own - only a barely-
 // visible 1pt/50%-alpha border. Fixed by giving both `intentTextView` and
 // `codeTextView` a real, shared "sunken field" fill
-// (`ConsoleComposerViewController.fieldFillColor(for:)`) and bumping the
+// (now `HelmField.fill(_:)`, Phase 6 of the UI audit) and bumping the
 // border alpha (`Self.fieldBorderAlpha`, 0.5 -> 0.7) on both scroll views -
 // see that method's own doc comment for why it blends `chromeInkHex` into
 // `chromeBackgroundHex` rather than reusing `backgroundHex` directly (the
@@ -341,7 +341,7 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
         intentTextView.autoresizingMask = [.width]
         intentTextView.textContainer?.widthTracksTextView = true
         // `drawsBackground = true` + an explicit theme-derived fill (set in
-        // `applyTheme` via `fieldFillColor(for:)`, shared with `codeTextView`
+        // `applyTheme` via `HelmField.fill(_:)`, shared with `codeTextView`
         // below) is the actual fix for the "input box has no visible
         // boundary" bug - `drawsBackground = false` left this control fully
         // transparent except for a barely-visible border, so on a light
@@ -393,7 +393,7 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
         codeTextView.autoresizingMask = [.width]
         codeTextView.textContainer?.widthTracksTextView = true
         codeTextView.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        codeTextView.backgroundColor = Self.fieldFillColor(for: theme)
+        codeTextView.backgroundColor = HelmField.fill(theme)
 
         codeScroll.documentView = codeTextView
         codeScroll.hasVerticalScroller = true
@@ -427,7 +427,7 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        let fieldFill = Self.fieldFillColor(for: theme)
+        let fieldFill = HelmField.fill(theme)
 
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
         iconTile.applyTheme(theme)
@@ -442,24 +442,6 @@ private final class ConsoleComposerViewController: NSViewController, NSTextViewD
         intentTextView.backgroundColor = fieldFill
         intentPlaceholderLabel.textColor = muted
         intentScroll.layer?.borderColor = line.withAlphaComponent(Self.fieldBorderAlpha).cgColor
-    }
-
-    /// The "sunken field" fill both `intentTextView` and `codeTextView` use -
-    /// see this file's header for why the intent field previously had none
-    /// at all. Deliberately blends `chromeInkHex` into `chromeBackgroundHex`
-    /// (the popover root's own fill) rather than using `backgroundHex`
-    /// directly: `chromeBackgroundHex` and `backgroundHex` are numerically
-    /// identical in 3 of the 12 `HelmTheme.allThemes` (`gruvbox-light`,
-    /// `tokyo-night-dark`, `tokyo-night-light` - see AGENTS.md's
-    /// `fm/grandline-sre-lead-polish` entry for the same gotcha found
-    /// elsewhere), which would have silently reproduced this exact bug in
-    /// those three themes. Ink and background are guaranteed to differ in
-    /// every theme (otherwise text would be invisible), so blending toward
-    /// ink at a small fraction always yields a fill distinct from the root.
-    private static func fieldFillColor(for theme: HelmTheme) -> NSColor {
-        let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
     }
 
     /// Measures the generated command's longest line against the code

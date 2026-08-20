@@ -1,217 +1,48 @@
 // Manjesh Grand Line - native macOS app.
 //
 // New/Edit Task sheet (cockpit-shift-create-edit, phase 2 of Shift - see
-// AGENTS.md's "Shift" section), restyled by fm/grandline-task-editor-
-// redesign against a captain-supplied HTML/CSS mockup
-// (data/grandline-task-editor-redesign/reference-mockup.html) - translated
-// into this app's own dark Helm design language (HelmTheme/ShiftFont/
-// HelmCard/IconTileView/HoverHighlightView), not the mockup's literal
-// light colors, matching how every other reference-mockup redesign in this
-// session has been approached.
+// AGENTS.md's "Shift" section), redesigned by fm/grandline-task-editor-redesign
+// against a captain-supplied HTML/CSS mockup, and moved onto the shared form
+// scaffold by Phase 6 of the full-app UI audit.
 //
-// Two things changed here:
+// **This sheet is where the app's form language came from.** The big
+// placeholder-styled title field, the uppercase section kickers, the clickable
+// field cards for Priority/Project, the `NSSwitch`-backed due-date card, the
+// sunken tag/description fields and the ⌘⏎ footer were all built here first;
+// §6.4 of the audit asks for exactly that language to become the default across
+// all six editors. Phase 6 promoted every one of those shapes into
+// `HelmForm.swift` (`HelmFormSheet`, `HelmFieldCard`, `HelmToggleRow`,
+// `HelmTextField`, `HelmTextView`, `HelmDotAccessory`) so the other five sheets
+// share them rather than copy them - which means this file now *reads* almost
+// entirely as behaviour: date detection, tag chips, the attachment well, and
+// what Save writes. None of that behaviour changed.
 //
-// 1. A real theming bug, the same class this codebase has hit and fixed
-//    repeatedly (see AGENTS.md's "Contrast" note and the many
-//    `.appearance = .darkAqua/.aqua`-forcing fixes across
-//    `SettingsController`/`HostEditorController`/etc.): this sheet's root
-//    view forced `.appearance` via `ThemeManager.shared.observe`, but never
-//    gave itself an explicit `HelmTheme`-derived background - a plain
-//    `NSView` with no `wantsLayer`/`layer.backgroundColor` paints nothing
-//    of its own, so blank areas showed through to the sheet's own default
-//    (light) window backing regardless of the forced appearance. Fixed the
-//    same way `HostEditorController.loadView()` already does it:
-//    `root.wantsLayer = true` plus an explicit
-//    `root.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor`
-//    inside the same observer. `ShiftFollowUpEditorController` and
-//    `ShiftProjectEditorController` had the identical gap and got the same
-//    two-line fix, since leaving two of the three editor sheets broken
-//    would just be the same bug found and left half-fixed.
+// Three things the scaffold took over that were bugs or near-bugs here:
 //
-// 2. The redesign itself: a large placeholder-styled title field (separated
-//    from a small natural-language-date hint line underneath, instead of
-//    baking the hint into the placeholder text), a "DETAILS" section of
-//    clickable field cards for Priority/Project (each popping an `NSMenu`,
-//    mirroring `ShiftProjectViews`' own status-pill click pattern) instead
-//    of plain `NSGridView` label:popup rows, a distinct toggle-row card for
-//    "Set due date" that reveals the existing date/time controls only once
-//    enabled, and a tags field that renders entered tags as small removable
-//    chips (reusing `VocabularyChipView`/`ChipFlowView` from Dictation's own
-//    chip treatment) instead of a single comma-separated field with no
-//    per-tag feedback. Every existing behavior - natural-language date
-//    detection on the title field (`ShiftDateParser`), priority/project
-//    selection, save/cancel actions, and the existing attachment feature
-//    (`ShiftImageAttachmentWell`) - is preserved; only its presentation
-//    changed. The footer's "⌘Enter to save" hint is now a real shortcut,
-//    not just copy: `save.keyEquivalentModifierMask = [.command]` fires via
-//    `NSWindow.performKeyEquivalent:` regardless of first responder, the
-//    same mechanism `ConsoleComposerPopover`'s Generate button already uses
-//    - it also fixes the pre-existing gap where a plain Return inside the
-//    multi-line Description field just inserted a newline and never saved.
+// 1. `shiftEditorFieldFillColor` was one of the three byte-identical copies of
+//    the sunken-field fill the audit counted (§3.2). It is now
+//    `HelmField.fill`, and this file has no colour derivation of its own left.
+// 2. The `sectionLabels` re-tint used to miss its first firing, because
+//    `ThemeManager.observe` fires synchronously at registration - before the
+//    `sectionLabel(...)` calls further down `loadView` had appended anything -
+//    so the four kickers rendered in the system `.labelColor`, *brighter* than
+//    the body text they label (audit §5.1). `HelmFormSheet.refreshTheme()` is
+//    the general form of the one-line fix, called at the end of every editor's
+//    `loadView`.
+// 3. `resizeToFitContent()` - `presentAsSheet` reads the root view's frame
+//    verbatim, so a hardcoded height leaves slack that `.gravityAreas` injects
+//    into an arbitrary row (fm/grandline-task-editor-layout-fix). That is
+//    `HelmFormSheet.sizeToFitContent()` now, and all four non-scrolling sheets
+//    get it rather than just this one.
 //
-// The mockup's Attachments drag-and-drop section is deliberately NOT part
-// of this pass - that's a different (already-shipped) attachment mechanism
-// in this app; this task only restructures presentation, not the
-// attachment model.
+// The mockup's Attachments drag-and-drop section is deliberately NOT part of
+// this - that is a different (already-shipped) attachment mechanism in this
+// app; these passes restructure presentation, not the attachment model.
 
 import AppKit
 import UniformTypeIdentifiers
 
-/// The one "form surface on top of this sheet's own background" fill both
-/// the field cards and the sunken text fields use - blends `chromeInkHex`
-/// into `chromeBackgroundHex` rather than reusing either token bare, so the
-/// surface stays visibly distinct from the sheet's `backgroundHex` root even
-/// in the themes where `chromeBackgroundHex` and `backgroundHex` are
-/// numerically identical (`gruvbox-light`/`tokyo-night-dark`/`tokyo-night-
-/// light` - see `ConsoleComposerPopover.fieldFillColor(for:)`'s own doc
-/// comment for the confirmed list). Mirrors `ShiftController.
-/// detailFieldFillColor(for:)` exactly.
-private func shiftEditorFieldFillColor(for theme: HelmTheme) -> NSColor {
-    let chromeBackground = HelmTheme.nsColor(theme.chromeBackgroundHex)
-    let ink = HelmTheme.nsColor(theme.chromeInkHex)
-    return chromeBackground.blended(withFraction: 0.08, of: ink) ?? chromeBackground
-}
-
-/// A small "icon-in-a-22pt-square" container holding a centered colored dot
-/// - gives the Priority field card's dot the same footprint as the Project
-/// field card's `IconTileView(size: 22)`, so both cards' text columns start
-/// at the same offset.
-private final class PriorityDotView: NSView {
-    private let dot = NSView()
-
-    init(size: CGFloat = 22, dotDiameter: CGFloat = 10) {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = dotDiameter / 2
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(dot)
-        NSLayoutConstraint.activate([
-            dot.centerXAnchor.constraint(equalTo: centerXAnchor),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: dotDiameter),
-            dot.heightAnchor.constraint(equalToConstant: dotDiameter),
-            widthAnchor.constraint(equalToConstant: size),
-            heightAnchor.constraint(equalToConstant: size),
-        ])
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    func setColor(_ color: NSColor) {
-        dot.layer?.backgroundColor = color.cgColor
-    }
-}
-
-/// The mockup's `.field` - a clickable card showing a small leading
-/// accessory (a colored dot for Priority, a mini `IconTileView` for
-/// Project), a muted field label over a bold value, and a trailing chevron.
-/// Clicking anywhere on the card pops an `NSMenu` positioned just under it,
-/// the same interaction `ShiftProjectViews`' status pill already uses.
-private final class TaskFieldCardView: NSView {
-    let card = HoverHighlightView()
-    let valueLabel = NSTextField(labelWithString: "")
-    private let fieldLabelView: NSTextField
-    private let chevron = NSImageView()
-    private let clickButton = NSButton()
-    var onClick: (() -> Void)?
-
-    init(label: String, accessory: NSView) {
-        fieldLabelView = NSTextField(labelWithString: label)
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-
-        card.cornerRadius = 10
-        card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
-        NSLayoutConstraint.activate([
-            card.leadingAnchor.constraint(equalTo: leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor),
-            card.topAnchor.constraint(equalTo: topAnchor),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor),
-            heightAnchor.constraint(equalToConstant: 50),
-        ])
-
-        accessory.translatesAutoresizingMaskIntoConstraints = false
-
-        fieldLabelView.font = .systemFont(ofSize: 10.5)
-        fieldLabelView.translatesAutoresizingMaskIntoConstraints = false
-
-        valueLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        valueLabel.lineBreakMode = .byTruncatingTail
-        valueLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let textStack = NSStackView(views: [fieldLabelView, valueLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 1
-        textStack.translatesAutoresizingMaskIntoConstraints = false
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        chevron.setContentHuggingPriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [accessory, textStack, chevron])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 9
-        row.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -11),
-            row.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-        ])
-
-        clickButton.title = ""
-        clickButton.isBordered = false
-        clickButton.target = self
-        clickButton.action = #selector(clicked)
-        clickButton.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(clickButton)
-        NSLayoutConstraint.activate([
-            clickButton.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            clickButton.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            clickButton.topAnchor.constraint(equalTo: card.topAnchor),
-            clickButton.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    @objc private func clicked() { onClick?() }
-
-    func popMenu(_ menu: NSMenu) {
-        menu.popUp(positioning: nil, at: NSPoint(x: 12, y: bounds.height + 4), in: self)
-    }
-
-    func applyTheme(_ theme: HelmTheme) {
-        let fill = shiftEditorFieldFillColor(for: theme)
-        card.normalColor = fill
-        card.hoverColor = fill.hoverShifted(by: 0.10, forMode: theme.mode)
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5).cgColor
-        fieldLabelView.textColor = HelmTheme.mutedInk(theme)
-        valueLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        chevron.contentTintColor = HelmTheme.mutedInk(theme)
-    }
-}
-
 final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
-
-    /// This sheet's fixed width - `ShiftFollowUpEditorController`/
-    /// `ShiftProjectEditorController` pick one fixed literal frame size and
-    /// leave it, which works for them since their content never changes
-    /// shape enough to expose the bug below; this sheet's due-date toggle,
-    /// natural-language "Detected:" row, and tag chips all show/hide real
-    /// content, so its height has to track that instead. See
-    /// `resizeToFitContent()`.
-    private static let sheetWidth: CGFloat = 520
 
     private let editing: ShiftTask?
     private let projects: [ShiftProject]
@@ -231,6 +62,8 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// `ShiftStore.addTask`/`updateTask`.
     var onSave: ((ShiftTask, ShiftAttachmentChange) -> Void)?
 
+    private var form: HelmFormSheet!
+
     private let attachmentWell = ShiftImageAttachmentWell()
     private let chooseImageButton = HelmButton(title: "Choose Image\u{2026}", variant: .secondary, target: nil, action: nil)
     /// `nil` until the captain interacts with the well in this session -
@@ -238,40 +71,30 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     /// edit that never touches the attachment never rewrites the image file.
     private var attachmentChange: ShiftAttachmentChange?
 
-    private let headingLabel = NSTextField(labelWithString: "")
-    private let titleField = NSTextField()
-    private let hintLabel = NSTextField(labelWithString: "")
+    private let titleField = HelmTextField(placeholder: "What needs to be done?", style: .lead)
+    private var hintLabel: NSTextField?
     private let detectedRow = NSStackView()
     private let detectedIcon = NSImageView(image: NSImage(systemSymbolName: "calendar.badge.checkmark", accessibilityDescription: nil) ?? NSImage())
     private let detectedLabel = NSTextField(labelWithString: "")
 
     private var selectedPriority: ShiftPriority
-    private let priorityDot = PriorityDotView()
-    private lazy var priorityCard = TaskFieldCardView(label: "Priority", accessory: priorityDot)
+    private let priorityDot = HelmDotAccessory()
+    private lazy var priorityCard = HelmFieldCard(label: "Priority", accessory: priorityDot)
 
     private var selectedProjectID: String?
-    private let projectIconTile = IconTileView(size: 22, cornerRadius: 6)
-    private lazy var projectCard = TaskFieldCardView(label: "Project", accessory: projectIconTile)
+    private let projectIconTile = IconTileView(size: 22, cornerRadius: HelmMetrics.rChip)
+    private lazy var projectCard = HelmFieldCard(label: "Project", accessory: projectIconTile)
 
-    private let dueCard = NSView()
-    private let dueSwitch = NSSwitch()
-    private let dueTitleLabel = NSTextField(labelWithString: "Set due date")
-    private let dueSubtitleLabel = NSTextField(labelWithString: "Add a date and optional time")
-    private let dueDatePicker = NSDatePicker()
+    private let dueDatePicker = HelmDatePicker()
+    private lazy var dueRow = HelmToggleRow(title: "Set due date",
+                                            subtitle: "Add a date and optional time",
+                                            trailing: dueDatePicker)
 
-    private let tagsField = NSTextField()
+    private let tagsField = HelmTextField(placeholder: "Add tags, separated by commas")
     private let tagsChipsFlow = ChipFlowView()
     private var tagChips: [String] = []
 
-    private let descriptionView = NSTextView()
-    private let descScroll = NSScrollView()
-
-    private let shortcutHintLabel = NSTextField(labelWithString: "\u{2318}\u{23ce} to save")
-
-    /// Every uppercase section-kicker label ("DETAILS"/"TAGS"/etc.), so
-    /// `applyTheme` can re-tint all of them in one loop instead of each
-    /// caller wiring its own theme observer.
-    private var sectionLabels: [NSTextField] = []
+    private let descriptionView = HelmTextView(height: 110)
 
     /// Once the person edits the due-date controls directly (switch or
     /// picker), further title edits stop overwriting their choice - only a
@@ -293,321 +116,102 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.sheetWidth, height: 780))
-        root.wantsLayer = true
-        // A fixed width, rather than just an initial-frame guess, is what
-        // makes `resizeToFitContent()`'s `fittingSize` read below reliable -
-        // without it, Auto Layout has to also guess a width when computing
-        // the fitting height, which text wrapping/`ChipFlowView`'s own
-        // wrap-to-width layout would otherwise make unstable.
-        root.widthAnchor.constraint(equalToConstant: Self.sheetWidth).isActive = true
-        view = root
-        // The fix for the real theming bug (see this file's header): an
-        // explicit `HelmTheme`-derived background, not just a forced
-        // `.appearance` - a plain, unpainted `NSView` shows through to the
-        // sheet's own default (light) window backing regardless of what
-        // appearance its subviews resolve colors against.
-        ThemeManager.shared.observe { [weak self] theme in
-            self?.view.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
-            self?.view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-            self?.applyTheme(theme)
-        }
+        let form = HelmFormSheet(title: editing == nil ? "New Task" : "Edit Task")
+        self.form = form
+        view = form
+        form.onApplyTheme = { [weak self] theme in self?.applyExtraTheme(theme) }
 
-        headingLabel.stringValue = editing == nil ? "New Task" : "Edit Task"
-        headingLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        // MARK: Title + natural-language date hint
 
-        // MARK: Big title field + hint
-
-        titleField.placeholderAttributedString = NSAttributedString(
-            string: "What needs to be done?",
-            attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold)]
-        )
         titleField.stringValue = editing?.title ?? ""
-        titleField.font = .systemFont(ofSize: 22, weight: .semibold)
-        titleField.isBordered = false
-        titleField.isBezeled = false
-        titleField.drawsBackground = false
-        titleField.focusRingType = .none
-        titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.delegate = self
+        form.addLead(titleField)
+        hintLabel = form.addLeadHint(hintAttributedString(muted: .labelColor, emphasis: .labelColor))
 
-        hintLabel.lineBreakMode = .byWordWrapping
-        hintLabel.maximumNumberOfLines = 1
-        hintLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        detectedLabel.font = .systemFont(ofSize: 11)
-        let clearDetected = NSButton(title: "", target: self, action: #selector(dismissDetected))
-        clearDetected.isBordered = false
-        clearDetected.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Dismiss")
-        clearDetected.imageScaling = .scaleProportionallyDown
-        clearDetected.translatesAutoresizingMaskIntoConstraints = false
+        let clearDetected = HelmButton(symbol: "xmark.circle.fill", variant: .quiet, size: .small,
+                                       target: self, action: #selector(dismissDetected))
+        detectedLabel.font = HelmType.caption()
         detectedRow.addArrangedSubview(detectedIcon)
         detectedRow.addArrangedSubview(detectedLabel)
         detectedRow.addArrangedSubview(clearDetected)
         detectedRow.orientation = .horizontal
-        detectedRow.spacing = 6
+        detectedRow.spacing = HelmMetrics.s2 - 2
         detectedRow.alignment = .centerY
-        detectedRow.translatesAutoresizingMaskIntoConstraints = false
         detectedRow.isHidden = true
+        form.addRow(detectedRow)
 
-        // MARK: DETAILS - Priority / Project field cards
+        // MARK: Details - Priority / Project field cards
 
-        let detailsLabel = sectionLabel("Details")
-        priorityDot.setColor(.clear)
+        form.addSection("Details")
         priorityCard.onClick = { [weak self] in self?.priorityCardClicked() }
         projectIconTile.configure(symbol: "folder.fill", tint: .info, pointSize: 11)
         projectCard.onClick = { [weak self] in self?.projectCardClicked() }
         updatePriorityCard()
         updateProjectCard()
+        form.addColumns([priorityCard, projectCard])
 
-        let metaGrid = NSStackView(views: [priorityCard, projectCard])
-        metaGrid.orientation = .horizontal
-        metaGrid.distribution = .fillEqually
-        metaGrid.spacing = 10
-        metaGrid.translatesAutoresizingMaskIntoConstraints = false
+        // MARK: Due date
 
-        // MARK: "Set due date" toggle row
-
-        dueCard.wantsLayer = true
-        dueCard.layer?.cornerRadius = 10
-        dueCard.translatesAutoresizingMaskIntoConstraints = false
-
-        dueSwitch.target = self
-        dueSwitch.action = #selector(hasDueToggled)
-        dueSwitch.setContentHuggingPriority(.required, for: .horizontal)
-        dueSwitch.translatesAutoresizingMaskIntoConstraints = false
-
-        dueTitleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        dueTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        dueSubtitleLabel.font = .systemFont(ofSize: 10.5)
-        dueSubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        let dueTextStack = NSStackView(views: [dueTitleLabel, dueSubtitleLabel])
-        dueTextStack.orientation = .vertical
-        dueTextStack.alignment = .leading
-        dueTextStack.spacing = 1
-        dueTextStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let dueLeft = NSStackView(views: [dueSwitch, dueTextStack])
-        dueLeft.orientation = .horizontal
-        dueLeft.alignment = .centerY
-        dueLeft.spacing = 10
-        dueLeft.translatesAutoresizingMaskIntoConstraints = false
-        dueLeft.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        dueDatePicker.datePickerStyle = .textFieldAndStepper
-        dueDatePicker.datePickerElements = [.yearMonthDay, .hourMinute]
         dueDatePicker.target = self
         dueDatePicker.action = #selector(dueDatePickerChanged)
-        dueDatePicker.translatesAutoresizingMaskIntoConstraints = false
-        dueDatePicker.setContentHuggingPriority(.required, for: .horizontal)
-        dueDatePicker.setContentCompressionResistancePriority(.required, for: .horizontal)
-
         let existingDue = ShiftDateFormatting.dateTime(from: editing?.dueDate, time: editing?.dueTime)
         if let existingDue {
-            dueSwitch.state = .on
+            dueRow.isOn = true
             dueDatePicker.dateValue = existingDue
             dueDatePicker.isEnabled = true
         } else {
-            dueSwitch.state = .off
+            dueRow.isOn = false
             dueDatePicker.dateValue = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
             dueDatePicker.isEnabled = false
         }
-        dueDatePicker.isHidden = dueSwitch.state != .on
-
-        let dueRow = NSStackView(views: [dueLeft, dueDatePicker])
-        dueRow.orientation = .horizontal
-        dueRow.distribution = .fill
-        dueRow.alignment = .centerY
-        dueRow.spacing = 10
-        dueRow.translatesAutoresizingMaskIntoConstraints = false
-        dueCard.addSubview(dueRow)
-        NSLayoutConstraint.activate([
-            dueRow.leadingAnchor.constraint(equalTo: dueCard.leadingAnchor, constant: 13),
-            dueRow.trailingAnchor.constraint(equalTo: dueCard.trailingAnchor, constant: -13),
-            dueRow.topAnchor.constraint(equalTo: dueCard.topAnchor, constant: 12),
-            dueRow.bottomAnchor.constraint(equalTo: dueCard.bottomAnchor, constant: -12),
-        ])
+        dueDatePicker.isHidden = !dueRow.isOn
+        dueRow.onToggle = { [weak self] in self?.hasDueToggled() }
+        form.addRow(dueRow)
 
         // MARK: Tags
 
-        let tagsLabel = sectionLabel("Tags")
-        tagsField.placeholderString = "Add tags, separated by commas"
-        styleSunkenField(tagsField)
-        tagsField.translatesAutoresizingMaskIntoConstraints = false
+        form.addSection("Tags")
         tagsField.delegate = self
+        form.addRow(tagsField)
+        form.setSpacingAfterLastRow(HelmMetrics.s2)
+        form.addRow(tagsChipsFlow)
         tagChips = editing?.tags ?? []
         renderTagChips()
 
         // MARK: Description
 
-        let descLabel = sectionLabel("Description")
+        form.addSection("Description")
         descriptionView.string = editing?.description ?? ""
-        descriptionView.font = .systemFont(ofSize: 12)
-        descriptionView.isRichText = false
-        descriptionView.textContainerInset = NSSize(width: 8, height: 8)
-        descriptionView.drawsBackground = true
-        descScroll.wantsLayer = true
-        descScroll.layer?.cornerRadius = 8
-        descScroll.layer?.masksToBounds = true
-        descScroll.layer?.borderWidth = 1
-        descScroll.borderType = .noBorder
-        descScroll.hasVerticalScroller = true
-        descScroll.documentView = descriptionView
-        descScroll.translatesAutoresizingMaskIntoConstraints = false
+        form.addRow(descriptionView)
 
-        // MARK: Attachment (existing feature, unchanged - out of this
-        // redesign's scope, see this file's header)
+        // MARK: Attachment (existing feature, unchanged)
 
-        let attachmentLabel = sectionLabel("Attachment")
-        attachmentWell.translatesAutoresizingMaskIntoConstraints = false
+        chooseImageButton.target = self
+        chooseImageButton.action = #selector(chooseImageClicked)
+        chooseImageButton.controlSize = .small
+        form.addSection("Attachment", actions: [chooseImageButton])
         attachmentWell.onImageChosen = { [weak self] data in self?.attachmentChange = .set(data) }
         attachmentWell.onRemove = { [weak self] in self?.attachmentChange = .removed }
         if let existingAttachmentData {
             attachmentWell.showExisting(data: existingAttachmentData)
         }
-        chooseImageButton.target = self
-        chooseImageButton.action = #selector(chooseImageClicked)
-        chooseImageButton.controlSize = .small
-        let attachmentRowSpacer = NSView()
-        attachmentRowSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let attachmentRow = NSStackView(views: [attachmentLabel, attachmentRowSpacer, chooseImageButton])
-        attachmentRow.orientation = .horizontal
-        attachmentRow.distribution = .fill
-        attachmentRow.translatesAutoresizingMaskIntoConstraints = false
+        form.addRow(attachmentWell)
 
         // MARK: Footer
 
-        shortcutHintLabel.font = .systemFont(ofSize: 11)
-        shortcutHintLabel.translatesAutoresizingMaskIntoConstraints = false
+        form.setFooter(target: self,
+                       confirmTitle: editing == nil ? "Create Task" : "Save",
+                       confirm: #selector(save),
+                       cancel: #selector(cancel),
+                       // ⌘Return rather than a plain Return, because this
+                       // sheet's multi-line Description field consumes Return
+                       // as a newline. `performKeyEquivalent:` reaches the
+                       // button regardless of first responder.
+                       confirmModifiers: [.command],
+                       hint: "\u{2318}\u{23ce} to save")
 
-        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let save = HelmButton(title: editing == nil ? "Create Task" : "Save", variant: .primary, target: self, action: #selector(save))
-        // Fires via `NSWindow.performKeyEquivalent:` regardless of first
-        // responder - same mechanism `ConsoleComposerPopover`'s Generate
-        // button uses, so ⌘Enter saves even while focus is in the
-        // multi-line Description field (where a plain Return just inserts
-        // a newline, per `descriptionView`'s own default key binding).
-        save.keyEquivalent = "\r"
-        save.keyEquivalentModifierMask = [.command]
-        let actionsSpacer = NSView()
-        actionsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [shortcutHintLabel, actionsSpacer, cancel, save])
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 10
-        footer.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [
-            headingLabel, titleField, hintLabel, detectedRow,
-            detailsLabel, metaGrid, dueCard,
-            tagsLabel, tagsField, tagsChipsFlow,
-            descLabel, descScroll,
-            attachmentRow, attachmentWell,
-            footer,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.setCustomSpacing(2, after: titleField)
-        stack.setCustomSpacing(16, after: hintLabel)
-        stack.setCustomSpacing(8, after: detailsLabel)
-        stack.setCustomSpacing(8, after: tagsField)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 22),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
-            titleField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            hintLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            detectedRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            metaGrid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            dueCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            tagsField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            tagsField.heightAnchor.constraint(equalToConstant: 30),
-            tagsChipsFlow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            descScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            descScroll.heightAnchor.constraint(equalToConstant: 110),
-            attachmentRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            attachmentWell.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-
-        // `ThemeManager.observe` fires synchronously at registration (this
-        // codebase's documented convention), and that registration happens
-        // near the top of this method - long before the four
-        // `sectionLabel(...)` calls below it have appended anything to
-        // `sectionLabels`. So that first, and absent a theme change *only*,
-        // firing found an empty array and `applyTheme`'s
-        // `sectionLabels.forEach { ... }` was a no-op: the DETAILS / TAGS /
-        // DESCRIPTION / ATTACHMENT kickers rendered in the system
-        // `.labelColor` (measured #ffffff@0.85) instead of
-        // `HelmTheme.mutedInk` (#f0f4f7@0.70), i.e. *brighter* than the body
-        // text they label, inverting the intended hierarchy - and it
-        // self-healed on any later theme switch, which is why this sheet's
-        // own theme-sweep verification never caught it.
-        //
-        // One explicit re-apply at the end of `loadView`, once everything a
-        // theme observer iterates actually exists, is the fix. See
-        // `ThemeManager.swift`'s checklist - this was the third confirmed
-        // instance of the same trap in this codebase.
-        applyTheme(ThemeManager.shared.theme)
-
-        resizeToFitContent()
-    }
-
-    /// The real fix for two captain-reported layout bugs
-    /// (fm/grandline-task-editor-layout-fix): a large dead gap between "Set
-    /// due date" and "TAGS" with the toggle off, and dead space below the
-    /// footer with it on. Root cause: `root`'s frame height used to be a
-    /// hardcoded literal (780) that didn't track this sheet's actual content
-    /// height (~605-620pt, measured live) - `presentAsSheet` reads that
-    /// literal frame size verbatim (it does not itself resize the sheet to
-    /// fit Auto Layout content), so the sheet was always ~140-160pt taller
-    /// than its content needed. With `stack`'s top and bottom both pinned as
-    /// required constraints to `root`'s edges, that ~140pt of slack still
-    /// had to go SOMEWHERE for the constraint system to be satisfiable - and
-    /// since `stack`'s distribution is the vertical-stack default,
-    /// `.gravityAreas` (never set explicitly), which has no defined rule for
-    /// *which* arranged subview absorbs leftover space (see AGENTS.md's
-    /// NSStackView gravityAreas gotcha), Auto Layout's own tie-breaking
-    /// picked a different, sibling-content-dependent spot each time: with
-    /// the due-date picker hidden, `dueCard` (an unconstrained-height plain
-    /// `NSView`) was the path of least resistance and silently stretched to
-    /// ~190pt (natural ~53pt) - the dead gap before "TAGS"; with the picker
-    /// visible, `dueCard` resolved to its natural size and the same ~137pt
-    /// instead landed as trailing space after the footer, since nothing else
-    /// in the graph offered a cheaper place to put it. Confirmed live via a
-    /// temporary debug probe (`FM_DEBUG_TASK_EDITOR_LAYOUT`, reverted before
-    /// commit) dumping every arranged subview's real frame in both states.
-    ///
-    /// Fix: never let `root`'s frame drift from what its content actually
-    /// needs. `root`'s width is now a real, required constraint (520pt, see
-    /// `sheetWidth`) rather than just an initial-frame guess, which makes
-    /// `fittingSize`'s height read stable and correct (text wrapping and
-    /// `ChipFlowView`'s wrap-to-width tag layout both depend on a real,
-    /// fixed width to size themselves). This is called once at the end of
-    /// `loadView()` (fixes the initial-open case for both a fresh task and
-    /// editing an existing one, due-off or due-on) and again from every
-    /// action that can change how much this sheet actually shows - the due
-    /// toggle, the natural-language "Detected:" row appearing/dismissing,
-    /// and a tag chip being added/removed - so the sheet's height keeps
-    /// tracking real content instead of drifting back into a mismatch (and
-    /// therefore back into `gravityAreas` needing to inject slack again) as
-    /// the captain interacts with the form.
-    private func resizeToFitContent() {
-        view.layoutSubtreeIfNeeded()
-        let height = view.fittingSize.height
-        guard height > 0 else { return }
-        let size = NSSize(width: Self.sheetWidth, height: height)
-        if let window = view.window {
-            window.setContentSize(size)
-        } else {
-            view.setFrameSize(size)
-        }
+        form.refreshTheme()
+        form.sizeToFitContent()
     }
 
     override func viewDidAppear() {
@@ -617,90 +221,23 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
 
     // MARK: Theming
 
-    private func sectionLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: "")
-        // The one kicker in the app (`HelmType.kicker()` + `kickerKern`,
-        // audit §6.2) rather than this sheet's own font/kern pair - the
-        // colour still arrives from `applyTheme` below, via `sectionLabels`.
-        label.attributedStringValue = NSAttributedString(string: text.uppercased(), attributes: [
-            .font: HelmType.kicker(),
-            .kern: HelmType.kickerKern,
-        ])
-        label.translatesAutoresizingMaskIntoConstraints = false
-        sectionLabels.append(label)
-        return label
-    }
-
-    /// Removes the stock system bezel and hands the whole look to an
-    /// explicit `HelmTheme`-derived fill/border, matching
-    /// `ShiftController.styleDetailFormField`/`ConsoleComposerViewController`'s
-    /// identical fix for the same off-theme-bezel problem.
-    private func styleSunkenField(_ field: NSTextField) {
-        field.isBordered = false
-        field.isBezeled = false
-        field.focusRingType = .none
-        field.drawsBackground = true
-        field.wantsLayer = true
-        field.layer?.masksToBounds = true
-        field.layer?.cornerRadius = 8
-        field.layer?.borderWidth = 1
-    }
-
-    private func applyTheme(_ theme: HelmTheme) {
+    /// Everything the scaffold does not own: this sheet's own hint line,
+    /// detected-date row, priority dot, tag chips and attachment well.
+    private func applyExtraTheme(_ theme: HelmTheme) {
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
-        let fieldFill = shiftEditorFieldFillColor(for: theme)
-        let lineColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.5)
-
-        headingLabel.textColor = ink
-
-        titleField.textColor = ink
-        titleField.placeholderAttributedString = NSAttributedString(
-            string: "What needs to be done?",
-            attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold), .foregroundColor: muted]
-        )
-
-        hintLabel.attributedStringValue = hintAttributedString(muted: muted, emphasis: ink)
-
+        hintLabel?.attributedStringValue = hintAttributedString(muted: muted, emphasis: ink)
         detectedIcon.contentTintColor = HelmTheme.nsColor(theme.accentHex)
         detectedLabel.textColor = muted
-
-        sectionLabels.forEach { $0.textColor = muted }
-
-        priorityCard.applyTheme(theme)
-        projectCard.applyTheme(theme)
         updatePriorityDotColor(theme: theme)
-
-        dueCard.layer?.backgroundColor = fieldFill.cgColor
-        dueCard.layer?.borderWidth = 1
-        dueCard.layer?.borderColor = lineColor.cgColor
-        dueTitleLabel.textColor = ink
-        dueSubtitleLabel.textColor = muted
-
-        tagsField.textColor = ink
-        tagsField.placeholderAttributedString = NSAttributedString(
-            string: "Add tags, separated by commas",
-            attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: muted]
-        )
-        tagsField.layer?.backgroundColor = fieldFill.cgColor
-        tagsField.layer?.borderColor = lineColor.cgColor
         tagsChipsFlow.subviews.compactMap { $0 as? VocabularyChipView }.forEach { $0.applyTheme(theme) }
-
-        descScroll.layer?.backgroundColor = fieldFill.cgColor
-        descScroll.layer?.borderColor = lineColor.cgColor
-        descriptionView.backgroundColor = fieldFill
-        descriptionView.textColor = ink
-        descriptionView.insertionPointColor = ink
-
-        shortcutHintLabel.textColor = muted
-
         attachmentWell.applyTheme(theme)
     }
 
     private func hintAttributedString(muted: NSColor, emphasis: NSColor) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: muted]
-        let bold: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: emphasis]
+        let base: [NSAttributedString.Key: Any] = [.font: HelmType.caption(), .foregroundColor: muted]
+        let bold: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold), .foregroundColor: emphasis]
         result.append(NSAttributedString(string: "Tip: type natural dates like ", attributes: base))
         result.append(NSAttributedString(string: "tomorrow 3pm", attributes: bold))
         result.append(NSAttributedString(string: " or ", attributes: base))
@@ -724,13 +261,12 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
     }
 
     private func updatePriorityCard() {
-        priorityCard.valueLabel.stringValue = selectedPriority.rawValue.capitalized
+        priorityCard.value = selectedPriority.rawValue.capitalized
         updatePriorityDotColor(theme: ThemeManager.shared.theme)
     }
 
     private func updateProjectCard() {
-        let name = projects.first(where: { $0.id == selectedProjectID })?.name ?? "No project"
-        projectCard.valueLabel.stringValue = name
+        projectCard.value = projects.first(where: { $0.id == selectedProjectID })?.name ?? "No project"
     }
 
     private func priorityCardClicked() {
@@ -785,10 +321,10 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         guard let parsed = ShiftDateParser.parse(titleField.stringValue) else {
             let wasHidden = detectedRow.isHidden
             detectedRow.isHidden = true
-            if !wasHidden { resizeToFitContent() }
+            if !wasHidden { form.sizeToFitContent() }
             return
         }
-        dueSwitch.state = .on
+        dueRow.isOn = true
         dueDatePicker.isEnabled = true
         dueDatePicker.isHidden = false
         if parsed.hasTime {
@@ -807,30 +343,30 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         detectedLabel.stringValue = "Detected: \(ShiftDateFormatting.friendly(dateStr, time: parsed.hasTime ? timeStr : nil))"
         let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = false
-        if wasHidden { resizeToFitContent() }
+        if wasHidden { form.sizeToFitContent() }
     }
 
     @objc private func dismissDetected() {
         let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = true
         dueManuallyEdited = true
-        if !wasHidden { resizeToFitContent() }
+        if !wasHidden { form.sizeToFitContent() }
     }
 
-    @objc private func hasDueToggled() {
+    private func hasDueToggled() {
         dueManuallyEdited = true
-        let on = dueSwitch.state == .on
+        let on = dueRow.isOn
         dueDatePicker.isEnabled = on
         dueDatePicker.isHidden = !on
         detectedRow.isHidden = true
-        resizeToFitContent()
+        form.sizeToFitContent()
     }
 
     @objc private func dueDatePickerChanged() {
         dueManuallyEdited = true
         let wasHidden = detectedRow.isHidden
         detectedRow.isHidden = true
-        if !wasHidden { resizeToFitContent() }
+        if !wasHidden { form.sizeToFitContent() }
     }
 
     // MARK: Tags
@@ -872,13 +408,12 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
             return chip
         }
         tagsChipsFlow.setChips(chips)
-        // A harmless no-op the first time this runs, from inside `loadView()`
-        // itself (before the stack/window exist) - `loadView()`'s own final
-        // `resizeToFitContent()` call supersedes it. Needed for every later
-        // call, once a tag is added/removed after the sheet is already
-        // showing, since `ChipFlowView`'s wrap-to-width height changes with
-        // the chip count.
-        resizeToFitContent()
+        // Needed for every call after the first, once a tag is added/removed
+        // while the sheet is already showing - `ChipFlowView`'s wrap-to-width
+        // height changes with the chip count. The first call happens from
+        // inside `loadView()` before the window exists, and `loadView()`'s own
+        // final `sizeToFitContent()` supersedes it.
+        form?.sizeToFitContent()
     }
 
     // MARK: Attachment
@@ -912,7 +447,7 @@ final class ShiftTaskEditorController: NSViewController, NSTextFieldDelegate {
         task.title = titleText
         task.description = descriptionView.string
         task.priority = selectedPriority
-        if dueSwitch.state == .on {
+        if dueRow.isOn {
             let (dateStr, timeStr) = ShiftDateFormatting.components(from: dueDatePicker.dateValue)
             task.dueDate = dateStr
             task.dueTime = timeStr
