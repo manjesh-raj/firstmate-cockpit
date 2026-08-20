@@ -10,7 +10,7 @@
 //
 // Unlike Compose, this popover shows read-only live status, not a
 // generate-review-run flow - the closest existing precedent for that shape
-// is `SRELeadStatusPill`'s sliding pane, but that's a heavier full-agentic
+// is SRE Lead's sliding pane, but that's a heavier full-agentic
 // panel; a transient popover is the right weight for a quick "check my
 // quota" glance (design plan, following the scout report's own
 // recommendation).

@@ -148,11 +148,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// `fm/grandline-sre-lead-per-tab`: SRE Lead's own state (session,
     /// bridge, runner, chat, phase) lives on each `TabModel.sreLead`, not
     /// here - see `SRELeadTabState.swift`'s header. `ConsoleController` only
-    /// owns the shared chrome: the pill, the pane, and the header - every
-    /// started tab's chat is added as a hidden sibling inside `sreLeadPane`
-    /// and shown/hidden to match whichever tab is currently selected
-    /// (`updateSRELeadPaneContent`).
-    private var sreLeadButton: SRELeadStatusPill?
+    /// owns the shared chrome: the toolbar button, the pane, and the header -
+    /// every started tab's chat is added as a hidden sibling inside
+    /// `sreLeadPane` and shown/hidden to match whichever tab is currently
+    /// selected (`updateSRELeadPaneContent`).
+    ///
+    /// A plain `HelmButton` from the same `makeLabeledButton` factory as Find
+    /// / Compose / Blocks / Claude usage - it used to be a bespoke dot-plus-
+    /// label view, see `SRELeadPhase.swift`'s header.
+    private var sreLeadButton: HelmButton?
 
     private let sreLeadPane = NSView()
     private let sreLeadPaneSeparator = NSView()
@@ -345,10 +349,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // whole app on every launch in the original PR #79/#80 attempt.
         var toolViews: [NSView] = []
         if !isFirstmateConsole {
-            let pill = SRELeadStatusPill()
-            pill.onClick = { [weak self] in self?.toggleSRELead() }
-            sreLeadButton = pill
-            toolViews.append(pill)
+            let button = makeLabeledButton(symbol: SRELeadPhase.notStarted.symbol,
+                                           title: SRELeadPhase.notStarted.text,
+                                           tooltip: "Toggle the SRE Lead investigation pane",
+                                           action: #selector(toggleSRELead))
+            button.tint = SRELeadPhase.notStarted.tint
+            sreLeadButton = button
+            toolViews.append(button)
         }
         toolViews += [findButton, zoomOutButton, zoomInButton, themeButton]
         if !isFirstmateConsole {
@@ -1097,21 +1104,27 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
     }
 
-    /// Refreshes the pill, the pane's visible content, the Generate
-    /// Postmortem button, and the pill's tooltip - all four always derived
+    /// Refreshes the toolbar button, the pane's visible content, the Generate
+    /// Postmortem button, and the button's tooltip - all four always derived
     /// from `currentTab`, called from every place that changes which tab is
     /// selected or changes that tab's own SRE Lead phase.
+    ///
+    /// No `applyTheme` call for the button any more: a `HelmButton` owns its
+    /// own `ThemeManager` observation and re-derives every colour itself, and
+    /// `tint` is a `HelmTint` case rather than a resolved hex, so the phase's
+    /// colour follows a theme change with nothing to push.
     private func updateSRELeadControls() {
         guard let tab = currentTab else { return }
         let phase = tab.sreLead?.phase ?? .notStarted
-        sreLeadButton?.setState(phase)
-        sreLeadButton?.applyTheme(theme)
+        sreLeadButton?.title = phase.text
+        sreLeadButton?.symbolName = phase.symbol
+        sreLeadButton?.tint = phase.tint
         updateSRELeadPaneContent()
         updateGeneratePostmortemButton()
         updateSRELeadButtonTooltip(for: tab)
     }
 
-    /// Explains the pill's disabled-in-spirit cap state up front, rather
+    /// Explains the button's disabled-in-spirit cap state up front, rather
     /// than only after an attempt bounces off the alert above.
     private func updateSRELeadButtonTooltip(for tab: TabModel) {
         let phase = tab.sreLead?.phase ?? .notStarted
@@ -1982,7 +1995,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Closes a tab by id - the same `closeTab(id:)` a chip's "×"/⌘W drives.
     func debugCloseTab(id: UUID) { closeTab(id: id) }
 
-    func debugSRELeadPhase(forTabID id: UUID) -> SRELeadStatusPill.State? {
+    func debugSRELeadPhase(forTabID id: UUID) -> SRELeadPhase? {
         tabs.first(where: { $0.id == id })?.sreLead?.phase
     }
 

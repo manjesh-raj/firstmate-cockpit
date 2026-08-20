@@ -24,11 +24,11 @@ import Foundation
 /// starts SRE Lead for that specific tab - a freshly duplicated tab never
 /// inherits or auto-starts one, matching this feature's existing default.
 final class SRELeadTabState {
-    /// Reuses `SRELeadStatusPill.State` directly rather than a second,
-    /// parallel enum with the same four cases - the pill's own state is
-    /// always exactly this tab's phase (see `ConsoleController.select`/
-    /// `updateSRELeadControls`).
-    var phase: SRELeadStatusPill.State = .notStarted
+    /// `SRELeadPhase` is shared with the toolbar button rather than a second,
+    /// parallel enum with the same four cases - the button always renders
+    /// exactly the currently selected tab's phase (see
+    /// `ConsoleController.select`/`updateSRELeadControls`).
+    var phase: SRELeadPhase = .notStarted
     var session: SRELeadSession?
     var bridge: SRELeadBridge?
     var runner: SRELeadRunner?

@@ -62,19 +62,6 @@ enum HostsTab: String, CaseIterable {
 
 final class HostsController: NSViewController, NSSearchFieldDelegate {
 
-    /// The content column's cap - a **maximum**, applied from the leading
-    /// edge, never a centring device.
-    ///
-    /// Phase 5 built this column as `leading >= / trailing <= / centerX ==`,
-    /// which floats the whole page in the middle of a wide window with a
-    /// mirrored dead gutter on both sides. The captain's own comparison
-    /// against the prototype (`07-proposed-hosts-a.png`) called that out
-    /// directly: Hosts is left-aligned like Overview, Review and Updates, all
-    /// of which start at the page gutter. The `centerX` tie is gone; only the
-    /// cap remains, so a very wide window still doesn't stretch a host row's
-    /// two short strings across 1500pt.
-    static let maxContentWidth: CGFloat = 1120
-
     private let hostStore: HostStore
     private let keyStore: SSHKeyStore
     private let snippetStore: SnippetStore
@@ -154,32 +141,38 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
         buildKeysTab()
         buildSnippetsTab()
 
-        // The capped, **left-aligned** content column. An `NSLayoutGuide`
-        // rather than a spacer view, so nothing renders it and nothing can
+        // The content column: gutter to gutter, exactly like every other
+        // card-bearing destination in this app. An `NSLayoutGuide` rather
+        // than a spacer view, so nothing renders it and nothing can
         // accidentally pick up a background from it.
         //
-        // Inequalities plus a *high-priority* (not required) width, never a
-        // required `==` tie to the container - AGENTS.md's host-editor gotcha
-        // (3). A required equality is what let AppKit treat the one width
-        // where that tie has zero slack as the view's "true" size. This page
-        // is embedded in the shell body rather than driving a window's frame,
-        // so it cannot hit that trap today, but the shape is the one this app
-        // has settled on for a capped column and there is no reason to have
-        // two.
+        // **There is no width cap any more.** Phase 5 built this column as
+        // `leading >= / trailing <= / centerX ==`, floating the page in the
+        // middle of a wide window with a mirrored dead gutter either side;
+        // `fm/grandline-design-fidelity-fixes` dropped the `centerX` tie so
+        // the page is left-aligned, but kept a 1120pt maximum, reasoning that
+        // "a very wide window still doesn't stretch a host row's two short
+        // strings across 1500pt". Live, that cap is what the captain reported
+        // next (`04-hosts-page-right-gap.png`): on a laptop-width window the
+        // cards stop about four fifths of the way across and the rest of the
+        // page is empty. The reasoning was also already handled one level
+        // down - a host row is a `HelmAccentRow` whose Connect / `...`
+        // controls sit in its own right-anchored `trailingAccessory` slot, so
+        // a wider card puts the extra width *between* the two short strings
+        // and the actions rather than stretching either, which is precisely
+        // how Updates', GitHub Sync's and Vault's rows already behave at any
+        // width.
         //
-        // The column is pinned to the page gutter (`leading ==`) and grows
-        // rightwards until it hits the cap - it is not centred. See
-        // `maxContentWidth`.
+        // `FleetController`, `ReviewController`, `UpdatesController`,
+        // `GitHubSyncController` and `VaultController` all pin
+        // `leading == +pageGutter` / `trailing == -pageGutter` with no cap.
+        // Hosts was the only exception; it no longer is.
         let column = NSLayoutGuide()
         root.addLayoutGuide(column)
-        let grow = column.widthAnchor.constraint(equalToConstant: Self.maxContentWidth)
-        grow.priority = .defaultHigh
-        grow.isActive = true
 
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: HelmMetrics.pageGutter),
-            column.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -HelmMetrics.pageGutter),
-            column.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxContentWidth),
+            column.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -HelmMetrics.pageGutter),
             column.topAnchor.constraint(equalTo: root.topAnchor, constant: HelmMetrics.s5),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -HelmMetrics.pageGutter),
 

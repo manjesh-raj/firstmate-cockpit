@@ -477,24 +477,45 @@ enum HelmContrastSelfTest {
         }
     }
 
-    // MARK: 8. The status column stays a column (audit §5.4)
+    // MARK: 8. The status column stays a column, on the right (audit §5.4)
 
-    /// The shared checklist row's status pill used to sit immediately after
-    /// the name label, so it tracked the name's length: measured at a 64pt
-    /// spread over five real Updates rows, forming a ragged diagonal instead
-    /// of a column. `ToolRowLayout`'s fixed name column fixed it; this keeps
-    /// it fixed, at three widths so the proportional column is exercised
-    /// rather than one lucky size.
+    /// The shared checklist row's status pill has to be a **column**, and it
+    /// has to be a column **on the trailing side of the row**. Three separate
+    /// live-reported defects live in this one check:
+    ///
+    /// - Pre-§5.4, the pill sat immediately after the name label, so it
+    ///   tracked the name's length: a 64pt spread over five real Updates
+    ///   rows, a ragged diagonal instead of a column.
+    /// - §5.4 fixed that with a fixed 42%-of-the-row name column, which put
+    ///   the pill at 42% *from the leading edge* - so a row with short detail
+    ///   text left roughly half the row empty between the pill and the
+    ///   right-anchored actions (measured on the real GitHub Sync page:
+    ///   729.5pt of dead gap on every row), and a row with long detail text
+    ///   truncated 6pt short of the pill with ~670pt of unused row to its
+    ///   right (Updates' real `firstmate` row).
+    /// - So the column is now measured from the trailing edge
+    ///   (`ToolRowLayout.statusColumnTrailingReserve`). This asserts what that
+    ///   actually guarantees, not a weaker restatement of it.
+    ///
+    /// Deliberately measures the pill's **trailing** edge, not its `minX`: the
+    /// pills are right-aligned now, and their own widths differ legitimately
+    /// ("Up to Date" vs "Update Available" is a real 32.5pt difference), so
+    /// `minX` would report that text-length difference as a layout failure.
     private static func checkStatusColumnAligned(_ ok: inout Bool) {
-        print("\n-- status column (audit §5.4) --")
+        print("\n-- status column (audit §5.4, trailing-anchored) --")
         let theme = ThemeManager.shared.theme
-        // Deliberately mismatched name lengths *and* action sets - both are
-        // what used to move the pill.
-        let fixtures: [(String, [String])] = [
-            ("gh-axi", ["Check"]),
-            ("chrome-devtools-axi", ["Check", "Update"]),
-            ("gh (GitHub CLI)", ["Check"]),
-            ("DevOps Playbook", ["Check", "Install in Bootstrap \u{2192}"]),
+        // Deliberately mismatched name lengths, detail lengths *and* action
+        // sets - the first two used to move the pill, and the third is what
+        // the reserve exists to absorb. Every action set here fits inside
+        // `statusColumnTrailingReserve`; the row that does not fit is checked
+        // separately below.
+        let fixtures: [(name: String, detail: String, buttons: [String])] = [
+            ("gh-axi", "0.1.30 - up to date", ["Check"]),
+            ("chrome-devtools-axi", "0.1.29 \u{2192} 0.1.30", ["Check", "Update"]),
+            ("gh (GitHub CLI)", "2.97.0 - up to date", ["Check"]),
+            ("manjesh-raj/treehouse", "In sync with kunchenguid/treehouse", []),
+            // The real string that used to truncate flush against the pill.
+            ("firstmate", "main carries 24 commit(s) of its own and is 7 behind upstream/main; run without --check to merge upstream into main, then push to origin", ["Check", "Update"]),
         ]
         for width in [760.0, 1064.0, 1400.0] as [CGFloat] {
             let host = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 400))
@@ -510,8 +531,8 @@ enum HelmContrastSelfTest {
                 stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
                 stack.topAnchor.constraint(equalTo: host.topAnchor),
             ])
-            var pills: [(NSView, NSView)] = []
-            for (name, buttons) in fixtures {
+            var rows: [(pill: NSView, detail: NSTextField, row: NSView)] = []
+            for fx in fixtures {
                 let v = ToolRowLayout.Views(
                     iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
                     detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
@@ -521,22 +542,100 @@ enum HelmContrastSelfTest {
                 ToolRowLayout.pill(text: "Up to Date", colorHex: theme.accentHex,
                                    into: v.pill, label: v.pillLabel, theme: theme)
                 let row = ToolRowLayout.build(
-                    v, iconSymbol: "shippingbox", tint: .info, name: name,
-                    trailingViews: buttons.map { HelmButton(title: $0, variant: .secondary, size: .small) },
-                    identifier: name)
+                    v, iconSymbol: "shippingbox", tint: .info, name: fx.name,
+                    trailingViews: fx.buttons.map { HelmButton(title: $0, variant: .secondary, size: .small) },
+                    identifier: fx.name)
+                v.detailLabel.stringValue = fx.detail
                 stack.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-                pills.append((v.pill, v.rowContainer))
+                rows.append((v.pill, v.detailLabel, v.rowContainer))
             }
             host.layoutSubtreeIfNeeded()
-            let xs = pills.map { $0.0.convert($0.0.bounds, to: $0.1).minX }
-            let spread = (xs.max() ?? 0) - (xs.min() ?? 0)
-            if spread > 0.5 {
-                print("  FAIL width \(Int(width)): pill x spread \(fmt(Double(spread)))pt - status column is not a column")
-                ok = false
-            } else {
-                print("  OK width \(Int(width)): pill x constant at \(fmt(Double(xs.first ?? 0)))")
+
+            // 1. One column: the pill's trailing edge is the same distance
+            //    from every row's trailing edge.
+            let insets = rows.map { $0.row.bounds.width - $0.pill.convert($0.pill.bounds, to: $0.row).maxX }
+            let spread = (insets.max() ?? 0) - (insets.min() ?? 0)
+            // 2. On the right: that distance is a small fraction of the row,
+            //    not the ~50% the leading-edge column left behind.
+            let rowWidth = rows.first?.row.bounds.width ?? 1
+            let inset = insets.first ?? 0
+            // 3. No conflict: the detail line never reaches the pill.
+            let gaps = rows.map { $0.pill.convert($0.pill.bounds, to: $0.row).minX - $0.detail.convert($0.detail.bounds, to: $0.row).maxX }
+            let minGap = gaps.min() ?? 0
+
+            var problems: [String] = []
+            if spread > 0.5 { problems.append("pill trailing-inset spread \(fmt(Double(spread)))pt - not a column") }
+            if inset > rowWidth * 0.25 {
+                problems.append("pill sits \(fmt(Double(inset)))pt from the row's end on a \(fmt(Double(rowWidth)))pt row - that is not the right side")
             }
+            // A **literal** floor, not `ToolRowLayout.statusColumnLeadingGap`
+            // itself - checking a constant against itself is a tautology, and
+            // "someone deletes the gap spacer / zeroes the constant" is
+            // exactly the regression this line is here to catch (confirmed:
+            // setting that constant to 0 has to fail here, and does).
+            let hardGapFloor: CGFloat = 12
+            if minGap < hardGapFloor {
+                problems.append("detail text comes within \(fmt(Double(minGap)))pt of the pill (hard floor is \(fmt(Double(hardGapFloor))))")
+            }
+            if ToolRowLayout.statusColumnLeadingGap < hardGapFloor {
+                problems.append("statusColumnLeadingGap is \(fmt(Double(ToolRowLayout.statusColumnLeadingGap)))pt, below the \(fmt(Double(hardGapFloor)))pt floor")
+            }
+            if problems.isEmpty {
+                print("  OK width \(Int(width)): pill trailing inset constant at \(fmt(Double(inset)))pt, min text->pill gap \(fmt(Double(minGap)))pt")
+            } else {
+                for p in problems { print("  FAIL width \(Int(width)): \(p)") }
+                ok = false
+            }
+        }
+
+        // A row whose actions are genuinely wider than the reserve shifts
+        // left - by exactly its own overflow, deterministically, never by
+        // anything to do with its text. Asserted rather than left implicit,
+        // because it is the one case the column above does not cover and the
+        // trade-off is deliberate (see `statusColumnTrailingReserve`).
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 200))
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(stack)
+        NSLayoutConstraint.activate([
+            host.widthAnchor.constraint(equalToConstant: 1200),
+            stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: host.topAnchor),
+        ])
+        var wide: [(pill: NSView, row: NSView)] = []
+        for name in ["DevOps Playbook", "Automic Vault"] {
+            let v = ToolRowLayout.Views(
+                iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+                detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+                pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+                detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+                logContainer: NSView(), rowContainer: HoverHighlightView())
+            ToolRowLayout.pill(text: "Not Installed", colorHex: theme.accentHex,
+                               into: v.pill, label: v.pillLabel, theme: theme)
+            let row = ToolRowLayout.build(
+                v, iconSymbol: "shippingbox", tint: .info, name: name,
+                trailingViews: [HelmButton(title: "Check", variant: .secondary, size: .small),
+                                HelmButton(title: "Install in Bootstrap \u{2192}", variant: .secondary, size: .small)],
+                identifier: name)
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            wide.append((v.pill, v.rowContainer))
+        }
+        host.layoutSubtreeIfNeeded()
+        let wideInsets = wide.map { $0.row.bounds.width - $0.pill.convert($0.pill.bounds, to: $0.row).maxX }
+        let wideSpread = (wideInsets.max() ?? 0) - (wideInsets.min() ?? 0)
+        if wideSpread > 0.5 {
+            print("  FAIL over-reserve rows disagree with each other by \(fmt(Double(wideSpread)))pt - the shift is supposed to be a function of the action set, nothing else")
+            ok = false
+        } else if (wideInsets.first ?? 0) <= ToolRowLayout.statusColumnTrailingReserve {
+            print("  FAIL an over-reserve row did not shift left at all (inset \(fmt(Double(wideInsets.first ?? 0)))pt) - the reserve is silently absorbing a wider action set")
+            ok = false
+        } else {
+            print("  OK over-reserve rows shift left together, to a constant \(fmt(Double(wideInsets.first ?? 0)))pt inset")
         }
     }
 
@@ -652,6 +751,68 @@ enum HelmContrastSelfTest {
             ok = false
         }
         win.orderOut(nil)
+
+        // **The other direction: a long detail line must not set a *floor*.**
+        //
+        // The 42%-of-the-row name column this layout replaced came with a
+        // required `textStack.width <= 520` cap, which outranked the labels
+        // and so kept them free to truncate. Removing the cap without also
+        // lowering the labels' own compression resistance (an `NSTextField`
+        // defaults to 750, above `NSLayoutPriorityWindowSizeStayPut`) hands
+        // the *full intrinsic width of the text* to the row as a minimum -
+        // measured on Updates' real `firstmate` string: a 1016pt container
+        // produced a 1055pt row, and the window it was in came back 1103pt
+        // wide after being asked for 1064.
+        // It has to be a real *window* asked for a narrow width, not a host
+        // view with a required width: inside a required-width container the
+        // solver has no choice but to break the label's own resistance, so
+        // the row fits and the check passes while the bug is fully present.
+        // A resizable window is precisely the case where AppKit resolves the
+        // conflict by growing the window instead - which is the symptom.
+        let narrow: CGFloat = 900
+        let tightVC = NSViewController()
+        let tightHost = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        let tightStack = NSStackView()
+        tightStack.orientation = .vertical
+        tightStack.alignment = .leading
+        tightStack.translatesAutoresizingMaskIntoConstraints = false
+        tightHost.addSubview(tightStack)
+        NSLayoutConstraint.activate([
+            tightStack.leadingAnchor.constraint(equalTo: tightHost.leadingAnchor),
+            tightStack.trailingAnchor.constraint(equalTo: tightHost.trailingAnchor),
+            tightStack.topAnchor.constraint(equalTo: tightHost.topAnchor),
+            tightStack.bottomAnchor.constraint(lessThanOrEqualTo: tightHost.bottomAnchor),
+        ])
+        let v3 = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView())
+        ToolRowLayout.pill(text: "Update Available", colorHex: theme.accentHex,
+                           into: v3.pill, label: v3.pillLabel, theme: theme)
+        let row3 = ToolRowLayout.build(v3, iconSymbol: "shippingbox", tint: .accent, name: "firstmate",
+                                       trailingViews: [HelmButton(title: "Check", variant: .secondary, size: .small),
+                                                       HelmButton(title: "Update", variant: .secondary, size: .small)],
+                                       identifier: "probe3")
+        v3.detailLabel.stringValue = "main carries 24 commit(s) of its own and is 7 behind upstream/main; run without --check to merge upstream into main, then push to origin"
+        tightStack.addArrangedSubview(row3)
+        row3.widthAnchor.constraint(equalTo: tightStack.widthAnchor).isActive = true
+        tightVC.view = tightHost
+        let tightWin = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                                styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        tightWin.contentViewController = tightVC
+        tightWin.setFrame(NSRect(x: -30000, y: -30000, width: narrow, height: 200), display: false)
+        tightWin.layoutIfNeeded()
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        let narrowHeld = tightWin.frame.width
+        if narrowHeld <= narrow + 1 {
+            print("  OK a window carrying a row with a 700pt-wide detail line holds \(Int(narrowHeld))pt")
+        } else {
+            print("  FAIL window grew to \(fmt(Double(narrowHeld)))pt when asked for \(Int(narrow)) - a long detail label is setting a width floor")
+            ok = false
+        }
+        tightWin.orderOut(nil)
     }
 
     // MARK: 9. One stat-tile recipe (audit §3.2 "Stat tile", §6.3 #4, Phase 4)

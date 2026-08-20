@@ -52,6 +52,15 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     private let document = FlippedView()
     private let stack = NSStackView()
     private let inputRow = NSView()
+    /// The hairline between the transcript and the input row.
+    ///
+    /// Needed once the transcript stopped painting itself in the *terminal's*
+    /// `backgroundHex` and joined the pane on `chromeBackgroundHex` (see
+    /// `applyTheme`): the two zones used to be told apart by a whole
+    /// background-token step, and now share one surface, exactly like
+    /// `ConsoleController`'s own `sreLeadHeaderDivider` does for the pane
+    /// header directly above.
+    private let inputDivider = NSView()
     private let inputField = NSTextField()
     private let sendButton = NSButton()
     private var documentTopConstraint: NSLayoutConstraint!
@@ -101,13 +110,21 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         inputRow.wantsLayer = true
         addSubview(inputRow)
 
+        inputDivider.translatesAutoresizingMaskIntoConstraints = false
+        inputDivider.wantsLayer = true
+        addSubview(inputDivider)
+
+        // The app's one sunken-field recipe (Phase 6, `HelmForm.swift`) rather
+        // than a bare borderless `NSTextField`. As shipped this field had no
+        // fill of its own at all, so the *cell* painted the system
+        // `.textBackgroundColor` behind the placeholder - a near-black box in
+        // a light theme's pane and a mismatched shade in a dark one, visible
+        // in the captain's own screenshot of this pane. That is AGENTS.md's
+        // documented `NSTextField.backgroundColor`-overpaints-the-layer trap;
+        // `HelmField` is the one place in the app that sets both.
         inputField.translatesAutoresizingMaskIntoConstraints = false
-        inputField.placeholderString = "Ask SRE Lead\u{2026}"
-        inputField.font = .systemFont(ofSize: 12)
-        inputField.isBordered = false
-        inputField.focusRingType = .none
+        HelmField.makeSunkenTextField(inputField)
         inputField.delegate = self
-        (inputField.cell as? NSTextFieldCell)?.usesSingleLineMode = true
         inputRow.addSubview(inputField)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
@@ -123,16 +140,22 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: inputRow.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: inputDivider.topAnchor),
+
+            inputDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
+            inputDivider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            inputDivider.bottomAnchor.constraint(equalTo: inputRow.topAnchor),
+            inputDivider.heightAnchor.constraint(equalToConstant: 1),
 
             inputRow.leadingAnchor.constraint(equalTo: leadingAnchor),
             inputRow.trailingAnchor.constraint(equalTo: trailingAnchor),
             inputRow.bottomAnchor.constraint(equalTo: bottomAnchor),
-            inputRow.heightAnchor.constraint(equalToConstant: 44),
+            inputRow.heightAnchor.constraint(equalToConstant: 48),
 
             inputField.leadingAnchor.constraint(equalTo: inputRow.leadingAnchor, constant: 12),
             inputField.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -8),
             inputField.centerYAnchor.constraint(equalTo: inputRow.centerYAnchor),
+            inputField.heightAnchor.constraint(equalToConstant: HelmField.controlHeight),
 
             sendButton.trailingAnchor.constraint(equalTo: inputRow.trailingAnchor, constant: -10),
             sendButton.centerYAnchor.constraint(equalTo: inputRow.centerYAnchor),
@@ -522,12 +545,32 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
 
     func applyTheme(_ theme: HelmTheme) {
         self.theme = theme
-        layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
+        // **`chromeBackgroundHex`, not `backgroundHex`.** `backgroundHex` is
+        // the *terminal's* own token; `chromeBackgroundHex` is this app's
+        // surface. `fm/grandline-sre-lead-polish` moved `sreLeadPane` and
+        // `sreLeadEmptyStateView` onto the surface token precisely so the pane
+        // stops reading as a continuation of the terminal beside it - and
+        // missed this view, which is what actually fills the pane once a tab
+        // has a chat. The consequence, reported live: a started-but-unasked
+        // pane rendered as "a large black empty area" between the readiness
+        // status line and the input row, indistinguishable from the terminal.
+        //
+        // Note this token pair is *identical* in `gruvbox-light`,
+        // `tokyo-night-dark` and `tokyo-night-light`, so those three never
+        // showed the bug and no fill change can be what proves the fix -
+        // measure the resolved colour against the pane's, per theme.
+        layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        inputDivider.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).cgColor
         inputRow.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-        inputField.textColor = HelmTheme.nsColor(theme.chromeInkHex)
+        HelmField.applySunken(to: inputField, theme: theme)
+        // Both, deliberately - the cell paints over the layer. See
+        // `HelmField.makeSunkenTextField`'s call site above.
+        inputField.backgroundColor = HelmField.fill(theme)
+        inputField.textColor = HelmField.ink(theme)
         (inputField.cell as? NSTextFieldCell)?.placeholderAttributedString = NSAttributedString(
             string: "Ask SRE Lead\u{2026}",
-            attributes: [.foregroundColor: HelmTheme.mutedInk(theme)]
+            attributes: [.font: inputField.font ?? HelmType.body(),
+                         .foregroundColor: HelmField.mutedInk(theme)]
         )
         sendButton.contentTintColor = HelmTheme.nsColor(theme.accentHex)
 

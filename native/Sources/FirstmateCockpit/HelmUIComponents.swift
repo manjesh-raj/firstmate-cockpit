@@ -564,26 +564,87 @@ enum ToolRowLayout {
         }
     }
 
-    /// The share of a row's width the name/detail column takes (audit §5.4).
+    /// The floor the name/detail column degrades to on a genuinely narrow row.
     ///
-    /// **Why a column at all.** The status pill used to sit immediately after
-    /// the name label, so it tracked the name's length and the pills formed a
-    /// ragged diagonal down a list rather than a column - measured live at a
-    /// 64pt spread across five real Updates rows (and 50pt across the real
-    /// page's thirteen). A fixed name column is the only formulation that
-    /// pins the status column's x *regardless of what a given caller puts in
-    /// `trailingViews`*: measuring back from the trailing edge cannot work,
-    /// because one row's actions are "Check" and another's are "Check" plus
-    /// "Install in Bootstrap ->".
+    /// It is only a floor now. Audit §5.4 originally made this column a
+    /// *fixed* 42%-of-the-row slot (clamped to [200, 520]) because the status
+    /// pill sat immediately after the name label and therefore tracked the
+    /// name's length - a ragged diagonal, measured at a 64pt pill-x spread
+    /// over five real Updates rows. Pinning the column pinned the pill.
     ///
-    /// Proportional rather than a constant so a wider window still shows more
-    /// of a long detail line ("Installed 2.97.0 - could not reach Homebrew
-    /// for the latest version" is a real one), clamped so it degrades sanely
-    /// at either extreme. At the ~1056pt row this app's pages actually use it
-    /// resolves to ~443pt, comfortably more than the longest real detail.
-    static let nameColumnFraction: CGFloat = 0.42
+    /// That fix worked and then cost more than it bought, in two ways the
+    /// captain hit live:
+    ///
+    /// - **The detail line truncated flush against the pill.** With the
+    ///   column capped at 520pt (~443pt on this app's real ~1056pt rows), a
+    ///   longer-than-the-column detail - Updates' `firstmate` row, "main
+    ///   carries 24 commit(s) of its own and is 7 behind upstream/main; run
+    ///   without --check to merge up..." - ran out of room 8pt short of the
+    ///   "Update Available" pill and truncated there, with ~500pt of unused
+    ///   row to its right. Reads as the two fighting for the same space,
+    ///   which is exactly how it was reported ("the context and the upgrade
+    ///   available is conflicting... it's blocking the context").
+    /// - **A row with short details left a dead gap.** GitHub Sync's rows all
+    ///   read "In sync with kunchenguid/<repo>" - well under the column - so
+    ///   its pill sat at 42% with roughly half the row empty between it and
+    ///   the right-anchored chevron ("let us have the status to the right
+    ///   side").
+    ///
+    /// Both are the same defect: the status column was positioned from the
+    /// *leading* edge. It is now positioned from the **trailing** edge - see
+    /// `statusColumnTrailingReserve` - so the status + actions cluster is
+    /// right-anchored and the text column gets every remaining point,
+    /// truncating far from the pill instead of against it.
     static let nameColumnMinWidth: CGFloat = 200
-    static let nameColumnMaxWidth: CGFloat = 520
+
+    /// How much room is reserved to the right of the status column for a
+    /// row's action buttons - and therefore where the status pill's trailing
+    /// edge lands, measured back from the row's own trailing edge.
+    ///
+    /// **This is what keeps the pill a column** now that it is no longer
+    /// anchored to a fixed name column. §5.4's doc comment argued that
+    /// measuring back from the trailing edge "cannot work, because one row's
+    /// actions are 'Check' and another's are 'Check' plus 'Install in
+    /// Bootstrap ->'". That is true of measuring back from the actions
+    /// *themselves*; it is not true of measuring back from a reserved slot.
+    /// The pill's trailing edge sits at
+    /// `rowTrailing - max(statusColumnTrailingReserve, actualActionsWidth)`,
+    /// so every row whose actions fit the reserve shares one pill x exactly,
+    /// and only a genuinely wider-than-reserve action set shifts left.
+    ///
+    /// It measures from the status column's trailing edge to the chevron's
+    /// leading edge, so it has to cover the row's own inter-column spacing
+    /// (3 x `topRow.spacing` = 24pt) as well as the buttons themselves.
+    ///
+    /// Sized from the real buttons, measured rather than guessed (the probe
+    /// that set it prints them): "Check" 59pt, "Check" + "Update" 131pt,
+    /// "Sync now" 77pt, and GitHub Sync's in-sync rows 0pt - their button is
+    /// hidden, and a hidden arranged subview leaves an `NSStackView`'s layout
+    /// entirely. So the widest common set needs 24 + 131 = 155, and 160 gives
+    /// it a little air: every one of Updates' 13 real rows and every one of
+    /// GitHub Sync's 8 real rows then shares one pill x exactly (measured:
+    /// 0.0pt spread on both real pages).
+    ///
+    /// Two row shapes deliberately exceed it and shift left together -
+    /// Updates' rare `.notInstalled` row ("Check" + "Install in Bootstrap
+    /// ->", 208pt, so 232) and Vault's two-button rows. Reserving for *those*
+    /// would put every ordinary row's pill 250pt from the row's end, which is
+    /// re-creating the dead gap this constant exists to close. A row that is
+    /// wide because it genuinely carries more is the better thing to make
+    /// special.
+    static let statusColumnTrailingReserve: CGFloat = 160
+
+    /// The minimum air between the name/detail column and the status column.
+    ///
+    /// Without it the two are separated only by `topRow.spacing` (8pt), which
+    /// is what a *long* detail line collapses to the moment the row is narrow
+    /// enough that the text wants all of its space - measured at 6pt of
+    /// visible gap on a 1026pt row, i.e. the original "conflicting / blocking
+    /// the context" reading returning at small window sizes even with the
+    /// column right-anchored. `leadingGap` is a real spacer view, so the text
+    /// column's own required `label.width <= textStack.width` caps make the
+    /// detail truncate rather than close the gap.
+    static let statusColumnLeadingGap: CGFloat = 16
 
     /// Holds a nested `NSStackView` tight to its own content.
     ///
@@ -628,13 +689,15 @@ enum ToolRowLayout {
     /// are the primary content rather than a dense checklist (fm/grandline-
     /// vault-row-polish). Pair with `applyTheme(cardStyle:attentionHex:)`.
     ///
-    /// **Columns (audit §5.4).** The row is a real three-column table: a
-    /// fixed-width name column, then the status column (`statusViews` -
-    /// `views.pill` by default, plus any spinner/progress label that replaces
-    /// it while a check runs), then flexible space, then the actions
-    /// (`trailingViews`) and the chevron pinned to the trailing edge. The
-    /// name column is what makes the status column's x constant down a list;
-    /// see `nameColumnFraction`.
+    /// **Columns (audit §5.4, repositioned in `fm/grandline-visual-polish-
+    /// round2`).** The row is a real three-column table, measured from the
+    /// **trailing** edge: the name/detail column takes every point left over
+    /// and truncates within it, then flexible space, then the status column
+    /// (`statusViews` - `views.pill` by default, plus any spinner/progress
+    /// label that replaces it while a check runs), then the actions
+    /// (`trailingViews`) and the chevron pinned to the trailing edge. What
+    /// makes the status column a column is `statusColumnTrailingReserve`, not
+    /// a fixed name column - read that constant before touching any of this.
     static func build(
         _ views: Views,
         iconSymbol: String,
@@ -673,14 +736,16 @@ enum ToolRowLayout {
         //
         // `setClippingResistancePriority(.defaultLow, ...)` above is precisely
         // the priority of the stack's internal "I am at least as wide as my
-        // widest arranged subview" constraint - so with the required
-        // `<= nameColumnMaxWidth` cap below winning, the stack is allowed to be
-        // *narrower than its own content*, and an `NSStackView` does not clip.
-        // A long detail line therefore rendered at its full intrinsic width,
-        // straight across the status column: measured live before this fix,
-        // Updates' `firstmate` row ("main carries 24 commit(s)... push to
-        // origin") reached x=751 while the "Update Available" pill started at
-        // x=598 - a real 153pt overlap, and exactly the captain-reported bug.
+        // widest arranged subview" constraint - so whenever anything else
+        // wins (the 42% column cap this used to be paired with, or today the
+        // row's own trailing-anchored status column), the stack is allowed to
+        // be *narrower than its own content*, and an `NSStackView` does not
+        // clip. A long detail line therefore rendered at its full intrinsic
+        // width, straight across the status column: measured live before this
+        // fix, Updates' `firstmate` row ("main carries 24 commit(s)... push
+        // to origin") reached x=751 while the "Update Available" pill started
+        // at x=598 - a real 153pt overlap, and exactly the captain-reported
+        // bug at the time.
         //
         // The labels already carry `.byTruncatingTail`; it simply never fired,
         // because nothing had ever made their *frames* narrower than their
@@ -689,6 +754,25 @@ enum ToolRowLayout {
         for label in [views.nameLabel, views.detailLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.widthAnchor.constraint(lessThanOrEqualTo: textStack.widthAnchor).isActive = true
+            // **And drop their compression resistance to match.**
+            //
+            // An `NSTextField`'s default horizontal compression resistance is
+            // 750 - above `NSLayoutPriorityWindowSizeStayPut` (500) - so a
+            // label whose text is genuinely long imposes that text's full
+            // intrinsic width as a *floor* on its row, and therefore on the
+            // window. The 42% column this replaced hid that: its required
+            // `textStack.width <= 520` cap outranked the labels, so they were
+            // always free to truncate. Removing the cap without this line
+            // handed the floor straight to the window - measured, on the real
+            // `firstmate` detail string ("main carries 24 commit(s)..."): a
+            // window asked for 1064pt came back 1103pt wide, with the row at
+            // 1055 instead of the 1016 its container offered.
+            //
+            // 250 puts them at the same priority as `textStack`'s own
+            // clipping resistance, so the whole text column compresses
+            // together and `.byTruncatingTail` does what it is there for.
+            // `checkRowDoesNotResizeWindow` covers this case explicitly.
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
 
         // The status column: the pill, plus whatever replaces it while a
@@ -718,16 +802,61 @@ enum ToolRowLayout {
             views.trailingStack.addArrangedSubview(v)
         }
 
-        // The one view in the row with no width of its own, so it is the one
-        // `topRow`'s `.fill` distribution can stretch - which is what keeps
-        // the actions and the chevron pinned to the trailing edge while the
-        // status column stays put in its own column.
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The gap between the text column and the status column - and the one
+        // view whose priorities decide which of the two absorbs the row's
+        // slack, i.e. whether the status column ends up on the left or the
+        // right of the row.
+        //
+        // **`setContentHuggingPriority` on this view is a no-op, and taking
+        // it at face value is what made the first attempt at this fix render
+        // exactly like the bug it was fixing.** A plain `NSView()` has no
+        // intrinsic content size (`NSView.noIntrinsicMetric` on both axes),
+        // and a content-priority API only ever constrains a view *against*
+        // its intrinsic size - so there is nothing for the priority to
+        // prioritise. This is the same trap as AGENTS.md gotcha (12), which
+        // records it for `NSStackView`; it is true of any view with no
+        // intrinsic metric, a bare spacer very much included. Measured: with
+        // the fixed 42% name-column constraint removed and this spacer left
+        // at `.defaultHigh` *content* hugging, the spacer happily absorbed
+        // 1024pt of a 1352pt row while `textStack` sat at its 200pt floor and
+        // the pill stayed at x=254 - the pre-fix geometry, to the point.
+        //
+        // A real width constraint is what actually expresses "stay collapsed
+        // unless something makes you grow": `== 0` at 499, which outranks
+        // `textStack`'s own `.defaultLow` (250) stack-level hugging, so the
+        // solver would rather stretch the text column than open this gap. The
+        // required `statusColumnTrailingReserve` inequality below still beats
+        // it, which is how the reserve gets opened when a row's actions are
+        // narrower than it.
+        //
+        // 499, not `.defaultHigh` (750), for the reason spelled out on that
+        // reserve constraint: nothing horizontal in this row belongs above
+        // `NSLayoutPriorityWindowSizeStayPut` (500) unless it is *meant* to
+        // drive the window's size, and `checkRowDoesNotResizeWindow` fails
+        // the build on any that is.
+        //
+        // There are **two** of them, and both are needed. The reserve below
+        // is expressed as "the status column's trailing edge sits at least
+        // `statusColumnTrailingReserve` short of the chevron", and the only
+        // way a solver can honour that is by widening something *after* the
+        // status column - so `reserveGap` has to exist. And the guaranteed
+        // air in front of the status column has to come from a view too: the
+        // stack's own 8pt spacing is not adjustable, and a
+        // `textStack.trailing <= statusColumn.leading - 16` constraint is
+        // simply unsatisfiable against it (the stack pins that distance at
+        // exactly its spacing), so it would break rather than hold.
+        let leadingGap = NSView()
+        let reserveGap = NSView()
+        var gapConstraints: [NSLayoutConstraint] = []
+        for (gap, minimum) in [(leadingGap, statusColumnLeadingGap), (reserveGap, 0)] {
+            gap.translatesAutoresizingMaskIntoConstraints = false
+            let collapse = gap.widthAnchor.constraint(equalToConstant: minimum)
+            collapse.priority = NSLayoutConstraint.Priority(rawValue: 499)
+            gapConstraints += [gap.widthAnchor.constraint(greaterThanOrEqualToConstant: minimum), collapse]
+        }
+        NSLayoutConstraint.activate(gapConstraints)
 
-        var topRowViews: [NSView] = [views.iconTile, textStack, statusColumn, spacer, views.trailingStack]
+        var topRowViews: [NSView] = [views.iconTile, textStack, leadingGap, statusColumn, reserveGap, views.trailingStack]
         if showDetails {
             views.detailsButton.title = ""
             views.detailsButton.isBordered = false
@@ -755,38 +884,53 @@ enum ToolRowLayout {
         topRow.distribution = .fill
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        // The fixed name column - the whole point of §5.4's fix. Proportional
-        // rather than a constant so a wider window still shows more of a long
-        // detail line, clamped at both ends, and above the surrounding stack
-        // priorities so a genuinely too-narrow row breaks *this* rather than
-        // overflowing.
+        // **The status column, positioned from the trailing edge.**
         //
-        // **It must stay below `NSLayoutPriorityWindowSizeStayPut` (500).**
-        // This constraint used to sit at `.defaultHigh + 1` (751), and a
-        // window only holds its own size at priority 500 - so any content
-        // constraint above that can *resize the window*. Paired with the
-        // required `<= nameColumnMaxWidth` below, it did exactly that: it
-        // capped the whole app window at
+        // This replaces §5.4's `textStack.width == 42% of the row` (clamped
+        // to [200, 520]) - see `nameColumnMinWidth` for the two live-reported
+        // defects that fixed-from-the-leading-edge column caused, and
+        // `statusColumnTrailingReserve` for why measuring back from a
+        // *reserved slot* keeps the pill a column when measuring back from
+        // the actions themselves could not.
+        //
+        // `<=` is the whole trick: the pill may sit further left than the
+        // reserve (a row whose actions genuinely need more room) but never
+        // further right. Because `reserveGap` above prefers its own minimum
+        // at 499 - which outranks `textStack`'s 250 stack-level hugging - the
+        // solver keeps it collapsed and lets `textStack` take the slack, so
+        // in the common case this inequality is tight and every row's pill
+        // lands on the same x.
+        //
+        // Required priority is safe here, and deliberately chosen over the
+        // 499 the old constraint needed. A window only holds its own size at
+        // `NSLayoutPriorityWindowSizeStayPut` (500), so a content constraint
+        // above that can resize the window - which is exactly what the old
+        // pairing did: `.defaultHigh + 1` (751) on the 42% multiplier plus a
+        // *required* `<= 520` cap capped the whole app window at
         // `520 / 0.42` + the row, card and page insets = **1410pt**, on every
-        // page that carries these rows (Updates, Bootstrap, Automation,
-        // GitHub Sync, Vault). Measured live on a 1512x982 screen: the window
-        // refused to grow past 1410 wide, `isZoomed` reported `true` at that
-        // size, and even genuine macOS full screen rendered 1410x949 centred
-        // with a black bar down each side - which is the captain's
-        // `01-live-window-not-fullscreen.png` exactly. Replacing the content
-        // with a plain `NSView` lifted the cap; so did removing these pages.
+        // page carrying these rows. Measured live on a 1512x982 screen: the
+        // window refused to grow past 1410, reported `isZoomed == true`
+        // there, and even genuine full screen rendered 1410pt wide, centred,
+        // with a black bar down each side.
         //
-        // 499 keeps every relationship this constraint needs (it still beats
-        // the spacer's and the text stack's `.defaultLow` 250, so the name
-        // column still wins the row's slack) and can no longer reach out and
-        // resize the window.
-        let nameWidth = textStack.widthAnchor.constraint(equalTo: topRow.widthAnchor,
-                                                         multiplier: nameColumnFraction)
-        nameWidth.priority = NSLayoutConstraint.Priority(rawValue: 499)
+        // That was a *maximum* on the content's width, so it propagated
+        // outward as a maximum on the window's. This is a `<=` on a trailing
+        // *position* with a flexible gap view absorbing it, and its only
+        // outward effect is on the row's **minimum** width (icon + status +
+        // reserve + chevron, ~300pt) - a floor no real window is anywhere
+        // near, and a floor can never stop a window growing.
+        // `checkRowDoesNotResizeWindow` proves that empirically rather than
+        // taking this paragraph's word for it.
+        let statusColumnRightEdge = showDetails ? views.detailsButton.leadingAnchor : topRow.trailingAnchor
+        let nameFloor = textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: nameColumnMinWidth)
+        // Below stay-put as well, and below the required reserve, so a row
+        // narrower than icon + 200 + status + reserve degrades by truncating
+        // the text rather than by breaking the column it is meant to protect.
+        nameFloor.priority = NSLayoutConstraint.Priority(rawValue: 499)
         NSLayoutConstraint.activate([
-            nameWidth,
-            textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: nameColumnMinWidth),
-            textStack.widthAnchor.constraint(lessThanOrEqualToConstant: nameColumnMaxWidth),
+            nameFloor,
+            statusColumn.trailingAnchor.constraint(lessThanOrEqualTo: statusColumnRightEdge,
+                                                   constant: -statusColumnTrailingReserve),
         ])
 
         var columnViews: [NSView] = [topRow]
