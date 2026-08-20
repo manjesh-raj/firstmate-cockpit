@@ -101,31 +101,47 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: Chrome views
 
-    private let tabBar = NSView()
+    /// The shared page toolbar (Phase 7, audit §3.2's "Page toolbars"). This
+    /// bar used to be a hand-rolled 42pt `NSView` with its own separator, and
+    /// Tools' own comment said it was a copy of this one - `HelmPageToolbar`
+    /// is now the single definition of the height, fill, hairline and insets
+    /// for all three pages that have such a bar.
+    private let tabBar = HelmPageToolbar()
     private let content = NSView()
     private let tabsStack = NSStackView()
-    private var plusButton = NSButton()
-    private var themeButton = NSButton()
-    private var findButton = NSButton()
-    private var zoomInButton = NSButton()
-    private var zoomOutButton = NSButton()
-    private var logButton = NSButton()
+    /// Every toolbar glyph is a bordered icon square now
+    /// (`HelmPageToolbar.iconButton`, i.e. `HelmButton(.secondary)`), not a
+    /// bare borderless image button. That was the audit's "two icon-button
+    /// languages, 40pt apart" finding: the app top bar renders its icons as
+    /// bordered squares, and this bar - one bar below it - rendered up to
+    /// eleven chrome-less glyphs at identical weight.
+    ///
+    /// Typed `HelmButton` rather than `NSButton` specifically so the two
+    /// state-coloured glyphs below can set `tint` (see `updateLogButton` /
+    /// `updateBlockViewControls`). `HelmButton.restyle()` owns
+    /// `contentTintColor`, so assigning that directly would be silently
+    /// overwritten on the next theme change - `tint` is the seam.
+    private var plusButton: HelmButton!
+    private var themeButton: HelmButton!
+    private var findButton: HelmButton!
+    private var zoomInButton: HelmButton!
+    private var zoomOutButton: HelmButton!
+    private var logButton: HelmButton!
     /// `fm/cockpit-block-view-stage0` - only ever shown for the one opted-in
     /// host's tab, see `updateBlockViewControls`.
-    private var blockViewToggleButton = NSButton()
-    private var blockViewRefreshButton = NSButton()
+    private var blockViewToggleButton: HelmButton!
+    private var blockViewRefreshButton: HelmButton!
     /// Phase 3 of "Knowledge and speed" (`fm/grandline-console-command-
     /// composer`) - only ever shown for a plain `.shell` tab that isn't a
     /// one-shot command, see `updateComposeControls`.
-    private var composeButton = NSButton()
+    private var composeButton: HelmButton!
     private let composer = ConsoleComposerController()
     /// `fm/grandline-herdr-utilization-panel` - only ever shown for a
     /// Herdr-backed `.mirror` tab, the opposite gating of `composeButton`
     /// above (see `updateUtilizationControls`), so the two never fight for
     /// the same toolbar slot on the same tab.
-    private var utilizationButton = NSButton()
+    private var utilizationButton: HelmButton!
     private let quotaUsage = QuotaUsageController()
-    private let separator = NSView()
 
     // MARK: SRE Lead (dedicated host pages only - see `SRELead.swift`)
 
@@ -212,7 +228,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             tabBar.topAnchor.constraint(equalTo: root.topAnchor),
-            tabBar.heightAnchor.constraint(equalToConstant: 42),
 
             // `content` (and therefore every tab's terminal inside it,
             // including the primary interactive tab SRE Lead's bridge
@@ -287,25 +302,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     // MARK: Building the top bar
 
     private func buildTabBar() {
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.wantsLayer = true
         view.addSubview(tabBar)
-
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.wantsLayer = true
-        tabBar.addSubview(separator)
-        NSLayoutConstraint.activate([
-            separator.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1),
-        ])
 
         tabsStack.orientation = .horizontal
         tabsStack.spacing = 4
         tabsStack.alignment = .centerY
         tabsStack.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabsStack)
+        tabBar.setLeading(tabsStack)
 
         plusButton = makeIconButton(symbol: "plus", tooltip: "New Shell Tab (⌘T)", action: #selector(newShellTab))
 
@@ -347,38 +350,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         toolViews.append(composeButton)
         toolViews.append(utilizationButton)
         toolViews.append(logButton)
-        let tools = NSStackView(views: toolViews)
-        tools.orientation = .horizontal
-        tools.spacing = 2
-        tools.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tools)
-
-        NSLayoutConstraint.activate([
-            tabsStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 12),
-            tabsStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
-            tabsStack.trailingAnchor.constraint(lessThanOrEqualTo: tools.leadingAnchor, constant: -8),
-            tools.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor, constant: -10),
-            tools.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
-        ])
+        // `setTrailing` also installs the clearance inequality that keeps a
+        // long tab strip truncating rather than running under the actions -
+        // the constraint this method used to activate by hand.
+        tabBar.setTrailing(HelmPageToolbar.group(toolViews))
     }
 
-    private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> NSButton {
-        let b = NSButton(title: "", target: self, action: action)
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 6
-        b.toolTip = tooltip
-        b.imageScaling = .scaleProportionallyDown
-        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip) {
-            b.image = img
-        } else {
-            b.title = symbol
-        }
-        NSLayoutConstraint.activate([
-            b.widthAnchor.constraint(equalToConstant: 30),
-            b.heightAnchor.constraint(equalToConstant: 26),
-        ])
-        return b
+    private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> HelmButton {
+        HelmPageToolbar.iconButton(symbol: symbol, tooltip: tooltip, target: self, action: action)
     }
 
     /// Re-lay the tab bar: one chip per tab, then the "+" button.
@@ -1509,14 +1488,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         blockViewToggleButton.isHidden = !available
         blockViewRefreshButton.isHidden = !available || !blockViewShowing
         guard available else { return }
-        blockViewToggleButton.image = NSImage(
-            systemSymbolName: blockViewShowing ? "rectangle.grid.1x2.fill" : "rectangle.grid.1x2",
-            accessibilityDescription: "Block View"
-        )
-        let accent = HelmTheme.nsColor(theme.accentHex)
-        blockViewToggleButton.contentTintColor = blockViewShowing ? accent : HelmTheme.nsColor(theme.chromeInkHex)
+        // `symbolName`, not `image`: `HelmButton` builds its glyph from that
+        // property (at the variant's own point size / weight), so a directly
+        // assigned `image` would be replaced the next time anything triggers
+        // `rebuildImage()`.
+        blockViewToggleButton.symbolName = blockViewShowing ? "rectangle.grid.1x2.fill" : "rectangle.grid.1x2"
+        // `tint`, not `contentTintColor`: `HelmButton` owns the latter and
+        // re-derives it on every theme change, so a direct assignment here
+        // would survive exactly until the next theme switch. `nil` means "no
+        // emphasis", i.e. the variant's own label colour.
+        blockViewToggleButton.tint = blockViewShowing ? .accent : nil
         blockViewToggleButton.toolTip = blockViewShowing ? "Show Raw Scrollback" : "Show Parsed Blocks (Stage 0)"
-        blockViewRefreshButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
         blockViewRefreshButton.toolTip = "Refresh Blocks"
     }
 
@@ -1536,15 +1518,15 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
         let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
+        let ink = HelmTheme.nsColor(theme.chromeInkHex)
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        tabBar.layer?.backgroundColor = chromeBg.cgColor
-        separator.layer?.backgroundColor = line.cgColor
+        // The bar's fill and hairline, and every glyph in it, are the
+        // component's / `HelmButton`'s own business now - this page no longer
+        // keeps a toolbar-button registry to re-tint (`ThemeManager.swift`'s
+        // checklist item 4).
+        tabBar.applyTheme(theme)
         content.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
 
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
-        for b in [plusButton, findButton, zoomInButton, zoomOutButton, themeButton] {
-            b.contentTintColor = ink
-        }
         styleChips()
         updateLogButton()
         updateBlockViewControls()
@@ -1658,11 +1640,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// filled and red while recording, outline and theme-tinted otherwise.
     private func updateLogButton() {
         let isLogging = currentTab?.terminal.isLogging ?? false
-        logButton.image = NSImage(
-            systemSymbolName: isLogging ? "record.circle.fill" : "record.circle",
-            accessibilityDescription: "Session Log"
-        )
-        logButton.contentTintColor = isLogging ? .systemRed : HelmTheme.nsColor(theme.chromeInkHex)
+        logButton.symbolName = isLogging ? "record.circle.fill" : "record.circle"
+        // `.critical` rather than a literal `.systemRed`: same "this is
+        // recording" signal, now the active theme's own red, routed through
+        // `HelmContrast` by `HelmButton` so it stays legible on the toolbar
+        // fill in all 12 palettes. (A rail *badge* deliberately keeps a fixed
+        // system red - see `IconRailController.attachBadge` - but that is an
+        // OS-convention alert pill, not a themed control's label.)
+        logButton.tint = isLogging ? .critical : nil
         logButton.toolTip = isLogging ? "Stop Session Log (⌘⇧L)" : "Log This Session (⌘⇧L)"
     }
 

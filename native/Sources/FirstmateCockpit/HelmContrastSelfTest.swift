@@ -67,6 +67,9 @@ enum HelmContrastSelfTest {
         checkSegmentedTabsRecipe(&ok)
         checkFieldRecipe(&ok)
         checkNoReDerivedFieldChrome(&ok)
+        checkPageToolbarRecipe(&ok)
+        checkResponsiveGrid(&ok)
+        checkPageTitleVoice(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -784,6 +787,215 @@ enum HelmContrastSelfTest {
         } else {
             for o in offenders { print("  FAIL \(o)") }
             print("  \(offenders.count) re-derived field-chrome site(s) - use HelmField instead")
+            ok = false
+        }
+    }
+
+    // MARK: 14. The one page toolbar (audit §3.2 "Page toolbars", Phase 7)
+
+    /// Console, Docs and Tools each built their own bar (42 / 44 / 42pt, plus
+    /// a second 40pt one inside Docs' Playbook tab) and Console's glyphs were
+    /// bare borderless images while the top bar 40pt above rendered bordered
+    /// squares. This asserts the shared component resolves to one height, one
+    /// fill, one hairline per theme, and that its glyph really is the
+    /// bordered `.secondary` square rather than a borderless one - the exact
+    /// thing the audit measured as "two icon-button languages".
+    private static func checkPageToolbarRecipe(_ ok: inout Bool) {
+        print("\n-- page toolbar (one height / fill / hairline / bordered square) --")
+
+        // Shape first, and it is theme-independent: a square at the shared
+        // side length, `HelmButton`'s own control radius, and - the part that
+        // matters - a variant that paints a border.
+        let glyph = HelmPageToolbar.iconButton(symbol: "magnifyingglass", tooltip: "t", target: nil, action: nil)
+        // In a real superview, laid out for real - a bare view with no
+        // ancestor resolves only some of its own constraints.
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 60))
+        host.addSubview(glyph)
+        NSLayoutConstraint.activate([
+            glyph.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            glyph.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+        ])
+        host.layoutSubtreeIfNeeded()
+        if glyph.variant != .secondary {
+            print("  FAIL toolbar glyph variant is \(glyph.variant), not .secondary (a borderless glyph is the audit's finding)")
+            ok = false
+        }
+        // A 1pt tolerance, and the reason is measured rather than slack: the
+        // frame lands on exactly 28.0 x 28.0 when the button is inside a real
+        // `NSWindow` (verified with a render probe) and 28.0 x 27.5 in this
+        // windowless host, because `NSButton.alignmentRectInsets` resolves
+        // slightly differently without one. What this check is actually
+        // guarding is the 5.5pt error the naive version had - a plain
+        // `heightAnchor == 28` renders a **33.5pt** tall box, since Auto Layout
+        // sizes the alignment rect while the layer paints the frame (see
+        // `HelmPageToolbar.iconButton`).
+        let side = HelmPageToolbar.iconButtonSide
+        if abs(glyph.frame.width - side) > 1 || abs(glyph.frame.height - side) > 1 {
+            print("  FAIL toolbar glyph is \(glyph.frame.size), not a \(side)pt square")
+            ok = false
+        }
+        if abs((glyph.layer?.cornerRadius ?? -1) - HelmMetrics.rControl) > 0.01 {
+            print("  FAIL toolbar glyph radius \(glyph.layer?.cornerRadius ?? -1), want \(HelmMetrics.rControl)")
+            ok = false
+        }
+
+        let bar = HelmPageToolbar()
+        bar.setLeading(NSView())
+        bar.setTrailing(HelmPageToolbar.group([
+            HelmPageToolbar.iconButton(symbol: "plus", tooltip: "t", target: nil, action: nil),
+        ]))
+        // A real width, so the two slots resolve to real frames.
+        bar.frame = NSRect(x: 0, y: 0, width: 900, height: HelmPageToolbar.height)
+
+        for theme in HelmTheme.allThemes {
+            bar.applyTheme(theme)
+            let g = bar.debugGeometry()
+            var problems: [String] = []
+            if abs(g.height - HelmPageToolbar.height) > 0.01 { problems.append("height \(g.height)") }
+            if let fill = g.fill {
+                if HelmContrast.ratio(fill, HelmTheme.nsColor(theme.chromeBackgroundHex)) > 1.01 {
+                    problems.append("fill is not chromeBackgroundHex")
+                }
+            } else {
+                problems.append("no fill (a bar with no explicit background paints nothing - gotcha #8)")
+            }
+            if let sep = g.separatorFill {
+                if HelmContrast.ratio(sep, HelmTheme.nsColor(theme.chromeLineHex)) > 1.01 {
+                    problems.append("hairline is not chromeLineHex")
+                }
+            } else {
+                problems.append("no hairline")
+            }
+            if abs(g.leadingMinX - HelmPageToolbar.leadingInset) > 0.51 {
+                problems.append("leading inset \(g.leadingMinX)")
+            }
+            if abs((bar.frame.width - g.trailingMaxX) - HelmPageToolbar.trailingInset) > 0.51 {
+                problems.append("trailing inset \(bar.frame.width - g.trailingMaxX)")
+            }
+            if !problems.isEmpty {
+                print("  FAIL \(theme.id): \(problems.joined(separator: ", "))")
+                ok = false
+            }
+        }
+        print("  OK - \(HelmPageToolbar.height)pt, chromeBackground fill + chromeLine hairline in all \(HelmTheme.allThemes.count) themes, \(HelmPageToolbar.iconButtonSide)pt bordered .secondary squares")
+    }
+
+    // MARK: 15. The one responsive grid (audit §4.8, Phase 7)
+
+    /// Settings' theme grid used a fixed 4-column chunk, which is what left
+    /// the audit's ragged 4/2/4/2 last row; Tools and Docs each had their own
+    /// copy of the real math. This asserts the shared helper's two guarantees
+    /// - column count tracks real width, and a partial last row is padded to a
+    /// full column count so `.fillEqually` divides by the same number - hold
+    /// for a spread of widths and item counts, including the awkward ones.
+    private static func checkResponsiveGrid(_ ok: inout Bool) {
+        print("\n-- responsive grid (columns from real width, partial row padded) --")
+        let minWidth: CGFloat = 300
+        let spacing = HelmResponsiveGrid.spacing
+
+        // Column count must be monotonic in width and never below 1, including
+        // for a zero width (the pre-first-layout case, which would otherwise
+        // collapse a whole grid to one column permanently).
+        var previous = 0
+        for width in [CGFloat(0), 200, 320, 600, 900, 1120, 1500, 2400] {
+            let columns = HelmResponsiveGrid.columns(containerWidth: width, minItemWidth: minWidth)
+            if columns < 1 {
+                print("  FAIL width \(width) -> \(columns) columns")
+                ok = false
+            }
+            // Width 0 falls back to a nominal container, so it is exempt from
+            // the monotonic check.
+            if width > 0 {
+                if columns < previous {
+                    print("  FAIL width \(width) gave fewer columns (\(columns)) than a narrower one (\(previous))")
+                    ok = false
+                }
+                previous = columns
+            }
+            let itemWidth = HelmResponsiveGrid.itemWidth(containerWidth: width, columns: columns)
+            // Cards plus gaps must fill the container exactly - the "cards
+            // hug the leading edge and waste the rest" bug in reverse.
+            let container = width > 0 ? width : HelmResponsiveGrid.fallbackContainerWidth
+            let total = itemWidth * CGFloat(columns) + spacing * CGFloat(columns - 1)
+            if abs(total - container) > 0.01 {
+                print("  FAIL width \(width): \(columns) x \(itemWidth) + gaps = \(total), want \(container)")
+                ok = false
+            }
+            if columns > 1 && itemWidth < minWidth - 0.01 {
+                print("  FAIL width \(width): \(columns) columns forces \(itemWidth) < minimum \(minWidth)")
+                ok = false
+            }
+        }
+
+        // Every row - full or partial - must end up with the same number of
+        // arranged subviews, so a lone leftover card is never stretched.
+        for count in 1...13 {
+            let rows = HelmResponsiveGrid.rows(Array(0..<count),
+                                              containerWidth: 1120,
+                                              minItemWidth: minWidth) { _, _ in NSView() }
+            let expectedColumns = HelmResponsiveGrid.columns(containerWidth: 1120, minItemWidth: minWidth)
+            let slotCounts = Set(rows.map { $0.arrangedSubviews.count })
+            if rows.isEmpty || slotCounts != [expectedColumns] {
+                print("  FAIL \(count) items -> row slot counts \(slotCounts.sorted()), want every row at \(expectedColumns)")
+                ok = false
+            }
+            if let first = rows.first, first.distribution != .fillEqually {
+                print("  FAIL \(count) items -> row distribution \(first.distribution)")
+                ok = false
+            }
+        }
+        print("  OK - columns track width, rows fill the container, every row padded to a full column count")
+    }
+
+    // MARK: 16. One page-title voice, at one size (audit §6.2, Phase 7)
+
+    /// The captain's registered decision is "promote the serif to the app-wide
+    /// page-title voice, at a single size (22)". The audit's finding was that
+    /// the serif existed at **four** sizes (15 / 17 / 19 / 22 / 23 across
+    /// Shift and the Command Library) with no rule, so the guarantee worth
+    /// enforcing is not "serif is used" but "`ShiftFont.serif` is reachable
+    /// only through `HelmType.pageTitle`" - which is what keeps a fifth size
+    /// from appearing.
+    private static func checkPageTitleVoice(_ ok: inout Bool) {
+        print("\n-- page-title voice (serif only via HelmType.pageTitle, one size) --")
+
+        for voice in [HelmType.Voice.sans, .serif] {
+            let font = HelmType.pageTitle(voice)
+            if abs(font.pointSize - 22) > 0.01 {
+                print("  FAIL pageTitle(\(voice)) is \(font.pointSize)pt, want 22")
+                ok = false
+            }
+        }
+        if HelmType.pageTitle(.serif).fontName == HelmType.pageTitle(.sans).fontName {
+            print("  FAIL the serif and sans voices resolve to the same face (\(HelmType.pageTitle(.serif).fontName))")
+            ok = false
+        }
+
+        let sourcesDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil),
+              files.contains(where: { $0.lastPathComponent == "HelmTheme.swift" }) else {
+            print("  SKIP source guard - sources not present next to this binary")
+            return
+        }
+        var offenders: [String] = []
+        for file in files where file.pathExtension == "swift" {
+            // `HelmDesignSystem.swift` holds the one call (inside
+            // `HelmType.pageTitle`); `ShiftTypography.swift` declares
+            // `ShiftFont.serif` itself; this file names it in prose.
+            if ["HelmDesignSystem.swift", "ShiftTypography.swift", "HelmContrastSelfTest.swift"]
+                .contains(file.lastPathComponent) { continue }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+                if line.contains("ShiftFont.serif(") {
+                    offenders.append("\(file.lastPathComponent):\(n + 1)")
+                }
+            }
+        }
+        if offenders.isEmpty {
+            print("  OK - serif reachable only via HelmType.pageTitle(.serif), at 22pt")
+        } else {
+            for o in offenders { print("  FAIL \(o) calls ShiftFont.serif directly - use HelmType.pageTitle(.serif) or HelmType.sectionTitle()") }
             ok = false
         }
     }

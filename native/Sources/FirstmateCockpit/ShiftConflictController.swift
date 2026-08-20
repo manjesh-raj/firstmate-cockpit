@@ -56,7 +56,7 @@ final class ShiftConflictController: NSViewController {
         }
 
         let title = NSTextField(labelWithString: "Sync conflict")
-        title.font = ShiftFont.serif(19)
+        title.font = HelmType.sectionTitle()
         title.textColor = HelmTheme.nsColor(theme.chromeInkHex)
 
         let subtitleText: String
@@ -155,7 +155,7 @@ final class ShiftConflictController: NSViewController {
     private func buildAutoMergeSection(theme: HelmTheme) -> NSView {
         let panel = HelmCard()
         let header = NSTextField(labelWithString: "Merged automatically (\(conflictSet.autoMergeNotes.count))")
-        header.font = ShiftFont.serif(14)
+        header.font = HelmType.sectionTitle()
         header.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         panel.setHeader(header)
 
@@ -182,7 +182,7 @@ final class ShiftConflictController: NSViewController {
     ) -> NSView {
         let panel = HelmCard()
         let header = NSTextField(labelWithString: "\(title) (\(conflicts.count))")
-        header.font = ShiftFont.serif(14)
+        header.font = HelmType.sectionTitle()
         header.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         panel.setHeader(header)
 

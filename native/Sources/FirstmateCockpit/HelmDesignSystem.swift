@@ -85,19 +85,39 @@ enum HelmMetrics {
 enum HelmType {
     /// The typographic voice a title is set in.
     ///
-    /// `serif` (Georgia) exists in the Shift family only today, at four
-    /// different sizes. Whether to promote it to the one app-wide page-title
-    /// voice or retire it is a registered captain decision
-    /// (`grandline-full-ui-audit-decision-page-title-voice`) and deliberately
-    /// **not** settled here - this enum only gives that decision somewhere to
-    /// land. Until it is answered, `.sans` is what non-Shift pages pass.
+    /// The registered captain decision
+    /// (`grandline-full-ui-audit-decision-page-title-voice`) is **settled**,
+    /// and it went the way §6.2 recommended: **promote** `serif` (Georgia) to
+    /// the app-wide page-title voice rather than retire it for all-sans. It is
+    /// the app's only real typographic personality, the captain had already
+    /// approved it for Shift, and it costs one line per hero title.
+    ///
+    /// So `.serif` is what a destination's **hero title** passes - Phase 7
+    /// applied it at exactly one size (22, see `pageTitle`) in place of the
+    /// four Shift-era sizes (15 / 19 / 22 / 23) the audit measured.
+    ///
+    /// `.sans` is not dead, and is deliberately still the default: it is the
+    /// voice for display type that is *not* a page hero - a sheet's heading
+    /// (`HelmFormSheet` sets its own at `sectionTitle()`), and the task
+    /// editor's lead **input** field (`HelmTextField(.lead)`), which is text
+    /// the captain types rather than a title the app displays.
+    ///
+    /// Do not add a third case or a second size. A page that wants a smaller
+    /// title wants `sectionTitle()`.
     enum Voice {
         case sans
         case serif
     }
 
-    /// A destination's own hero title. 22pt in both voices, which is the size
-    /// Overview and Review already use.
+    /// A destination's own hero title. One size, 22pt, in both voices - the
+    /// size Overview and Review already used, and the one Phase 7 collapsed
+    /// Shift's four onto.
+    ///
+    /// A hero title is for a page whose title carries **information**: a
+    /// greeting ("Good afternoon"), or the name of the record being viewed (a
+    /// project, a command). It is *not* for restating the destination's own
+    /// name - the top bar already shows that, which is why Phase 7 removed
+    /// Review's literal "Review" label rather than restyling it.
     static func pageTitle(_ voice: Voice = .sans) -> NSFont {
         switch voice {
         case .sans: return .systemFont(ofSize: 22, weight: .semibold)
@@ -1986,5 +2006,314 @@ final class HelmSegmentedTabs: NSView {
                         activeInk: active?.label.textColor,
                         inactiveInk: inactive?.label.textColor,
                         labelPointSizes: pills.compactMap { $0.label.font?.pointSize })
+    }
+}
+
+// MARK: - HelmPageToolbar
+
+/// The app's one **page toolbar**: the horizontal chrome strip a destination
+/// puts directly under the app top bar, carrying that page's tab strip (or
+/// sub-navigation) on the leading side and its actions on the trailing side.
+///
+/// Phase 7, audit §3.2's "Page toolbars" and §6.4's Console row. What was
+/// wrong is worth stating precisely, because it is not "these bars looked
+/// slightly different":
+///
+/// - **Two icon-button languages, 40pt apart.** The app top bar renders its
+///   icons as bordered 34x34 squares (`TopBarController`: `isBordered = false`
+///   + a `chromeBackgroundHex` layer fill + a 1pt `chromeLineHex` border).
+///   Console's toolbar, one bar below it, rendered *six to eleven* bare
+///   borderless glyphs at identical visual weight with no chrome at all - so
+///   the same "icon button" idea read two completely different ways within
+///   40 vertical points.
+/// - **No shared slot, so three heights.** Console built its own 42pt bar,
+///   Tools its own 42pt bar (copied from Console by hand - its own comment
+///   said "mirrors ConsoleController.buildTabBar"), Docs its own 44pt bar,
+///   and Docs then stacked a *second* 40pt bar inside its Playbook tab.
+///   Nothing enforced any of those numbers matching.
+///
+/// This type is that missing slot. It owns the height, the fill, the bottom
+/// hairline, the two content insets, and - via `iconButton(...)` - the one
+/// toolbar-glyph recipe, so a page supplies only *what* goes in it.
+///
+/// **It themes itself**, like `HelmCard` and `HelmButton`: a page calls
+/// `applyTheme(_:)` from its own `ThemeManager.observe` closure and nothing
+/// else. `iconButton`'s buttons are `HelmButton`s, which already observe the
+/// theme individually, so a page never re-tints a toolbar glyph either.
+final class HelmPageToolbar: NSView {
+
+    /// The one page-toolbar height. 44pt - Docs' own value, and the roomiest
+    /// of the three, so nothing that fitted before stops fitting: it clears a
+    /// 28pt `TabChipView` / `iconButton` with 8pt of breathing room above and
+    /// below.
+    static let height: CGFloat = 44
+
+    /// The leading inset. `HelmMetrics.s3`, which is what all three bars
+    /// already used for their tab strip.
+    static let leadingInset: CGFloat = HelmMetrics.s3
+    /// The trailing inset, slightly tighter than the leading one so a bordered
+    /// icon square's own chrome doesn't read as floating away from the edge.
+    static let trailingInset: CGFloat = 10
+
+    /// The bordered icon square's side. Matches `TabChipView`'s own 28pt
+    /// height so a toolbar reads as one row of controls on one baseline,
+    /// rather than the top bar's 34pt (which would leave only 5pt of air in a
+    /// 44pt bar, and would tower over the tab chips beside it). Same visual
+    /// *language* as the top bar - bordered, filled, rounded square - at the
+    /// density a page toolbar needs.
+    static let iconButtonSide: CGFloat = 28
+
+    /// The one toolbar-glyph recipe: a bordered icon square, in the app's own
+    /// button component rather than a second hand-rolled chrome.
+    ///
+    /// `.secondary` is deliberate. It is `HelmButton`'s "bordered,
+    /// theme-derived" variant - the one that replaced the stock bezel in Phase
+    /// 2 - so a toolbar glyph is now painted by exactly the same code as every
+    /// other bordered control in the app, and picks up its hover/press states
+    /// for free. `.quiet` (borderless) is what the audit was complaining
+    /// about, so it is specifically *not* the default here.
+    ///
+    /// A caller that needs a state colour (Console's record-red while logging,
+    /// its accent while Block View is showing) sets `HelmButton.tint`, never
+    /// `contentTintColor` - `HelmButton.restyle()` owns that property and will
+    /// overwrite it on the next theme change.
+    static func iconButton(symbol: String,
+                           tooltip: String,
+                           target: AnyObject?,
+                           action: Selector?) -> HelmButton {
+        let b = HelmButton(symbol: symbol, variant: .secondary, target: target, action: action)
+        b.toolTip = tooltip
+        b.translatesAutoresizingMaskIntoConstraints = false
+
+        // **Auto Layout constrains an `NSButton`'s *alignment rect*, not its
+        // frame** - and `NSButton.alignmentRectInsets` is not zero: measured
+        // live, `(top: 3, left: 0, bottom: 2.5, right: 0)` at `.regular`
+        // (2.5/2.5 at `.small`). AppKit reserves that vertical slack for the
+        // focus ring a stock bezel would draw.
+        //
+        // A `HelmButton` draws its chrome in its own **layer**, which fills
+        // the *frame* - so a plain `heightAnchor == 28` produces a 28pt
+        // alignment rect and a visibly **33.5pt** bordered box: not a square,
+        // and 5.5pt taller than the 28pt `TabChipView` beside it. Confirmed by
+        // measuring the real button in a real window (28 -> 33.5, 34 -> 39.5,
+        // i.e. a fixed +5.5 offset), which is also the mechanism behind
+        // AGENTS.md's rail note that "every row resolves several points taller
+        // than its explicit heightAnchor constant".
+        //
+        // So subtract the button's own insets - read from the button, never
+        // hardcoded - and the frame lands on exactly `iconButtonSide` square.
+        let insets = b.alignmentRectInsets
+        NSLayoutConstraint.activate([
+            b.widthAnchor.constraint(equalToConstant: iconButtonSide - insets.left - insets.right),
+            b.heightAnchor.constraint(equalToConstant: iconButtonSide - insets.top - insets.bottom),
+        ])
+        return b
+    }
+
+    /// A horizontal group of toolbar controls, spaced the one way.
+    static func group(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = HelmMetrics.s1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
+    private let separator = NSView()
+    private var heightConstraint: NSLayoutConstraint!
+    private var leadingContent: NSView?
+    private var trailingContent: NSView?
+    /// Activated once both slots are filled, so the leading content truncates
+    /// rather than overrunning the actions (Console's tab strip does exactly
+    /// this once enough tabs are open).
+    private var clearanceConstraint: NSLayoutConstraint?
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        separator.wantsLayer = true
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(separator)
+
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.height)
+        NSLayoutConstraint.activate([
+            heightConstraint,
+            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    /// The leading slot - a page's tab strip or sub-navigation.
+    func setLeading(_ content: NSView) {
+        leadingContent?.removeFromSuperview()
+        leadingContent = content
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.leadingInset),
+            content.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        updateClearance()
+    }
+
+    /// The trailing slot - this page's actions.
+    func setTrailing(_ content: NSView) {
+        trailingContent?.removeFromSuperview()
+        trailingContent = content
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.trailingInset),
+            content.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        updateClearance()
+    }
+
+    private func updateClearance() {
+        clearanceConstraint?.isActive = false
+        guard let leadingContent, let trailingContent else { return }
+        let c = leadingContent.trailingAnchor.constraint(lessThanOrEqualTo: trailingContent.leadingAnchor,
+                                                         constant: -HelmMetrics.s2)
+        c.isActive = true
+        clearanceConstraint = c
+    }
+
+    /// Collapses the bar to nothing, for a page whose toolbar is meaningless
+    /// in some state - Tools with no tool tab open, where the strip's only
+    /// content was a "+" that opens the picker already filling the page
+    /// (audit §4.8).
+    ///
+    /// Both halves are needed: `isHidden` alone leaves the 44pt reserved,
+    /// because an ordinary hidden `NSView`'s constraints still participate
+    /// fully in layout (AGENTS.md gotcha (11) - true for a plain view, false
+    /// for a hidden *arranged subview* of an `NSStackView`). Owning the height
+    /// constraint here rather than letting the page add its own also avoids
+    /// two required height constraints fighting.
+    func setCollapsed(_ collapsed: Bool) {
+        isHidden = collapsed
+        heightConstraint.constant = collapsed ? 0 : Self.height
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
+        separator.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).cgColor
+    }
+
+    // MARK: Verification hooks
+
+    /// The resolved chrome, for `HelmContrastSelfTest` and a render probe -
+    /// asserted rather than re-derived, the same way `HelmButton.palette` and
+    /// `HelmSegmentedTabs.debugGeometry` are.
+    struct Geometry {
+        let height: CGFloat
+        let fill: NSColor?
+        let separatorFill: NSColor?
+        let leadingMinX: CGFloat
+        let trailingMaxX: CGFloat
+    }
+
+    func debugGeometry() -> Geometry {
+        layoutSubtreeIfNeeded()
+        return Geometry(height: bounds.height,
+                        fill: layer?.backgroundColor.map { NSColor(cgColor: $0) ?? .clear },
+                        separatorFill: separator.layer?.backgroundColor.map { NSColor(cgColor: $0) ?? .clear },
+                        leadingMinX: leadingContent?.frame.minX ?? -1,
+                        trailingMaxX: trailingContent?.frame.maxX ?? -1)
+    }
+}
+
+// MARK: - HelmResponsiveGrid
+
+/// The app's one wrapping card-grid layout: column count derived from the
+/// container's **real** width, and a partial last row padded with invisible
+/// spacers so its cards stay the same width as every other row's.
+///
+/// Phase 7, audit §4.8 and §6.4's Settings row. This is not new code - it is
+/// `ToolsController.rebuildGrid`'s math, which the audit called "the best card
+/// grid in the app", lifted out of it so the two pages that had already
+/// hand-copied it (`DocsController.layoutDocGrid`, whose own comment says it
+/// is a port) and the one that had *not* (`SettingsController.
+/// rebuildAppearanceGrid`, a fixed `columnsPerRow = 4` that left the audit's
+/// ragged 4/2/4/2 last row and never responded to window width) all share one
+/// definition.
+///
+/// Both halves matter, and both were bug fixes when they landed in Tools:
+///
+/// - **Columns from real width.** A fixed column count plus a fixed card width
+///   hugs the leading edge on a wide window (measured live in
+///   `fm/cockpit-tools-page-ui-polish`: ~700pt of a 1500pt container wasted).
+/// - **Spacer padding.** `.fillEqually` divides a row's width by however many
+///   arranged subviews it has, so a partial last row would stretch its lone
+///   card across the whole row (`fm/cockpit-tools-page-partial-row-fix`).
+///
+/// A caller still owns its own card view; this only decides how many go in a
+/// row and how wide each one is.
+enum HelmResponsiveGrid {
+
+    /// The one inter-card gap.
+    static let spacing: CGFloat = 14
+
+    /// The width to lay out against before the container has a real one -
+    /// a first `rebuild` runs before the first layout pass, and a zero width
+    /// would resolve to a single column.
+    static let fallbackContainerWidth: CGFloat = 860
+
+    /// How many `minItemWidth`-or-wider columns fit in `containerWidth`.
+    /// Never fewer than one, however narrow the container gets.
+    static func columns(containerWidth: CGFloat,
+                        minItemWidth: CGFloat,
+                        spacing: CGFloat = spacing) -> Int {
+        let width = containerWidth > 0 ? containerWidth : fallbackContainerWidth
+        return max(1, Int((width + spacing) / (minItemWidth + spacing)))
+    }
+
+    /// The width one card gets, once `columns` of them plus their gaps have to
+    /// fill `containerWidth` exactly.
+    static func itemWidth(containerWidth: CGFloat,
+                          columns: Int,
+                          spacing: CGFloat = spacing) -> CGFloat {
+        let width = containerWidth > 0 ? containerWidth : fallbackContainerWidth
+        return (width - spacing * CGFloat(max(0, columns - 1))) / CGFloat(max(1, columns))
+    }
+
+    /// Lays `items` out into `.fillEqually` rows: the whole grid in one call.
+    ///
+    /// `makeItem` is handed each item and the width its card should be built
+    /// for (some cards need it up front - a wrapping label's
+    /// `preferredMaxLayoutWidth`, for instance).
+    static func rows<Item>(_ items: [Item],
+                           containerWidth: CGFloat,
+                           minItemWidth: CGFloat,
+                           spacing: CGFloat = spacing,
+                           makeItem: (Item, CGFloat) -> NSView) -> [NSStackView] {
+        let columnsPerRow = columns(containerWidth: containerWidth,
+                                    minItemWidth: minItemWidth,
+                                    spacing: spacing)
+        let width = itemWidth(containerWidth: containerWidth,
+                              columns: columnsPerRow,
+                              spacing: spacing)
+        return items.chunked(into: columnsPerRow).map { chunk in
+            var views: [NSView] = chunk.map { makeItem($0, width) }
+            // The partial-last-row fix: pad to a fixed column count so
+            // `.fillEqually` always divides by the same number.
+            while views.count < columnsPerRow {
+                let spacer = NSView()
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                views.append(spacer)
+            }
+            let row = NSStackView(views: views)
+            row.orientation = .horizontal
+            row.spacing = spacing
+            row.distribution = .fillEqually
+            row.translatesAutoresizingMaskIntoConstraints = false
+            return row
+        }
     }
 }

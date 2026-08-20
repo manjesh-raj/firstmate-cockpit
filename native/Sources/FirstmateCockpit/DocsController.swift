@@ -9,9 +9,12 @@
 // these 4 tabs are fixed and always present, not user-creatable/closeable
 // like the Tools page's own multi-instance `TabChipView` strip.
 //
-// Tab 1, Playbook, is byte-for-byte the same locked-down embedded `WKWebView`
-// onto the captain's real DevOps Playbook this page always was - none of
-// that code changed, only its container. Tabs 2-3 are new: Runbooks (real
+// Tab 1, Playbook, is still the same locked-down embedded `WKWebView` onto
+// the captain's real DevOps Playbook this page always was - Phase 7 of the
+// UI audit moved its back/forward/reload/Open-Live-Site cluster out of a
+// second 40pt bar of its own and into the one shared `HelmPageToolbar` (see
+// `buildTabBar()`), but the web view, its navigation delegate, and the
+// local-only load path are untouched. Tabs 2-3 are new: Runbooks (real
 // CRUD, git-synced) and Postmortems (list/display only - generation is a
 // later task). The original phase-1 build also shipped a 5th "Command
 // Composer" tab that only ever showed an explanatory pointer at the real
@@ -52,6 +55,12 @@ final class DocsController: NSViewController {
     }
 
     private var activeTab: DocsTab = .playbook
+
+    /// The shared page toolbar (Phase 7) - see `buildTabBar()`.
+    private let pageToolbar = HelmPageToolbar()
+    /// The active tab's own actions, in that toolbar's trailing slot.
+    private let playbookActions = NSStackView()
+    private let runbooksActions = NSStackView()
     /// The tab switcher, now the app's shared `HelmSegmentedTabs`
     /// (`HelmDesignSystem.swift`, audit §6.3 component 6). This page used to
     /// build **bare pills** on a 44pt divider bar - and the audit's finding was
@@ -79,18 +88,15 @@ final class DocsController: NSViewController {
     // MARK: Playbook (unchanged from before this task)
 
     private var webView: WKWebView!
-    private let playbookToolbar = NSView()
-    private var backButton: NSButton!
-    private var forwardButton: NSButton!
-    private var reloadButton: NSButton!
+    private var backButton: HelmButton!
+    private var forwardButton: HelmButton!
+    private var reloadButton: HelmButton!
     private let openLiveButton = HelmButton(title: "", variant: .secondary, symbol: "arrow.up.forward.square")
-    private let toolbarDivider = NSView()
     private let emptyStateContainer = NSView()
     private var playbookEmptyState: HelmEmptyState?
     private let syncButton = HelmButton(title: "", variant: .primary)
     private let syncSpinner = NSProgressIndicator()
     private var isSyncing = false
-    private var docsTitleLabel: NSTextField?
     private let playbookContainer = NSView()
 
     // MARK: Runbooks
@@ -144,17 +150,17 @@ final class DocsController: NSViewController {
         root.wantsLayer = true
         view = root
 
-        let tabBar = buildTabBar()
-        root.addSubview(tabBar)
-        // `bar`'s anchors reference `view` (this method's `root`), so this
-        // must run only after `tabBar` is actually in `root`'s view
-        // hierarchy - see `buildTabBar()`'s own doc comment on the
-        // "no common ancestor" exception this used to throw.
+        root.addSubview(pageToolbar)
+        // `pageToolbar`'s own internal constraints are self-contained, but
+        // these three reference `root`, so they can only be activated once it
+        // is actually a subview - see `buildTabBar()`'s doc comment for the
+        // "no common ancestor" exception this file threw once before.
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: root.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            pageToolbar.topAnchor.constraint(equalTo: root.topAnchor),
+            pageToolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            pageToolbar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
         ])
+        buildTabBar()
 
         buildPlaybookContainer()
         buildRunbooksContainer()
@@ -166,7 +172,7 @@ final class DocsController: NSViewController {
             NSLayoutConstraint.activate([
                 container.leadingAnchor.constraint(equalTo: root.leadingAnchor),
                 container.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-                container.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+                container.topAnchor.constraint(equalTo: pageToolbar.bottomAnchor),
                 container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             ])
         }
@@ -245,48 +251,100 @@ final class DocsController: NSViewController {
 
     // MARK: Tab bar
 
-    private func buildTabBar() -> NSView {
-        let bar = NSView()
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.wantsLayer = true
-
-        let divider = NSView()
-        divider.wantsLayer = true
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(divider)
-        self.tabBarDivider = divider
-
+    /// Phase 7, audit §3.2's "Page toolbars" / §4.10. Two things changed here,
+    /// and the second is why this page ended up with the largest diff of the
+    /// three:
+    ///
+    /// 1. The bar itself is `HelmPageToolbar` - one height, fill, hairline and
+    ///    inset shared with Console and Tools, rather than this page's own
+    ///    hand-rolled 44pt `NSView` and divider.
+    /// 2. **This page's second bar is gone.** The Playbook tab carried its own
+    ///    40pt toolbar *inside* the tab (back / forward / reload, a title
+    ///    reading "DevOps Playbook", and "Open Live Site"), stacked directly
+    ///    under the tab bar - the audit's "Console adds a second horizontal
+    ///    chrome bar; Tools adds a third" finding, in its worst form, since
+    ///    here both bars belonged to the same page. Those controls now live in
+    ///    this one toolbar's trailing slot, shown only while their own tab is
+    ///    active (`updateToolbarActions`). The "DevOps Playbook" label went
+    ///    with the bar: the tab pill two inches to its left already says
+    ///    "Playbook".
+    ///
+    /// The Runbooks tab's own "+ New Runbook" and count moved the same way,
+    /// which is what let its in-page "Runbooks" heading go - a heading that
+    /// restated the active tab pill directly above it. Same for Postmortems.
+    private func buildTabBar() {
         tabs.onSelect = { [weak self] id in
             guard let self, let tab = DocsTab(rawValue: id) else { return }
             self.showTab(tab)
         }
-        bar.addSubview(tabs)
+        pageToolbar.setLeading(tabs)
 
-        NSLayoutConstraint.activate([
-            bar.heightAnchor.constraint(equalToConstant: 44),
-            divider.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            divider.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 1),
-            tabs.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 12),
-            tabs.centerYAnchor.constraint(equalTo: bar.centerYAnchor, constant: -1),
-        ])
+        buildPlaybookToolbarActions()
+        buildRunbooksToolbarActions()
 
-        // `bar`'s own top/leading/trailing anchors are constrained against
-        // `self.view` by the caller (`loadView()`), AFTER `bar` has actually
-        // been added as a subview of `view` - activating a constraint whose
-        // two anchors don't yet share a common ancestor throws a real
-        // NSGenericException ("no common ancestor"), and since this runs
-        // during the `applicationDidFinishLaunching` notification dispatch,
-        // AppKit silently swallows that exception (logs it, doesn't crash),
-        // aborting the whole method - the window is never shown, with no
-        // visible error. Confirmed live via the unified log's exception
-        // backtrace (grandline-docs-no-window-fix) - this was a real,
-        // reproduced regression, not a hypothetical one.
-        return bar
+        // Hidden arranged subviews of an `NSStackView` drop out of layout
+        // entirely (unlike an ordinary hidden `NSView` - AGENTS.md gotcha
+        // (11)), so the inactive tabs' action groups take up no width.
+        let actions = NSStackView(views: [playbookActions, runbooksActions])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = HelmMetrics.s2
+        pageToolbar.setTrailing(actions)
+        updateToolbarActions()
     }
 
-    private var tabBarDivider: NSView?
+    /// The Playbook tab's own actions, in the shared toolbar's trailing slot.
+    private func buildPlaybookToolbarActions() {
+        backButton = HelmPageToolbar.iconButton(symbol: "chevron.left", tooltip: "Back",
+                                                target: self, action: #selector(backTapped))
+        forwardButton = HelmPageToolbar.iconButton(symbol: "chevron.right", tooltip: "Forward",
+                                                   target: self, action: #selector(forwardTapped))
+        reloadButton = HelmPageToolbar.iconButton(symbol: "arrow.clockwise",
+                                                  tooltip: "Reload (local copy only)",
+                                                  target: self, action: #selector(reloadTapped))
+
+        openLiveButton.title = "Open Live Site"
+        openLiveButton.controlSize = .small
+        openLiveButton.target = self
+        openLiveButton.action = #selector(openLiveTapped)
+        openLiveButton.translatesAutoresizingMaskIntoConstraints = false
+
+        playbookActions.setViews([backButton, forwardButton, reloadButton, openLiveButton], in: .leading)
+        playbookActions.orientation = .horizontal
+        playbookActions.alignment = .centerY
+        playbookActions.spacing = HelmMetrics.s1
+        playbookActions.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// The Runbooks tab's own actions - the count and "+ New Runbook" that
+    /// used to sit in an in-page header row beside a duplicate "Runbooks"
+    /// heading.
+    private func buildRunbooksToolbarActions() {
+        runbooksHeaderCountLabel.font = HelmType.caption()
+        runbooksHeaderCountLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let newButton = HelmButton(title: "New Runbook", variant: .primary, symbol: "plus")
+        newButton.controlSize = .small
+        let newSleeve = ClosureSleeve { [weak self] in self?.beginNewRunbook() }
+        rowSleeves.append(newSleeve)
+        newButton.target = newSleeve
+        newButton.action = #selector(ClosureSleeve.invoke)
+        newButton.translatesAutoresizingMaskIntoConstraints = false
+
+        runbooksActions.setViews([runbooksHeaderCountLabel, newButton], in: .leading)
+        runbooksActions.orientation = .horizontal
+        runbooksActions.alignment = .centerY
+        runbooksActions.spacing = HelmMetrics.s2
+        runbooksActions.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// Only the active tab's actions are in the toolbar - and none at all
+    /// while the runbook editor is open, since "New Runbook" beside a form
+    /// that is already creating one reads as a second, competing action.
+    private func updateToolbarActions() {
+        playbookActions.isHidden = activeTab != .playbook
+        runbooksActions.isHidden = activeTab != .runbooks || !runbookEditorContainer.isHidden
+    }
 
     private func showTab(_ tab: DocsTab) {
         activeTab = tab
@@ -299,6 +357,7 @@ final class DocsController: NSViewController {
         postmortemsContainer.isHidden = tab != .postmortems
         if tab == .runbooks { reloadRunbooksList() }
         if tab == .postmortems { reloadPostmortemsList() }
+        updateToolbarActions()
         applyTheme()
     }
 
@@ -310,86 +369,26 @@ final class DocsController: NSViewController {
         webView.navigationDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
 
-        buildPlaybookToolbar()
         buildEmptyState()
 
-        playbookContainer.addSubview(playbookToolbar)
         playbookContainer.addSubview(webView)
         playbookContainer.addSubview(emptyStateContainer)
-        playbookToolbar.translatesAutoresizingMaskIntoConstraints = false
         emptyStateContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        toolbarDivider.wantsLayer = true
-        toolbarDivider.translatesAutoresizingMaskIntoConstraints = false
-        playbookToolbar.addSubview(toolbarDivider)
+        // The web view now starts at the container's own top edge: this tab's
+        // second 40pt toolbar is gone, its controls having moved into the one
+        // shared page toolbar (see `buildTabBar()`).
         NSLayoutConstraint.activate([
-            toolbarDivider.leadingAnchor.constraint(equalTo: playbookToolbar.leadingAnchor),
-            toolbarDivider.trailingAnchor.constraint(equalTo: playbookToolbar.trailingAnchor),
-            toolbarDivider.bottomAnchor.constraint(equalTo: playbookToolbar.bottomAnchor),
-            toolbarDivider.heightAnchor.constraint(equalToConstant: 1),
-        ])
-
-        NSLayoutConstraint.activate([
-            playbookToolbar.leadingAnchor.constraint(equalTo: playbookContainer.leadingAnchor),
-            playbookToolbar.trailingAnchor.constraint(equalTo: playbookContainer.trailingAnchor),
-            playbookToolbar.topAnchor.constraint(equalTo: playbookContainer.topAnchor),
-            playbookToolbar.heightAnchor.constraint(equalToConstant: 40),
-
             webView.leadingAnchor.constraint(equalTo: playbookContainer.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: playbookContainer.trailingAnchor),
-            webView.topAnchor.constraint(equalTo: playbookToolbar.bottomAnchor),
+            webView.topAnchor.constraint(equalTo: playbookContainer.topAnchor),
             webView.bottomAnchor.constraint(equalTo: playbookContainer.bottomAnchor),
 
             emptyStateContainer.leadingAnchor.constraint(equalTo: playbookContainer.leadingAnchor),
             emptyStateContainer.trailingAnchor.constraint(equalTo: playbookContainer.trailingAnchor),
-            emptyStateContainer.topAnchor.constraint(equalTo: playbookToolbar.bottomAnchor),
+            emptyStateContainer.topAnchor.constraint(equalTo: playbookContainer.topAnchor),
             emptyStateContainer.bottomAnchor.constraint(equalTo: playbookContainer.bottomAnchor),
         ])
-    }
-
-    private func buildPlaybookToolbar() {
-        backButton = makeIconButton(symbol: "chevron.left", tooltip: "Back", action: #selector(backTapped))
-        forwardButton = makeIconButton(symbol: "chevron.right", tooltip: "Forward", action: #selector(forwardTapped))
-        reloadButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Reload (local copy only)", action: #selector(reloadTapped))
-        let navTools = NSStackView(views: [backButton, forwardButton, reloadButton])
-        navTools.orientation = .horizontal
-        navTools.spacing = 2
-        navTools.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = NSTextField(labelWithString: "DevOps Playbook")
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        self.docsTitleLabel = titleLabel
-
-        openLiveButton.title = "Open Live Site"
-        openLiveButton.controlSize = .small
-        openLiveButton.target = self
-        openLiveButton.action = #selector(openLiveTapped)
-        openLiveButton.translatesAutoresizingMaskIntoConstraints = false
-
-        playbookToolbar.addSubview(navTools)
-        playbookToolbar.addSubview(titleLabel)
-        playbookToolbar.addSubview(openLiveButton)
-        NSLayoutConstraint.activate([
-            navTools.leadingAnchor.constraint(equalTo: playbookToolbar.leadingAnchor, constant: 10),
-            navTools.centerYAnchor.constraint(equalTo: playbookToolbar.centerYAnchor),
-
-            titleLabel.leadingAnchor.constraint(equalTo: navTools.trailingAnchor, constant: 12),
-            titleLabel.centerYAnchor.constraint(equalTo: playbookToolbar.centerYAnchor),
-
-            openLiveButton.trailingAnchor.constraint(equalTo: playbookToolbar.trailingAnchor, constant: -10),
-            openLiveButton.centerYAnchor.constraint(equalTo: playbookToolbar.centerYAnchor),
-        ])
-    }
-
-    private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> NSButton {
-        let b = HelmButton(symbol: symbol, variant: .quiet, target: self, action: action)
-        b.toolTip = tooltip
-        NSLayoutConstraint.activate([
-            b.widthAnchor.constraint(equalToConstant: 28),
-            b.heightAnchor.constraint(equalToConstant: 26),
-        ])
-        return b
     }
 
     @objc private func backTapped() { webView.goBack() }
@@ -484,26 +483,10 @@ final class DocsController: NSViewController {
     // MARK: Runbooks
 
     private func buildRunbooksContainer() {
-        let header = NSTextField(labelWithString: "Runbooks")
-        header.font = .systemFont(ofSize: 15, weight: .semibold)
-        header.translatesAutoresizingMaskIntoConstraints = false
-        runbooksHeaderCountLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        runbooksHeaderCountLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let newButton = HelmButton(title: "+ New Runbook", variant: .primary, target: nil, action: nil)
-        newButton.controlSize = .small
-        let newSleeve = ClosureSleeve { [weak self] in self?.beginNewRunbook() }
-        rowSleeves.append(newSleeve)
-        newButton.target = newSleeve
-        newButton.action = #selector(ClosureSleeve.invoke)
-        newButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerRow = NSStackView(views: [header, runbooksHeaderCountLabel, NSView(), newButton])
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .centerY
-        headerRow.spacing = 8
-        headerRow.translatesAutoresizingMaskIntoConstraints = false
-
+        // No in-page "Runbooks" heading: it restated the active tab pill
+        // directly above it (audit §4.10 / Phase 7). Its row's two real
+        // contents - the count and "New Runbook" - are in the shared page
+        // toolbar now, see `buildRunbooksToolbarActions()`.
         runbookListStack.orientation = .vertical
         runbookListStack.alignment = .leading
         runbookListStack.spacing = Self.docCardSpacing
@@ -536,7 +519,7 @@ final class DocsController: NSViewController {
         listContent.widthAnchor.constraint(equalTo: runbookListScroll.contentView.widthAnchor).isActive = true
 
         let listStack = runbookListContainerStack
-        listStack.setViews([headerRow, runbookListScroll], in: .leading)
+        listStack.setViews([runbookListScroll], in: .leading)
         listStack.orientation = .vertical
         listStack.alignment = .leading
         listStack.spacing = 12
@@ -561,7 +544,6 @@ final class DocsController: NSViewController {
             listStack.trailingAnchor.constraint(equalTo: runbooksContainer.trailingAnchor, constant: -18),
             listStack.topAnchor.constraint(equalTo: runbooksContainer.topAnchor, constant: 16),
             listStack.bottomAnchor.constraint(equalTo: runbooksContainer.bottomAnchor, constant: -16),
-            headerRow.widthAnchor.constraint(equalTo: listStack.widthAnchor),
             runbookListScroll.widthAnchor.constraint(equalTo: listStack.widthAnchor),
 
             runbookEditorContainer.leadingAnchor.constraint(equalTo: runbooksContainer.leadingAnchor, constant: 18),
@@ -639,7 +621,9 @@ final class DocsController: NSViewController {
 
     private func reloadRunbooksList() {
         let runbooks = runbookStore.listRunbooks()
-        runbooksHeaderCountLabel.stringValue = "\(runbooks.count)"
+        // Reads as a sentence now that it sits in the toolbar rather than
+        // beside a "Runbooks" heading - a bare "6" there says nothing.
+        runbooksHeaderCountLabel.stringValue = runbooks.count == 1 ? "1 runbook" : "\(runbooks.count) runbooks"
         runbookGridItems = runbooks.map { runbook in
             DocGridItem(
                 title: runbook.title,
@@ -697,6 +681,7 @@ final class DocsController: NSViewController {
         runbookDeleteButton.isHidden = true
         runbookListContainerStack.isHidden = true
         runbookEditorContainer.isHidden = false
+        updateToolbarActions()
         view.window?.makeFirstResponder(runbookTitleField)
     }
 
@@ -710,11 +695,13 @@ final class DocsController: NSViewController {
         runbookDeleteButton.isHidden = false
         runbookListContainerStack.isHidden = true
         runbookEditorContainer.isHidden = false
+        updateToolbarActions()
     }
 
     private func cancelRunbookEditor() {
         runbookEditorContainer.isHidden = true
         runbookListContainerStack.isHidden = false
+        updateToolbarActions()
         editingRunbookID = nil
         editingIsNew = false
     }
@@ -737,6 +724,7 @@ final class DocsController: NSViewController {
         }
         runbookEditorContainer.isHidden = true
         runbookListContainerStack.isHidden = false
+        updateToolbarActions()
         editingRunbookID = nil
         editingIsNew = false
         reloadRunbooksList()
@@ -785,10 +773,8 @@ final class DocsController: NSViewController {
     // MARK: Postmortems
 
     private func buildPostmortemsContainer() {
-        let header = NSTextField(labelWithString: "Postmortems")
-        header.font = .systemFont(ofSize: 15, weight: .semibold)
-        header.translatesAutoresizingMaskIntoConstraints = false
-
+        // No in-page "Postmortems" heading either - same reason as Runbooks
+        // above.
         postmortemListStack.orientation = .vertical
         postmortemListStack.alignment = .leading
         postmortemListStack.spacing = Self.docCardSpacing
@@ -825,7 +811,7 @@ final class DocsController: NSViewController {
         postmortemDetailScroll.translatesAutoresizingMaskIntoConstraints = false
         postmortemDetailScroll.isHidden = true
 
-        let stack = NSStackView(views: [header, postmortemEmptyState, postmortemListScroll, postmortemDetailScroll])
+        let stack = NSStackView(views: [postmortemEmptyState, postmortemListScroll, postmortemDetailScroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -944,35 +930,21 @@ final class DocsController: NSViewController {
     /// `ToolsController.rebuildGrid()`. Returns the built rows (to add as
     /// arranged subviews of the caller's own vertical list stack) and the
     /// cards themselves (for `applyTheme()`'s re-tint pass).
+    /// This page's own copy of Tools' column-count/spacer-padding math (its
+    /// original doc comment said as much: "a direct port of
+    /// `ToolsController.rebuildGrid`") is gone - Phase 7 moved that one
+    /// definition into `HelmResponsiveGrid`. What is left here is what is
+    /// genuinely this page's: which card to build, and collecting the built
+    /// cards so `applyTheme` can re-tint their borders.
     private func layoutDocGrid(items: [DocGridItem], containerWidth: CGFloat) -> (rows: [NSView], cards: [HoverHighlightView]) {
-        let width = containerWidth > 0 ? containerWidth : 860
-        let columnsPerRow = max(1, Int((width + Self.docCardSpacing) / (Self.docMinCardWidth + Self.docCardSpacing)))
-        let cardWidth = (width - Self.docCardSpacing * CGFloat(columnsPerRow - 1)) / CGFloat(columnsPerRow)
-
-        var rows: [NSView] = []
         var cards: [HoverHighlightView] = []
-        for chunk in items.chunked(into: columnsPerRow) {
-            var views: [NSView] = chunk.map { item in
-                let card = buildDocCard(item, width: cardWidth)
-                cards.append(card)
-                return card
-            }
-            // Pad a partial last row out to `columnsPerRow` slots with
-            // invisible spacers so `.fillEqually` always divides by the same
-            // column count - otherwise a lone leftover card would stretch
-            // to fill the whole row width instead of matching a full row's
-            // card width (`fm/cockpit-tools-page-partial-row-fix`).
-            while views.count < columnsPerRow {
-                let spacer = NSView()
-                spacer.translatesAutoresizingMaskIntoConstraints = false
-                views.append(spacer)
-            }
-            let row = NSStackView(views: views)
-            row.orientation = .horizontal
-            row.spacing = Self.docCardSpacing
-            row.distribution = .fillEqually
-            row.translatesAutoresizingMaskIntoConstraints = false
-            rows.append(row)
+        let rows = HelmResponsiveGrid.rows(items,
+                                           containerWidth: containerWidth,
+                                           minItemWidth: Self.docMinCardWidth,
+                                           spacing: Self.docCardSpacing) { item, width in
+            let card = self.buildDocCard(item, width: width)
+            cards.append(card)
+            return card
         }
         return (rows, cards)
     }
@@ -1077,16 +1049,13 @@ final class DocsController: NSViewController {
             container.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
         }
 
-        playbookToolbar.wantsLayer = true
-        playbookToolbar.layer?.backgroundColor = surface.cgColor
-        docsTitleLabel?.textColor = ink
-        // The three toolbar glyphs are `HelmButton(.quiet)` now and own their
-        // own tint, re-derived from the theme by the button itself.
+        // The page toolbar owns its own fill and hairline, and every button
+        // in it is a `HelmButton` that re-derives its own tint - so there is
+        // nothing here to re-colour for either.
+        pageToolbar.applyTheme(theme)
         playbookEmptyState?.applyTheme(theme)
         emptyStateContainer.wantsLayer = true
         emptyStateContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        toolbarDivider.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
-        tabBarDivider?.layer?.backgroundColor = line.withAlphaComponent(0.5).cgColor
 
         tabs.applyTheme(theme)
 
