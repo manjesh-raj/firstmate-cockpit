@@ -130,6 +130,51 @@ enum RailDestination: CaseIterable {
         }
     }
 
+    /// The hue this destination's icon carries wherever it is drawn as an
+    /// `IconTileView` rather than a bare rail glyph - today that is the Setup
+    /// flyout's four rows (`SetupFlyoutViewController`).
+    ///
+    /// `fm/grandline-sre-lead-and-setup-icons`: every one of those rows used
+    /// to pass a hardcoded `.accent`, so all four rendered the identical
+    /// teal tile and the flyout read as one undifferentiated block - measured
+    /// in a real render, all four glyphs sampled the same `rgb(165,218,229)`.
+    /// The captain's own proposed mockup assigns each row a distinct hue, and
+    /// sampling that mockup's pixels resolves each one to a `HelmTint` this
+    /// app already has: blue `.info` for Updates, amber `.warn` for
+    /// Bootstrap, the theme accent for Automation, magenta `.violet` for
+    /// GitHub Sync. Semantic tints, not literals, so all 12 palettes resolve
+    /// their own hues.
+    ///
+    /// Every other destination keeps `.accent` - the rail's own rows are
+    /// plain tinted glyphs with no tile behind them, and this property is
+    /// only consulted where a tile is actually drawn.
+    ///
+    /// **Measured caveat, recorded rather than hidden:** `.accent` for
+    /// Automation resolves to the *same hue as a neighbouring row* in 3 of
+    /// the 12 palettes, because those palettes genuinely define their accent
+    /// as that hue - `tokyo-night-dark`/`-light` set `accentHex` to their own
+    /// blue (`ansiHex[4]`, so Updates and Automation match) and
+    /// `rose-pine-main` sets it to its own magenta (`ansiHex[5]`, so
+    /// Automation and GitHub Sync match). Swapping Automation to `.good`
+    /// removes every collision (measured: zero in all 12), but `.good` is
+    /// green in `helm-dark` where the captain's own reference mockup shows
+    /// the accent cyan - and the brief names those screenshots as ground
+    /// truth. Exact fidelity in the reference palette was chosen over
+    /// collision-freedom in three others; this is still a strict improvement
+    /// everywhere, since before this all four rows shared one hue in all 12.
+    /// Revisit by adding a genuinely distinct semantic `HelmTint` case, not
+    /// by hardcoding a literal here.
+    var flyoutTint: HelmTint {
+        switch self {
+        case .updates: return .info
+        case .bootstrap: return .warn
+        case .automation: return .accent
+        case .githubSync: return .violet
+        case .overview, .console, .hosts, .shift, .review,
+             .tools, .vault, .dictation, .docs, .settings: return .accent
+        }
+    }
+
     var isDailyUse: Bool {
         switch self {
         case .overview, .console, .hosts, .shift, .review: return true
@@ -1416,7 +1461,7 @@ private final class SetupFlyoutViewController: NSViewController {
             row.translatesAutoresizingMaskIntoConstraints = false
 
             let icon = IconTileView(size: 26, cornerRadius: 7)
-            icon.configure(symbol: dest.symbol, tint: .accent, pointSize: 12)
+            icon.configure(symbol: dest.symbol, tint: dest.flyoutTint, pointSize: 12)
             rowIcons.append(icon)
 
             let label = NSTextField(labelWithString: dest.title)
