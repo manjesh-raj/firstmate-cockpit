@@ -116,9 +116,9 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// bordered squares, and this bar - one bar below it - rendered up to
     /// eleven chrome-less glyphs at identical weight.
     ///
-    /// Typed `HelmButton` rather than `NSButton` specifically so the two
-    /// state-coloured glyphs below can set `tint` (see `updateLogButton` /
-    /// `updateBlockViewControls`). `HelmButton.restyle()` owns
+    /// Typed `HelmButton` rather than `NSButton` specifically so the one
+    /// state-coloured glyph below can set `tint` (Block View's accent while
+    /// showing - see `updateBlockViewControls`). `HelmButton.restyle()` owns
     /// `contentTintColor`, so assigning that directly would be silently
     /// overwritten on the next theme change - `tint` is the seam.
     private var plusButton: HelmButton!
@@ -126,7 +126,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     private var findButton: HelmButton!
     private var zoomInButton: HelmButton!
     private var zoomOutButton: HelmButton!
-    private var logButton: HelmButton!
     /// `fm/cockpit-block-view-stage0` - only ever shown for the one opted-in
     /// host's tab, see `updateBlockViewControls`.
     private var blockViewToggleButton: HelmButton!
@@ -188,17 +187,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// simultaneously. Attempting to start a 6th shows a clear alert instead
     /// of silently queuing or silently refusing.
     private let sreLeadMaxConcurrent = 5
-
-    /// `FM_LOG_SESSIONS_DEFAULT` (Phase 3, B5), then Settings > General's
-    /// "Log sessions by default" toggle: when set, every newly started tab
-    /// begins logging automatically. Re-read on every tab start (not cached)
-    /// so a Settings change applies to the next tab without a restart.
-    private var defaultLoggingEnabled: Bool {
-        if let v = ProcessInfo.processInfo.environment["FM_LOG_SESSIONS_DEFAULT"]?.lowercased() {
-            return v == "1" || v == "true" || v == "yes"
-        }
-        return AppSettings.shared.sessionLoggingDefault
-    }
 
     // MARK: Lifecycle
 
@@ -323,15 +311,14 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // names, plus Block View, which is the same kind of thing: a named,
         // stateful feature toggle rather than a glyph-native utility.
         //
-        // Zoom in / zoom out / theme / log / "+" stay icon squares
-        // deliberately - they have no prototype counterpart, their glyphs are
-        // universally legible on their own, and labelling five more controls
-        // would leave a long tab strip nowhere to go.
+        // Zoom in / zoom out / theme / "+" stay icon squares deliberately -
+        // they have no prototype counterpart, their glyphs are universally
+        // legible on their own, and labelling four more controls would leave
+        // a long tab strip nowhere to go.
         findButton = makeLabeledButton(symbol: "magnifyingglass", title: "Find", tooltip: "Find (⌘F)", action: #selector(showFind))
         zoomOutButton = makeIconButton(symbol: "minus.magnifyingglass", tooltip: "Zoom Out (⌘−)", action: #selector(zoomOut))
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
-        logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
         blockViewToggleButton = makeLabeledButton(symbol: "rectangle.grid.1x2", title: "Blocks", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
         blockViewRefreshButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Refresh Blocks", action: #selector(refreshBlockView))
         composeButton = makeLabeledButton(symbol: "sparkles", title: "Compose", tooltip: "Compose a command…", action: #selector(toggleComposer))
@@ -364,7 +351,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // the same tab.
         toolViews.append(composeButton)
         toolViews.append(utilizationButton)
-        toolViews.append(logButton)
         // `setTrailing` also installs the clearance inequality that keeps a
         // long tab strip truncating rather than running under the actions -
         // the constraint this method used to activate by hand.
@@ -515,7 +501,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
         }
         tab.started = true
-        if defaultLoggingEnabled { startLogging(tab) }
         restartTabBookkeeping(tab)
     }
 
@@ -1292,7 +1277,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         tab.mirror?.tearDown()
         tab.mirror = nil
         cleanupSSHKeyTempFile(tab)
-        tab.terminal.stopLogging()
         tab.terminal.terminate()
         tab.terminal.removeFromSuperview()
         tab.blockContainer?.removeFromSuperview()
@@ -1362,7 +1346,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         for t in tabs { updateTabViewVisibility(t) }
         styleChips()
         updateWindowTitle(from: tab)
-        updateLogButton()
         updateBlockViewControls()
         updateComposeControls()
         updateUtilizationControls()
@@ -1550,7 +1533,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         content.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
 
         styleChips()
-        updateLogButton()
         updateBlockViewControls()
         updateComposeControls()
         updateUtilizationControls()
@@ -1614,64 +1596,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// `main.swift`'s existing `onFontSizeStep` wiring still calls it.
     func stepFontSize(by delta: CGFloat) { FontSizeManager.shared.step(by: delta) }
     var currentFontSize: CGFloat { fontSize }
-
-    // MARK: Session logging (B5)
-
-    /// ⌘⇧L / the toolbar icon: toggle a plain-text transcript of the active
-    /// tab's host output. Off -> on opens a fresh timestamped file; on -> off
-    /// just closes it - a later toggle back on starts a new file rather than
-    /// appending to the old one, so each "recording" is its own transcript.
-    @objc func toggleLoggingForActiveTab() {
-        guard let tab = currentTab else { return }
-        if tab.terminal.isLogging {
-            tab.terminal.stopLogging()
-        } else {
-            startLogging(tab)
-        }
-        updateLogButton()
-    }
-
-    /// `~/Library/Application Support/FirstmateCockpit/logs/<tab>-<timestamp>.log`.
-    /// Best-effort: a failure (unwritable disk, sandboxing) is surfaced in the
-    /// terminal rather than silently discarding the toggle.
-    private func startLogging(_ tab: TabModel) {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FirstmateCockpit", isDirectory: true)
-            .appendingPathComponent("logs", isDirectory: true)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let slug = tab.name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
-        // Finding 8 (cockpit-audit-core): the timestamp alone is only
-        // second-resolution, so two tabs created (e.g. via rapid ⌘D) within
-        // the same wall-clock second used to compute the identical log path -
-        // the second `startLogging` truncated the file the first tab's still-
-        // open `FileHandle` was writing to, interleaving/corrupting both
-        // transcripts. Including the tab's own UUID makes every tab's log
-        // path unique regardless of name or timing.
-        let shortID = tab.id.uuidString.split(separator: "-").first.map(String.init) ?? tab.id.uuidString
-        let fileName = "\(String(slug))-\(formatter.string(from: Date()))-\(shortID).log"
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try tab.terminal.startLogging(to: dir.appendingPathComponent(fileName))
-        } catch {
-            tab.terminal.feed(text: "\r\n  \u{1b}[2m[session log]\u{1b}[0m \(error.localizedDescription)\r\n")
-        }
-    }
-
-    /// Restyle the toolbar icon for the active tab's current logging state -
-    /// filled and red while recording, outline and theme-tinted otherwise.
-    private func updateLogButton() {
-        let isLogging = currentTab?.terminal.isLogging ?? false
-        logButton.symbolName = isLogging ? "record.circle.fill" : "record.circle"
-        // `.critical` rather than a literal `.systemRed`: same "this is
-        // recording" signal, now the active theme's own red, routed through
-        // `HelmContrast` by `HelmButton` so it stays legible on the toolbar
-        // fill in all 12 palettes. (A rail *badge* deliberately keeps a fixed
-        // system red - see `IconRailController.attachBadge` - but that is an
-        // OS-convention alert pill, not a themed control's label.)
-        logButton.tint = isLogging ? .critical : nil
-        logButton.toolTip = isLogging ? "Stop Session Log (⌘⇧L)" : "Log This Session (⌘⇧L)"
-    }
 
     // MARK: Find + copy (routed to the active terminal)
 
@@ -1760,8 +1684,8 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     }
 
     /// Tear down every mirror's grouped session, every materialized ssh key
-    /// temp file, every open session log, and the theme observer registered
-    /// in `loadView` - so nothing is left dangling. Called from the app
+    /// temp file, and the theme observer registered in `loadView` - so
+    /// nothing is left dangling. Called from the app
     /// delegate on quit for the shared Firstmate console, and (Fix 1) from
     /// `AppShellController.removeHostConsole` when a host's dedicated page
     /// is torn down mid-session, which is why unregistering the theme
@@ -1771,7 +1695,6 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             tab.mirror?.tearDown()
             tab.mirror = nil
             cleanupSSHKeyTempFile(tab)
-            tab.terminal.stopLogging()
         }
         // Host-page disconnect (design brief Part B) - tear down every
         // tab's own SRE Lead session (`fm/grandline-sre-lead-per-tab`: each

@@ -67,7 +67,6 @@ Phase 3 (design doc Sections B1, B2, B4, B5, Section D Phase 3) adds the feature
 - **Groups + tags.** `Host.group`/`Host.tags` (present since Phase 1 but unused) now drive the sidebar: hosts are grouped into labeled sections (skipped entirely when every visible host shares one group, so a flat list stays flat), and a row of tag chips beneath the search field filters the list to hosts carrying the tapped tag(s) - in addition to the search field already matching tags by text.
 - **Port forwarding.** A **"Port Forwarding…"** button on the host editor opens `PortForwardingController` as a nested sheet: add/remove Local (`-L`), Remote (`-R`), and Dynamic/SOCKS (`-D`) rules, each with bind address, listen port, and (for Local/Remote) a destination host/port. Saved per host as `Host.portForwards`.
 - **Snippets.** A saved-command library (`SnippetStore`, `snippets.json`), managed from its own **Snippets** window (Snippets menu, `⌘⌥N` / `⌘⌥P`) - Label + command text, and a **Run** that sends the command plus Enter to the console's active tab. A host can also name one as its **Startup snippet**; `ConsoleController.runStartupSnippet` sends it a fixed 1.5s after the ssh process starts - there is no protocol-level "the remote shell is ready" signal to hook, so this is deliberately best-effort, matching the design doc's "best-effort timing is fine for v1."
-- **Session logging.** The toolbar's record-circle icon (also `⌘⇧L` / Tab menu -> Toggle Session Logging) toggles a plain-text transcript of the active tab's host output to `~/Library/Application Support/FirstmateCockpit/logs/<tab>-<timestamp>.log`. Implemented as a `dataReceived` override in `CockpitTerminalView` that tees raw bytes to a `FileHandle` before feeding the terminal - not SwiftTerm's own `setHostLogging(directory:)`, which writes one file per read syscall rather than a single chronological transcript. `FM_LOG_SESSIONS_DEFAULT=1` turns logging on for every newly started tab by default.
 
 ## What is and is not in this build
 
@@ -77,7 +76,7 @@ Phase 3 (design doc Sections B1, B2, B4, B5, Section D Phase 3) adds the feature
 - The tmux grouped-session lifecycle, **ported to Swift** (`Process`) so the console needs **no Python backend running** (that is Phase 3).
 - Helm dark + light palettes applied to the terminal colour set (foreground/background/cursor/selection + a full 16-colour ANSI set).
 - Native find bar, font zoom, and copy-to-`NSPasteboard`, all on the top bar and the main menu.
-- Jump hosts, agent forwarding, known-hosts surfacing, groups/tags, port forwarding, snippets, and session logging (Phase 3, see above).
+- Jump hosts, agent forwarding, known-hosts surfacing, groups/tags, port forwarding, and snippets (Phase 3, see above).
 
 **Deliberately out of scope (later phases):** no dashboard / fleet view / PR list, no Python backend spawning or embedding, no auth, no packaging / signing / notarization, no SFTP browser, no split panes, no encrypted cross-device sync (Phase 4). This is the console + connection manager only.
 
@@ -227,7 +226,6 @@ Verify with `security find-identity -v -p codesigning | grep "Firstmate Cockpit 
 | `⌘⌃S` | Toggle the Hosts sidebar |
 | `⌘⇧N` | New key (opens the "SSH Keys" window and its New Key sheet) |
 | `⌘⇧K` | Manage Keys… (opens/brings forward the "SSH Keys" window) |
-| `⌘⇧L` | Toggle session logging for the active tab |
 | `⌘⌥N` | New snippet (opens the "Snippets" window and its New Snippet sheet) |
 | `⌘⌥P` | Manage Snippets… (opens/brings forward the "Snippets" window) |
 
@@ -326,16 +324,10 @@ If those pass, all five of the captain's original connection-manager requirement
 - [ ] With a terminal tab focused, select the snippet and click **Run** (or double-click it) - the command runs in that tab.
 - [ ] Set a host's **Startup snippet** to a saved snippet, Connect, and confirm the snippet's command runs automatically in the new ssh tab shortly after the shell prompt appears (best-effort timing - if the connection is unusually slow, it may fire before the prompt; this is a known v1 tradeoff).
 
-**(o) Session logging (Phase 3)**
-- [ ] Click the record-circle icon in the toolbar (or `⌘⇧L`) on an active tab - it turns solid red. Run a few commands, toggle it off. Confirm a new file appeared under `~/Library/Application Support/FirstmateCockpit/logs/` named after the tab and a timestamp, containing the raw terminal output.
-- [ ] Toggling logging on again on the same tab starts a **new** file rather than appending to the old one.
-- [ ] Relaunch with `FM_LOG_SESSIONS_DEFAULT=1` and confirm a fresh log file appears for every tab opened, without touching the toggle.
-
 ## Scope guardrails
 
 - Console + the Hosts sidebar + the SSH Keys window + the Snippets window only. No dashboard, backend spawning, auth, or packaging.
 - Secrets (private key bytes, passphrases) live only in the macOS Keychain, Touch-ID/passcode gated (`KeychainKeyStore.swift`). Non-secret metadata (hosts, key labels/public keys/fingerprints, port-forward rules, snippets) lives in plain JSON under Application Support. `.ppk` (PuTTY) import is explicitly unsupported, not silently mishandled - see the Keys section above.
-- Session logs are plain text under Application Support, not sanitized or redacted - a logged session's transcript can contain anything the remote host printed. Treat the `logs/` directory the same way you would treat terminal scrollback.
 - Jump hosts, port forwarding, and agent forwarding are all just extra `ssh` argv - this app does not re-implement any part of the SSH protocol, host-key trust, or the SSH agent protocol.
 - Deferred out of this pass: SFTP, split panes, encrypted cross-device sync/vault, broadcast-snippet-to-all-tabs (Phase 4 / nice-to-have).
 - This native app is the only cockpit in this repo; the earlier Python/WKWebView cockpit it replaced has been removed.

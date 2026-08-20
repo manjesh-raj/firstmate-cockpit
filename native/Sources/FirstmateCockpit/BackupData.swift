@@ -21,10 +21,10 @@
 //     key entry with no secret behind it would be worse than the plain
 //     "re-add this key" message this file's diff already produces).
 //   - A named subset of `AppSettings`: mirror target, default working
-//     directory, the active theme id, terminal font size, and the three
+//     directory, the active theme id, terminal font size, and the two
 //     terminal-behavior toggles (auto-reconnect, needs-decision
-//     notifications, session-logging-by-default). Everything else backed by
-//     `UserDefaults` in this app (there is nothing else today) is
+//     notifications). Everything else backed by `UserDefaults` in this app
+//     (there is nothing else today) is
 //     deliberately left out - only fields that are genuinely "this
 //     captain's preferences," not machine-local state like `fmHome` (Firstmate
 //     home is already its own explicit Bootstrap step, resolved per machine).
@@ -39,14 +39,17 @@
 //     vocabulary list or a shortcut choice.
 //
 // `formatVersion` exists so a bundle from a future, incompatible version of
-// this file can be detected and refused rather than silently misdecoded. Both
-// new fields above are optional on `GrandLineBackup`, so this addition needed
-// no version bump: an old-format bundle (no "dictation" key at all) still
-// decodes cleanly into `dictation == nil` via Swift's synthesized
-// `Decodable` (an `Optional`-typed stored property is decoded with
-// `decodeIfPresent`), and a new-format bundle read by an app built before
-// this change simply ignores the extra key, same as `JSONDecoder` already
-// does for any unrecognized key.
+// this file can be detected and refused rather than silently misdecoded.
+// Adding or removing an *optional* field here never needs a version bump in
+// either direction: an old-format bundle missing the key still decodes
+// cleanly into `nil` via Swift's synthesized `Decodable` (an `Optional`-typed
+// stored property is decoded with `decodeIfPresent`), and an old bundle
+// carrying a key this file no longer declares is simply ignored, same as
+// `JSONDecoder` already does for any unrecognized key. That last direction is
+// why `fm/grandline-remove-session-logging` could drop
+// `BackupSettings.sessionLoggingDefault` outright: a `.glbackup` exported by
+// an earlier build still imports, its now-unknown key discarded rather than
+// failing the decode.
 
 import Foundation
 
@@ -85,7 +88,6 @@ struct BackupSettings: Codable {
     var fontSize: Double?
     var autoReconnect: Bool?
     var notifyOnNeedsDecision: Bool?
-    var sessionLoggingDefault: Bool?
 
     static func fromCurrent() -> BackupSettings {
         let s = AppSettings.shared
@@ -95,8 +97,7 @@ struct BackupSettings: Codable {
             themeID: ThemeManager.shared.theme.id,
             fontSize: Double(s.fontSize),
             autoReconnect: s.autoReconnect,
-            notifyOnNeedsDecision: s.notifyOnNeedsDecision,
-            sessionLoggingDefault: s.sessionLoggingDefault
+            notifyOnNeedsDecision: s.notifyOnNeedsDecision
         )
     }
 
@@ -110,7 +111,6 @@ struct BackupSettings: Codable {
         if let fontSize { s.fontSize = CGFloat(fontSize) }
         if let autoReconnect { s.autoReconnect = autoReconnect }
         if let notifyOnNeedsDecision { s.notifyOnNeedsDecision = notifyOnNeedsDecision }
-        if let sessionLoggingDefault { s.sessionLoggingDefault = sessionLoggingDefault }
     }
 
     /// A one-line, non-hardcoded summary for the diff preview - lists only
@@ -124,7 +124,6 @@ struct BackupSettings: Codable {
         if fontSize != nil { bits.append("font size") }
         if autoReconnect != nil { bits.append("auto-reconnect") }
         if notifyOnNeedsDecision != nil { bits.append("notifications") }
-        if sessionLoggingDefault != nil { bits.append("session logging") }
         return bits.isEmpty ? "no settings" : bits.joined(separator: ", ")
     }
 }

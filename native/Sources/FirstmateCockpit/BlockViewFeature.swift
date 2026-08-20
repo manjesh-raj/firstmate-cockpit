@@ -8,11 +8,11 @@
 // recommendation for a third attempt was: default OFF (not `AppSettings`
 // default-on, which is what turned a niche-feature bug into "crashes on
 // every launch" the first time), and env-var gated matching this app's
-// existing `FM_LOG_SESSIONS_DEFAULT`/`FM_DOCS_DIR`/etc. convention - see
-// `ConsoleController.defaultLoggingEnabled` for the identical pattern this
-// mirrors. Re-read on every check (not cached), so flipping the env var
-// only takes effect for a fresh process anyway (env vars don't change
-// mid-run), but this keeps the shape consistent with every other flag here.
+// existing `FM_DOCS_DIR`/`FM_HOSTS_FILE`/etc. convention - see
+// `DocsStore.folderURL` for the identical pattern this mirrors. Re-read on
+// every check (not cached), so flipping the env var only takes effect for a
+// fresh process anyway (env vars don't change mid-run), but this keeps the
+// shape consistent with every other flag here.
 //
 // Deliberately NOT an `AppSettings`-backed, UI-toggleable, persisted
 // preference in Stage 0 - there is no in-app way to turn this on. Turning it
