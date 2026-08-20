@@ -134,6 +134,11 @@ enum HelmType {
         [.font: kicker(), .kern: kickerKern, .foregroundColor: color]
     }
 
+    /// Text that *is* code - a saved snippet's command preview, a key
+    /// fingerprint. Monospaced at `caption()`'s size, so a code line and a
+    /// prose caption sit on the same baseline rhythm.
+    static func code() -> NSFont { .monospacedSystemFont(ofSize: 11.5, weight: .regular) }
+
     /// A number meant to be read as a measurement - a stat tile's value, a
     /// count badge. Monospaced digits so it does not reflow as it changes.
     static func metric(_ size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
@@ -999,6 +1004,24 @@ final class HelmAccentRow: NSView {
         var chipTint: HelmTint? = nil
         /// A wide row truncates its title to one line; a narrow one wraps.
         var titleWraps: Bool = false
+        /// Render `meta` in `HelmType.code()` rather than `caption()` - for a
+        /// meta line that is literally a command or a fingerprint, where
+        /// proportional spacing costs real readability.
+        var metaIsCode: Bool = false
+        /// A literal hue for the bar / badge / border, overriding `tint`.
+        ///
+        /// Only for a record that genuinely carries a **user-chosen** colour
+        /// rather than a semantic one: a saved `Host`'s own `accentHex`
+        /// (picked per host in the host editor) and an `SSHKeyType`'s fixed
+        /// per-algorithm accent. Everything else passes a `HelmTint`, which
+        /// resolves against the active palette. The kicker is still
+        /// `mutedInk` either way - a literal hue is no safer as text than a
+        /// `HelmTint` one.
+        var tintHex: String? = nil
+
+        /// The hue actually painted: the literal override when set, else the
+        /// semantic tint resolved against `theme`.
+        func resolvedTintHex(in theme: HelmTheme) -> String { tintHex ?? tint.hex(in: theme) }
     }
 
     // MARK: Geometry - `NotificationRowView`'s, promoted
@@ -1022,6 +1045,13 @@ final class HelmAccentRow: NSView {
     /// backgroundHex`, exactly as for `HelmCard`.
     static let borderAlpha: CGFloat = 0.4
 
+    /// How far a selected row's card fill is pulled toward the theme accent,
+    /// and the alpha of its accent stroke. Both are `HelmTableRowView`'s own
+    /// 0.24 / 0.65 recipe, softened a touch because a card already has a fill
+    /// and a border of its own to sit under - see `isRowSelected`.
+    static let selectionWash: CGFloat = 0.20
+    static let selectionBorderAlpha: CGFloat = 0.85
+
     // MARK: Views
 
     private let card = HoverHighlightView()
@@ -1036,9 +1066,27 @@ final class HelmAccentRow: NSView {
     private let chip = NSView()
     private let chipLabel = NSTextField(labelWithString: "")
 
+    private let trailingAccessory: NSView?
+
     private let chipPlacement: ChipPlacement
     private let hoverEnabled: Bool
     private var content: Content?
+    /// The theme the row was last painted with, so `isRowSelected` can repaint
+    /// without the caller having to hand the theme back in.
+    private var lastTheme: HelmTheme = ThemeManager.shared.theme
+
+    /// Whether this row is the selected one in its list.
+    ///
+    /// Selection lives on the card because the card is opaque: a wash painted
+    /// *behind* it by an `NSTableRowView` (which is how the Hosts / Keys /
+    /// Snippets lists rendered selection before Phase 5) is simply invisible
+    /// once the row is a card. The recipe is the one that row view used -
+    /// a wash of the theme's own accent plus a stronger accent stroke -
+    /// relocated onto the thing that is actually on top. Never the *system*
+    /// accent, which is the whole point of audit §5.2.
+    var isRowSelected: Bool = false {
+        didSet { if isRowSelected != oldValue { applyTheme(lastTheme) } }
+    }
 
     /// Set to make the whole row clickable. Left nil for a row whose
     /// interaction lives elsewhere (a table's own double-click, a nested
@@ -1055,13 +1103,21 @@ final class HelmAccentRow: NSView {
     ///     - SRE Lead's rendered-markdown block stack. The kicker, bar, badge
     ///     and card still come from this row.
     ///   - hover: whether the card highlights under the cursor.
+    ///   - trailingAccessory: a caller-owned view at the row's trailing edge,
+    ///     after the chip - the Hosts / Keys / Snippets lists put each row's
+    ///     own action buttons here, which is what let Phase 5 delete the
+    ///     three-button `.fillEqually` footer strip those lists used to pin to
+    ///     the bottom of the page. Mirrors `leadingControl`: the row owns the
+    ///     slot, the caller owns the control and its behaviour.
     init(chipPlacement: ChipPlacement = .trailing,
          leadingControl: NSView? = nil,
          contentView: NSView? = nil,
+         trailingAccessory: NSView? = nil,
          hover: Bool = true) {
         self.chipPlacement = chipPlacement
         self.leadingControl = leadingControl
         self.customContent = contentView
+        self.trailingAccessory = trailingAccessory
         self.hoverEnabled = hover
         self.badge = leadingControl == nil
             ? IconTileView(size: HelmMetrics.tileSmall, cornerRadius: HelmMetrics.tileSmall / 2)
@@ -1069,7 +1125,15 @@ final class HelmAccentRow: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         buildLayout()
-        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(rowClicked)))
+        let click = NSClickGestureRecognizer(target: self, action: #selector(rowClicked))
+        // The row has to stay composable inside a *selectable* table: with the
+        // AppKit default (`true`) this recognizer delays - and can swallow -
+        // the primary mouse-down, so an `NSTableView` never sees the click
+        // that should have selected the row. `rowClicked` no-ops when no
+        // `onClick` is set, so letting the event through costs nothing for a
+        // row that is not itself clickable.
+        click.delaysPrimaryMouseButtonEvents = false
+        addGestureRecognizer(click)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
@@ -1155,6 +1219,23 @@ final class HelmAccentRow: NSView {
         }
         rowViews.append(textStack)
         if chipPlacement == .trailing { rowViews.append(chip) }
+        if let trailingAccessory {
+            trailingAccessory.translatesAutoresizingMaskIntoConstraints = false
+            trailingAccessory.setContentHuggingPriority(.required, for: .horizontal)
+            trailingAccessory.setContentCompressionResistancePriority(.required, for: .horizontal)
+            // AGENTS.md gotcha (12): the two calls above are **no-ops** when
+            // the accessory is itself an `NSStackView`, because both constrain
+            // a view against its *intrinsic content size* and a stack has
+            // none. Without the stack-level pair the accessory - not the text
+            // column - is what `.fill` picks to absorb the row's slack, which
+            // is how a 90pt "Connect" button rendered ~900pt wide in the first
+            // Phase 5 render of this page.
+            if let stack = trailingAccessory as? NSStackView {
+                stack.setHuggingPriority(.required, for: .horizontal)
+                stack.setClippingResistancePriority(.required, for: .horizontal)
+            }
+            rowViews.append(trailingAccessory)
+        }
 
         let row = NSStackView(views: rowViews)
         row.orientation = .horizontal
@@ -1221,6 +1302,7 @@ final class HelmAccentRow: NSView {
 
         metaLabel.stringValue = content.meta ?? ""
         metaLabel.isHidden = (content.meta?.isEmpty ?? true)
+        metaLabel.font = content.metaIsCode ? HelmType.code() : HelmType.caption()
 
         chip.isHidden = content.chipText == nil
         applyTheme(theme)
@@ -1229,8 +1311,9 @@ final class HelmAccentRow: NSView {
     /// Re-resolves every colour against `theme`. Safe to call repeatedly: it
     /// re-reads the last `configure`d content rather than caching colours.
     func applyTheme(_ theme: HelmTheme) {
+        lastTheme = theme
         guard let content else { return }
-        let tintColor = HelmTheme.nsColor(content.tint.hex(in: theme))
+        let tintColor = HelmTheme.nsColor(content.resolvedTintHex(in: theme))
 
         badge?.applyTheme(theme)
 
@@ -1244,20 +1327,31 @@ final class HelmAccentRow: NSView {
         titleAccessory.contentTintColor = HelmTheme.mutedInk(theme)
 
         if let chipText = content.chipText {
-            ToolRowLayout.pill(text: chipText,
-                               colorHex: (content.chipTint ?? content.tint).hex(in: theme),
+            let chipHex = content.chipTint.map { $0.hex(in: theme) } ?? content.resolvedTintHex(in: theme)
+            ToolRowLayout.pill(text: chipText, colorHex: chipHex,
                                into: chip, label: chipLabel, theme: theme)
         }
 
         accentBar.layer?.backgroundColor = tintColor.cgColor
 
-        let cardFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
-        card.normalColor = cardFill
-        card.hoverColor = hoverEnabled
-            ? (cardFill.blended(withFraction: 0.08, of: tintColor) ?? cardFill)
-            : cardFill
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = tintColor.withAlphaComponent(Self.borderAlpha).cgColor
+        let baseFill = HelmTheme.nsColor(theme.chromeBackgroundHex)
+        if isRowSelected {
+            // The pre-Phase-5 `HelmTableRowView` recipe, moved onto the card:
+            // a wash of the theme's own accent under a stronger accent stroke.
+            let accent = HelmTheme.nsColor(theme.accentHex)
+            let fill = baseFill.blended(withFraction: Self.selectionWash, of: accent) ?? baseFill
+            card.normalColor = fill
+            card.hoverColor = fill
+            card.layer?.borderWidth = 1
+            card.layer?.borderColor = accent.withAlphaComponent(Self.selectionBorderAlpha).cgColor
+        } else {
+            card.normalColor = baseFill
+            card.hoverColor = hoverEnabled
+                ? (baseFill.blended(withFraction: 0.08, of: tintColor) ?? baseFill)
+                : baseFill
+            card.layer?.borderWidth = 1
+            card.layer?.borderColor = tintColor.withAlphaComponent(Self.borderAlpha).cgColor
+        }
     }
 
     // MARK: Probe / self-test surface
@@ -1276,6 +1370,9 @@ final class HelmAccentRow: NSView {
         let chipFrame: NSRect
         let cardRadius: CGFloat
         let cardBorderColor: NSColor?
+        let cardFill: NSColor?
+        let isRowSelected: Bool
+        let trailingAccessoryFrame: NSRect?
     }
 
     func debugGeometry() -> Geometry {
@@ -1293,7 +1390,10 @@ final class HelmAccentRow: NSView {
             chipVisible: !chip.isHidden,
             chipFrame: chip.convert(chip.bounds, to: self),
             cardRadius: card.layer?.cornerRadius ?? 0,
-            cardBorderColor: card.layer?.borderColor.map { NSColor(cgColor: $0) ?? .clear }
+            cardBorderColor: card.layer?.borderColor.map { NSColor(cgColor: $0) ?? .clear },
+            cardFill: card.normalColor,
+            isRowSelected: isRowSelected,
+            trailingAccessoryFrame: trailingAccessory.map { $0.convert($0.bounds, to: self) }
         )
     }
 }
@@ -1522,6 +1622,10 @@ final class HelmEmptyState: NSView {
     private let size: Size
     private let boxed: Bool
     private let accessory: NSView?
+    /// The glyph is fixed at `init` (only `setText` rewrites the words), so a
+    /// reusing `NSTableView` cell needs this to know whether the instance it
+    /// got back is showing the symbol it wants.
+    let symbolName: String
 
     /// - Parameters:
     ///   - symbol: the SF Symbol. Confirm a symbol actually resolves before
@@ -1547,6 +1651,7 @@ final class HelmEmptyState: NSView {
         self.size = size
         self.boxed = boxed
         self.accessory = accessory
+        self.symbolName = symbol
 
         iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title ?? body)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: size.glyphPointSize,

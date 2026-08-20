@@ -30,9 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // separate store instances that could drift out of sync with each other.
     let shiftStore = ShiftStore()
     lazy var console = ConsoleController(keyStore: keyStore, snippetStore: snippetStore)
-    lazy var hostsPanel = HostsSidebarController(store: hostStore)
-    lazy var keysController = KeysSidebarController(store: keyStore)
-    lazy var snippetsController = SnippetsController(store: snippetStore)
+    // Phase 5 of the full-app UI audit merged the Hosts destination and the
+    // two floating SSH Keys / Snippets windows into one destination with
+    // three segmented tabs, so this is now the only controller for all three
+    // stores' browsing/editing surfaces.
+    lazy var hostsPanel = HostsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore)
     lazy var settingsController = SettingsController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
     lazy var shiftMenuBar = ShiftMenuBarController(store: shiftStore)
     lazy var shiftSearch = ShiftSearchController(store: shiftStore)
@@ -83,8 +85,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
         )
     }()
-    var keysWindow: NSWindow?
-    var snippetsWindow: NSWindow?
     var hostEditorWindow: NSWindow?
     /// Fix 1: last-seen saved-host ids, so `hostStore.observe` below can
     /// detect a delete (a host id present last time but missing now) and
@@ -148,9 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.rail.onConnectHost = { [weak self] host in
             self?.connectToHost(host)
         }
-        // The Snippets panel's "Run" (Phase 3, B2) sends straight to the
+        // The Snippets tab's "Run" (Phase 3, B2) sends straight to the
         // console's active tab.
-        snippetsController.onRun = { [weak self] snippet in
+        appShell.onRunSnippet = { [weak self] snippet in
             self?.console.runSnippetInActiveTab(snippet)
         }
         // Settings > Terminal's font-size stepper (Fix 3) talks straight to
@@ -311,6 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `contentViewController` assignment above) - lock now so the very
         // first frame the captain sees is the lock screen, not the console.
         appLock.lock(reason: .launch)
+
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -452,65 +453,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // MARK: Keys window (Phase 2)
-
-    /// Open (or bring forward) the "SSH Keys" screen. A separate window rather
-    /// than a third split-view pane, since keys are managed far less often
-    /// than hosts are connected to (design report Section A1: "a keychain
-    /// screen the captain can browse").
-    @objc func showKeysWindow() {
-        if keysWindow == nil {
-            let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            win.title = "SSH Keys"
-            win.contentViewController = keysController
-            win.isReleasedWhenClosed = false
-            win.followHelmTheme()
-            win.center()
-            keysWindow = win
-        }
-        keysWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func newKeyFromMenu() {
-        showKeysWindow()
-        keysController.newKey()
-    }
-
-    // MARK: Snippets window (Phase 3, B2/B5)
-
-    /// Open (or bring forward) the "Snippets" screen - a separate window,
-    /// matching how the Keys screen (above) is kept out of the main
-    /// split-view rather than added as a third pane.
-    @objc func showSnippetsWindow() {
-        if snippetsWindow == nil {
-            let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 360, height: 480),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            win.title = "Snippets"
-            win.contentViewController = snippetsController
-            win.isReleasedWhenClosed = false
-            win.followHelmTheme()
-            win.center()
-            snippetsWindow = win
-        }
-        snippetsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func newSnippetFromMenu() {
-        showSnippetsWindow()
-        snippetsController.newSnippet()
-    }
-
     // MARK: Shift power features (phase 5)
 
     @objc func showShiftSearch() {
@@ -598,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(hostsMenuItem)
         let hostsMenu = NSMenu(title: "Hosts")
         hostsMenuItem.submenu = hostsMenu
-        let newHostItem = NSMenuItem(title: "New Host…", action: #selector(HostsSidebarController.newHost), keyEquivalent: "n")
+        let newHostItem = NSMenuItem(title: "New Host…", action: #selector(HostsController.newHost), keyEquivalent: "n")
         newHostItem.target = hostsPanel
         hostsMenu.addItem(newHostItem)
         // No keyboard shortcut (⌘K now belongs to Find in Terminal above) -
@@ -657,29 +599,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shiftMenu.addItem(quickCaptureItem)
 
         // Keys menu - the Phase 2 Keychain screen. Both items target the app
-        // delegate directly (so they work regardless of focus, like the Hosts
-        // menu's New Host / Quick Connect above).
+        // shell (so they work regardless of focus, like the Hosts menu's New
+        // Host / Quick Connect above). Phase 5 of the full-app UI audit folded
+        // this screen into the Hosts destination as a segmented tab, so
+        // "Manage Keys…" now selects that tab instead of opening a window -
+        // the shortcuts and titles are unchanged.
         let keysMenuItem = NSMenuItem()
         mainMenu.addItem(keysMenuItem)
         let keysMenu = NSMenu(title: "Keys")
         keysMenuItem.submenu = keysMenu
-        keysMenu.addItem(withTitle: "New Key…", action: #selector(AppDelegate.newKeyFromMenu), keyEquivalent: "n")
+        keysMenu.addItem(withTitle: "New Key…", action: #selector(AppShellController.newKeyFromMenu), keyEquivalent: "n")
             .keyEquivalentModifierMask = [.command, .shift]
-        keysMenu.addItem(withTitle: "Manage Keys…", action: #selector(AppDelegate.showKeysWindow), keyEquivalent: "k")
+        keysMenu.addItem(withTitle: "Manage Keys…", action: #selector(AppShellController.selectKeys), keyEquivalent: "k")
             .keyEquivalentModifierMask = [.command, .shift]
-        for item in keysMenu.items { item.target = self }
+        for item in keysMenu.items { item.target = appShell }
 
         // Snippets menu - the Phase 3 saved-command library (B2/B5). Same
-        // shape as the Keys menu above.
+        // shape as the Keys menu above, and folded into the same destination
+        // by the same phase.
         let snippetsMenuItem = NSMenuItem()
         mainMenu.addItem(snippetsMenuItem)
         let snippetsMenu = NSMenu(title: "Snippets")
         snippetsMenuItem.submenu = snippetsMenu
-        snippetsMenu.addItem(withTitle: "New Snippet…", action: #selector(AppDelegate.newSnippetFromMenu), keyEquivalent: "n")
+        snippetsMenu.addItem(withTitle: "New Snippet…", action: #selector(AppShellController.newSnippetFromMenu), keyEquivalent: "n")
             .keyEquivalentModifierMask = [.command, .option]
-        snippetsMenu.addItem(withTitle: "Manage Snippets…", action: #selector(AppDelegate.showSnippetsWindow), keyEquivalent: "p")
+        snippetsMenu.addItem(withTitle: "Manage Snippets…", action: #selector(AppShellController.selectSnippets), keyEquivalent: "p")
             .keyEquivalentModifierMask = [.command, .option]
-        for item in snippetsMenu.items { item.target = self }
+        for item in snippetsMenu.items { item.target = appShell }
 
         // Tab menu - the dynamic tab collection: new / duplicate / rename / close,
         // reconnect, and ⌘1…⌘9 to jump to a tab. All resolve to ConsoleController.

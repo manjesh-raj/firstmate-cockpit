@@ -41,52 +41,21 @@ enum HelmTint {
     }
 }
 
-/// The shared selected-row background for this app's `NSTableView` lists.
+/// Selected-row rendering note (audit §5.2, Phase 0 -> Phase 5).
 ///
-/// **Why this exists:** `table.style = .sourceList` paired with
-/// `selectionHighlightStyle = .regular` hands selection rendering to AppKit's
-/// private, vibrancy-backed `NSTableRowSidebarSelectionView`, which has no
-/// layer fill of its own and draws from the **system accent colour** - not
-/// from `HelmTheme`. So a selected host / key / snippet rendered macOS blue
-/// (`controlAccentColor` #007aff, `selectedContentBackgroundColor` #0059d1)
-/// on Gruvbox's orange, Catppuccin's violet and every other palette; forcing
-/// `root.appearance` does not help, because the wrong thing being resolved is
-/// the *accent*, not light-vs-dark (audit §5.2). The fix is to take selection
-/// rendering back: `selectionHighlightStyle = .none` on the table (which is
-/// what stops that private view being installed at all) plus this row view,
-/// which paints a wash of the active theme's own accent instead.
+/// This file used to hold `HelmTableRowView`, an `NSTableRowView` that painted
+/// a wash of the active theme's accent behind a selected row - Phase 0's fix
+/// for the Hosts / Keys / Snippets lists, which had handed selection to
+/// AppKit's private, vibrancy-backed `NSTableRowSidebarSelectionView` and so
+/// rendered macOS blue on every palette.
 ///
-/// Deliberately a translucent wash with a stronger stroke, not an opaque
-/// accent fill: a wash leaves the row's existing text contrast essentially
-/// untouched, so this stays a colour fix rather than turning into a
-/// selected-row typography change.
-final class HelmTableRowView: NSTableRowView {
-    /// The theme accent to paint with. Set by the owning table's
-    /// `tableView(_:rowViewForRow:)`, which knows the active theme.
-    var accentHex: String = ThemeManager.shared.theme.accentHex {
-        didSet { if isSelected { needsDisplay = true } }
-    }
-
-    /// With `selectionHighlightStyle = .none` AppKit never calls
-    /// `drawSelection(in:)`, and does not repaint on its own when selection
-    /// changes - both are on us.
-    override var isSelected: Bool {
-        didSet { needsDisplay = true }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard isSelected else { return }
-        let accent = HelmTheme.nsColor(accentHex)
-        let rect = bounds.insetBy(dx: 4, dy: 1)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        accent.withAlphaComponent(0.24).setFill()
-        path.fill()
-        accent.withAlphaComponent(0.65).setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-}
+/// Phase 5 turned all three of those lists into `HelmAccentRow` cards, and a
+/// card is opaque: a wash painted *behind* it is invisible. Selection moved
+/// onto the card itself (`HelmAccentRow.isRowSelected`, same accent-wash +
+/// accent-stroke recipe), and those three lists were this class's only
+/// callers, so it is gone rather than left as dead code. The rule it encoded
+/// still stands and is stronger now: those tables are `.fullWidth`, not
+/// `.sourceList`, so the private selection material is never installed at all.
 
 /// A live registry of labels that carry `HelmTheme.mutedInk` - the app's one
 /// muted/secondary text tone - so a window whose theme observer has no other

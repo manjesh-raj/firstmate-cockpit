@@ -5,9 +5,11 @@
 // body area that swaps between five destinations:
 //
 //   - .overview shows `FleetController` (Fix 1): the real fleet/PR dashboard.
-//   - .hosts shows `HostsSidebarController` (Fix 2) as its own full
-//     destination - no longer nested inside Console, so it's reachable
-//     exactly like Settings is.
+//   - .hosts shows `HostsController` (Fix 2) as its own full destination -
+//     no longer nested inside Console, so it's reachable exactly like
+//     Settings is. As of Phase 5 of the full-app UI audit that destination
+//     also owns SSH Keys and Snippets as segmented tabs, so the two floating
+//     windows those used to live in no longer exist.
 //   - .console shows `ConsoleController` alone: just the terminal/tabs area,
 //     with no Hosts panel required to be visible alongside it.
 //   - .review shows `ReviewController` (Fix 3, theme-audit task): the real,
@@ -36,7 +38,7 @@ final class AppShellController: NSViewController {
 
     let rail = IconRailController()
     let topBar = TopBarController()
-    private let hostsPanel: HostsSidebarController
+    private let hostsPanel: HostsController
     private let console: ConsoleController
     private let settings: SettingsController
     private let overview: FleetController
@@ -118,7 +120,7 @@ final class AppShellController: NSViewController {
     var onSearchTapped: (() -> Void)?
 
     init(
-        hostsPanel: HostsSidebarController, console: ConsoleController, settings: SettingsController,
+        hostsPanel: HostsController, console: ConsoleController, settings: SettingsController,
         hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
         dictationStore: DictationStore,
         makeHostConsole: @escaping () -> ConsoleController
@@ -607,6 +609,14 @@ final class AppShellController: NSViewController {
         hostsPanel.focusQuickConnect()
     }
 
+    /// Wired by the app delegate: the Snippets tab's "Run" sends a snippet to
+    /// the console's active tab. Forwarded rather than owned, matching
+    /// `onPresentHostEditor` - this controller knows nothing about snippets.
+    var onRunSnippet: ((Snippet) -> Void)? {
+        get { hostsPanel.onRunSnippet }
+        set { hostsPanel.onRunSnippet = newValue }
+    }
+
     /// The Edit menu's "Find in Terminal" (no longer ⌘K as of phase 4 - see
     /// main.swift's Edit menu comment; ⌘K now opens the unified search
     /// palette instead): invoke the exact same find action the console
@@ -636,6 +646,36 @@ final class AppShellController: NSViewController {
     /// The Hosts menu's "Show Hosts": select the Hosts rail destination.
     @objc func selectHosts() {
         show(.hosts)
+        hostsPanel.select(tab: .hosts)
+    }
+
+    /// The Keys menu's "Manage Keys…" (⌘⇧K). Phase 5 of the full-app UI audit
+    /// folded the SSH Keys window into the Hosts destination as a tab, so
+    /// this now selects that destination and that tab rather than opening a
+    /// second window.
+    @objc func selectKeys() {
+        show(.hosts)
+        hostsPanel.select(tab: .keys)
+    }
+
+    /// The Snippets menu's "Manage Snippets…" (⌘⌥P) - same shape as
+    /// `selectKeys`.
+    @objc func selectSnippets() {
+        show(.hosts)
+        hostsPanel.select(tab: .snippets)
+    }
+
+    /// The Keys menu's "New Key…" (⌘⇧N): reveal the Keys tab and open the key
+    /// editor sheet on it, regardless of which destination was showing.
+    @objc func newKeyFromMenu() {
+        show(.hosts)
+        hostsPanel.newKey()
+    }
+
+    /// The Snippets menu's "New Snippet…" (⌘⌥N) - same shape.
+    @objc func newSnippetFromMenu() {
+        show(.hosts)
+        hostsPanel.newSnippet()
     }
 
     /// The Shift menu's "New Task…" (⌘N) - selects the Shift destination
