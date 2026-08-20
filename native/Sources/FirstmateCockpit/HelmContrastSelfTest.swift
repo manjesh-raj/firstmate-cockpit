@@ -72,6 +72,7 @@ enum HelmContrastSelfTest {
         checkPageTitleVoice(&ok)
         checkRowDoesNotResizeWindow(&ok)
         checkSetupFlyoutTintsAreDistinct(&ok)
+        checkConsoleCardChromeGeometry(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -115,6 +116,90 @@ enum HelmContrastSelfTest {
                     ok = false
                 }
             }
+        }
+    }
+
+    // MARK: Console's SRE-Lead-active card chrome
+
+    /// `fm/grandline-sre-lead-app-feel`: with SRE Lead up, Console draws the
+    /// terminal as a card beside the SRE Lead panel. The card's whole reason
+    /// for being drawable at all is that the terminal never moves - the card's
+    /// leading/top/bottom edges have to land exactly on the terminal's own
+    /// permanent inset, or the border floats in the padding (a gap) or sits
+    /// over live text (clipping the first column).
+    ///
+    /// So this asserts the geometry contract rather than any colour: the drawn
+    /// card lines up with `ConsoleController.terminalInset` on the three real
+    /// edges, the two panels are separated by exactly one `HelmMetrics.s3`
+    /// gap of workspace floor, and both panels sit the same distance from the
+    /// window edge. Theme-independent by nature, so it runs once - the fill,
+    /// border and elevation it uses are `HelmCard`'s own tokens, already swept
+    /// per theme by `checkStatTileRecipe`/`checkPills` and by
+    /// `HelmCard.applyCardSurface`'s single definition.
+    private static func checkConsoleCardChromeGeometry(_ ok: inout Bool) {
+        print("\n-- console card chrome (SRE Lead active) --")
+        let pad = HelmMetrics.s3
+        let paneWidth: CGFloat = 380
+        let chrome = ConsoleCardChrome(frame: NSRect(x: 0, y: 0, width: 1200, height: 700))
+        chrome.pad = pad
+        chrome.gap = pad
+
+        // Closed: the card spans the full content width, inset by `pad` all
+        // round - the degenerate case, and the one that proves the card edge
+        // tracks the terminal's inset rather than a hardcoded number.
+        chrome.paneStripWidth = nil
+        let closed = chrome.terminalCardRect
+        if closed != NSRect(x: pad, y: pad, width: 1200 - pad * 2, height: 700 - pad * 2) {
+            print("  FAIL closed card rect \(closed) does not inset 1200x700 by \(pad) on all sides")
+            ok = false
+        }
+        if chrome.paneCardRect != nil {
+            print("  FAIL a pane card rect exists with no pane open")
+            ok = false
+        }
+
+        // Open: two panels, one gap.
+        chrome.paneStripWidth = paneWidth
+        let card = chrome.terminalCardRect
+        guard let pane = chrome.paneCardRect else {
+            print("  FAIL no pane card rect with a pane open")
+            ok = false
+            return
+        }
+        var failures: [String] = []
+        if card.minX != pad { failures.append("terminal card leading \(card.minX) != \(pad)") }
+        if card.minY != pad { failures.append("terminal card bottom \(card.minY) != \(pad)") }
+        if card.maxY != 700 - pad { failures.append("terminal card top \(card.maxY) != \(700 - pad)") }
+        if pane.minY != card.minY || pane.maxY != card.maxY {
+            failures.append("panels are not the same height: \(card) vs \(pane)")
+        }
+        if pane.maxX != 1200 - pad {
+            failures.append("pane card trailing \(pane.maxX) != \(1200 - pad) (must match the terminal card's own \(pad)pt window margin)")
+        }
+        if pane.minX - card.maxX != pad {
+            failures.append("workspace gap between the panels is \(pane.minX - card.maxX), expected exactly \(pad)")
+        }
+        // The pane card is what `ConsoleController` constrains inside the
+        // 380pt backdrop strip: full strip width minus its own trailing pad.
+        if pane.width != paneWidth - pad {
+            failures.append("pane card width \(pane.width) != \(paneWidth - pad)")
+        }
+        if failures.isEmpty {
+            print("  OK - terminal card \(card), pane card \(pane), gap \(pane.minX - card.maxX)pt")
+        } else {
+            for failure in failures { print("  FAIL \(failure)") }
+            ok = false
+        }
+
+        // A window too small to hold either panel must degrade to an empty
+        // rect rather than a negative-size one AppKit would then try to draw.
+        let tiny = ConsoleCardChrome(frame: NSRect(x: 0, y: 0, width: 40, height: 10))
+        tiny.pad = pad
+        tiny.gap = pad
+        tiny.paneStripWidth = paneWidth
+        if !tiny.terminalCardRect.isEmpty || tiny.paneCardRect != nil {
+            print("  FAIL a 40x10 content area produced non-empty card rects: \(tiny.terminalCardRect) / \(String(describing: tiny.paneCardRect))")
+            ok = false
         }
     }
 
