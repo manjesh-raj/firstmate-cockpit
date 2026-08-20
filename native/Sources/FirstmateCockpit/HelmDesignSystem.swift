@@ -2110,6 +2110,37 @@ final class HelmPageToolbar: NSView {
         return b
     }
 
+    /// A toolbar control that names itself: the same bordered `.secondary`
+    /// chrome as `iconButton`, with its glyph *and* a label.
+    ///
+    /// The audit prototype's Console toolbar reads "Find / Compose / Claude
+    /// usage / SRE Lead" (`15-proposed-console-sre-lead.png`); as shipped
+    /// those were four bare glyphs, indistinguishable from each other and from
+    /// the zoom controls beside them unless the captain hovered for a tooltip.
+    /// Phase 7 unified the toolbar's *chrome* and left every control an icon
+    /// square, which is right for a pure utility (zoom in / zoom out) and
+    /// wrong for a named feature.
+    ///
+    /// Height is compensated for the button's own `alignmentRectInsets`
+    /// exactly as in `iconButton` - see that method for the measured reason -
+    /// so a labelled control and an icon square sit on one baseline at the
+    /// same visible height.
+    static func labeledButton(symbol: String,
+                              title: String,
+                              tooltip: String,
+                              target: AnyObject?,
+                              action: Selector?) -> HelmButton {
+        let b = HelmButton(title: title, variant: .secondary, size: .small,
+                           symbol: symbol, target: target, action: action)
+        b.toolTip = tooltip
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.setContentHuggingPriority(.required, for: .horizontal)
+        b.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let insets = b.alignmentRectInsets
+        b.heightAnchor.constraint(equalToConstant: iconButtonSide - insets.top - insets.bottom).isActive = true
+        return b
+    }
+
     /// A horizontal group of toolbar controls, spaced the one way.
     static func group(_ views: [NSView]) -> NSStackView {
         let stack = NSStackView(views: views)

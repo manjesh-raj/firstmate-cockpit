@@ -26,16 +26,30 @@ final class FleetController: NSViewController {
 
     private let greetingLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let refreshButton = NSButton()
+    /// A labeled `HelmButton(.quiet)`, matching the prototype's own page
+    /// header (and every other page's refresh action) rather than the bare
+    /// borderless glyph tucked beside the greeting this page used to have.
+    private let refreshButton = HelmButton(title: "Refresh", variant: .quiet, symbol: "arrow.clockwise")
 
-    private let bannerView = NSView()
-    private let bannerGlyph = NSTextField(labelWithString: "")
-    private let bannerTitle = NSTextField(labelWithString: "")
-    private let bannerBody = NSTextField(wrappingLabelWithString: "")
+    /// The answer banner is the app's shared `HelmAccentRow` now, not a
+    /// hand-rolled tinted slab with a text glyph in it. The prototype renders
+    /// it exactly like every other alert card in the app - a 3pt accent bar, a
+    /// round badge, an uppercase kicker ("ALL CLEAR" / "NEEDS YOU"), the
+    /// headline and a meta line - and the audit's whole point was that this
+    /// page had its own private version of an idea the design system already
+    /// owns.
+    private let bannerRow = HelmAccentRow(hover: false)
 
     private let statsRow = NSStackView()
 
+    /// A plain section heading (round glyph + title + count chip), not a
+    /// `HelmCard` wrapper. The prototype puts "In flight" rows straight on the
+    /// page: they are `HelmAccentRow` cards already, so a card around a list
+    /// of cards is a second border for nothing.
     private let inFlightHeader = NSTextField(labelWithString: "")
+    private let inFlightCountChip = NSView()
+    private let inFlightCountLabel = NSTextField(labelWithString: "")
+    private let inFlightGlyph = IconTileView(size: 22, cornerRadius: 11)
     private let inFlightStack = NSStackView()
 
     /// Shown in place of the data sections above until the first
@@ -44,9 +58,6 @@ final class FleetController: NSViewController {
     private let loadingSpinner = NSProgressIndicator()
     private let loadingLabel = NSTextField(labelWithString: "Loading fleet data\u{2026}")
     private var inFlightSectionView: NSView!
-    /// Every `HelmCard` on this page, re-themed together. Replaces this
-    /// file's own copy of the card theming loop (audit §3.2).
-    private var cards: [HelmCard] = []
     private var hasLoadedOnce = false
 
     private var theme: HelmTheme = ThemeManager.shared.theme
@@ -84,10 +95,9 @@ final class FleetController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
-        buildBanner()
         buildStatsRow()
         let loadingSection = buildLoadingState()
-        let inFlightSection = buildSection(header: inFlightHeader, iconSymbol: "clock", title: "In flight", stack: inFlightStack)
+        let inFlightSection = buildSection(title: "In flight")
         inFlightSectionView = inFlightSection
 
         contentStack.orientation = .vertical
@@ -96,13 +106,13 @@ final class FleetController: NSViewController {
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
         contentStack.addArrangedSubview(loadingSection)
-        contentStack.addArrangedSubview(bannerView)
+        contentStack.addArrangedSubview(bannerRow)
         contentStack.addArrangedSubview(statsRow)
         contentStack.addArrangedSubview(inFlightSection)
 
         // The data sections stay hidden behind the loading skeleton until the
         // first successful `render(...)` - see `buildLoadingState`.
-        bannerView.isHidden = true
+        bannerRow.isHidden = true
         statsRow.isHidden = true
         inFlightSection.isHidden = true
 
@@ -112,8 +122,9 @@ final class FleetController: NSViewController {
             contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            headerRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             loadingSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
-            bannerView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            bannerRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             statsRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             inFlightSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
         ])
@@ -178,57 +189,44 @@ final class FleetController: NSViewController {
         subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        refreshButton.title = ""
-        refreshButton.isBordered = false
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshButton.target = self
         refreshButton.action = #selector(refreshTapped)
         refreshButton.toolTip = "Refresh fleet data"
+        refreshButton.setContentHuggingPriority(.required, for: .horizontal)
+        refreshButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
         let textStack = NSStackView(views: [greetingLabel, subtitleLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 4
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [textStack, refreshButton])
+        // `.fill` plus a flexible spacer, so Refresh sits at the page's own
+        // trailing edge (prototype `.phead .row`) instead of hugging the
+        // greeting. See AGENTS.md gotcha (10)/(12): a nested stack has no
+        // intrinsic size, so the spacer - not the text stack - is what carries
+        // the low hugging priority the distribution actually stretches.
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [textStack, spacer, refreshButton])
         row.orientation = .horizontal
+        row.alignment = .lastBaseline
+        row.distribution = .fill
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
+        headerRow = row
         return row
     }
 
-    private func buildBanner() {
-        bannerView.wantsLayer = true
-        bannerView.layer?.cornerRadius = 12
-        bannerView.translatesAutoresizingMaskIntoConstraints = false
-
-        bannerGlyph.font = .systemFont(ofSize: 22)
-        bannerGlyph.translatesAutoresizingMaskIntoConstraints = false
-
-        bannerTitle.font = .systemFont(ofSize: 14, weight: .semibold)
-        bannerTitle.translatesAutoresizingMaskIntoConstraints = false
-
-        bannerBody.font = .systemFont(ofSize: 12)
-        bannerBody.translatesAutoresizingMaskIntoConstraints = false
-
-        let textStack = NSStackView(views: [bannerTitle, bannerBody])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 3
-        textStack.translatesAutoresizingMaskIntoConstraints = false
-
-        bannerView.addSubview(bannerGlyph)
-        bannerView.addSubview(textStack)
-        NSLayoutConstraint.activate([
-            bannerGlyph.leadingAnchor.constraint(equalTo: bannerView.leadingAnchor, constant: 16),
-            bannerGlyph.centerYAnchor.constraint(equalTo: bannerView.centerYAnchor),
-            textStack.leadingAnchor.constraint(equalTo: bannerGlyph.trailingAnchor, constant: 14),
-            textStack.trailingAnchor.constraint(lessThanOrEqualTo: bannerView.trailingAnchor, constant: -16),
-            textStack.topAnchor.constraint(equalTo: bannerView.topAnchor, constant: 14),
-            textStack.bottomAnchor.constraint(equalTo: bannerView.bottomAnchor, constant: -14),
-        ])
-    }
+    /// Kept so `loadView` can pin it to the content column's full width -
+    /// without that the row shrinks to its content and Refresh stops being at
+    /// the page's trailing edge.
+    private var headerRow: NSStackView!
 
     private func buildStatsRow() {
         statsRow.orientation = .horizontal
@@ -284,8 +282,8 @@ final class FleetController: NSViewController {
     /// pr-list: this is how the "ready to merge" tile jumps straight to
     /// `.review`'s full list, after removing this page's own duplicate
     /// itemized copy of it.
-    private func statTile(icon: String, value: String, label: String, onClick: (() -> Void)? = nil) -> NSView {
-        let tile = HelmStatTile(symbol: icon, value: value, caption: label)
+    private func statTile(icon: String, value: String, label: String, tint: HelmTint? = nil, onClick: (() -> Void)? = nil) -> NSView {
+        let tile = HelmStatTile(symbol: icon, value: value, caption: label, tint: tint)
         if let onClick {
             tile.onClick = onClick
             tile.toolTip = "View in Review"
@@ -299,25 +297,61 @@ final class FleetController: NSViewController {
     /// so `applyTheme` can hand every live tile the new theme.
     private var statTiles: [HelmStatTile] = []
 
-    /// One `HelmCard` per section - the shared container from
-    /// `HelmDesignSystem.swift`. This used to be a bare header-row-over-stack
-    /// with no chrome at all, near-identical to `ReviewController`'s copy and
-    /// differing from it only in one stack spacing (audit §3.2). The caller
-    /// keeps its own title label, since it rewrites the text with a live
-    /// count; the card owns that label's font and colour.
-    private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> HelmCard {
-        header.stringValue = title
+    /// The "In flight" section: a plain heading (round glyph + title + count
+    /// chip) over the rows, exactly as the prototype's `h2.sect` renders it -
+    /// **not** a `HelmCard`.
+    ///
+    /// The rows below are `HelmAccentRow` cards, each with its own fill and
+    /// border, so wrapping them in a second card put a border around a list of
+    /// borders and made Overview read as one uniform slab. Review keeps its
+    /// cards because those group PRs *by forge*; there is one group here.
+    private func buildSection(title: String) -> NSView {
+        inFlightHeader.stringValue = title
+        inFlightHeader.font = HelmType.sectionTitle()
+        inFlightHeader.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        inFlightGlyph.configure(symbol: "clock", tint: .accent, pointSize: 11)
+        inFlightGlyph.setContentHuggingPriority(.required, for: .horizontal)
 
-        let card = HelmCard()
-        card.setHeader(symbol: iconSymbol, titleLabel: header)
-        card.setBody(stack, insets: HelmCard.contentInsets)
-        cards.append(card)
-        return card
+        inFlightCountLabel.font = HelmType.metric(11, weight: .medium)
+        inFlightCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        inFlightCountChip.wantsLayer = true
+        inFlightCountChip.layer?.cornerRadius = 5
+        inFlightCountChip.translatesAutoresizingMaskIntoConstraints = false
+        inFlightCountChip.addSubview(inFlightCountLabel)
+        NSLayoutConstraint.activate([
+            inFlightCountLabel.leadingAnchor.constraint(equalTo: inFlightCountChip.leadingAnchor, constant: 6),
+            inFlightCountLabel.trailingAnchor.constraint(equalTo: inFlightCountChip.trailingAnchor, constant: -6),
+            inFlightCountLabel.topAnchor.constraint(equalTo: inFlightCountChip.topAnchor, constant: 1),
+            inFlightCountLabel.bottomAnchor.constraint(equalTo: inFlightCountChip.bottomAnchor, constant: -1),
+        ])
+        inFlightCountChip.setContentHuggingPriority(.required, for: .horizontal)
+
+        let headingSpacer = NSView()
+        headingSpacer.translatesAutoresizingMaskIntoConstraints = false
+        headingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let heading = NSStackView(views: [inFlightGlyph, inFlightHeader, inFlightCountChip, headingSpacer])
+        heading.orientation = .horizontal
+        heading.alignment = .centerY
+        heading.distribution = .fill
+        heading.spacing = HelmMetrics.s2
+        heading.translatesAutoresizingMaskIntoConstraints = false
+
+        inFlightStack.orientation = .vertical
+        inFlightStack.alignment = .leading
+        inFlightStack.spacing = HelmMetrics.s2
+        inFlightStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let section = NSStackView(views: [heading, inFlightStack])
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = HelmMetrics.s3
+        section.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            heading.widthAnchor.constraint(equalTo: section.widthAnchor),
+            inFlightStack.widthAnchor.constraint(equalTo: section.widthAnchor),
+        ])
+        return section
     }
 
     // MARK: Refresh
@@ -370,7 +404,7 @@ final class FleetController: NSViewController {
             hasLoadedOnce = true
             loadingSpinner.stopAnimation(nil)
             loadingContainer.isHidden = true
-            bannerView.isHidden = false
+            bannerRow.isHidden = false
             statsRow.isHidden = false
             inFlightSectionView.isHidden = false
         }
@@ -394,7 +428,8 @@ final class FleetController: NSViewController {
         renderBanner(needs: needs, working: working, readyCount: mergedPRs?.count ?? 0)
         rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot)
         rebuildTaskRows(into: inFlightStack, tasks: working, emptyTitle: "All hands idle", emptyBody: "No crew are working right now. Send your first mate a task from the console and this board lights up.")
-        inFlightHeader.stringValue = "In flight (\(working.count))"
+        inFlightHeader.stringValue = "In flight"
+        inFlightCountLabel.stringValue = "\(working.count)"
 
         applyTheme()
 
@@ -410,26 +445,34 @@ final class FleetController: NSViewController {
         scrollToTop()
     }
 
+    /// The answer banner, as the shared `HelmAccentRow`. Same two states and
+    /// same copy as before; only the presentation changed - the accent bar,
+    /// the round badge and the uppercase kicker come from the component now
+    /// rather than being absent.
     private func renderBanner(needs: [FleetTask], working: [FleetTask], readyCount: Int) {
+        let content: HelmAccentRow.Content
         if needs.isEmpty {
-            bannerGlyph.stringValue = "\u{2713}"
-            bannerTitle.stringValue = "All clear - nothing needs you"
-            bannerBody.stringValue = "\(working.count) crew working, \(readyCount) PR\(readyCount == 1 ? "" : "s") ready to merge. Nobody is parked on a decision."
-            bannerIsAlert = false
+            content = HelmAccentRow.Content(
+                tint: .good,
+                kicker: "All clear",
+                title: "Nothing needs you right now",
+                meta: "\(working.count) crew working \u{00B7} \(readyCount) PR\(readyCount == 1 ? "" : "s") ready to merge \u{00B7} nobody is parked on a decision.",
+                badgeSymbol: "checkmark")
         } else {
             let decisions = needs.filter { $0.status == "needs_decision" }.count
             let blocked = needs.filter { $0.status == "blocked" }.count
             var bits: [String] = []
             if decisions > 0 { bits.append("\(decisions) decision\(decisions > 1 ? "s" : "") waiting") }
             if blocked > 0 { bits.append("\(blocked) blocked") }
-            bannerGlyph.stringValue = "\u{26A0}\u{FE0F}"
-            bannerTitle.stringValue = "\(needs.count) task\(needs.count > 1 ? "s" : "") need your call"
-            bannerBody.stringValue = bits.joined(separator: " \u{00B7} ") + " - the crew is holding for you."
-            bannerIsAlert = true
+            content = HelmAccentRow.Content(
+                tint: .warn,
+                kicker: "Needs you",
+                title: "\(needs.count) task\(needs.count > 1 ? "s" : "") need your call",
+                meta: bits.joined(separator: " \u{00B7} ") + " - the crew is holding for you.",
+                badgeSymbol: "exclamationmark.triangle.fill")
         }
+        bannerRow.configure(content, theme: theme)
     }
-
-    private var bannerIsAlert = false
 
     private func rebuildStats(working: Int, ready: Int, snapshot: FleetSnapshot) {
         for v in statsRow.arrangedSubviews {
@@ -445,12 +488,26 @@ final class FleetController: NSViewController {
         default: watcherLabel = "watcher off"
         }
 
+        // Tinted by meaning, not uniformly ink - the prototype's own stat row.
+        // A tint only ever means "this number is itself a signal": ready-to-
+        // merge is the one actionable count and the only clickable tile, done-
+        // today is a good outcome, and the watcher's own health decides its
+        // own colour. Working / queued / projects stay plain, because a
+        // coloured number there would be colour with nothing to say.
+        // `HelmStatTile` runs every tint through `HelmContrast` (§5.7), so
+        // none of these is the raw hue as text.
+        let watcherTint: HelmTint
+        switch snapshot.watcher.status {
+        case "healthy": watcherTint = .good
+        case "stale": watcherTint = .warn
+        default: watcherTint = .neutral
+        }
         statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(working)", label: "working"))
-        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", onClick: { [weak self] in self?.onNavigateToReview?() }))
+        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", tint: .accent, onClick: { [weak self] in self?.onNavigateToReview?() }))
         statsRow.addArrangedSubview(statTile(icon: "line.3.horizontal", value: "\(snapshot.queuedCount)", label: "queued"))
-        statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(snapshot.doneCount)", label: "done today"))
+        statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(snapshot.doneCount)", label: "done today", tint: .good))
         statsRow.addArrangedSubview(statTile(icon: "shippingbox", value: "\(snapshot.projectsCount)", label: "projects"))
-        statsRow.addArrangedSubview(statTile(icon: "waveform.path.ecg", value: "", label: watcherLabel))
+        statsRow.addArrangedSubview(statTile(icon: "waveform.path.ecg", value: snapshot.watcher.status == "healthy" ? "OK" : "\u{2014}", label: watcherLabel, tint: watcherTint))
     }
 
     private func rebuildTaskRows(into stack: NSStackView, tasks: [FleetTask], emptyTitle: String, emptyBody: String) {
@@ -539,7 +596,6 @@ final class FleetController: NSViewController {
 
     private func applyTheme() {
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        for card in cards { card.applyTheme(theme) }
         let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let surface = HelmTheme.nsColor(theme.chromeBackgroundHex)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
@@ -552,18 +608,19 @@ final class FleetController: NSViewController {
         let muted = HelmTheme.mutedInk(theme)
         greetingLabel.textColor = ink
         subtitleLabel.textColor = muted
-        refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
+        // `refreshButton` is a `HelmButton` and themes itself - never set
+        // `contentTintColor` on one, `restyle()` owns that property.
 
         loadingContainer.layer?.backgroundColor = surface.cgColor
         loadingContainer.layer?.borderWidth = 1
         loadingContainer.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
         loadingLabel.textColor = muted
 
-        let bannerColorHex = bannerIsAlert ? theme.ansiHex[3] : theme.ansiHex[2]
-        let bannerColor = HelmTheme.nsColor(bannerColorHex)
-        bannerView.layer?.backgroundColor = bannerColor.withAlphaComponent(0.12).cgColor
-        bannerTitle.textColor = ink
-        bannerBody.textColor = muted
+        bannerRow.applyTheme(theme)
+        inFlightHeader.textColor = ink
+        inFlightGlyph.applyTheme(theme)
+        inFlightCountChip.layer?.backgroundColor = ink.withAlphaComponent(0.08).cgColor
+        inFlightCountLabel.textColor = muted
 
         for tile in statTiles { tile.applyTheme(theme) }
         for empty in emptyStates { empty.applyTheme(theme) }

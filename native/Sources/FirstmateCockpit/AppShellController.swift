@@ -52,6 +52,13 @@ final class AppShellController: NSViewController {
     private let bootstrap: BootstrapController
     private let automation: AutomationController
     private let githubSync = GitHubSyncController()
+    /// fm/grandline-design-fidelity-fixes: the four pages above are one Setup
+    /// destination with a `HelmSegmentedTabs` row across the top, so the
+    /// captain can move between them without going back out to the rail's
+    /// Setup flyout. They are still four independent `RailDestination` cases
+    /// and four independent controllers - this only parents them and switches
+    /// which one is visible. See `SetupContainerController`.
+    private var setup: SetupContainerController!
 
     /// Fix 1: builds a fresh, host-scoped `ConsoleController` (no Mirror/
     /// Shell tabs - see `ConsoleController.init(opensFirstmateOnLaunch:)`).
@@ -179,13 +186,23 @@ final class AppShellController: NSViewController {
         addChild(vault)
         addChild(dictation)
         addChild(docs)
-        addChild(updates)
-        addChild(bootstrap)
-        addChild(automation)
-        addChild(githubSync)
+        // The four Setup pages become children of `setup`, not of this
+        // controller - `SetupContainerController.loadView` calls `addChild`
+        // for each of them.
+        setup = SetupContainerController(updates: updates, bootstrap: bootstrap,
+                                         automation: automation, githubSync: githubSync)
+        setup.onTabSelected = { [weak self] dest in
+            // The tab row moved itself; only the rail highlight still needs to
+            // follow. The top bar keeps saying "Setup" - the tab row directly
+            // below it is what names the active sub-page, exactly as in the
+            // prototype (`03-proposed-setup-tabs.png`), and as Hosts already
+            // does for its own three tabs.
+            self?.rail.setActive(dest)
+        }
+        addChild(setup)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, updates.view, bootstrap.view, automation.view, githubSync.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, setup.view, settings.view] {
             embed(destinationView)
         }
 
@@ -489,18 +506,15 @@ final class AppShellController: NSViewController {
         case .docs:
             docs.view.isHidden = false
             topBar.setTitle("Docs")
-        case .updates:
-            updates.view.isHidden = false
-            topBar.setTitle("Updates")
-        case .bootstrap:
-            bootstrap.view.isHidden = false
-            topBar.setTitle("Bootstrap")
-        case .automation:
-            automation.view.isHidden = false
-            topBar.setTitle("Automation")
-        case .githubSync:
-            githubSync.view.isHidden = false
-            topBar.setTitle("GitHub Sync")
+        case .updates, .bootstrap, .automation, .githubSync:
+            // One destination view with four tabs - the rail flyout still
+            // names a specific one, which just selects that tab.
+            setup.view.isHidden = false
+            if let tab = SetupTab(destination: dest) { setup.select(tab: tab) }
+            // "Setup", not the sub-page's own name: the tab row below names
+            // the sub-page, and the rail row the captain came from says
+            // "Setup" too.
+            topBar.setTitle("Setup")
         case .settings:
             settings.view.isHidden = false
             topBar.setTitle("Settings")
@@ -592,10 +606,7 @@ final class AppShellController: NSViewController {
         vault.view.isHidden = true
         dictation.view.isHidden = true
         docs.view.isHidden = true
-        updates.view.isHidden = true
-        bootstrap.view.isHidden = true
-        automation.view.isHidden = true
-        githubSync.view.isHidden = true
+        setup.view.isHidden = true
         settings.view.isHidden = true
         for controller in hostConsoles.values { controller.view.isHidden = true }
         activeHostID = nil

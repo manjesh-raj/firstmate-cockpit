@@ -165,6 +165,79 @@ enum DocsRunbookDataSelfTest {
             check(freshContent?.contains("Real content.") == true, "a fresh clone from the remote should show the real committed runbook content")
         }
 
+        // --- DocsRunbookMetadata (fm/grandline-design-fidelity-fixes) -------
+        //
+        // The card subtitle the Docs grid shows is derived from the document's
+        // own markdown - no stored category, no stored step count. These are
+        // the two real shapes on disk: a runbook (`# Title`, prose, a `##
+        // Steps` fenced block of commands) and a postmortem written by
+        // `SRELeadPostmortem` (`## Root Cause` with a `**Finding:**` label).
+        let runbookMarkdown = """
+        # Node Health Check
+
+        Read-only survey of overall node health across the cluster.
+
+        ## Steps
+
+        ```
+        kubectl get nodes -o wide
+        kubectl top nodes
+        kubectl get events -A --field-selector involvedObject.kind=Node
+        ```
+
+        ## Next steps
+
+        - `kubectl describe node <node-name>` - check the Conditions section.
+        """
+        let rb = DocsRunbook(id: "node-health-check", title: "Node Health Check",
+                             content: runbookMarkdown, modifiedAt: Date())
+        check(DocsRunbookMetadata.stepCount(in: runbookMarkdown) == 3,
+              "step count should be the 3 command lines inside the fenced block, got \(DocsRunbookMetadata.stepCount(in: runbookMarkdown))")
+        check(DocsRunbookMetadata.category(in: runbookMarkdown) == "Kubernetes",
+              "an all-kubectl runbook should read as Kubernetes, got \(String(describing: DocsRunbookMetadata.category(in: runbookMarkdown)))")
+        check(DocsRunbookMetadata.runbookSubtitle(rb) == "Kubernetes \u{00B7} 3 steps",
+              "subtitle should be \"Kubernetes \u{00B7} 3 steps\", got \(String(describing: DocsRunbookMetadata.runbookSubtitle(rb)))")
+
+        // The `- ` bullet in "Next steps" is prose, not a step: it is outside
+        // the fence, so it must not be counted.
+        check(!DocsRunbookMetadata.commandLines(in: runbookMarkdown).contains { $0.hasPrefix("-") },
+              "prose bullets outside a fenced block must not count as steps")
+
+        // A document with no fenced commands has nothing to say - the caller
+        // falls back to "Updated N ago".
+        check(DocsRunbookMetadata.runbookSubtitle(
+                DocsRunbook(id: "x", title: "x", content: "# x\n\nJust prose.\n", modifiedAt: Date())) == nil,
+              "a runbook with no steps should have no derived subtitle")
+
+        // Mixed tools: the dominant executable wins.
+        let awsMarkdown = "# X\n\n```\naws s3 ls\naws ec2 describe-instances\nkubectl get pods\n```\n"
+        check(DocsRunbookMetadata.category(in: awsMarkdown) == "AWS",
+              "the dominant executable should decide the category, got \(String(describing: DocsRunbookMetadata.category(in: awsMarkdown)))")
+
+        let postmortemMarkdown = """
+        # 2026-08-11 worker OOMKill cascade
+
+        ## Timeline
+
+        - 14:02 first restart.
+
+        ## Root Cause
+
+        **Finding:** the worker's 512Mi memory limit was below its real working set. Everything after the first sentence is detail.
+
+        ## Follow-ups
+
+        **Recommended next action:** raise the limit to 768Mi.
+        """
+        let pm = DocsRunbook(id: "pm", title: "2026-08-11 worker OOMKill cascade",
+                             content: postmortemMarkdown, modifiedAt: Date())
+        let pmSubtitle = DocsRunbookMetadata.postmortemSubtitle(pm)
+        check(pmSubtitle == "Root cause: the worker's 512Mi memory limit was below its real working set",
+              "postmortem subtitle should be the first sentence of Root Cause with the Finding label stripped, got \(String(describing: pmSubtitle))")
+        check(DocsRunbookMetadata.postmortemSubtitle(
+                DocsRunbook(id: "y", title: "y", content: "# y\n\n## Timeline\n\nnothing.\n", modifiedAt: Date())) == nil,
+              "a postmortem with no Root Cause section should have no derived subtitle")
+
         if !failures.isEmpty {
             for f in failures { FileHandle.standardError.write(Data(("FAIL: " + f + "\n").utf8)) }
         }

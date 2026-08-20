@@ -625,9 +625,18 @@ final class DocsController: NSViewController {
         // beside a "Runbooks" heading - a bare "6" there says nothing.
         runbooksHeaderCountLabel.stringValue = runbooks.count == 1 ? "1 runbook" : "\(runbooks.count) runbooks"
         runbookGridItems = runbooks.map { runbook in
-            DocGridItem(
+            // The card's own metadata line - "Kubernetes \u{00B7} 3 steps" -
+            // read out of the runbook's own fenced steps
+            // (`DocsRunbookMetadata`), matching the prototype
+            // (`11-proposed-docs-runbooks.png`). "Updated N ago" is the
+            // fallback for a document with no steps yet, and stays on the
+            // card's tooltip either way so the timestamp is never lost.
+            let updated = "Updated \(Self.relativeDate(runbook.modifiedAt))"
+            let subtitle = DocsRunbookMetadata.runbookSubtitle(runbook) ?? updated
+            return DocGridItem(
                 title: runbook.title,
-                subtitle: "Updated \(Self.relativeDate(runbook.modifiedAt))",
+                subtitle: subtitle,
+                tooltip: subtitle == updated ? runbook.title : "\(runbook.title) \u{2014} \(updated)",
                 icon: "doc.text",
                 tint: .info,
                 onOpen: { [weak self] in self?.beginEditRunbook(runbook.id) },
@@ -834,9 +843,16 @@ final class DocsController: NSViewController {
         postmortemEmptyState.isHidden = !postmortems.isEmpty
         postmortemListScroll.isHidden = postmortems.isEmpty
         postmortemGridItems = postmortems.map { postmortem in
-            DocGridItem(
+            // A postmortem's own `## Root Cause` section is what its card
+            // says (prototype `13-proposed-docs-postmortems.png`); the
+            // timestamp falls back in when the document has no root cause
+            // written yet.
+            let updated = "Updated \(Self.relativeDate(postmortem.modifiedAt))"
+            let subtitle = DocsRunbookMetadata.postmortemSubtitle(postmortem) ?? updated
+            return DocGridItem(
                 title: postmortem.title,
-                subtitle: "Updated \(Self.relativeDate(postmortem.modifiedAt))",
+                subtitle: subtitle,
+                tooltip: subtitle == updated ? postmortem.title : "\(postmortem.title) \u{2014} \(updated)",
                 icon: "exclamationmark.triangle",
                 tint: .warn,
                 onOpen: { [weak self] in self?.showPostmortem(postmortem.id) },
@@ -895,6 +911,10 @@ final class DocsController: NSViewController {
     private struct DocGridItem {
         let title: String
         let subtitle: String
+        /// Hover text for the whole card. Carries what the one-line subtitle
+        /// no longer has room for once it shows real metadata - the full
+        /// title and the "Updated N ago" timestamp.
+        var tooltip: String? = nil
         let icon: String
         let tint: HelmTint
         let onOpen: () -> Void
@@ -923,6 +943,10 @@ final class DocsController: NSViewController {
     /// scrollable-item's height silently growing" lesson already applied to
     /// this app's other lists - see AGENTS.md's Shift/Diff-tool entries).
     private static let docCardHeight: CGFloat = 100
+    /// The card's corner delete glyph, sized like a toolbar icon square
+    /// rather than left at a regular button's intrinsic width - see
+    /// `buildDocCard`.
+    private static let docCardDeleteButtonSide: CGFloat = 24
 
     /// Lays `items` out as a grid of rows, each row a `.fillEqually`
     /// horizontal stack of cards sized to `containerWidth` - byte-for-byte
@@ -957,12 +981,25 @@ final class DocsController: NSViewController {
         let titleLabel = NSTextField(wrappingLabelWithString: item.title)
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
         titleLabel.maximumNumberOfLines = 3
-        let deleteButtonWidth: CGFloat = item.onDelete != nil ? 22 : 0
-        // Card width varies with the container (see `layoutDocGrid`), so
-        // this is recomputed on every rebuild rather than a fixed guess -
-        // matching `ToolsController.toolCard`'s own reasoning for its
-        // description label.
-        titleLabel.preferredMaxLayoutWidth = max(60, width - Self.docCardPadding * 2 - 26 - 10 - deleteButtonWidth)
+        // Everything to the title column's right: the delete glyph plus the
+        // 10pt gap `row`'s trailing constraint leaves in front of it.
+        let deleteColumnWidth: CGFloat = item.onDelete != nil ? Self.docCardDeleteButtonSide + 10 : 0
+        // Card width varies with the container (see `layoutDocGrid`), so this
+        // is recomputed on every rebuild rather than a fixed guess - matching
+        // `ToolsController.toolCard`'s own reasoning for its description
+        // label.
+        //
+        // **It has to be the column's real width, not an over-estimate.** An
+        // over-estimate is the dangerous direction: AppKit computes a
+        // one-line `intrinsicContentSize` at the estimate, lays the label out
+        // one line tall, and the text then wraps to two lines *inside* that
+        // one-line frame and draws the second line outside its own bounds -
+        // no ellipsis, just a silently missing tail. Measured before this
+        // fix: "Debugging High CPU Usage" estimated at 179.6pt, laid out at
+        // 167pt, rendered as a bare "Debugging High" (visible in the
+        // captain's own `12-live-docs-runbooks.png` too). The old formula
+        // missed both the 10pt gap above and the delete button's real width.
+        titleLabel.preferredMaxLayoutWidth = max(60, width - Self.docCardPadding * 2 - 26 - 10 - deleteColumnWidth)
 
         let subtitleLabel = NSTextField(labelWithString: item.subtitle)
         subtitleLabel.font = .systemFont(ofSize: 10.5)
@@ -974,8 +1011,27 @@ final class DocsController: NSViewController {
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 3
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        // Stack-level priorities, not the content ones - AGENTS.md gotcha
+        // (12): `setContentHuggingPriority` is a no-op on an `NSStackView`,
+        // which has no intrinsic size of its own.
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        textStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        // Both labels take exactly the text column's width, so a title that
+        // does not fit wraps or truncates instead of being **clipped**.
+        // Measured before this fix: "Debugging High CPU Usage" had an
+        // intrinsic width of 170.5 inside a 161.5pt text stack in a 373pt
+        // card, and rendered as a bare "Debugging High" with no ellipsis -
+        // visible in the captain's own live screenshot
+        // (`12-live-docs-runbooks.png`) as well as in a real off-screen
+        // render. The text stack was that narrow because `row` below was left
+        // at `.gravityAreas`.
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: textStack.widthAnchor),
+            subtitleLabel.widthAnchor.constraint(equalTo: textStack.widthAnchor),
+        ])
 
         // The delete button is pinned directly to the container's own
         // top-right corner below, not laid out inside `row` alongside the
@@ -990,11 +1046,16 @@ final class DocsController: NSViewController {
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 10
+        // `.fill`, explicitly - at the default `.gravityAreas` the text stack
+        // was laid out at its own natural width rather than the card's, which
+        // is what clipped a long title (see the constraints above).
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let container = HoverHighlightView()
         container.cornerRadius = 9
         container.layer?.borderWidth = 1
+        container.toolTip = item.tooltip
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(row)
 
@@ -1002,16 +1063,28 @@ final class DocsController: NSViewController {
         var rowTrailingConstant: CGFloat = -Self.docCardPadding
 
         if let onDelete = item.onDelete {
-            let deleteButton = HelmButton(symbol: "trash", variant: .quiet)
+            let deleteButton = HelmButton(symbol: "trash", variant: .quiet, size: .small)
             let sleeve = ClosureSleeve(onDelete)
             rowSleeves.append(sleeve)
             deleteButton.target = sleeve
             deleteButton.action = #selector(ClosureSleeve.invoke)
+            deleteButton.toolTip = "Delete"
             deleteButton.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(deleteButton)
+            // **A real width, matching the `deleteButtonWidth` the title's own
+            // wrap math above already assumes.** Left to its intrinsic size a
+            // `HelmButton` carries a regular button's horizontal padding even
+            // with an empty title - measured 87pt on a 265pt card, a third of
+            // the card, which squeezed the title column to 104pt and clipped
+            // any title longer than that. Compensated for the button's own
+            // `alignmentRectInsets` exactly as `HelmPageToolbar.iconButton`
+            // does, so the visible box really is this size.
+            let insets = deleteButton.alignmentRectInsets
             NSLayoutConstraint.activate([
                 deleteButton.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.docCardPadding),
                 deleteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.docCardPadding),
+                deleteButton.widthAnchor.constraint(equalToConstant: Self.docCardDeleteButtonSide - insets.left - insets.right),
+                deleteButton.heightAnchor.constraint(equalToConstant: Self.docCardDeleteButtonSide - insets.top - insets.bottom),
             ])
             rowTrailingAnchor = deleteButton.leadingAnchor
             rowTrailingConstant = -10
