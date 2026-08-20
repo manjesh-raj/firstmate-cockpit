@@ -9,7 +9,7 @@
 // public key" input, so this one doesn't either.
 //
 // This view never touches the Keychain or `SSHKeyStore` directly. On Save it
-// hands the caller (`KeysSidebarController`) either a freshly generated/
+// hands the caller (`HostsController`'s Keys tab) either a freshly generated/
 // imported `SSHKey` + raw private-key bytes + passphrase (create mode), or an
 // updated `SSHKey` + an optional new passphrase (edit mode) - the same
 // "editor computes, caller persists" split `HostEditorController` already uses.
@@ -48,8 +48,21 @@ final class KeyEditorController: NSViewController {
 
     // MARK: Create-mode fields
 
-    private let modeSwitch = NSSegmentedControl()
-    private let typeSwitch = NSSegmentedControl()
+    /// Generate-vs-Import and Ed25519-vs-RSA are both "pick one of two", and
+    /// as stock `NSSegmentedControl`s they were the last two system-chrome
+    /// controls on this sheet - the audit called this file "the single most
+    /// system-chrome-dependent file in the app" (§4.5). They are the app's own
+    /// `HelmSegmentedTabs` now (Phase 4's component), which is the same
+    /// affordance in the theme's own colours. `.compact` for the type picker,
+    /// which sits in a form grid row rather than above a panel.
+    private let modeSwitch = HelmSegmentedTabs(
+        items: [.init(id: "generate", title: "Generate"), .init(id: "import", title: "Import")],
+        selected: "generate")
+    private let typeSwitch = HelmSegmentedTabs(
+        items: [.init(id: SSHKeyType.ed25519.rawValue, title: SSHKeyType.ed25519.displayName),
+                .init(id: SSHKeyType.rsa.rawValue, title: SSHKeyType.rsa.displayName)],
+        selected: SSHKeyType.ed25519.rawValue,
+        size: .compact)
     /// Edit mode's single passphrase field ("leave blank to keep current").
     private let passphraseField = NSSecureTextField()
     /// Generate and Import each need their own passphrase control - one sets
@@ -90,6 +103,9 @@ final class KeyEditorController: NSViewController {
     /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
     /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
     private let mutedLabels = MutedInkLabels()
+    /// Which hue `statusLabel` is currently showing, so a theme change can
+    /// re-derive its colour rather than leaving the previous theme's.
+    private var statusTone: HelmTint = .critical
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 620))
         view = root
@@ -103,6 +119,9 @@ final class KeyEditorController: NSViewController {
             root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
             self?.mutedLabels.apply(theme)
             self?.importDropZone.applyTheme(theme)
+            self?.modeSwitch.applyTheme(theme)
+            self?.typeSwitch.applyTheme(theme)
+            self?.applyStatusTone(theme)
         }
 
         let title = NSTextField(labelWithString: editing == nil ? "New Key" : "Edit Key")
@@ -148,13 +167,7 @@ final class KeyEditorController: NSViewController {
     // MARK: Create layout (Generate / Import)
 
     private func buildCreateLayout() -> NSStackView {
-        modeSwitch.segmentCount = 2
-        modeSwitch.setLabel("Generate", forSegment: 0)
-        modeSwitch.setLabel("Import", forSegment: 1)
-        modeSwitch.selectedSegment = 0
-        modeSwitch.target = self
-        modeSwitch.action = #selector(modeChanged)
-        modeSwitch.translatesAutoresizingMaskIntoConstraints = false
+        modeSwitch.onSelect = { [weak self] _ in self?.modeChanged() }
 
         buildGeneratePanel()
         buildImportPanel()
@@ -167,8 +180,8 @@ final class KeyEditorController: NSViewController {
 
         let publicKeyBox = buildPublicKeyPreview()
 
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .systemRed
+        statusLabel.font = HelmType.caption()
+        setStatusTone(.critical)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let bottom = buildBottomBar(showDelete: false)
@@ -193,12 +206,6 @@ final class KeyEditorController: NSViewController {
     }
 
     private func buildGeneratePanel() {
-        typeSwitch.segmentCount = 2
-        typeSwitch.setLabel("Ed25519", forSegment: 0)
-        typeSwitch.setLabel("RSA", forSegment: 1)
-        typeSwitch.selectedSegment = 0
-        typeSwitch.translatesAutoresizingMaskIntoConstraints = false
-
         configure(generatePassphraseField, placeholder: "Passphrase (optional)", value: nil)
         let generate = HelmButton(title: "Generate", variant: .primary, target: self, action: #selector(generateKey))
 
@@ -299,8 +306,8 @@ final class KeyEditorController: NSViewController {
         grid.column(at: 1).xPlacement = .fill
         grid.translatesAutoresizingMaskIntoConstraints = false
 
-        statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.textColor = .systemRed
+        statusLabel.font = HelmType.caption()
+        setStatusTone(.critical)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let bottom = buildBottomBar(showDelete: true)
@@ -343,8 +350,8 @@ final class KeyEditorController: NSViewController {
 
     // MARK: Actions - Generate
 
-    @objc private func modeChanged() {
-        let importing = modeSwitch.selectedSegment == 1
+    private func modeChanged() {
+        let importing = modeSwitch.selected == "import"
         generatePanel.isHidden = importing
         importPanel.isHidden = !importing
         statusLabel.stringValue = ""
@@ -353,7 +360,7 @@ final class KeyEditorController: NSViewController {
     @objc private func generateKey() {
         let label = labelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { flag(labelField); return }
-        let type: SSHKeyType = typeSwitch.selectedSegment == 0 ? .ed25519 : .rsa
+        let type = SSHKeyType(rawValue: typeSwitch.selected) ?? .ed25519
         let passphrase = generatePassphraseField.stringValue
         do {
             let generated = try SSHKeyGenerator.generate(type: type, label: label, passphrase: passphrase)
@@ -412,10 +419,10 @@ final class KeyEditorController: NSViewController {
             publicKeyView.string = imported.publicKeyLine
             fingerprintLabel.stringValue = imported.fingerprint
             statusLabel.stringValue = "Verified \(imported.type.displayName) key."
-            statusLabel.textColor = .systemGreen
+            setStatusTone(.good)
         } catch {
             pendingPrivateKey = nil
-            statusLabel.textColor = .systemRed
+            setStatusTone(.critical)
             statusLabel.stringValue = error.localizedDescription
         }
         updateSaveEnabled()
@@ -498,6 +505,23 @@ final class KeyEditorController: NSViewController {
     }
 
     // MARK: Small view helpers
+
+    /// The status line's hue, re-derived from the *active* theme rather than
+    /// pinned to `.systemRed`/`.systemGreen`. Routed through `HelmContrast`
+    /// because a `HelmTint` hue is safe as a fill and is not automatically
+    /// safe as text (Phase 0's rule, audit §5.7) - the sheet's own background
+    /// is what it has to clear here.
+    private func setStatusTone(_ tint: HelmTint) {
+        statusTone = tint
+        applyStatusTone(ThemeManager.shared.theme)
+    }
+
+    private func applyStatusTone(_ theme: HelmTheme) {
+        statusLabel.textColor = HelmContrast.legibleTintedText(tintHex: statusTone.hex(in: theme),
+                                                               over: HelmTheme.nsColor(theme.backgroundHex),
+                                                               theme: theme)
+    }
+
 
     private func configure(_ field: NSTextField, placeholder: String, value: String?) {
         field.placeholderString = placeholder

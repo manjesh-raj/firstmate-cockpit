@@ -29,15 +29,25 @@ enum SSHKeyType: String, Codable {
         }
     }
 
-    /// A Helm-palette accent per type (`HostCatalog.accents`) so the keys list
-    /// reads with the same visual language as the Hosts sidebar's per-host
-    /// accents, without needing a per-key colour picker.
-    var accentHex: String {
+    /// The semantic hue the keys list gives this algorithm.
+    ///
+    /// This used to be a fixed hex per type, lifted from `HostCatalog.accents`
+    /// - which meant it was picked against `helm-dark` and knew nothing about
+    /// the other eleven palettes. Once Phase 5 put that hue on a real accent
+    /// bar, the Ed25519 cyan measurably washed out against Gruvbox Light's
+    /// cream page (seen in a real render). A `HelmTint` resolves against the
+    /// active theme, keeps per-type differentiation, and is the vehicle the
+    /// design system already has for exactly this.
+    ///
+    /// A saved `Host` deliberately keeps a literal hex instead: that one is
+    /// the captain's own per-host colour choice in the host editor, not a
+    /// semantic role the app assigns.
+    var tint: HelmTint {
         switch self {
-        case .ed25519: return "6cd7e3"
-        case .rsa: return "ffd972"
-        case .ecdsa: return "e9a1e3"
-        case .other: return "96e8ef"
+        case .ed25519: return .accent
+        case .rsa: return .warn
+        case .ecdsa: return .violet
+        case .other: return .neutral
         }
     }
 
