@@ -71,8 +71,51 @@ enum HelmContrastSelfTest {
         checkResponsiveGrid(&ok)
         checkPageTitleVoice(&ok)
         checkRowDoesNotResizeWindow(&ok)
+        checkSetupFlyoutTintsAreDistinct(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
+    }
+
+    // MARK: Setup flyout - one hue per destination
+
+    /// `fm/grandline-sre-lead-and-setup-icons`: every Setup flyout row passed
+    /// a hardcoded `.accent`, so Updates / Bootstrap / Automation / GitHub
+    /// Sync all rendered the identical tile and the flyout read as one
+    /// undifferentiated block (measured in a real render: all four glyphs
+    /// sampled `rgb(165,218,229)` in `helm-dark`). Each now carries its own
+    /// `RailDestination.flyoutTint`.
+    ///
+    /// This asserts the *mapping*, not the pixels - the four rows must resolve
+    /// to four different `HelmTint` cases, so a future edit that collapses
+    /// them back onto one shared tint fails the build rather than silently
+    /// restoring the bug. Deliberately not asserting four distinct resolved
+    /// hexes: `.accent` genuinely equals a neighbouring slot in 3 of the 12
+    /// palettes (tokyo-night-dark/-light's blue, rose-pine-main's magenta),
+    /// a known and documented trade-off recorded on `flyoutTint` itself.
+    private static func checkSetupFlyoutTintsAreDistinct(_ ok: inout Bool) {
+        print("\n-- setup flyout (one tint per destination) --")
+        let rows: [RailDestination] = [.updates, .bootstrap, .automation, .githubSync]
+        let tints = rows.map { $0.flyoutTint }
+        let names = tints.map { String(describing: $0) }
+        if Set(names).count != rows.count {
+            print("  FAIL setup flyout rows share a tint: \(zip(rows.map { $0.title }, names).map { "\($0)=\($1)" })")
+            ok = false
+        } else {
+            print("  OK - \(zip(rows.map { $0.title }, names).map { "\($0)=\($1)" }.joined(separator: ", "))")
+        }
+
+        // Every one of those hues must still clear the icon-tile floor in
+        // every palette - `checkIconTiles` already sweeps all seven tints, so
+        // this only guards that the four rows use tints that sweep covers.
+        for theme in HelmTheme.allThemes {
+            for (row, tint) in zip(rows, tints) {
+                let hex = tint.hex(in: theme)
+                if hex.isEmpty {
+                    print("  FAIL \(theme.id) \(row.title): tint resolved to an empty hex")
+                    ok = false
+                }
+            }
+        }
     }
 
     // MARK: 1. The shared status pill (audit §5.7)
