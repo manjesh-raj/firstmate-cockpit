@@ -691,9 +691,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tabMenu.addItem(withTitle: "Close Tab", action: #selector(ConsoleController.closeCurrentTab), keyEquivalent: "w")
         tabMenu.addItem(NSMenuItem.separator())
         tabMenu.addItem(withTitle: "Reconnect Tab", action: #selector(ConsoleController.reconnectActive), keyEquivalent: "r")
-        let loggingItem = NSMenuItem(title: "Toggle Session Logging", action: #selector(ConsoleController.toggleLoggingForActiveTab), keyEquivalent: "l")
-        loggingItem.keyEquivalentModifierMask = [.command, .shift]
-        tabMenu.addItem(loggingItem)
         tabMenu.addItem(NSMenuItem.separator())
         // ⌘1…⌘9 select the Nth tab; the tag carries the 1-based index.
         for n in 1...9 {

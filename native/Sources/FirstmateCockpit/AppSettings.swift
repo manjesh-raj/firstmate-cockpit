@@ -2,11 +2,10 @@
 //
 // App-level preferences, backed by `UserDefaults`. Before the Settings panel
 // (Fix 3), these lived as ad-hoc environment-variable reads scattered across
-// `TerminalEnvironment.swift` (`FM_SHELL_CWD`, `FM_MIRROR_TARGET`) and
-// `ConsoleController` (`FM_LOG_SESSIONS_DEFAULT`), with no UI to change them.
-// The env vars still win when set (so existing dev/CI workflows that export
-// them keep working unchanged); otherwise the persisted value here applies,
-// editable from Settings > General.
+// `TerminalEnvironment.swift` (`FM_SHELL_CWD`, `FM_MIRROR_TARGET`), with no
+// UI to change them. The env vars still win when set (so existing dev/CI
+// workflows that export them keep working unchanged); otherwise the persisted
+// value here applies, editable from Settings > General.
 
 import Foundation
 
@@ -19,7 +18,6 @@ final class AppSettings {
         static let fontSize = "fm.fontSize"
         static let defaultShellCwd = "fm.defaultShellCwd"
         static let mirrorTarget = "fm.mirrorTarget"
-        static let sessionLoggingDefault = "fm.sessionLoggingDefault"
         static let autoReconnect = "fm.autoReconnect"
         static let notifyOnNeedsDecision = "fm.notifyOnNeedsDecision"
         static let fmHome = "fm.fmHome"
@@ -53,13 +51,6 @@ final class AppSettings {
     var mirrorTarget: String? {
         get { defaults.string(forKey: Keys.mirrorTarget) }
         set { defaults.set(newValue, forKey: Keys.mirrorTarget) }
-    }
-
-    /// Settings > General's "Log sessions by default" toggle - checked by
-    /// `ConsoleController` after `FM_LOG_SESSIONS_DEFAULT`.
-    var sessionLoggingDefault: Bool {
-        get { defaults.bool(forKey: Keys.sessionLoggingDefault) }
-        set { defaults.set(newValue, forKey: Keys.sessionLoggingDefault) }
     }
 
     /// Settings > Terminal's "Reconnect automatically" toggle (Fix 3) -

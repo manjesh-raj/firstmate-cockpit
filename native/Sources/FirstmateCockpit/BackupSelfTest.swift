@@ -21,6 +21,15 @@
 // changes when the bundle's differs from what's configured, and
 // `DictationHistoryEntry`/history is never present in the exported bytes at
 // all - it's per-machine usage data, deliberately excluded from the bundle.
+//
+// One case here is specifically about a *removed* field rather than an added
+// one: `fm/grandline-remove-session-logging` dropped
+// `BackupSettings.sessionLoggingDefault` when the session-logging feature was
+// deleted, so a `.glbackup` a captain exported from an earlier build still
+// carries that key. `legacyBundleWithRemovedKeyStillDecodes` asserts that
+// bundle imports rather than failing the decode - which is what makes
+// dropping an optional field from this format safe with no `formatVersion`
+// bump, in the same way adding one already was.
 
 import AppKit
 import Foundation
@@ -195,6 +204,38 @@ enum BackupSelfTest {
                 check(true, "a future format version is rejected on decode")
             } catch {
                 check(false, "a future format version is rejected on decode (wrong error type: \(error))")
+            }
+        }
+
+        // fm/grandline-remove-session-logging: a bundle exported by an
+        // earlier build still carries the now-deleted
+        // `BackupSettings.sessionLoggingDefault` key. Decoding it must
+        // succeed and simply ignore that key - never throw - and every
+        // setting this file still declares must survive alongside it.
+        // Built by injecting the legacy key into a real encoded bundle's
+        // JSON rather than hand-writing a whole bundle literal, so this
+        // case cannot drift out of shape as the format grows.
+        if let realData = try? GrandLineBackupFile.encode(bundle),
+           var json = (try? JSONSerialization.jsonObject(with: realData)) as? [String: Any] {
+            var settings = (json["settings"] as? [String: Any]) ?? [:]
+            settings["sessionLoggingDefault"] = true
+            settings["mirrorTarget"] = "legacy-session"
+            json["settings"] = settings
+            if let legacyData = try? JSONSerialization.data(withJSONObject: json) {
+                // Guard against this case passing vacuously: the bytes being
+                // decoded must genuinely carry the removed key.
+                check(String(data: legacyData, encoding: .utf8)?.contains("sessionLoggingDefault") == true,
+                      "the legacy bundle's bytes genuinely carry the removed sessionLoggingDefault key")
+                do {
+                    let legacy = try GrandLineBackupFile.decode(legacyData)
+                    check(true, "a legacy bundle carrying the removed sessionLoggingDefault key still decodes")
+                    check(legacy.settings.mirrorTarget == "legacy-session",
+                          "the legacy bundle's other settings still decode alongside the removed key")
+                    check(legacy.hosts.count == bundle.hosts.count,
+                          "the legacy bundle's hosts still decode alongside the removed key")
+                } catch {
+                    check(false, "a legacy bundle carrying the removed sessionLoggingDefault key still decodes (threw: \(error))")
+                }
             }
         }
 

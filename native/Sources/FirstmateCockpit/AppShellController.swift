@@ -782,7 +782,7 @@ final class AppShellController: NSViewController {
 
     /// Fix 1: mirrors what `AppDelegate.applicationWillTerminate` already
     /// does for the shared Firstmate `console` - tear down every host
-    /// page's mirrors/materialized keys/session logs on quit, not just the
+    /// page's mirrors and materialized keys on quit, not just the
     /// destination that happened to be visible.
     func shutdownAllHostConsoles() {
         for controller in hostConsoles.values { controller.shutdown() }

@@ -21,9 +21,7 @@
 //     two toggles with real behaviour behind them: "Reconnect automatically"
 //     (`AppSettings.autoReconnect`, read by `ConsoleController.
 //     processTerminated`) and "Bell & notifications" (`AppSettings.
-//     notifyOnNeedsDecision`, driving `FleetNotifier`). Session logging
-//     (previously under "General") moves here too, since it's another
-//     per-session terminal behaviour.
+//     notifyOnNeedsDecision`, driving `FleetNotifier`).
 //
 // Like before, fields persist immediately on change rather than batching
 // into a Save button.
@@ -91,7 +89,6 @@ final class SettingsController: NSViewController {
     private var fontPresetButtons: [Int: HelmButton] = [:]
     private let autoReconnectSwitch = NSSwitch()
     private let notifySwitch = NSSwitch()
-    private let sessionLoggingSwitch = NSSwitch()
 
     /// Every `HelmCard` on this page, re-themed together. The card owns its own
     /// header icon tile and subtitle label, so neither needs a registry here.
@@ -699,15 +696,11 @@ final class SettingsController: NSViewController {
         notifySwitch.action = #selector(notifyToggled)
         let notifyRow = descRow(title: "Bell & notifications", desc: "Surface a desktop notification the moment a crewmate needs your decision.", trailing: notifySwitch)
 
-        sessionLoggingSwitch.target = self
-        sessionLoggingSwitch.action = #selector(sessionLoggingToggled)
-        let loggingRow = descRow(title: "Log sessions by default", desc: "Every newly started tab begins writing a plain-text transcript automatically.", trailing: sessionLoggingSwitch)
-
-        let section = NSStackView(views: [fontRow, separator(), reconnectRow, separator(), notifyRow, separator(), loggingRow])
+        let section = NSStackView(views: [fontRow, separator(), reconnectRow, separator(), notifyRow])
         section.orientation = .vertical
         section.alignment = .leading
         section.spacing = 12
-        for row in [fontRow, reconnectRow, notifyRow, loggingRow] {
+        for row in [fontRow, reconnectRow, notifyRow] {
             row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         }
         return section
@@ -884,10 +877,6 @@ final class SettingsController: NSViewController {
         FleetNotifier.shared.setEnabled(on)
     }
 
-    @objc private func sessionLoggingToggled() {
-        AppSettings.shared.sessionLoggingDefault = sessionLoggingSwitch.state == .on
-    }
-
     // MARK: Shared field plumbing
 
     private func configure(_ field: NSTextField, placeholder: String) {
@@ -925,7 +914,6 @@ final class SettingsController: NSViewController {
         }
         autoReconnectSwitch.state = AppSettings.shared.autoReconnect ? .on : .off
         notifySwitch.state = AppSettings.shared.notifyOnNeedsDecision ? .on : .off
-        sessionLoggingSwitch.state = AppSettings.shared.sessionLoggingDefault ? .on : .off
 
         rebuildAppearanceGrid()
         refreshSessions()
