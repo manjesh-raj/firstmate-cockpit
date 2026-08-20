@@ -18,8 +18,20 @@ final class ReviewController: NSViewController {
     private let scroll = NSScrollView()
     private let contentStack = NSStackView()
 
-    private let titleLabel = NSTextField(labelWithString: "Review")
-    private let subtitleLabel = NSTextField(labelWithString: "")
+    // No in-page hero title. This page shipped one reading literally
+    // "Review", directly under a top bar already reading "Review" - audit
+    // §4.6's finding, and dead repetition rather than a title carrying
+    // information (contrast Shift's "Good afternoon", or a project detail's
+    // own name, both of which stayed). Phase 7 removed it; the lead line is
+    // now the live PR count, which is what a captain opening this page
+    // actually wants to read first. Every other title-less destination in
+    // this app (Tools, Updates, Bootstrap, Automation, GitHub Sync,
+    // Settings, Dictation, Vault) opens on a description line the same way.
+    /// Seeded rather than left blank: with the hero title gone this is the
+    /// page's only header text, and `render` does not fill it in until the
+    /// background PR fetch returns - so an empty string here left the header
+    /// row as a lone refresh glyph for the first second or two.
+    private let subtitleLabel = NSTextField(labelWithString: "Open pull requests across your projects")
     private let refreshButton = NSButton()
 
     private let githubHeader = NSTextField(labelWithString: "")
@@ -157,10 +169,7 @@ final class ReviewController: NSViewController {
     // MARK: Building the static chrome
 
     private func buildHeader() -> NSView {
-        titleLabel.font = HelmType.pageTitle()
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.font = HelmType.body()
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         refreshButton.title = ""
@@ -171,7 +180,7 @@ final class ReviewController: NSViewController {
         refreshButton.toolTip = "Refresh open PRs"
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [titleLabel, subtitleLabel])
+        let textStack = NSStackView(views: [subtitleLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 4
@@ -497,7 +506,6 @@ final class ReviewController: NSViewController {
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let muted = HelmTheme.mutedInk(theme)
 
-        titleLabel.textColor = ink
         subtitleLabel.textColor = muted
         refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
 

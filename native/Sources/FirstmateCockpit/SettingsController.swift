@@ -169,7 +169,38 @@ final class SettingsController: NSViewController {
         ])
         scrollView = scroll
 
+        // The theme grid's column count now comes from `appearanceContainer`'s
+        // real width (Phase 7, see `rebuildAppearanceGrid`), so it has to be
+        // recomputed when that width changes. Same hook and same reasoning as
+        // `ToolsController.containerWidthMayHaveChanged`: a live window resize
+        // does not reliably re-invoke this child view controller's own
+        // `viewDidLayout()` (only the window's own content view controller is
+        // guaranteed that), so listen for the window's resize notification.
+        NotificationCenter.default.addObserver(self,
+                                              selector: #selector(containerWidthMayHaveChanged),
+                                              name: NSWindow.didResizeNotification,
+                                              object: nil)
+
         refreshFromSettings()
+    }
+
+    /// The container width the theme grid was last laid out against, so a
+    /// resize that does not actually change it costs nothing.
+    private var lastAppearanceGridWidth: CGFloat = 0
+
+    @objc private func containerWidthMayHaveChanged() {
+        // Only while this destination is the visible one - every destination is
+        // a permanently mounted, `isHidden`-toggled child of
+        // `AppShellController`, so an un-gated handler here would rebuild this
+        // grid on every resize no matter which page the captain is looking at
+        // (the measured regression `fm/cockpit-tools-yaml-quotes-diff-perf`
+        // fixed on the Tools page).
+        guard !view.isHidden else { return }
+        view.window?.contentView?.layoutSubtreeIfNeeded()
+        let width = appearanceContainer.frame.width
+        guard width > 0, abs(width - lastAppearanceGridWidth) > 0.5 else { return }
+        lastAppearanceGridWidth = width
+        rebuildAppearanceGrid()
     }
 
     override func viewWillAppear() {
@@ -510,26 +541,51 @@ final class SettingsController: NSViewController {
         return section
     }
 
+    /// The width one theme card will not go below - the only parameter this
+    /// page owns in the shared grid math.
+    ///
+    /// 150, not the 108 this card used to be *fixed* at, and the reason is
+    /// measured rather than picked: at 108 the longest theme names
+    /// ("Catppuccin Mocha", "Tokyo Night Light") do not fit beside the active
+    /// checkmark, and a real render showed one card in the row resolving to
+    /// 130pt while its siblings sat at 107 - its own label's compression
+    /// resistance winning over `.fillEqually`. 150 is what the widest name
+    /// plus the checkmark and the card's insets actually need.
+    private static let themeCardMinWidth: CGFloat = 150
+
     private func rebuildAppearanceGrid() {
         for v in appearanceContainer.arrangedSubviews {
             appearanceContainer.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
         let activeID = ThemeManager.shared.theme.id
-        // Wrap into fixed-size rows rather than one ever-widening row per
-        // mode - cockpit-theme-overhaul grew this from 4 themes/mode to 6,
-        // and a single non-wrapping `NSStackView` row would just overflow
-        // the settings column at 6+ cards (`NSStackView` has no built-in
-        // wrap). Chunking at a fixed column count keeps every row's width
-        // bounded regardless of how many themes a mode ends up with.
-        let columnsPerRow = 4
+        lastAppearanceGridWidth = appearanceContainer.frame.width
+        // Phase 7 (audit §4.8 / §6.4's Settings row): this used to chunk into
+        // a **fixed** `columnsPerRow = 4` of **fixed** 108pt cards, which is
+        // what left the audit's ragged 4/2/4/2 last row and never responded to
+        // window width at all. It now runs on `HelmResponsiveGrid` - Tools'
+        // own column-count-from-real-width plus partial-row spacer padding,
+        // shared rather than re-derived - so the theme grid re-flows on a
+        // window resize and its last row's cards stay the same width as every
+        // other row's.
+        //
+        // Still two groups (dark, then light), because that split is a real
+        // distinction a captain scans by, not an artefact of the old chunking.
         for group in [HelmTheme.allThemes.filter { $0.mode == .dark }, HelmTheme.allThemes.filter { $0.mode == .light }] {
-            for chunk in group.chunked(into: columnsPerRow) {
-                let row = NSStackView(views: chunk.map { themeCard($0, active: $0.id == activeID) })
-                row.orientation = .horizontal
-                row.spacing = 8
-                row.translatesAutoresizingMaskIntoConstraints = false
+            let rows = HelmResponsiveGrid.rows(group,
+                                               containerWidth: appearanceContainer.frame.width,
+                                               minItemWidth: Self.themeCardMinWidth,
+                                               spacing: HelmMetrics.s2) { t, _ in
+                // This card takes no width: unlike a Tools landing card (whose
+                // wrapping description needs a `preferredMaxLayoutWidth` up
+                // front) it has only fixed-size content, so the row's
+                // `.fillEqually` distribution is the only thing that needs to
+                // know how wide it is.
+                self.themeCard(t, active: t.id == activeID)
+            }
+            for row in rows {
                 appearanceContainer.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: appearanceContainer.widthAnchor).isActive = true
             }
         }
     }
@@ -556,6 +612,12 @@ final class SettingsController: NSViewController {
 
         let nameLabel = NSTextField(labelWithString: t.name)
         nameLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        // Otherwise the longest name's own compression resistance beats the
+        // row's `.fillEqually` distribution and that one card comes out wider
+        // than its siblings (measured: 130 against 107). A truncated name is
+        // the right trade - the swatch identifies the theme too.
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let check = NSImageView()
@@ -572,6 +634,7 @@ final class SettingsController: NSViewController {
         NSLayoutConstraint.activate([
             nameLabel.leadingAnchor.constraint(equalTo: nameRow.leadingAnchor, constant: 8),
             nameLabel.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: check.leadingAnchor, constant: -4),
             check.trailingAnchor.constraint(equalTo: nameRow.trailingAnchor, constant: -8),
             check.centerYAnchor.constraint(equalTo: nameRow.centerYAnchor),
             check.widthAnchor.constraint(equalToConstant: 12),
@@ -598,7 +661,6 @@ final class SettingsController: NSViewController {
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             stack.topAnchor.constraint(equalTo: card.topAnchor),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            card.widthAnchor.constraint(equalToConstant: 108),
         ])
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(themeCardClicked(_:)))

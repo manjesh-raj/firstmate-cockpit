@@ -172,7 +172,7 @@ final class FleetController: NSViewController {
     // MARK: Building the static chrome
 
     private func buildHeader() -> NSView {
-        greetingLabel.font = HelmType.pageTitle()
+        greetingLabel.font = HelmType.pageTitle(.serif)
         greetingLabel.translatesAutoresizingMaskIntoConstraints = false
 
         subtitleLabel.font = .systemFont(ofSize: 12)

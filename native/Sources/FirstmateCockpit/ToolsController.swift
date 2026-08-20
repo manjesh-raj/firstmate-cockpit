@@ -130,10 +130,13 @@ final class ToolsController: NSViewController {
 
     // MARK: Chrome
 
-    private let tabBar = NSView()
+    /// The shared page toolbar (Phase 7). This bar's own comment used to say
+    /// it mirrored `ConsoleController.buildTabBar` - it was a hand-copied 42pt
+    /// `NSView` plus its own separator, with nothing enforcing the two staying
+    /// in step. Both pages now build the same `HelmPageToolbar`.
+    private let tabBar = HelmPageToolbar()
     private let tabsStack = NSStackView()
-    private var plusButton = NSButton()
-    private let tabBarSeparator = NSView()
+    private var plusButton: HelmButton!
 
     private let subtitleLabel = NSTextField(labelWithString: "Everyday DevOps utilities - everything runs locally, nothing leaves this machine.")
     private let gridContainer = NSStackView()
@@ -285,51 +288,42 @@ final class ToolsController: NSViewController {
         scrollView?.reflectScrolledClipView(scrollView.contentView)
     }
 
-    // MARK: Tab bar chrome (mirrors ConsoleController.buildTabBar)
+    // MARK: Tab bar chrome (the shared `HelmPageToolbar`, as in Console)
 
     private func buildTabBar() {
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.wantsLayer = true
         view.addSubview(tabBar)
-
-        tabBarSeparator.translatesAutoresizingMaskIntoConstraints = false
-        tabBarSeparator.wantsLayer = true
-        tabBar.addSubview(tabBarSeparator)
 
         tabsStack.orientation = .horizontal
         tabsStack.spacing = 4
         tabsStack.alignment = .centerY
         tabsStack.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.addSubview(tabsStack)
+        tabBar.setLeading(tabsStack)
 
-        plusButton = NSButton(title: "", target: self, action: #selector(newShellTab))
-        plusButton.isBordered = false
-        plusButton.wantsLayer = true
-        plusButton.layer?.cornerRadius = 6
-        plusButton.toolTip = "New Tool Tab (⌘T)"
-        plusButton.imageScaling = .scaleProportionallyDown
-        plusButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tool Tab")
-        NSLayoutConstraint.activate([
-            plusButton.widthAnchor.constraint(equalToConstant: 30),
-            plusButton.heightAnchor.constraint(equalToConstant: 26),
-        ])
+        plusButton = HelmPageToolbar.iconButton(symbol: "plus",
+                                                tooltip: "New Tool Tab (⌘T)",
+                                                target: self,
+                                                action: #selector(newShellTab))
 
-        NSLayoutConstraint.activate([
-            tabBar.heightAnchor.constraint(equalToConstant: 42),
-            tabBarSeparator.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
-            tabBarSeparator.trailingAnchor.constraint(equalTo: tabBar.trailingAnchor),
-            tabBarSeparator.bottomAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            tabBarSeparator.heightAnchor.constraint(equalToConstant: 1),
-
-            tabsStack.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor, constant: 12),
-            tabsStack.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
-            tabsStack.trailingAnchor.constraint(lessThanOrEqualTo: tabBar.trailingAnchor, constant: -12),
-        ])
         NSLayoutConstraint.activate([
             tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tabBar.topAnchor.constraint(equalTo: view.topAnchor),
         ])
+        // The starting state is zero tabs, and `refreshTabBar()` (the only
+        // other caller) does not run until the first add - so set it here too
+        // or the strip ships visible-but-empty, which is the exact thing the
+        // audit flagged.
+        updateTabBarVisibility()
+    }
+
+    /// Shows the tab strip only when there is at least one open tab.
+    ///
+    /// Audit §4.8: with no tool tab open, this bar sat above the landing grid
+    /// as dead chrome - a strip whose only content was a "+" that opens the
+    /// picker already filling the page. ⌘T still opens a new tab from the
+    /// menu regardless, and the strip reappears with it.
+    private func updateTabBarVisibility() {
+        tabBar.setCollapsed(tabs.isEmpty)
     }
 
     private func refreshTabBar() {
@@ -341,6 +335,7 @@ final class ToolsController: NSViewController {
             tabsStack.addArrangedSubview(tab.chip)
         }
         tabsStack.addArrangedSubview(plusButton)
+        updateTabBarVisibility()
         styleChips()
     }
 
@@ -357,12 +352,17 @@ final class ToolsController: NSViewController {
     /// fixed-width cards filled 824pt of a 1500pt container (~700pt wasted).
     /// `containerWidthMayHaveChanged()` calls this again whenever
     /// `gridContainer`'s width changes, so resizing the window re-flows the
-    /// column count live -
-    /// the same "recompute on layout, don't just size once" approach
-    /// `SettingsController.rebuildAppearanceGrid` uses for a fixed column
-    /// count, extended here to a column count derived from real width.
+    /// column count live.
+    ///
+    /// The column-count / card-width / partial-last-row-padding math this page
+    /// worked out is no longer *here*: Phase 7 lifted it into
+    /// `HelmResponsiveGrid` (audit §4.8 called this "the best card grid in the
+    /// app", which is precisely why it should not be a private copy). Docs had
+    /// already hand-ported it once, and Settings' theme grid had *not* - it
+    /// kept a fixed 4-column chunk that left the audit's ragged 4/2/4/2 last
+    /// row. All three now call one definition; this page keeps only what is
+    /// genuinely its own, the card itself.
     private static let minCardWidth: CGFloat = 300
-    private static let cardSpacing: CGFloat = 14
     private static let cardPadding: CGFloat = 16
 
     private func rebuildGrid() {
@@ -374,30 +374,12 @@ final class ToolsController: NSViewController {
         cardBorderViews.removeAll()
         mutedLabels.removeAll()
 
-        let containerWidth = gridContainer.frame.width > 0 ? gridContainer.frame.width : 860
-        let columnsPerRow = max(1, Int((containerWidth + Self.cardSpacing) / (Self.minCardWidth + Self.cardSpacing)))
-        let cardWidth = (containerWidth - Self.cardSpacing * CGFloat(columnsPerRow - 1)) / CGFloat(columnsPerRow)
-
-        for chunk in ToolKind.allCases.chunked(into: columnsPerRow) {
-            // `.fillEqually` divides a row's width across however many
-            // arranged subviews it has - a partial last row (fewer cards
-            // than `columnsPerRow`) would otherwise stretch its lone card(s)
-            // to fill the whole row width instead of matching a full row's
-            // card width. Pad the row out to a fixed `columnsPerRow` slots
-            // with invisible spacers so `.fillEqually` always divides by the
-            // same column count, and the real cards stay the same width as
-            // every other row.
-            var views = chunk.map { toolCard($0, width: cardWidth) }
-            while views.count < columnsPerRow {
-                let spacer = NSView()
-                spacer.translatesAutoresizingMaskIntoConstraints = false
-                views.append(spacer)
-            }
-            let row = NSStackView(views: views)
-            row.orientation = .horizontal
-            row.spacing = Self.cardSpacing
-            row.distribution = .fillEqually
-            row.translatesAutoresizingMaskIntoConstraints = false
+        let rows = HelmResponsiveGrid.rows(ToolKind.allCases,
+                                           containerWidth: gridContainer.frame.width,
+                                           minItemWidth: Self.minCardWidth) { kind, width in
+            self.toolCard(kind, width: width)
+        }
+        for row in rows {
             gridContainer.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: gridContainer.widthAnchor).isActive = true
         }
@@ -606,15 +588,11 @@ final class ToolsController: NSViewController {
     // MARK: Theme
 
     private func applyTheme() {
-        let ink = HelmTheme.nsColor(theme.chromeInkHex)
         let muted = HelmTheme.mutedInk(theme)
         let line = HelmTheme.nsColor(theme.chromeLineHex)
-        let chromeBg = HelmTheme.nsColor(theme.chromeBackgroundHex)
 
         view.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor
-        tabBar.layer?.backgroundColor = chromeBg.cgColor
-        tabBarSeparator.layer?.backgroundColor = line.cgColor
-        plusButton.contentTintColor = ink
+        tabBar.applyTheme(theme)
 
         subtitleLabel.textColor = muted
 
@@ -639,6 +617,5 @@ final class ToolsController: NSViewController {
             let tint = accent.withAlphaComponent(theme.mode == .dark ? 0.20 : 0.14)
             tab.chip.applyStyle(selected: selected, accent: accent, muted: muted, tint: tint)
         }
-        plusButton.contentTintColor = ink
     }
 }

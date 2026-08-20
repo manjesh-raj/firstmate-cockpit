@@ -296,7 +296,7 @@ final class ShiftController: NSViewController {
     // MARK: Building chrome
 
     private func buildHeader() -> NSView {
-        greetingLabel.font = ShiftFont.serif(23)
+        greetingLabel.font = HelmType.pageTitle(.serif)
         subtitleLabel.font = .systemFont(ofSize: 12)
         let textStack = NSStackView(views: [greetingLabel, subtitleLabel])
         textStack.orientation = .vertical
@@ -416,7 +416,7 @@ final class ShiftController: NSViewController {
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        label.font = ShiftFont.serif(15)
+        label.font = HelmType.sectionTitle()
         var views: [NSView] = [icon, label]
         if let countBadge {
             countBadge.font = ShiftFont.mono(11, weight: .medium)
@@ -563,7 +563,7 @@ final class ShiftController: NSViewController {
     func showDashboard() { switchTopLevelView(.dashboard) }
 
     private func buildWeeklyReviewSection() -> NSView {
-        reviewGreeting.font = ShiftFont.serif(19)
+        reviewGreeting.font = HelmType.pageTitle(.serif)
         reviewSubtitle.font = .systemFont(ofSize: 12)
         let textStack = NSStackView(views: [reviewGreeting, reviewSubtitle])
         textStack.orientation = .vertical
@@ -1001,7 +1001,7 @@ final class ShiftController: NSViewController {
     private func buildDetailHeader() -> NSView {
         detailIconTile.configure(symbol: "shippingbox", tint: .accent)
 
-        detailNameLabel.font = ShiftFont.serif(22)
+        detailNameLabel.font = HelmType.pageTitle(.serif)
         detailNameLabel.lineBreakMode = .byTruncatingTail
 
         detailStatusPillLabel.font = ShiftFont.mono(10.5, weight: .semibold)

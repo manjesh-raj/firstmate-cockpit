@@ -783,6 +783,58 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         return button
     }
 
+    /// The two rows that open a flyout instead of navigating (`hostsButton`,
+    /// `setupButton`), and the small chevron each one carries to say so - held
+    /// so `restyle(_:)` can keep that chevron's colour in step with its own
+    /// row's active/inactive state.
+    private var flyoutIndicators: [(button: NSButton, chevron: NSImageView)] = []
+
+    /// Marks a rail row that **opens something** rather than navigating.
+    ///
+    /// Phase 7 (audit §7's Phase 7 entry). "Hosts" and "Setup" are the only
+    /// two rows in this rail that behave differently from every other row: a
+    /// click pops a flyout (`showHostsFlyout()` / `showSetupFlyout()`) instead
+    /// of switching the body view. Nothing said so visually - both rendered as
+    /// an ordinary icon-over-label row - so the difference was only
+    /// discoverable by clicking.
+    ///
+    /// A small trailing `chevron.right`, the same affordance macOS itself uses
+    /// for a submenu, is deliberately the smallest thing that carries that
+    /// meaning: it reuses this rail's existing visual language (an SF Symbol
+    /// tinted with the row's own colour) and adds no new row shape, no
+    /// disclosure control, and no hit target - the whole row stays the one
+    /// clickable thing it already was.
+    ///
+    /// **Where it sits, and why not the corner.** Vertically centred on the
+    /// icon (via `iconCenterYOffsetFromRowCenter`, the same real icon position
+    /// `attachBadge` anchors to) and pinned to the row's trailing edge, which
+    /// is clear of the 20pt icon's own box by ~15pt. It deliberately does not
+    /// overlap the icon: see `attachBadge`'s long comment for the three
+    /// live-rendered attempts that proved no corner-overlap amount clears
+    /// every glyph's ink. Neither of these two rows carries a count badge
+    /// (only `RailDestination` rows built through `railButton(for:)` do), so
+    /// the badge slot to the icon's right and this chevron never both exist on
+    /// one row - but they would not collide even if they did, since the badge
+    /// sits at the icon's *top* edge and this at its centre.
+    private func attachFlyoutIndicator(to button: NSButton) {
+        // `buildSetupButton()`/`buildHostsButton()` can be handed an existing
+        // button instance (see `buildRailRowButton`'s `existingButton`), so
+        // never attach a second chevron to a row that already has one.
+        guard !flyoutIndicators.contains(where: { $0.button === button }) else { return }
+
+        let chevron = NSImageView()
+        chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Opens a menu")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold))
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            chevron.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -4),
+            chevron.centerYAnchor.constraint(equalTo: button.centerYAnchor,
+                                             constant: Self.iconCenterYOffsetFromRowCenter),
+        ])
+        flyoutIndicators.append((button, chevron))
+    }
+
     /// Every row also gets a "needs you" count badge overlay
     /// (fm/grandline-sidebar-badges) - cheap to attach on all of them (hidden
     /// by default) rather than threading a second "does this destination
@@ -818,6 +870,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         )
         button.target = self
         button.action = #selector(setupClicked)
+        attachFlyoutIndicator(to: button)
         return button
     }
 
@@ -996,6 +1049,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         )
         button.target = self
         button.action = #selector(hostsClicked)
+        attachFlyoutIndicator(to: button)
         return button
     }
 
@@ -1255,6 +1309,14 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         setupButton.contentTintColor = setupColor
         setupButton.attributedTitle = attributedRowTitle("Setup", color: setupColor)
         setupButton.layer?.backgroundColor = (setupIsActive ? accentTint : .clear).cgColor
+
+        // Each flyout chevron takes its own row's resolved colour, so it
+        // brightens to the accent along with the icon and label whenever that
+        // row is active (which, for these two, includes "its flyout is open").
+        for (button, chevron) in flyoutIndicators {
+            let rowColor = button === hostsButton ? hostsColor : setupColor
+            chevron.contentTintColor = rowColor
+        }
         restyleAvatar(theme)
     }
 
