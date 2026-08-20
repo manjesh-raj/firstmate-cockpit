@@ -669,6 +669,27 @@ enum ToolRowLayout {
         // Stack-level priorities, not content-level - see `columnHugging`.
         textStack.setHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        // **Cap both labels at the column's own width.**
+        //
+        // `setClippingResistancePriority(.defaultLow, ...)` above is precisely
+        // the priority of the stack's internal "I am at least as wide as my
+        // widest arranged subview" constraint - so with the required
+        // `<= nameColumnMaxWidth` cap below winning, the stack is allowed to be
+        // *narrower than its own content*, and an `NSStackView` does not clip.
+        // A long detail line therefore rendered at its full intrinsic width,
+        // straight across the status column: measured live before this fix,
+        // Updates' `firstmate` row ("main carries 24 commit(s)... push to
+        // origin") reached x=751 while the "Update Available" pill started at
+        // x=598 - a real 153pt overlap, and exactly the captain-reported bug.
+        //
+        // The labels already carry `.byTruncatingTail`; it simply never fired,
+        // because nothing had ever made their *frames* narrower than their
+        // text. These two required caps are what does that, and they can only
+        // ever shrink a label - never widen the row.
+        for label in [views.nameLabel, views.detailLabel] {
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.widthAnchor.constraint(lessThanOrEqualTo: textStack.widthAnchor).isActive = true
+        }
 
         // The status column: the pill, plus whatever replaces it while a
         // check runs (a spinner and its label). Its own hugging is set with
@@ -736,11 +757,32 @@ enum ToolRowLayout {
 
         // The fixed name column - the whole point of §5.4's fix. Proportional
         // rather than a constant so a wider window still shows more of a long
-        // detail line, clamped at both ends, and at `.defaultHigh + 1` so a
-        // genuinely too-narrow row breaks *this* rather than overflowing.
+        // detail line, clamped at both ends, and above the surrounding stack
+        // priorities so a genuinely too-narrow row breaks *this* rather than
+        // overflowing.
+        //
+        // **It must stay below `NSLayoutPriorityWindowSizeStayPut` (500).**
+        // This constraint used to sit at `.defaultHigh + 1` (751), and a
+        // window only holds its own size at priority 500 - so any content
+        // constraint above that can *resize the window*. Paired with the
+        // required `<= nameColumnMaxWidth` below, it did exactly that: it
+        // capped the whole app window at
+        // `520 / 0.42` + the row, card and page insets = **1410pt**, on every
+        // page that carries these rows (Updates, Bootstrap, Automation,
+        // GitHub Sync, Vault). Measured live on a 1512x982 screen: the window
+        // refused to grow past 1410 wide, `isZoomed` reported `true` at that
+        // size, and even genuine macOS full screen rendered 1410x949 centred
+        // with a black bar down each side - which is the captain's
+        // `01-live-window-not-fullscreen.png` exactly. Replacing the content
+        // with a plain `NSView` lifted the cap; so did removing these pages.
+        //
+        // 499 keeps every relationship this constraint needs (it still beats
+        // the spacer's and the text stack's `.defaultLow` 250, so the name
+        // column still wins the row's slack) and can no longer reach out and
+        // resize the window.
         let nameWidth = textStack.widthAnchor.constraint(equalTo: topRow.widthAnchor,
                                                          multiplier: nameColumnFraction)
-        nameWidth.priority = NSLayoutConstraint.Priority(rawValue: NSLayoutConstraint.Priority.defaultHigh.rawValue + 1)
+        nameWidth.priority = NSLayoutConstraint.Priority(rawValue: 499)
         NSLayoutConstraint.activate([
             nameWidth,
             textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: nameColumnMinWidth),
@@ -880,6 +922,14 @@ enum ToolRowLayout {
         views.iconTile.applyTheme(theme)
         views.nameLabel.textColor = ink
         views.detailLabel.textColor = detailFailed ? HelmTheme.nsColor(theme.ansiHex[1]) : muted
+        // The detail line now genuinely truncates at the name column's width
+        // (see `build`'s label caps), so keep the whole string reachable on
+        // hover. Set here rather than at each caller's `stringValue =` site
+        // because every caller already calls this method after changing a
+        // row's status text - Updates and GitHub Sync mutate their rows in
+        // place, Bootstrap and Automation rebuild them.
+        views.nameLabel.toolTip = views.nameLabel.stringValue
+        views.detailLabel.toolTip = views.detailLabel.stringValue.isEmpty ? nil : views.detailLabel.stringValue
         views.detailsButton.contentTintColor = ink.withAlphaComponent(0.5)
         views.logField.textColor = muted
         views.logContainer.layer?.backgroundColor = HelmTheme.nsColor(theme.backgroundHex).cgColor

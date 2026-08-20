@@ -32,6 +32,122 @@ struct DocsRunbook: Identifiable, Equatable {
     var modifiedAt: Date
 }
 
+/// What a runbook / postmortem card says under its title.
+///
+/// Derived from the document's own markdown - **no new field, no new file
+/// format, nothing written to disk**. A runbook is a `# Title`, a short
+/// description, and one or more fenced blocks of command lines
+/// (`CommandLibraryWorkflow` writes exactly that shape, and SRE Lead's
+/// `run_runbook` reads it back the same way), so:
+///
+/// - **steps** is the number of real command lines inside those fenced
+///   blocks: the same lines `native/Scripts/sre_kubectl_mcp.py`'s
+///   `_extract_command_lines` counts as steps, so the number on the card and
+///   the number SRE Lead would actually run can never disagree.
+/// - **category** is the dominant leading executable across those lines
+///   (`kubectl` -> Kubernetes, `aws` -> AWS, ...), mapped to the same names
+///   the Command Library's own catalog uses. A runbook whose steps are all
+///   `kubectl` genuinely *is* a Kubernetes runbook - this reads the content,
+///   it does not invent a stored category the captain never set.
+/// - **rootCause** is a postmortem's own `## Root Cause` section, first
+///   sentence, with SRE Lead's `**Finding:**` label stripped - the postmortem
+///   writer (`SRELeadPostmortem`) always emits that heading.
+///
+/// Everything returns `nil` when the document genuinely has nothing to say,
+/// and the card falls back to "Updated N ago" exactly as before.
+enum DocsRunbookMetadata {
+
+    /// Command lines inside fenced code blocks - the runbook's real steps.
+    static func commandLines(in content: String) -> [String] {
+        var lines: [String] = []
+        var inFence = false
+        for raw in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                inFence.toggle()
+                continue
+            }
+            guard inFence else { continue }
+            var text = line.trimmingCharacters(in: .whitespaces)
+            if text.isEmpty || text.hasPrefix("#") { continue }
+            if text.hasPrefix("$ ") { text = String(text.dropFirst(2)) }
+            if text.isEmpty { continue }
+            lines.append(text)
+        }
+        return lines
+    }
+
+    static func stepCount(in content: String) -> Int { commandLines(in: content).count }
+
+    /// Leading executable -> the Command Library's own display name for it.
+    /// Only tools this app already knows about; anything else is left
+    /// uncategorised rather than guessed at.
+    private static let executableCategories: [String: String] = [
+        "kubectl": "Kubernetes", "helm": "Helm", "argocd": "ArgoCD",
+        "aws": "AWS", "terraform": "Terraform", "docker": "Docker",
+        "git": "Git", "mysql": "MySQL", "psql": "PostgreSQL",
+        "systemctl": "Linux", "journalctl": "Linux", "openssl": "OpenSSL",
+        "dig": "Networking", "curl": "Networking", "nc": "Networking",
+    ]
+
+    /// The category a runbook's own steps put it in, or `nil` when its steps
+    /// name no tool this app recognises (or it has no steps at all).
+    static func category(in content: String) -> String? {
+        var counts: [String: Int] = [:]
+        for line in commandLines(in: content) {
+            guard let first = line.split(separator: " ").first else { continue }
+            guard let head = first.split(separator: "/").last.map(String.init) else { continue }
+            guard let name = executableCategories[head.lowercased()] else { continue }
+            counts[name, default: 0] += 1
+        }
+        // Ties broken by name so the same document always reports the same
+        // category - a dictionary's own iteration order is not stable.
+        return counts.max { a, b in a.value == b.value ? a.key > b.key : a.value < b.value }?.key
+    }
+
+    /// A postmortem's root cause, in one line. `nil` when the document has no
+    /// `## Root Cause` section or that section is empty.
+    static func rootCause(in content: String) -> String? {
+        var inSection = false
+        for raw in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") {
+                let heading = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                inSection = heading.lowercased() == "root cause"
+                continue
+            }
+            guard inSection, !line.isEmpty else { continue }
+            var text = line
+            for label in ["**Finding:**", "Finding:", "**Root cause:**", "Root cause:"] {
+                if text.hasPrefix(label) { text = String(text.dropFirst(label.count)).trimmingCharacters(in: .whitespaces) }
+            }
+            text = text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            if text.isEmpty { continue }
+            // First sentence only - a card subtitle is one line.
+            if let stop = text.firstIndex(of: "."), text.distance(from: text.startIndex, to: stop) > 20 {
+                text = String(text[text.startIndex..<stop])
+            }
+            return text
+        }
+        return nil
+    }
+
+    /// The runbook card's subtitle: "Kubernetes \u{00B7} 3 steps", or as much
+    /// of that as the document actually supports.
+    static func runbookSubtitle(_ runbook: DocsRunbook) -> String? {
+        let steps = stepCount(in: runbook.content)
+        let category = category(in: runbook.content)
+        if steps > 0, let category { return "\(category) \u{00B7} \(steps) step\(steps == 1 ? "" : "s")" }
+        if steps > 0 { return "\(steps) step\(steps == 1 ? "" : "s")" }
+        return category
+    }
+
+    /// The postmortem card's subtitle: its own root cause.
+    static func postmortemSubtitle(_ postmortem: DocsRunbook) -> String? {
+        rootCause(in: postmortem.content).map { "Root cause: \($0)" }
+    }
+}
+
 // MARK: - Git sync (shares ShiftGitSync's clone/queue - see file header)
 
 final class DocsRunbookGitSync {

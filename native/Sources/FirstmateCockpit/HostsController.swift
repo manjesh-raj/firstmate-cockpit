@@ -62,11 +62,18 @@ enum HostsTab: String, CaseIterable {
 
 final class HostsController: NSViewController, NSSearchFieldDelegate {
 
-    /// The content column's cap. Wide enough for a host row's label, address
-    /// and actions to breathe, narrow enough that the page does not become a
-    /// single 1500pt-wide line of text on a maximised window - the audit's
-    /// actual complaint about this page.
-    static let maxContentWidth: CGFloat = 940
+    /// The content column's cap - a **maximum**, applied from the leading
+    /// edge, never a centring device.
+    ///
+    /// Phase 5 built this column as `leading >= / trailing <= / centerX ==`,
+    /// which floats the whole page in the middle of a wide window with a
+    /// mirrored dead gutter on both sides. The captain's own comparison
+    /// against the prototype (`07-proposed-hosts-a.png`) called that out
+    /// directly: Hosts is left-aligned like Overview, Review and Updates, all
+    /// of which start at the page gutter. The `centerX` tie is gone; only the
+    /// cap remains, so a very wide window still doesn't stretch a host row's
+    /// two short strings across 1500pt.
+    static let maxContentWidth: CGFloat = 1120
 
     private let hostStore: HostStore
     private let keyStore: SSHKeyStore
@@ -147,9 +154,9 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
         buildKeysTab()
         buildSnippetsTab()
 
-        // The capped, centred content column. An `NSLayoutGuide` rather than a
-        // spacer view, so nothing renders it and nothing can accidentally pick
-        // up a background from it.
+        // The capped, **left-aligned** content column. An `NSLayoutGuide`
+        // rather than a spacer view, so nothing renders it and nothing can
+        // accidentally pick up a background from it.
         //
         // Inequalities plus a *high-priority* (not required) width, never a
         // required `==` tie to the container - AGENTS.md's host-editor gotcha
@@ -159,6 +166,10 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
         // so it cannot hit that trap today, but the shape is the one this app
         // has settled on for a capped column and there is no reason to have
         // two.
+        //
+        // The column is pinned to the page gutter (`leading ==`) and grows
+        // rightwards until it hits the cap - it is not centred. See
+        // `maxContentWidth`.
         let column = NSLayoutGuide()
         root.addLayoutGuide(column)
         let grow = column.widthAnchor.constraint(equalToConstant: Self.maxContentWidth)
@@ -166,9 +177,8 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
         grow.isActive = true
 
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: HelmMetrics.pageGutter),
+            column.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: HelmMetrics.pageGutter),
             column.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -HelmMetrics.pageGutter),
-            column.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             column.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxContentWidth),
             column.topAnchor.constraint(equalTo: root.topAnchor, constant: HelmMetrics.s5),
             column.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -HelmMetrics.pageGutter),
@@ -447,16 +457,22 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
 
     private func hostItem(_ host: Host) -> HostsListSection.Item {
         var content = HelmAccentRow.Content(tint: .accent,
-                                            kicker: "SSH",
+                                            kicker: Self.roleKicker(for: host),
                                             title: host.label,
                                             meta: host.subtitle,
                                             badgeSymbol: host.iconSymbol)
         // A host's accent is picked per host in the host editor, so it is a
         // literal hue rather than a semantic `HelmTint` - see
-        // `HelmAccentRow.Content.tintHex`.
+        // `HelmAccentRow.Content.tintHex`. Together with the role kicker
+        // above, that is the prototype's "PREPROD / PROD / CI" row: the bar
+        // and badge carry the captain's own colour for that host, the kicker
+        // names the role.
         content.tintHex = host.accentHex
-        if let tag = host.tags.first {
-            content.chipText = host.tags.count > 1 ? "\(tag) +\(host.tags.count - 1)" : tag
+        // The first tag is the kicker now, so the chip only carries what the
+        // kicker could not - "+2 more". A chip repeating the kicker was the
+        // same signal twice.
+        if host.tags.count > 1 {
+            content.chipText = "+\(host.tags.count - 1) more"
         }
         var item = HostsListSection.Item(content: content)
         item.primary = .init(title: "Connect", symbol: "bolt.fill") { [weak self] in self?.connect(host) }
@@ -467,6 +483,25 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
             .init(title: "Delete") { [weak self] in self?.confirmDeleteHost(host) },
         ]
         return item
+    }
+
+    /// A host row's kicker: what kind of box this is, in the captain's own
+    /// words. The prototype's Hosts page reads LOCAL / PREPROD / PROD / CI
+    /// down the left of the list rather than "SSH" four times, and this app
+    /// already stores exactly that - a host's first tag, or its group when it
+    /// has no tags. Falls back to "SSH" for a host with neither, which is
+    /// what every row said before.
+    ///
+    /// `HelmAccentRow` uppercases and kerns the kicker itself, so this returns
+    /// the captain's own casing untouched.
+    static func roleKicker(for host: Host) -> String {
+        if let tag = host.tags.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+            return tag
+        }
+        if let group = host.group?.trimmingCharacters(in: .whitespacesAndNewlines), !group.isEmpty {
+            return group
+        }
+        return "SSH"
     }
 
     // MARK: Keys data

@@ -312,15 +312,30 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
         plusButton = makeIconButton(symbol: "plus", tooltip: "New Shell Tab (⌘T)", action: #selector(newShellTab))
 
-        findButton = makeIconButton(symbol: "magnifyingglass", tooltip: "Find (⌘F)", action: #selector(showFind))
+        // **Named features are labelled; pure utilities stay icon squares.**
+        //
+        // The audit prototype's Console toolbar
+        // (`15-proposed-console-sre-lead.png`) reads "Find / Compose / Claude
+        // usage / SRE Lead" - four labelled buttons, not four glyphs. Phase 7
+        // unified this bar's *chrome* (bordered `.secondary` squares) but left
+        // every control unlabelled, so a captain could not tell Compose from
+        // Claude usage without hovering. These are the four the prototype
+        // names, plus Block View, which is the same kind of thing: a named,
+        // stateful feature toggle rather than a glyph-native utility.
+        //
+        // Zoom in / zoom out / theme / log / "+" stay icon squares
+        // deliberately - they have no prototype counterpart, their glyphs are
+        // universally legible on their own, and labelling five more controls
+        // would leave a long tab strip nowhere to go.
+        findButton = makeLabeledButton(symbol: "magnifyingglass", title: "Find", tooltip: "Find (⌘F)", action: #selector(showFind))
         zoomOutButton = makeIconButton(symbol: "minus.magnifyingglass", tooltip: "Zoom Out (⌘−)", action: #selector(zoomOut))
         zoomInButton = makeIconButton(symbol: "plus.magnifyingglass", tooltip: "Zoom In (⌘+)", action: #selector(zoomIn))
         themeButton = makeIconButton(symbol: "circle.lefthalf.filled", tooltip: "Toggle Light/Dark (⌘⌥T)", action: #selector(toggleTheme))
         logButton = makeIconButton(symbol: "record.circle", tooltip: "Log This Session (⌘⇧L)", action: #selector(toggleLoggingForActiveTab))
-        blockViewToggleButton = makeIconButton(symbol: "rectangle.grid.1x2", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
+        blockViewToggleButton = makeLabeledButton(symbol: "rectangle.grid.1x2", title: "Blocks", tooltip: "Show Parsed Blocks (Stage 0)", action: #selector(toggleBlockView))
         blockViewRefreshButton = makeIconButton(symbol: "arrow.clockwise", tooltip: "Refresh Blocks", action: #selector(refreshBlockView))
-        composeButton = makeIconButton(symbol: "sparkles", tooltip: "Compose a command…", action: #selector(toggleComposer))
-        utilizationButton = makeIconButton(symbol: quotaUsageGaugeSymbol, tooltip: "Claude usage", action: #selector(toggleUtilization))
+        composeButton = makeLabeledButton(symbol: "sparkles", title: "Compose", tooltip: "Compose a command…", action: #selector(toggleComposer))
+        utilizationButton = makeLabeledButton(symbol: quotaUsageGaugeSymbol, title: "Claude usage", tooltip: "Claude usage", action: #selector(toggleUtilization))
 
         // SRE Lead (design brief Part C) and block view (`fm/cockpit-block-
         // view-stage0`) are both dedicated-host-page-only affordances - the
@@ -358,6 +373,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     private func makeIconButton(symbol: String, tooltip: String, action: Selector) -> HelmButton {
         HelmPageToolbar.iconButton(symbol: symbol, tooltip: tooltip, target: self, action: action)
+    }
+
+    private func makeLabeledButton(symbol: String, title: String, tooltip: String, action: Selector) -> HelmButton {
+        HelmPageToolbar.labeledButton(symbol: symbol, title: title, tooltip: tooltip, target: self, action: action)
     }
 
     /// Re-lay the tab bar: one chip per tab, then the "+" button.
@@ -1393,7 +1412,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         composeButton.isHidden = !available
         if !available { composer.close() }
-        composeButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+        // No `contentTintColor` here - `HelmButton.restyle()` owns that
+        // property (AGENTS.md, Phase 2) and this button themes itself. It was
+        // a harmless no-op back when the control was image-only; now that it
+        // carries a label too, letting the variant decide both is the point.
     }
 
     @objc private func toggleComposer() {
@@ -1418,7 +1440,7 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         }
         utilizationButton.isHidden = !available
         if !available { quotaUsage.close() }
-        utilizationButton.contentTintColor = HelmTheme.nsColor(theme.chromeInkHex)
+        // See `updateComposeControls` - `HelmButton` owns its own tinting.
     }
 
     @objc private func toggleUtilization() {

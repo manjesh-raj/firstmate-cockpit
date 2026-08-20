@@ -70,6 +70,7 @@ enum HelmContrastSelfTest {
         checkPageToolbarRecipe(&ok)
         checkResponsiveGrid(&ok)
         checkPageTitleVoice(&ok)
+        checkRowDoesNotResizeWindow(&ok)
         print(ok ? "== contrast: PASS ==" : "== contrast: FAIL ==")
         return ok
     }
@@ -494,6 +495,120 @@ enum HelmContrastSelfTest {
                 print("  OK width \(Int(width)): pill x constant at \(fmt(Double(xs.first ?? 0)))")
             }
         }
+    }
+
+    // MARK: 8b. A row must never resize the window (fm/grandline-design-fidelity-fixes)
+
+    /// **No constraint inside a `ToolRowLayout` row may outrank
+    /// `NSLayoutPriorityWindowSizeStayPut` (500).**
+    ///
+    /// A window only holds its own size at priority 500, so *any* content
+    /// constraint above that can reach out and resize the whole window. The
+    /// fixed-name-column constraint (§5.4's fix) shipped at `.defaultHigh + 1`
+    /// (751) paired with a required `<= nameColumnMaxWidth`, and between them
+    /// they capped the entire app window at `nameColumnMaxWidth /
+    /// nameColumnFraction` plus the row, card and page insets - **1410pt** -
+    /// on every page carrying these rows. On a 1512pt-wide screen the window
+    /// refused to grow past that, reported `isZoomed == true` at it, and even
+    /// genuine macOS full screen rendered 1410pt wide, centred, with a black
+    /// bar down each side.
+    ///
+    /// Two checks, because either alone would miss it: the priority itself,
+    /// and a real window that is asked to be wider than the cap and must
+    /// actually stay there.
+    private static func checkRowDoesNotResizeWindow(_ ok: inout Bool) {
+        print("\n-- rows must not drive window size (priority < 500) --")
+        let theme = ThemeManager.shared.theme
+
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 1600, height: 300))
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: host.topAnchor),
+        ])
+        let v = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView())
+        ToolRowLayout.pill(text: "Up to Date", colorHex: theme.accentHex,
+                           into: v.pill, label: v.pillLabel, theme: theme)
+        let row = ToolRowLayout.build(v, iconSymbol: "shippingbox", tint: .info, name: "chrome-devtools-axi",
+                                      trailingViews: [HelmButton(title: "Check", variant: .secondary, size: .small)],
+                                      identifier: "probe")
+        stack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        host.layoutSubtreeIfNeeded()
+
+        let stayPut = NSLayoutConstraint.Priority(rawValue: 500)
+        var offenders: [NSLayoutConstraint] = []
+        func scan(_ view: NSView) {
+            for c in view.constraints where c.isActive && c.priority > stayPut && c.priority < .required {
+                switch c.firstAttribute {
+                case .width, .leading, .trailing, .left, .right, .centerX: offenders.append(c)
+                default: break
+                }
+            }
+            view.subviews.forEach(scan)
+        }
+        scan(host)
+        if offenders.isEmpty {
+            print("  OK no horizontal row constraint sits above NSLayoutPriorityWindowSizeStayPut")
+        } else {
+            for c in offenders { print("  FAIL priority \(c.priority.rawValue) > 500: \(c)") }
+            ok = false
+        }
+
+        // The real thing: a window whose content is one of these rows must be
+        // able to hold a width well past `nameColumnMaxWidth / fraction`.
+        let target: CGFloat = 1600
+        let vc = NSViewController()
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let inner = NSStackView()
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            inner.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            inner.topAnchor.constraint(equalTo: content.topAnchor),
+            inner.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor),
+        ])
+        let v2 = ToolRowLayout.Views(
+            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
+            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
+            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
+            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
+            logContainer: NSView(), rowContainer: HoverHighlightView())
+        ToolRowLayout.pill(text: "Up to Date", colorHex: theme.accentHex,
+                           into: v2.pill, label: v2.pillLabel, theme: theme)
+        let row2 = ToolRowLayout.build(v2, iconSymbol: "shippingbox", tint: .info, name: "chrome-devtools-axi",
+                                       trailingViews: [HelmButton(title: "Check", variant: .secondary, size: .small)],
+                                       identifier: "probe2")
+        inner.addArrangedSubview(row2)
+        row2.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+        vc.view = content
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                           styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        win.contentViewController = vc
+        win.setFrame(NSRect(x: -30000, y: -30000, width: target, height: 300), display: false)
+        win.layoutIfNeeded()
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        let held = win.frame.width
+        if held >= target - 1 {
+            print("  OK a window carrying one of these rows holds \(Int(held))pt")
+        } else {
+            print("  FAIL window shrank to \(Int(held))pt when asked for \(Int(target)) - a row constraint is resizing it")
+            ok = false
+        }
+        win.orderOut(nil)
     }
 
     // MARK: 9. One stat-tile recipe (audit §3.2 "Stat tile", §6.3 #4, Phase 4)

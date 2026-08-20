@@ -289,16 +289,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appShell.onLockStateChanged = { [weak self] locked in self?.setContentMenusEnabled(!locked) }
         appLock.start()
 
-        let frame = NSRect(x: 0, y: 0, width: 1220, height: 720)
+        // The window opens filling the screen's usable area, not a hardcoded
+        // 1220x720 box.
+        //
+        // This is **half** of the captain's "the window doesn't cover the
+        // laptop screen" report (`01-live-window-not-fullscreen.png`): a fixed
+        // content rect plus `center()` meant the window simply never asked for
+        // more than 1220x720. The other half was a real Auto Layout constraint
+        // that capped the window at 1410pt wide no matter what was asked for,
+        // including in genuine full screen - see the priority note on
+        // `ToolRowLayout.build`'s name-column constraint
+        // (`HelmUIComponents.swift`). Both had to go; either one alone still
+        // left black bars.
+        //
+        // `visibleFrame` (not `frame`) so the menu bar and the Dock are
+        // excluded, and it is applied as the *window* frame (title bar
+        // included) so nothing is pushed off the top of the screen.
         window = NSWindow(
-            contentRect: frame,
+            contentRect: NSRect(x: 0, y: 0, width: 1220, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Manjesh Grand Line"
-        window.center()
+        // **`contentViewController` first, then the frame.** Assigning a
+        // content view controller makes AppKit re-derive the window's frame
+        // from that content's Auto Layout fitting size (AGENTS.md's
+        // host-editor gotcha (3), in its milder form) - so setting the frame
+        // *before* this line is silently undone. Measured with a real window:
+        // set to 1512x950 and then given a content view controller, it came
+        // back 960x652, i.e. exactly `contentMinSize` plus the title bar.
         window.contentViewController = appShell
+        window.contentMinSize = Self.minContentSize
+        window.setFrame(Self.defaultWindowFrame(), display: false)
+        // `setFrameAutosaveName` after the frame is set: with no saved frame
+        // yet (first launch on this machine) AppKit keeps what we just asked
+        // for, and from then on the captain's own resize/zoom is what is
+        // restored - so this sets a sane default without overriding a
+        // deliberate later choice.
+        window.setFrameAutosaveName(Self.windowAutosaveName)
         // Theme-audit task: the window's own chrome (title bar) has no view
         // to force `.appearance` on, so without this it always follows the
         // OS's actual light/dark setting rather than the active Helm theme.
@@ -312,6 +341,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // first frame the captain sees is the lock screen, not the console.
         appLock.lock(reason: .launch)
 
+    }
+
+    /// The main window's saved-frame key. Once the captain resizes or zooms
+    /// the window, AppKit restores that instead of the default below.
+    static let windowAutosaveName = "GrandLineMainWindow"
+
+    /// Never smaller than this. Deliberately below any real Mac's usable
+    /// height so it can never fight `defaultWindowFrame` - it only stops the
+    /// captain dragging the window down to a size where the destinations
+    /// stop being readable.
+    static let minContentSize = NSSize(width: 960, height: 620)
+
+    /// The screen's usable area - menu bar and Dock excluded. This is the
+    /// *window* frame (title bar included), so the title bar stays on screen.
+    /// Falls back to the old fixed size only when there is no screen at all
+    /// to measure (a headless / self-test launch).
+    static func defaultWindowFrame() -> NSRect {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            return NSRect(x: 0, y: 0, width: 1220, height: 720)
+        }
+        return screen.visibleFrame
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

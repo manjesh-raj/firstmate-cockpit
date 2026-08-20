@@ -72,13 +72,22 @@ final class CommandLibraryPageView: NSObject {
     private let detailCommandBox = NSView()
     private let detailCommandLabel = NSTextField(wrappingLabelWithString: "")
     private let detailParamsStack = NSStackView()
-    private let detailCopyButton = HelmButton(title: "Copy", variant: .secondary, target: nil, action: nil)
-    private let detailSendButton = HelmButton(title: "Send to Terminal", variant: .primary, target: nil, action: nil)
-    private let detailEditButton = HelmButton(title: "Edit", variant: .secondary, target: nil, action: nil)
-    private let detailDuplicateButton = HelmButton(title: "Duplicate", variant: .secondary, target: nil, action: nil)
-    private let detailWorkflowButton = HelmButton(title: "+ Workflow", variant: .secondary, target: nil, action: nil)
-    private let detailExplainButton = HelmButton(title: "\u{2728} Explain", variant: .secondary, target: nil, action: nil)
-    private let detailFavoriteButton = HelmButton(title: "\u{2606} Favorite", variant: .secondary, target: nil, action: nil)
+    // **The action row has a hierarchy now.** As shipped it was seven
+    // same-weight buttons in a line, so nothing said which one the captain
+    // reaches for. The prototype (`10-proposed-devops-commands.png`) leads
+    // with a filled "Send to Terminal", follows it with two bordered
+    // secondaries (Copy, Add to Runbook) and pushes a lightweight "Explain"
+    // to the far right. Every action this page had is still here - the
+    // prototype simply doesn't model Edit/Duplicate/Favorite - they move into
+    // the quiet trailing group with Explain rather than competing with the
+    // primary action.
+    private let detailCopyButton = HelmButton(title: "Copy", variant: .secondary, symbol: "doc.on.doc", target: nil, action: nil)
+    private let detailSendButton = HelmButton(title: "Send to Terminal", variant: .primary, symbol: "play.fill", target: nil, action: nil)
+    private let detailEditButton = HelmButton(title: "Edit", variant: .quiet, target: nil, action: nil)
+    private let detailDuplicateButton = HelmButton(title: "Duplicate", variant: .quiet, target: nil, action: nil)
+    private let detailWorkflowButton = HelmButton(title: "Add to Runbook", variant: .secondary, symbol: "plus", target: nil, action: nil)
+    private let detailExplainButton = HelmButton(title: "Explain", variant: .quiet, symbol: "sparkles", target: nil, action: nil)
+    private let detailFavoriteButton = HelmButton(title: "Favorite", variant: .quiet, symbol: "star", target: nil, action: nil)
     private let detailContentContainer = NSView()
 
     /// Every live parameter input control, keyed by parameter name, for the
@@ -119,9 +128,17 @@ final class CommandLibraryPageView: NSObject {
         columns.orientation = .horizontal
         columns.alignment = .top
         columns.spacing = 16
+        // `.fill`, explicitly - AGENTS.md gotcha (10). Left at the default
+        // `.gravityAreas` this stack ignored the hugging priorities below
+        // entirely and laid both panes out at their natural width, which is
+        // why the detail card stopped around 60% of the page with dead space
+        // to its right instead of filling the column the way the prototype's
+        // right-hand pane does.
+        columns.distribution = .fill
         columns.translatesAutoresizingMaskIntoConstraints = false
         leftPanel.widthAnchor.constraint(equalToConstant: 220).isActive = true
         leftPanel.setContentHuggingPriority(.required, for: .horizontal)
+        leftPanel.setContentCompressionResistancePriority(.required, for: .horizontal)
         detailPanel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         detailPanel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -317,10 +334,19 @@ final class CommandLibraryPageView: NSObject {
         detailFavoriteButton.translatesAutoresizingMaskIntoConstraints = false
 
         let buttonsSpacer = NSView()
+        buttonsSpacer.translatesAutoresizingMaskIntoConstraints = false
         buttonsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        buttonsSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for b in [detailSendButton, detailCopyButton, detailWorkflowButton,
+                  detailEditButton, detailDuplicateButton, detailFavoriteButton, detailExplainButton] {
+            b.setContentHuggingPriority(.required, for: .horizontal)
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        // Primary first, then the two supporting secondaries, then the spacer,
+        // then the quiet group at the trailing edge.
         let buttonsRow = NSStackView(views: [
-            detailCopyButton, detailSendButton, detailEditButton, detailDuplicateButton,
-            detailWorkflowButton, detailExplainButton, buttonsSpacer, detailFavoriteButton,
+            detailSendButton, detailCopyButton, detailWorkflowButton, buttonsSpacer,
+            detailEditButton, detailDuplicateButton, detailFavoriteButton, detailExplainButton,
         ])
         buttonsRow.orientation = .horizontal
         buttonsRow.distribution = .fill
@@ -514,12 +540,10 @@ final class CommandLibraryPageView: NSObject {
             return
         }
 
-        switch leftPanelState {
-        case .browse:
-            renderBrowseList()
-        case .category(let categoryID):
-            renderCategoryCommandList(categoryID)
-        }
+        // One renderer for both states now - `renderBrowseList` reads
+        // `leftPanelState` itself to decide whether to append a selected
+        // category's command list under the Categories panel.
+        renderBrowseList()
     }
 
     private func addCommandButton() -> NSView {
@@ -546,6 +570,20 @@ final class CommandLibraryPageView: NSObject {
         }
     }
 
+    /// The left column, in both states.
+    ///
+    /// **The Categories overview never goes away.** As shipped this was a
+    /// drill-down: picking a category replaced the whole column with a
+    /// "\u{2039} Kubernetes" back row plus that category's commands, so the
+    /// other categories - and Favorites and Recently used - were gone until
+    /// the captain navigated back. The prototype
+    /// (`10-proposed-devops-commands.png`) keeps a "Categories" panel with a
+    /// per-category count above the selected category's own list, which is
+    /// both what the captain asked for and strictly less navigation. So the
+    /// selected category's commands are now *appended* below the same list
+    /// the browse state already renders, with the active category
+    /// highlighted; nothing is ever hidden, and the back row is gone because
+    /// there is no longer anywhere to go back from.
     private func renderBrowseList() {
         let favorites = store.favoriteCommands()
         if !favorites.isEmpty {
@@ -569,10 +607,21 @@ final class CommandLibraryPageView: NSObject {
             appendDividerToLeftPanel()
         }
 
+        var selectedCategoryID: String?
+        if case .category(let id) = leftPanelState { selectedCategoryID = id }
+
+        appendToLeftPanel(mutedHeaderLabel("CATEGORIES"))
         for (info, commands) in store.commandsByCategory() where !commands.isEmpty {
-            let row = leftPanelRow(text: info.displayName, trailing: "\(commands.count)", action: #selector(categoryRowClicked(_:)))
+            let row = leftPanelRow(text: info.displayName, trailing: "\(commands.count)",
+                                   isSelected: info.id == selectedCategoryID,
+                                   action: #selector(categoryRowClicked(_:)))
             rowCategoryIDs[ObjectIdentifier(row)] = info.id
             appendToLeftPanel(row)
+        }
+
+        if let selectedCategoryID {
+            appendDividerToLeftPanel()
+            renderCategoryCommandList(selectedCategoryID)
         }
 
         appendDividerToLeftPanel()
@@ -583,26 +632,12 @@ final class CommandLibraryPageView: NSObject {
         appendToLeftPanel(workflowsRow)
     }
 
+    /// The selected category's own command list, rendered *below* the
+    /// Categories panel (see `renderBrowseList`). Headed by the category's
+    /// name, the same way the prototype's second left-hand card is - not by a
+    /// "\u{2039} back" row, which no longer has anything to go back to.
     private func renderCategoryCommandList(_ categoryID: String) {
-        let backRow = HoverHighlightView()
-        backRow.cornerRadius = 6
-        let backLabel = NSTextField(labelWithString: "\u{2039} \(CommandLibraryCategory.info(for: categoryID).displayName)")
-        backLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        backLabel.translatesAutoresizingMaskIntoConstraints = false
-        backRow.addSubview(backLabel)
-        NSLayoutConstraint.activate([
-            backLabel.leadingAnchor.constraint(equalTo: backRow.leadingAnchor, constant: 8),
-            backLabel.trailingAnchor.constraint(equalTo: backRow.trailingAnchor, constant: -8),
-            backLabel.topAnchor.constraint(equalTo: backRow.topAnchor, constant: 5),
-            backLabel.bottomAnchor.constraint(equalTo: backRow.bottomAnchor, constant: -5),
-        ])
-        backLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
-        backRow.normalColor = .clear
-        backRow.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.25)
-        backRow.translatesAutoresizingMaskIntoConstraints = false
-        backRow.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(backToBrowseClicked)))
-        appendToLeftPanel(backRow)
-        appendDividerToLeftPanel()
+        appendToLeftPanel(mutedHeaderLabel(CommandLibraryCategory.info(for: categoryID).displayName.uppercased()))
 
         let commandsInCategory = store.commandsByCategory().first { $0.info.id == categoryID }?.commands ?? []
         for command in commandsInCategory {
@@ -625,12 +660,14 @@ final class CommandLibraryPageView: NSObject {
 
     @objc private func categoryRowClicked(_ sender: NSClickGestureRecognizer) {
         guard let view = sender.view, let categoryID = rowCategoryIDs[ObjectIdentifier(view)] else { return }
-        leftPanelState = .category(categoryID)
-        render()
-    }
-
-    @objc private func backToBrowseClicked() {
-        leftPanelState = .browse
+        // Clicking the already-open category closes it again, so the column
+        // can be collapsed back to just the Categories overview without a
+        // separate back row.
+        if case .category(categoryID) = leftPanelState {
+            leftPanelState = .browse
+        } else {
+            leftPanelState = .category(categoryID)
+        }
         render()
     }
 
@@ -683,7 +720,11 @@ final class CommandLibraryPageView: NSObject {
     /// change by the button itself, so this no longer has to know the theme.
     private func refreshFavoriteButton() {
         let isFavorite = selectedCommandID.map(store.isFavorite) ?? false
-        detailFavoriteButton.title = isFavorite ? "\u{2605} Favorited" : "\u{2606} Favorite"
+        // The star is an SF Symbol on the button now rather than a literal
+        // \u{2605}/\u{2606} glyph baked into the title, so filled-vs-outline
+        // carries the state and the label stays one word.
+        detailFavoriteButton.title = isFavorite ? "Favorited" : "Favorite"
+        detailFavoriteButton.symbolName = isFavorite ? "star.fill" : "star"
     }
 
     private func rebuildParamControls(for command: DevOpsCommand) {
