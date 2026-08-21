@@ -67,7 +67,12 @@ final class VaultController: NSViewController {
     private let contentStack = NSStackView()
 
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let refreshButton = HelmButton(symbol: "arrow.clockwise", variant: .quiet)
+    // A labeled quiet button ("Refresh" + icon), not a bare icon-only one -
+    // matches this page's own reviewed design pass and the labeled toolbar
+    // controls Console already established (`HelmPageToolbar.labeledButton`'s
+    // own doc comment names this exact "named feature, not a bare glyph"
+    // treatment).
+    private let refreshButton = HelmButton(title: "Refresh", variant: .quiet, symbol: "arrow.clockwise")
 
     // Whether `av` itself is installed - checked in the background (reusing
     // the same `UpdatesSource`/`DependencyCatalog` "automic-vault" entry the
@@ -258,27 +263,45 @@ final class VaultController: NSViewController {
         addSecretButton.action = #selector(addSecretTapped)
 
         secretsCountBadge.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        secretsCountBadge.translatesAutoresizingMaskIntoConstraints = false
 
-        let header = sectionHeaderRow(title: "Secrets", badge: secretsCountBadge, trailing: addSecretButton)
+        // The structured `HelmCard` header - icon tile, title, subtitle,
+        // trailing actions - replacing a hand-rolled title-only row so this
+        // card reads the same as every other icon-tile card on this page
+        // (Verified Launchers, Recipe Backup) and elsewhere in the app
+        // (`ShiftPanelView`'s own section headers use the identical shape).
+        secretsPanel.setHeader(
+            symbol: "lock.fill",
+            tint: .good,
+            title: "Secrets",
+            subtitle: "Keychain-backed, this device only",
+            actions: [secretsCountBadge, addSecretButton]
+        )
         secretsStack.orientation = .vertical
         secretsStack.alignment = .leading
         secretsStack.spacing = 10
         secretsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        secretsPanel.setHeader(header)
         secretsPanel.setBody(secretsStack)
         return secretsPanel
     }
 
     private func buildToolsSection() -> NSView {
         toolsCountBadge.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
-        let header = sectionHeaderRow(title: "Verified Launchers", badge: toolsCountBadge, trailing: nil)
+        toolsCountBadge.translatesAutoresizingMaskIntoConstraints = false
+
+        toolsPanel.setHeader(
+            symbol: "checkmark.shield.fill",
+            tint: .violet,
+            title: "Verified Launchers",
+            subtitle: "From av doctor --json",
+            actions: [toolsCountBadge]
+        )
         toolsStack.orientation = .vertical
         toolsStack.alignment = .leading
         toolsStack.spacing = 10
         toolsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        toolsPanel.setHeader(header)
         toolsPanel.setBody(toolsStack)
         return toolsPanel
     }
@@ -305,23 +328,24 @@ final class VaultController: NSViewController {
         buttonsRow.spacing = 8
         buttonsRow.alignment = .centerY
 
-        let titleLabel = NSTextField(labelWithString: "Recipe Backup")
-        titleLabel.font = HelmType.sectionTitle()
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let header = NSStackView(views: [titleLabel, spacer, buttonsRow])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 8
-        header.translatesAutoresizingMaskIntoConstraints = false
+        recipePanel.setHeader(
+            symbol: "shippingbox.fill",
+            tint: .accent,
+            title: "Recipe Backup",
+            subtitle: "Which secrets and tools are hardened, never a value",
+            actions: [buttonsRow]
+        )
 
         recipeDetailLabel.font = .systemFont(ofSize: 11.5)
         recipeDetailLabel.preferredMaxLayoutWidth = 700
-        recipeDetailLabel.stringValue = "Records which secrets and tools are hardened right now - names and launcher metadata only, never a secret value - so the same setup can be replayed as a checklist after a fresh machine or wipe."
+        // A neutral placeholder - `refreshRecipeStatusFromDisk()` replaces
+        // this with a real "Last exported to <repo> N days ago" (read from
+        // whatever recipe file already exists on disk, never fabricated)
+        // moments later, on every `refresh()`.
+        recipeDetailLabel.stringValue = "Checking for a previous export\u{2026}"
         setRecipeLabelColor(.info)
         recipeDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        recipePanel.setHeader(header)
         // `HelmCard.setBody` defaults to flush, for a full-bleed list whose
         // own rows carry their inset. Real content passes the one shared card
         // body padding instead of a hand-rolled wrapper view.
@@ -329,29 +353,12 @@ final class VaultController: NSViewController {
         return recipePanel
     }
 
-    private func sectionHeaderRow(title: String, badge: NSTextField, trailing: NSView?) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = HelmType.sectionTitle()
-        badge.translatesAutoresizingMaskIntoConstraints = false
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        var views: [NSView] = [titleLabel, badge, spacer]
-        if let trailing { views.append(trailing) }
-        let row = NSStackView(views: views)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
-    }
-
     // MARK: Refresh
 
     @objc private func refreshTapped() { refresh() }
 
     private func refresh() {
+        refreshRecipeStatusFromDisk()
         checkAvInstalled { [weak self] in
             guard let self else { return }
             if self.installStatus == .notInstalled {
@@ -481,84 +488,93 @@ final class VaultController: NSViewController {
         empty.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
+    /// The app's one "accent-carrying row" (`HelmAccentRow`, `HelmDesignSystem.
+    /// swift`) - a colored left accent bar, a tinted round badge, an uppercase
+    /// kicker, a body line, a meta line, and a caller-owned trailing accessory
+    /// for this row's own action buttons (the same slot the Hosts / Keys /
+    /// Snippets lists use for Connect/Edit/…). Replaces the dense
+    /// checklist-row shape `ToolRowLayout` gave these two sections before this
+    /// pass - `ToolRowLayout` is still the right component for Updates/
+    /// Bootstrap/Automation/GitHub Sync's fixed-column checklists, but a
+    /// secret or a launcher reads as a record/finding, not a checklist item,
+    /// which is exactly the distinction `HelmAccentRow`'s own doc comment
+    /// draws between the two components.
     private func secretRowView(_ secret: VaultSecret) -> NSView {
-        let views = ToolRowLayout.Views(
-            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
-            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
-            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
-            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
-            logContainer: NSView(), rowContainer: HoverHighlightView()
-        )
-        ToolRowLayout.pill(text: "Hardened", colorHex: theme.ansiHex[2], into: views.pill, label: views.pillLabel, theme: theme)
+        let row = HelmAccentRow(trailingAccessory: secretRowActions(for: secret), hover: false)
+        row.configure(HelmAccentRow.Content(
+            tint: .good,
+            kicker: "Hardened",
+            title: secret.name,
+            // `av list` only ever returns bare secret names - there is no
+            // per-secret human-readable purpose (the prototype's "App lock"/
+            // "GitHub CLI" are illustrative examples, not real data this app
+            // has access to) - so this stays a plain, honest, generic line
+            // rather than a fabricated description.
+            meta: "Stored in Automic Vault's Keychain",
+            badgeSymbol: "key.fill",
+            titleIsCode: true
+        ), theme: theme)
+        return row
+    }
 
+    private func secretRowActions(for secret: VaultSecret) -> NSView {
         let runButton = HelmButton(title: "Run injected\u{2026}", variant: .secondary, target: self, action: #selector(runInjectedTapped(_:)))
         runButton.controlSize = .small
         runButton.identifier = NSUserInterfaceItemIdentifier("secret-run:\(secret.name)")
 
-        // A real labeled button, styled identically to "Run injected..." -
-        // sits right next to it so the row's two actions read as one group,
-        // rather than the icon-only button PR #116 pinned to the row's far
-        // trailing edge. Still only ever copies the NAME already shown in
-        // this row; the secret's value never touches this app (see this
-        // file's header comment).
+        // Still only ever copies the NAME already shown in this row; the
+        // secret's value never touches this app (see this file's header
+        // comment).
         let copyButton = HelmButton(title: "Copy Name", variant: .secondary, target: self, action: #selector(copyNameTapped(_:)))
         copyButton.controlSize = .small
         copyButton.toolTip = "Copy secret name to clipboard"
         copyButton.identifier = NSUserInterfaceItemIdentifier("secret-copy:\(secret.name)")
 
-        let row = ToolRowLayout.build(
-            views,
-            iconSymbol: "key.fill",
-            tint: .good,
-            name: secret.name,
-            trailingViews: [runButton, copyButton],
-            identifier: "secret:\(secret.name)",
-            showDetails: false,
-            cardStyle: true
-        )
-        views.detailLabel.stringValue = "Stored in Automic Vault's Keychain"
-        row.identifier = NSUserInterfaceItemIdentifier("secret:\(secret.name)")
-        ToolRowLayout.applyTheme(views, theme: theme, detailFailed: false, cardStyle: true)
-        return row
+        // AGENTS.md gotcha (12): `NSStackView`'s own `.gravityAreas` default
+        // distribution honors no hugging priority, so without `.fill` +
+        // required stack-level hugging on this stack (a content-priority API
+        // is a no-op on the stack itself) - plus required hugging on each
+        // button, since a stack has no intrinsic size of its own to hug
+        // against - the solver's tie-break can stretch whichever button it
+        // likes to fill the row. `HostsListSection`'s identical `actions`
+        // stack (`HostsListSection.swift`) is the reference for this exact
+        // trio. Without it, "Run injected…" rendered ~1000pt wide here.
+        let actions = NSStackView(views: [runButton, copyButton])
+        actions.orientation = .horizontal
+        actions.spacing = 8
+        actions.alignment = .centerY
+        actions.distribution = .fill
+        actions.setHuggingPriority(.required, for: .horizontal)
+        actions.setClippingResistancePriority(.required, for: .horizontal)
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        for button in [runButton, copyButton] {
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        return actions
     }
 
     private func toolRowView(_ tool: VaultTool) -> NSView {
-        let views = ToolRowLayout.Views(
-            iconTile: IconTileView(), nameLabel: NSTextField(labelWithString: ""),
-            detailLabel: NSTextField(labelWithString: ""), pill: NSView(),
-            pillLabel: NSTextField(labelWithString: ""), trailingStack: NSStackView(),
-            detailsButton: NSButton(), logField: NSTextField(wrappingLabelWithString: ""),
-            logContainer: NSView(), rowContainer: HoverHighlightView()
-        )
         let isHardened: Bool
         switch tool.status {
         case .hardened: isHardened = true
         case .needsAttention: isHardened = false
         }
         // "Needs attention" (real `av doctor` issues) reads as amber, not
-        // red - a tool with issues to review isn't broken the same way,
-        // matching the mockup's calm/informational/needs-attention pill
-        // semantics.
-        ToolRowLayout.pill(
-            text: tool.status.label,
-            colorHex: isHardened ? theme.ansiHex[2] : theme.ansiHex[3],
-            into: views.pill, label: views.pillLabel, theme: theme
-        )
-
-        let row = ToolRowLayout.build(
-            views,
-            iconSymbol: "checkmark.shield",
+        // red - a tool with issues to review isn't broken the same way. The
+        // kicker names the category ("Hardened"/"Needs Attention"); the meta
+        // line carries the real detail (`av doctor`'s own issue count).
+        let meta = isHardened
+            ? "Hardened, 0 issues"
+            : tool.status.label + " found"
+        let row = HelmAccentRow(hover: false)
+        row.configure(HelmAccentRow.Content(
             tint: isHardened ? .good : .warn,
-            name: tool.name,
-            identifier: "tool:\(tool.name)",
-            showDetails: false,
-            cardStyle: true
-        )
-        views.detailLabel.stringValue = tool.commands.isEmpty ? " " : tool.commands.joined(separator: ", ")
-        ToolRowLayout.applyTheme(
-            views, theme: theme, detailFailed: false, cardStyle: true,
-            attentionHex: isHardened ? nil : theme.ansiHex[3]
-        )
+            kicker: isHardened ? "Hardened" : "Needs Attention",
+            title: tool.name,
+            meta: meta,
+            badgeSymbol: "checkmark.shield.fill"
+        ), theme: theme)
         return row
     }
 
@@ -645,6 +661,46 @@ final class VaultController: NSViewController {
         }
     }
 
+    /// Shows "Last exported to <repo> N days ago" - read straight off
+    /// whatever recipe file already exists on disk (`VaultRecipeGit.
+    /// loadExistingRecipe`, a plain local file read/decode, no git/network
+    /// call) - or a plain "no backup yet" message when none exists. Never
+    /// fabricated: if there's no local `manjesh-config` clone or no recipe
+    /// file in it, this says so plainly rather than guessing a date, mirroring
+    /// the prototype's own "Last exported to manjesh-config 4 days ago"
+    /// body line with real data instead of a hardcoded example. Runs on every
+    /// `refresh()` (page load + the header's Refresh button) - never a
+    /// background poll, matching this page's "quiet until it matters"
+    /// convention - and never overwrites an in-flight export/check status.
+    private func refreshRecipeStatusFromDisk() {
+        guard !isRecipeBusy else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let text: String
+            if let repoPath = VaultRecipeGit.resolveRepoPath(),
+               let recipe = VaultRecipeGit.loadExistingRecipe(repoPath: repoPath) {
+                let repoName = (repoPath as NSString).lastPathComponent
+                text = Self.relativeExportSummary(generatedAt: recipe.generatedAt, repoName: repoName)
+            } else {
+                text = "No recipe backup found yet - use \u{201c}Export Recipe\u{201d} above to create one."
+            }
+            DispatchQueue.main.async {
+                guard let self, !self.isRecipeBusy else { return }
+                self.recipeDetailLabel.stringValue = text
+                self.setRecipeLabelColor(.info)
+            }
+        }
+    }
+
+    private static func relativeExportSummary(generatedAt: String, repoName: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: generatedAt) else {
+            return "Last exported to \(repoName)."
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        let relative = formatter.localizedString(for: date, relativeTo: Date())
+        return "Last exported to \(repoName) \(relative)."
+    }
+
     private func setRecipeBusy(_ busy: Bool, status: String) {
         isRecipeBusy = busy
         exportRecipeButton.isEnabled = !busy
@@ -688,11 +744,17 @@ final class VaultController: NSViewController {
         subtitleLabel.textColor = muted
         subtitleLabel.stringValue = installStatus == .notInstalled
             ? "Automic Vault isn't installed on this machine yet."
-            : "\(secrets.count) secret\(secrets.count == 1 ? "" : "s") \u{00B7} \(tools.count) verified launcher\(tools.count == 1 ? "" : "s")"
+            : "\(secrets.count) secret\(secrets.count == 1 ? "" : "s") \u{00B7} \(tools.count) verified launcher\(tools.count == 1 ? "" : "s") \u{00B7} names and metadata only, never a value"
 
         attentionBanner.layer?.backgroundColor = warn.withAlphaComponent(0.14).cgColor
         attentionLabel.textColor = ink
         attentionIcon.contentTintColor = warn
+
+        // Theme-derived, never the system `labelColor` default these two
+        // fell back to before this pass - the same rule `HelmCard`'s own
+        // header title/subtitle already follow.
+        secretsCountBadge.textColor = muted
+        toolsCountBadge.textColor = muted
 
         secretsPanel.applyTheme(theme)
         toolsPanel.applyTheme(theme)
