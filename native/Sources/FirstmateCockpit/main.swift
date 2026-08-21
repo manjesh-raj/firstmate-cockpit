@@ -868,6 +868,16 @@ if ProcessInfo.processInfo.environment["FM_RUN_VAULT_DATA_TESTS"] == "1" {
     exit(VaultDataSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-live-gap-rootcause-scout`: real-view-hierarchy regression
+// coverage for the captain-reported black/blank right-side window gap -
+// asserts `AppShellController.bodyContainer`'s width tracks the window's
+// real, current content width across a series of resizes, and self-heals
+// if that tie is ever silently broken - see AppShellBodyWidthSelfTest.swift's
+// header.
+if ProcessInfo.processInfo.environment["FM_RUN_APP_SHELL_BODY_WIDTH_TESTS"] == "1" {
+    exit(AppShellBodyWidthSelfTest.run() ? 0 : 1)
+}
+
 // fm/grandline-app-lock: same convention, for `AppLockController`'s idle/
 // hard-logout timing math against a fake clock/idle-time provider - see
 // AppLockSelfTest.swift's header.
