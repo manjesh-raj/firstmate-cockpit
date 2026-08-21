@@ -20,6 +20,12 @@
 import AppKit
 
 final class ShiftProjectCardView: NSView {
+    /// A colored icon tile leading the card - the prototype's `.gcard`
+    /// shape (icon tile + name/subtitle/progress column), which this card
+    /// previously omitted entirely. Tinted from the same status mapping as
+    /// `statusPill` (`tint(for:)`) so the two never disagree about what a
+    /// project's status color means.
+    private let iconTile = IconTileView(size: HelmMetrics.tileBase, cornerRadius: 9)
     private let nameLabel = NSTextField(labelWithString: "")
     private let descriptionLabel = NSTextField(labelWithString: "")
     private let progressLabel = NSTextField(labelWithString: "")
@@ -79,14 +85,20 @@ final class ShiftProjectCardView: NSView {
         infoStack.translatesAutoresizingMaskIntoConstraints = false
         progressTrack.widthAnchor.constraint(equalTo: infoStack.widthAnchor).isActive = true
 
+        let contentRow = NSStackView(views: [iconTile, infoStack])
+        contentRow.orientation = .horizontal
+        contentRow.alignment = .top
+        contentRow.spacing = 10
+        contentRow.translatesAutoresizingMaskIntoConstraints = false
+
         openRegion.cornerRadius = 8
         openRegion.translatesAutoresizingMaskIntoConstraints = false
-        openRegion.addSubview(infoStack)
+        openRegion.addSubview(contentRow)
         NSLayoutConstraint.activate([
-            infoStack.leadingAnchor.constraint(equalTo: openRegion.leadingAnchor, constant: 6),
-            infoStack.trailingAnchor.constraint(equalTo: openRegion.trailingAnchor, constant: -6),
-            infoStack.topAnchor.constraint(equalTo: openRegion.topAnchor, constant: 6),
-            infoStack.bottomAnchor.constraint(equalTo: openRegion.bottomAnchor, constant: -6),
+            contentRow.leadingAnchor.constraint(equalTo: openRegion.leadingAnchor, constant: 6),
+            contentRow.trailingAnchor.constraint(equalTo: openRegion.trailingAnchor, constant: -6),
+            contentRow.topAnchor.constraint(equalTo: openRegion.topAnchor, constant: 6),
+            contentRow.bottomAnchor.constraint(equalTo: openRegion.bottomAnchor, constant: -6),
         ])
         let openClick = NSClickGestureRecognizer(target: self, action: #selector(openClicked))
         openRegion.addGestureRecognizer(openClick)
@@ -174,20 +186,27 @@ final class ShiftProjectCardView: NSView {
         openRegion.normalColor = .clear
         openRegion.hoverColor = HelmTheme.nsColor(theme.chromeLineHex).withAlphaComponent(0.18)
 
+        iconTile.configure(symbol: "shippingbox", tint: Self.tint(for: project.status))
+        iconTile.applyTheme(theme)
         applyStatusPill(project.status)
     }
 
+    /// The one status -> `HelmTint` mapping this card uses for both the
+    /// icon tile and the status pill, so the two can never disagree about
+    /// what a project's status color means. Matches `ShiftController`'s own
+    /// `applyDetailStatusPill` mapping for the same statuses.
+    private static func tint(for status: ShiftProjectStatus) -> HelmTint {
+        switch status {
+        case .notStarted: return .neutral
+        case .inProgress: return .info
+        case .onHold: return .warn
+        case .completed: return .good
+        case .archived: return .critical
+        }
+    }
+
     private func applyStatusPill(_ status: ShiftProjectStatus) {
-        let tint: HelmTint = {
-            switch status {
-            case .notStarted: return .neutral
-            case .inProgress: return .info
-            case .onHold: return .warn
-            case .completed: return .good
-            case .archived: return .critical
-            }
-        }()
-        let color = HelmTheme.nsColor(tint.hex(in: theme))
+        let color = HelmTheme.nsColor(Self.tint(for: status).hex(in: theme))
         statusPill.layer?.backgroundColor = color.withAlphaComponent(0.16).cgColor
         statusLabel.stringValue = status.displayName + " \u{2304}"
         statusLabel.textColor = color

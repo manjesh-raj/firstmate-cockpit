@@ -54,6 +54,22 @@ final class ShiftController: NSViewController {
     private let projectsGridContainer = NSStackView()
     private let projectsDetailContainer = NSStackView()
 
+    /// The neutral pill containers wrapping every `sectionHeaderRow` count
+    /// badge (the prototype's `.count` - a muted mono pill, distinct from
+    /// `ToolRowLayout.pill`'s tinted status chip). Built once per header
+    /// row, restyled here since a plain `NSTextField` carries no background
+    /// of its own to theme. See `countPillContainer(for:)`.
+    private var countBadgeContainers: [NSView] = []
+
+    /// Every `sectionHeaderRow`'s leading icon tile - a colored `IconTileView`
+    /// (the prototype's `.tile.b.t-{tint}`, the same idiom `FleetController`'s
+    /// "In flight" heading and every `HelmCard.setHeader(symbol:...)` caller
+    /// already use), not a bare glyph. `IconTileView.applyTheme` needs a
+    /// second call on every theme change (it only self-themes once, at
+    /// `configure` time), so these are tracked the same way
+    /// `countBadgeContainers` is.
+    private var headerIconTiles: [IconTileView] = []
+
     // MARK: Weekly Review (phase 5, cockpit-shift-power-features)
 
     /// The two-tab switcher living just below the header - "My Tasks" (the
@@ -405,44 +421,81 @@ final class ShiftController: NSViewController {
         return tile
     }
 
-    /// A panel header row: icon + serif title + a small muted monospace
-    /// count badge (the mockup's `.cnt` - "My Tasks 12", not text baked into
-    /// the title itself) + an optional "+" add action. `countBadge` is
-    /// `nil` for sections (Projects) that don't need a live count.
+    /// A panel header row: a tinted `IconTileView` + serif title + a small
+    /// muted monospace count badge (the prototype's `.cnt` - "My Tasks 12",
+    /// not text baked into the title itself) + an optional "+" add action.
+    /// `countBadge` is `nil` for sections (Weekly Review's "Pushed back", the
+    /// detail form) that don't need a live count.
+    ///
+    /// The icon tile, count badge, and "+" button all come from tokens
+    /// already shared across this app (`IconTileView`, `countPillContainer`,
+    /// `HelmButton(.quiet)`) rather than a bare glyph, a hand-rolled label,
+    /// and a plain `NSButton` - the tile mirrors `FleetController`'s "In
+    /// flight" heading and every `HelmCard.setHeader(symbol:...)` caller, so
+    /// this hand-built header (needed for the count badge + "+" pair, per
+    /// `HelmCard`'s own "arbitrary header view" escape hatch) still matches
+    /// the app's one icon-tile convention rather than inventing a bare-glyph
+    /// second one. See `fm/grandline-tasks-projects-redesign`.
     private func sectionHeaderRow(
-        iconSymbol: String, label: NSTextField, countBadge: NSTextField? = nil,
+        iconSymbol: String, tint: HelmTint = .accent, label: NSTextField, countBadge: NSTextField? = nil,
         addAction: Selector? = nil, addTooltip: String? = nil
     ) -> NSStackView {
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: iconSymbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        let icon = IconTileView(size: HelmMetrics.tileBase, cornerRadius: 9)
+        icon.configure(symbol: iconSymbol, tint: tint, pointSize: 13)
+        headerIconTiles.append(icon)
         label.font = HelmType.sectionTitle()
         var views: [NSView] = [icon, label]
         if let countBadge {
-            countBadge.font = ShiftFont.mono(11, weight: .medium)
-            views.append(countBadge)
+            views.append(countPillContainer(for: countBadge))
         }
         if let addAction {
             let spacer = NSView()
             spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let addButton = NSButton(title: "", target: self, action: addAction)
-            addButton.isBordered = false
-            addButton.image = NSImage(systemSymbolName: "plus.circle", accessibilityDescription: addTooltip)
+            let addButton = HelmButton(symbol: "plus", variant: .quiet, size: .small, target: self, action: addAction)
             addButton.toolTip = addTooltip
-            addButton.translatesAutoresizingMaskIntoConstraints = false
             views += [spacer, addButton]
         }
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.spacing = 8
-        row.alignment = .firstBaseline
+        // `.centerY`, not `.firstBaseline` - the count-badge pill and the
+        // `HelmButton` are plain views with no text baseline of their own,
+        // and `.firstBaseline` alignment against them dropped the badge
+        // onto its own line below the title (live-caught rendering the
+        // fix). `VaultController.sectionHeaderRow` uses the same `.centerY`
+        // for the identical icon+title+badge+button shape.
+        row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
         return row
     }
 
+    /// Wraps a count-badge label in the prototype's `.count` pill: a small,
+    /// neutral, monospace-digit chip (`background: rgba(ink,.08)`) - not
+    /// `ToolRowLayout.pill`, which always carries a semantic tint and would
+    /// make an ordinary item count read as a status. Built once per header
+    /// (see `countBadgeContainers`), restyled from `applyTheme()`.
+    private func countPillContainer(for label: NSTextField) -> NSView {
+        label.font = HelmType.metric(11, weight: .medium)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = HelmMetrics.rChip
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -6),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
+        ])
+        container.setContentHuggingPriority(.required, for: .horizontal)
+        countBadgeContainers.append(container)
+        return container
+    }
+
     private func buildTaskSection() -> NSView {
         let headerRow = sectionHeaderRow(
-            iconSymbol: "checklist", label: tasksHeader, countBadge: tasksCountBadge,
+            iconSymbol: "checklist", tint: .accent, label: tasksHeader, countBadge: tasksCountBadge,
             addAction: #selector(newTaskClicked), addTooltip: "New Task (\u{2318}N)"
         )
 
@@ -462,7 +515,7 @@ final class ShiftController: NSViewController {
 
     private func buildFollowUpSection() -> NSView {
         let headerRow = sectionHeaderRow(
-            iconSymbol: "bell", label: followUpsHeader, countBadge: followUpsCountBadge,
+            iconSymbol: "bell", tint: .warn, label: followUpsHeader, countBadge: followUpsCountBadge,
             addAction: #selector(newFollowUpClicked), addTooltip: "New Follow-up (\u{2318}\u{21e7}F)"
         )
 
@@ -500,7 +553,7 @@ final class ShiftController: NSViewController {
     /// rather than match it.
     private func buildProjectsSection() -> NSView {
         let headerRow = sectionHeaderRow(
-            iconSymbol: "shippingbox", label: projectsHeader, countBadge: projectsCountBadge,
+            iconSymbol: "shippingbox", tint: .violet, label: projectsHeader, countBadge: projectsCountBadge,
             addAction: #selector(newProjectClicked), addTooltip: "New Project"
         )
 
@@ -576,7 +629,7 @@ final class ShiftController: NSViewController {
         reviewStatsRow.spacing = 10
         reviewStatsRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerRow = sectionHeaderRow(iconSymbol: "arrow.uturn.backward", label: reviewPushedBackHeader)
+        let headerRow = sectionHeaderRow(iconSymbol: "arrow.uturn.backward", tint: .warn, label: reviewPushedBackHeader)
 
         reviewPushedBackStack.orientation = .vertical
         reviewPushedBackStack.alignment = .leading
@@ -1294,12 +1347,15 @@ final class ShiftController: NSViewController {
         detailTasksHeader.textColor = ink
 
         for tile in statTiles { tile.applyTheme(theme) }
+        for tile in headerIconTiles { tile.applyTheme(theme) }
         taskPanel.applyTheme(theme)
         followUpPanel.applyTheme(theme)
         projectsPanel.applyTheme(theme)
         tasksCountBadge.textColor = muted
         followUpsCountBadge.textColor = muted
         projectsCountBadge.textColor = muted
+        let badgeFill = ink.withAlphaComponent(0.08)
+        for container in countBadgeContainers { container.layer?.backgroundColor = badgeFill.cgColor }
         taskListView.applyTheme(theme)
         followUpListView.applyTheme(theme)
         applySyncPill()
