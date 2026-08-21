@@ -78,6 +78,20 @@ final class AppShellController: NSViewController {
     /// the initial layout pass.
     private let bodyContainer = NSView()
 
+    /// `fm/grandline-live-gap-rootcause-scout`: named (rather than anonymous,
+    /// like every other constraint activated in `loadView`) so
+    /// `reassertBodyContainerWidthTie()` can check/repair them on every
+    /// window resize - see that method's own doc comment for why a plain
+    /// `equalTo:` tie alone was not enough to guarantee this stays correct.
+    private var bodyLeadingConstraint: NSLayoutConstraint!
+    private var bodyTrailingConstraint: NSLayoutConstraint!
+
+    /// Fires on every window resize (registered globally, `object: nil`,
+    /// matching `ToolsController.containerWidthMayHaveChanged`'s own
+    /// convention - see AGENTS.md) so `bodyContainer` never settles at a
+    /// width that no longer matches the window's current content area.
+    private var windowResizeObserver: NSObjectProtocol?
+
     /// Set while a host's dedicated page is showing; `nil` whenever a fixed
     /// `RailDestination` is current. Mirrors `IconRailController.activeHostID`
     /// so `removeHostConsole` knows whether to navigate away.
@@ -206,13 +220,16 @@ final class AppShellController: NSViewController {
             embed(destinationView)
         }
 
+        bodyLeadingConstraint = bodyContainer.leadingAnchor.constraint(equalTo: rail.view.trailingAnchor)
+        bodyTrailingConstraint = bodyContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor)
+
         NSLayoutConstraint.activate([
             rail.view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             rail.view.topAnchor.constraint(equalTo: root.topAnchor),
             rail.view.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
-            bodyContainer.leadingAnchor.constraint(equalTo: rail.view.trailingAnchor),
-            bodyContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            bodyLeadingConstraint,
+            bodyTrailingConstraint,
             bodyContainer.topAnchor.constraint(equalTo: root.topAnchor),
             bodyContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
@@ -221,6 +238,43 @@ final class AppShellController: NSViewController {
             topBar.view.topAnchor.constraint(equalTo: bodyContainer.topAnchor),
             topBar.view.heightAnchor.constraint(equalToConstant: TopBarController.height),
         ])
+
+        // `fm/grandline-live-gap-rootcause-scout`: a real, live-captured
+        // instance of this app showed `bodyContainer` (and every destination
+        // mounted inside it) frozen at a width matching the *screen's* width
+        // minus the rail - 1428pt, i.e. `1512 - 84` - while the window's
+        // real, current frame was only 1033pt wide. `root` (this window's
+        // own `contentView`) tracked the real window width correctly the
+        // whole time (contentView's frame is kept in sync with the window's
+        // content rect unconditionally by the OS, independent of Auto
+        // Layout), so the tie above (`bodyTrailingConstraint`, a required
+        // `==` to `root.trailingAnchor`) was declared correctly - the bug is
+        // that nothing re-asserts it live. `main.swift`'s launch sequence
+        // resizes this same window twice before it's ever shown
+        // (`setFrame(defaultWindowFrame(), display: false)`, screen-sized,
+        // then `setFrameAutosaveName` silently restoring the captain's own
+        // smaller saved frame on top of it) with `display: false` both
+        // times, and neither `ToolsController`'s own grid nor this window
+        // has any other resize-driven correctness check the way
+        // `ToolsController.containerWidthMayHaveChanged`/`SettingsController`
+        // already do for their own content (see AGENTS.md) - `bodyContainer`
+        // was the one major structural container with *no* such defensive
+        // re-derivation at all. `reassertBodyContainerWidthTie()` closes
+        // that gap: called once here (covering the window's still-off-screen
+        // launch-time resizes above) and on every subsequent
+        // `NSWindow.didResizeNotification`, so a stale/never-relaid-out
+        // frame - or, per AGENTS.md gotcha (13)'s own documented class of
+        // required-constraint conflict, a tie that AppKit silently
+        // deactivated after losing to some other required constraint deep in
+        // a (possibly hidden - gotcha (11)) destination view - can't survive
+        // past the very next resize.
+        reassertBodyContainerWidthTie()
+        windowResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, (note.object as? NSWindow) === self.view.window else { return }
+            self.reassertBodyContainerWidthTie()
+        }
 
         hostsPanel.onAddOrEdit = { [weak self] host in self?.onPresentHostEditor?(host) }
         // cockpit-bootstrap-dotfiles: every command the Bootstrap page can run
@@ -468,6 +522,58 @@ final class AppShellController: NSViewController {
             destinationView.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
             destinationView.bottomAnchor.constraint(equalTo: bodyContainer.bottomAnchor),
         ])
+    }
+
+    /// `fm/grandline-live-gap-rootcause-scout`: re-derives `bodyContainer`'s
+    /// width from `root`'s (this window's `contentView`'s) actual current
+    /// bounds, on demand - called once at launch (from `loadView`, before the
+    /// window is ever shown) and again on every `NSWindow.didResizeNotification`
+    /// for this window. Two independent, cheap safeguards, not one:
+    ///   1. Reactivate `bodyLeadingConstraint`/`bodyTrailingConstraint` if
+    ///      either was ever deactivated - required constraints that lose a
+    ///      genuine conflict against some other required constraint
+    ///      elsewhere (possibly deep in a hidden destination view - see
+    ///      AGENTS.md gotcha (11)) get silently disabled by AppKit and do
+    ///      not reactivate themselves once the conflict is gone.
+    ///   2. Force a real `layoutSubtreeIfNeeded()` - a resize that happens
+    ///      with `display: false` (as `main.swift`'s launch sequence does,
+    ///      twice, before the window is ever shown) only marks the affected
+    ///      views `needsLayout`; it does not itself flush that into an
+    ///      updated `.frame` the way a direct `.frame` read after this call
+    ///      does.
+    private func reassertBodyContainerWidthTie() {
+        if let bodyLeadingConstraint, !bodyLeadingConstraint.isActive { bodyLeadingConstraint.isActive = true }
+        if let bodyTrailingConstraint, !bodyTrailingConstraint.isActive { bodyTrailingConstraint.isActive = true }
+        view.layoutSubtreeIfNeeded()
+    }
+
+    deinit {
+        if let windowResizeObserver {
+            NotificationCenter.default.removeObserver(windowResizeObserver)
+        }
+    }
+
+    // MARK: Test hooks (`fm/grandline-live-gap-rootcause-scout`)
+
+    /// `AppShellBodyWidthSelfTest` reads this rather than `bodyContainer`
+    /// directly, since that property stays `private` - everything else in
+    /// this controller only ever needs to add/remove/toggle a destination
+    /// view, never measure the container itself.
+    var bodyContainerFrameForTests: NSRect { bodyContainer.frame }
+
+    /// Simulates the exact failure this task's scout report captured live:
+    /// AppKit (for whatever internal reason - a transient required-
+    /// constraint conflict elsewhere, or simply a resize that happened with
+    /// no layout pass ever following it) leaves the width tie inactive.
+    /// `reassertBodyContainerWidthTie()` is what's supposed to notice and
+    /// repair this on the next resize; this hook exists so a test can force
+    /// that exact starting condition without needing to actually reproduce
+    /// the underlying AppKit conflict (which requires runtime conditions
+    /// this scout task could not otherwise pin down - see
+    /// `data/grandline-live-gap-rootcause-scout/report.md`).
+    func debugBreakBodyWidthTieForTests() {
+        bodyLeadingConstraint.isActive = false
+        bodyTrailingConstraint.isActive = false
     }
 
     // MARK: Destination switching
