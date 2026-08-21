@@ -10,6 +10,35 @@
 // (github/bitbucket), matching the web cockpit's Review view
 // (`backend/static/index.html`), each with title, repo, PR number, checks
 // state, and the same Review/Merge actions Overview's list already wires up.
+//
+// fm/grandline-review-page-redesign: brought this page up to the same design
+// language `FleetController`/`VaultController`/every other card-bearing
+// destination already uses, closing the gap a captain-supplied Lavish
+// prototype flagged (this page was still a flat list of plain pill-and-
+// button rows with no page header, no stats and no colour-by-status
+// styling). Every piece below maps to an existing Helm* primitive:
+//   - a `HelmType.pageTitle(.serif)` hero + a live subtitle + a quiet
+//     `HelmButton` refresh, mirroring `FleetController.buildHeader` exactly
+//     (the hero title carries real information - "Ready to merge" - rather
+//     than restating the destination's own name, which is the distinction
+//     `HelmType.pageTitle`'s own doc comment draws and the reason Phase 7
+//     removed this page's *old* literal "Review" title in the first place).
+//   - a `statsRow` of three `HelmStatTile`s (open / ready-to-merge / checks
+//     running), the same "tint only when the number is itself a signal" rule
+//     `FleetController.rebuildStats` already follows.
+//   - each PR row is now a `HelmAccentRow` (chip below the body, Review/
+//     Merge in `trailingAccessory`) instead of a hand-rolled tinted pill
+//     row, colour-and-chip-mapped from the PR's own `checks` state - the
+//     same real field this page already read, just finally driving the
+//     row's colour instead of only a muted "no checks" label everywhere.
+//   - each forge's `HelmCard` header gained a plain, neutral count badge
+//     (the prototype's `.count` span) instead of baking the number into the
+//     title string, plus a subtitle naming the account/org the PRs in that
+//     section belong to (the prototype's "manjesh-raj" under "GitHub"),
+//     derived from a real PR's own already-fetched URL rather than a
+//     hardcoded name.
+// No new data source, no invented colours/fonts/spacing - everything below
+// is `HelmTheme`/`HelmMetrics`/`HelmType` tokens already in this codebase.
 
 import AppKit
 
@@ -18,27 +47,44 @@ final class ReviewController: NSViewController {
     private let scroll = NSScrollView()
     private let contentStack = NSStackView()
 
-    // No in-page hero title. This page shipped one reading literally
-    // "Review", directly under a top bar already reading "Review" - audit
-    // §4.6's finding, and dead repetition rather than a title carrying
-    // information (contrast Shift's "Good afternoon", or a project detail's
-    // own name, both of which stayed). Phase 7 removed it; the lead line is
-    // now the live PR count, which is what a captain opening this page
-    // actually wants to read first. Every other title-less destination in
-    // this app (Tools, Updates, Bootstrap, Automation, GitHub Sync,
-    // Settings, Dictation, Vault) opens on a description line the same way.
-    /// Seeded rather than left blank: with the hero title gone this is the
-    /// page's only header text, and `render` does not fill it in until the
+    /// The hero title. "Ready to merge" is real information (which PRs need
+    /// the captain, not just "here is the Review page") - not a restatement
+    /// of the destination's own name, which is the bar `HelmType.pageTitle`'s
+    /// doc comment sets and the reason Phase 7 removed this page's old
+    /// literal "Review" title. Serif voice, matching every other page hero
+    /// in the app (`FleetController`'s greeting, Shift's project name).
+    private let heroLabel = NSTextField(labelWithString: "Ready to merge")
+    /// Seeded rather than left blank: `render` does not fill it in until the
     /// background PR fetch returns - so an empty string here left the header
-    /// row as a lone refresh glyph for the first second or two.
+    /// row with nothing under the hero for the first second or two.
     private let subtitleLabel = NSTextField(labelWithString: "Open pull requests across your projects")
-    private let refreshButton = NSButton()
+    /// A labelled `HelmButton(.quiet)`, matching every other page's own
+    /// refresh action (`FleetController`, `VaultController`, `UpdatesController`)
+    /// instead of a bare borderless glyph.
+    private let refreshButton = HelmButton(title: "Refresh", variant: .quiet, symbol: "arrow.clockwise")
+    /// Kept so `loadView` can pin it to the content column's full width -
+    /// without that the row shrinks to its content and Refresh stops being
+    /// at the page's trailing edge.
+    private var headerRow: NSStackView!
+
+    /// Three `HelmStatTile`s: open PRs (accent), ready to merge (good), and
+    /// checks running (warn) - the same three numbers the per-row chips
+    /// below already carry, just totalled. Rebuilt on every render like
+    /// `FleetController.rebuildStats`.
+    private let statsRow = NSStackView()
+    private var statTiles: [HelmStatTile] = []
 
     private let githubHeader = NSTextField(labelWithString: "")
+    private let githubSubtitle = NSTextField(wrappingLabelWithString: "")
+    private let githubCountLabel = NSTextField(labelWithString: "0")
     private let githubStack = NSStackView()
     private let bitbucketHeader = NSTextField(labelWithString: "")
+    private let bitbucketSubtitle = NSTextField(wrappingLabelWithString: "")
+    private let bitbucketCountLabel = NSTextField(labelWithString: "0")
     private let bitbucketStack = NSStackView()
     private let otherHeader = NSTextField(labelWithString: "")
+    private let otherSubtitle = NSTextField(wrappingLabelWithString: "")
+    private let otherCountLabel = NSTextField(labelWithString: "0")
     private let otherStack = NSStackView()
     /// The "Other" section (forge-less, task-tracked PRs the forge scan
     /// hasn't matched yet) only renders when non-empty - unlike GitHub/
@@ -59,6 +105,11 @@ final class ReviewController: NSViewController {
     private var cards: [HelmCard] = []
     private var bitbucketSectionView: NSView!
     private var hasLoadedOnce = false
+
+    /// Each forge card's neutral "N" badge - the prototype's `.count` span
+    /// (mono, muted, a faint ink wash) - and the label it wraps, paired so
+    /// `applyTheme` can re-colour both without a second lookup.
+    private var countBadges: [(container: NSView, label: NSTextField)] = []
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var isLoading = false
@@ -89,25 +140,33 @@ final class ReviewController: NSViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
 
         let header = buildHeader()
+        buildStatsRow()
         let loadingSection = buildLoadingState()
-        let githubSection = buildSection(header: githubHeader, iconSymbol: "chevron.left.forwardslash.chevron.right", title: "GitHub", stack: githubStack)
-        let bitbucketSection = buildSection(header: bitbucketHeader, iconSymbol: "water.waves", title: "Bitbucket", stack: bitbucketStack)
-        otherSection = buildSection(header: otherHeader, iconSymbol: "arrow.triangle.branch", title: "Other", stack: otherStack)
+        let githubSection = buildSection(header: githubHeader, subtitle: githubSubtitle, countLabel: githubCountLabel,
+                                         iconSymbol: "chevron.left.forwardslash.chevron.right",
+                                         title: "GitHub", stack: githubStack)
+        let bitbucketSection = buildSection(header: bitbucketHeader, subtitle: bitbucketSubtitle, countLabel: bitbucketCountLabel,
+                                            iconSymbol: "water.waves", title: "Bitbucket", stack: bitbucketStack)
+        otherSection = buildSection(header: otherHeader, subtitle: otherSubtitle, countLabel: otherCountLabel,
+                                    iconSymbol: "arrow.triangle.branch", title: "Other", stack: otherStack)
         githubSectionView = githubSection
         bitbucketSectionView = bitbucketSection
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 22
+        contentStack.spacing = 20
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(header)
         contentStack.addArrangedSubview(loadingSection)
+        contentStack.addArrangedSubview(statsRow)
         contentStack.addArrangedSubview(githubSection)
         contentStack.addArrangedSubview(bitbucketSection)
         contentStack.addArrangedSubview(otherSection)
 
-        // The three forge sections stay hidden behind the loading skeleton
-        // until the first successful `render(...)` - see `buildLoadingState`.
+        // The stats row and three forge sections stay hidden behind the
+        // loading skeleton until the first successful `render(...)` - see
+        // `buildLoadingState`.
+        statsRow.isHidden = true
         githubSection.isHidden = true
         bitbucketSection.isHidden = true
         otherSection.isHidden = true
@@ -118,7 +177,9 @@ final class ReviewController: NSViewController {
             contentStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -HelmMetrics.pageGutter),
             contentStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             contentStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
+            headerRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             loadingSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            statsRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             githubSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             bitbucketSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             otherSection.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
@@ -169,27 +230,52 @@ final class ReviewController: NSViewController {
     // MARK: Building the static chrome
 
     private func buildHeader() -> NSView {
+        heroLabel.font = HelmType.pageTitle(.serif)
+        heroLabel.translatesAutoresizingMaskIntoConstraints = false
+
         subtitleLabel.font = HelmType.body()
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        refreshButton.title = ""
-        refreshButton.isBordered = false
-        refreshButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refreshButton.target = self
         refreshButton.action = #selector(refreshTapped)
         refreshButton.toolTip = "Refresh open PRs"
+        refreshButton.setContentHuggingPriority(.required, for: .horizontal)
+        refreshButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [subtitleLabel])
+        let textStack = NSStackView(views: [heroLabel, subtitleLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
         textStack.spacing = 4
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [textStack, refreshButton])
+        // `.fill` plus a flexible spacer, so Refresh sits at the page's own
+        // trailing edge (prototype `.phead .row`) instead of hugging the
+        // hero text. See AGENTS.md gotcha (10)/(12): a nested stack has no
+        // intrinsic size, so the spacer - not the text stack - is what
+        // carries the low hugging priority the distribution actually
+        // stretches.
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [textStack, spacer, refreshButton])
         row.orientation = .horizontal
+        row.alignment = .lastBaseline
+        row.distribution = .fill
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
+        headerRow = row
         return row
+    }
+
+    private func buildStatsRow() {
+        statsRow.orientation = .horizontal
+        statsRow.distribution = .fillEqually
+        statsRow.spacing = 10
+        statsRow.translatesAutoresizingMaskIntoConstraints = false
     }
 
     /// A skeleton that occupies the content area under the header from the
@@ -226,14 +312,43 @@ final class ReviewController: NSViewController {
         return loadingContainer
     }
 
+    /// One `HelmStatTile` - the app's shared stat tile. Mirrors
+    /// `FleetController.statTile` exactly: the tile themes itself, this only
+    /// tracks the live instance so a theme change can reach it.
+    private func statTile(icon: String, value: String, label: String, tint: HelmTint? = nil) -> NSView {
+        let tile = HelmStatTile(symbol: icon, value: value, caption: label, tint: tint)
+        statTiles.append(tile)
+        return tile
+    }
+
     /// One `HelmCard` per section - the shared container from
-    /// `HelmDesignSystem.swift`. This used to be a bare header-row-over-stack
-    /// with no chrome at all, near-identical to `FleetController`'s copy and
-    /// differing from it only in one stack spacing (audit §3.2). The caller
-    /// keeps its own title label, since it rewrites the text with a live
-    /// count; the card owns that label's font and colour.
-    private func buildSection(header: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> HelmCard {
+    /// `HelmDesignSystem.swift`. The caller keeps its own title/subtitle
+    /// labels, since neither's text is fixed at build time: the title never
+    /// changes per render now that the live count moved into its own neutral
+    /// badge (the prototype's `.count` span) rather than being baked into the
+    /// title string, and the subtitle (the prototype's account/org name
+    /// under "GitHub") is only known once the first PR in that forge has
+    /// actually loaded - see `render`'s `subtitle(for:)` call.
+    private func buildSection(header: NSTextField, subtitle: NSTextField, countLabel: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> HelmCard {
         header.stringValue = title
+        subtitle.stringValue = ""
+        subtitle.isHidden = true
+
+        countLabel.font = HelmType.metric(11, weight: .medium)
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let badge = NSView()
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 5
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(countLabel)
+        NSLayoutConstraint.activate([
+            countLabel.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 6),
+            countLabel.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -6),
+            countLabel.topAnchor.constraint(equalTo: badge.topAnchor, constant: 1),
+            countLabel.bottomAnchor.constraint(equalTo: badge.bottomAnchor, constant: -1),
+        ])
+        countBadges.append((container: badge, label: countLabel))
 
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -241,7 +356,7 @@ final class ReviewController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let card = HelmCard()
-        card.setHeader(symbol: iconSymbol, titleLabel: header)
+        card.setHeader(symbol: iconSymbol, titleLabel: header, subtitleLabel: subtitle, actions: [badge])
         card.setBody(stack, insets: HelmCard.contentInsets)
         cards.append(card)
         return card
@@ -283,12 +398,10 @@ final class ReviewController: NSViewController {
             hasLoadedOnce = true
             loadingSpinner.stopAnimation(nil)
             loadingContainer.isHidden = true
+            statsRow.isHidden = false
             githubSectionView.isHidden = false
             bitbucketSectionView.isHidden = false
         }
-
-        rowContainers.removeAll()
-        emptyStates.removeAll()
 
         onOpenPRCountChanged?(prs.count)
 
@@ -297,16 +410,27 @@ final class ReviewController: NSViewController {
         let bitbucket = sorted.filter { $0.forge == "bitbucket" }
         let other = sorted.filter { $0.forge != "github" && $0.forge != "bitbucket" }
 
-        subtitleLabel.stringValue = "\(prs.count) open pull request\(prs.count == 1 ? "" : "s") across your projects"
+        if prs.isEmpty {
+            subtitleLabel.stringValue = "No open pull requests right now"
+        } else {
+            let forgesRepresented = [github, bitbucket, other].filter { !$0.isEmpty }.count
+            subtitleLabel.stringValue = "\(prs.count) open pull request\(prs.count == 1 ? "" : "s") "
+                + "across \(forgesRepresented) forge\(forgesRepresented == 1 ? "" : "s")"
+        }
+
+        rebuildStats(prs)
 
         rebuildRows(into: githubStack, prs: github)
-        githubHeader.stringValue = "GitHub (\(github.count))"
+        githubCountLabel.stringValue = "\(github.count)"
+        applyAccountSubtitle(githubSubtitle, prs: github)
         rebuildRows(into: bitbucketStack, prs: bitbucket)
-        bitbucketHeader.stringValue = "Bitbucket (\(bitbucket.count))"
+        bitbucketCountLabel.stringValue = "\(bitbucket.count)"
+        applyAccountSubtitle(bitbucketSubtitle, prs: bitbucket)
         otherSection.isHidden = other.isEmpty
         if !other.isEmpty {
             rebuildRows(into: otherStack, prs: other)
-            otherHeader.stringValue = "Other (\(other.count))"
+            otherCountLabel.stringValue = "\(other.count)"
+            applyAccountSubtitle(otherSubtitle, prs: other)
         }
 
         applyTheme()
@@ -318,6 +442,28 @@ final class ReviewController: NSViewController {
         // FleetController.render's identical fix.
         view.layoutSubtreeIfNeeded()
         scrollToTop()
+    }
+
+    /// The three headline numbers: open PRs (accent - every PR here is one
+    /// the captain has waiting on them), ready to merge (good - checks have
+    /// passed) and checks running (warn) - the same `checks` state each row's
+    /// own chip already reads, just totalled. A tint only ever means "this
+    /// number is itself a signal" (`FleetController.rebuildStats`'s rule):
+    /// the open-PR count and the two status counts qualify, so all three are
+    /// tinted here, unlike a page mixing signal and plain counts.
+    private func rebuildStats(_ prs: [MergedPR]) {
+        for v in statsRow.arrangedSubviews {
+            statsRow.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        statTiles.removeAll()
+
+        let ready = prs.filter { $0.checks == "green" }.count
+        let running = prs.filter { $0.checks == "pending" }.count
+
+        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.branch", value: "\(prs.count)", label: "open PRs", tint: .accent))
+        statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(ready)", label: "ready to merge", tint: .good))
+        statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(running)", label: "checks running", tint: .warn))
     }
 
     private func rebuildRows(into stack: NSStackView, prs: [MergedPR]) {
@@ -354,106 +500,92 @@ final class ReviewController: NSViewController {
     /// itself, so this only exists to reach the live ones from `applyTheme`.
     private var emptyStates: [HelmEmptyState] = []
 
-    /// One compact row: title, "repo · PR #N" subtitle, a checks pill, and
-    /// Review (always) + Merge (only for a task-tracked PR) - the identical
-    /// actions Overview's "Ready to merge" list already wires up
-    /// (`reviewPR`/`mergePR` below mirror `FleetController`'s one-for-one).
+    /// One `HelmAccentRow` per PR - the app's shared accent-bar card
+    /// (`HelmDesignSystem.swift`, audit §6.3 component 2), coloured and
+    /// chipped from the PR's own `checks` state (`checksVisuals` below) -
+    /// replacing this page's own hand-rolled tinted pill row, which only ever
+    /// coloured a "no checks" label and left every row the same flat grey
+    /// otherwise. `chipPlacement: .belowBody` puts the status chip under the
+    /// title (the prototype's `.col` div), and Review/Merge live in
+    /// `trailingAccessory` - the identical actions Overview's "Ready to
+    /// merge" list already wired up (`reviewPR`/`mergePR` below mirror
+    /// `FleetController`'s one-for-one), just relocated onto the shared row.
     private func prRowView(_ pr: MergedPR) -> NSView {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: "arrow.triangle.pull", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .medium))
-        iconView.contentTintColor = HelmTheme.nsColor(theme.accentHex)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
+        let visuals = checksVisuals(pr.checks)
 
+        var kickerParts: [String] = []
+        if !pr.repo.isEmpty { kickerParts.append(pr.repo) }
+        kickerParts.append(pr.number != nil ? "PR #\(pr.number!)" : "PR")
         let heading = pr.title.isEmpty ? (pr.number != nil ? "PR #\(pr.number!)" : "PR") : pr.title
-        let titleLabel = NSTextField(labelWithString: heading)
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        titleLabel.lineBreakMode = .byTruncatingTail
 
-        var subBits: [String] = []
-        if !pr.repo.isEmpty { subBits.append(pr.repo) }
-        subBits.append(pr.number != nil ? "PR #\(pr.number!)" : "PR")
-        let subLabel = NSTextField(labelWithString: subBits.joined(separator: " \u{00B7} "))
-        subLabel.font = .systemFont(ofSize: 10.5)
-        subLabel.textColor = HelmTheme.mutedInk(theme)
-        subLabel.lineBreakMode = .byTruncatingTail
-
-        let textStack = NSStackView(views: [titleLabel, subLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 2
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let (checksLabel, checksColorHex) = checksVisuals(pr.checks)
-        let checksPill = pillLabelView(text: checksLabel, colorHex: checksColorHex)
-
-        let reviewButton = HelmButton(title: "Review", variant: .secondary, target: self, action: #selector(reviewPR(_:)))
+        let reviewButton = HelmButton(title: "Review", variant: .secondary, size: .small, target: self, action: #selector(reviewPR(_:)))
         reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
 
-        var trailing: [NSView] = [checksPill, reviewButton]
+        var trailing: [NSView] = [reviewButton]
         if pr.source == "work", let taskID = pr.taskID {
-            let mergeButton = HelmButton(title: "Merge", variant: .primary, target: self, action: #selector(mergePR(_:)))
+            let mergeButton = HelmButton(title: "Merge", variant: .primary, size: .small, target: self, action: #selector(mergePR(_:)))
             mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
             trailing.append(mergeButton)
         }
+        let actionsRow = NSStackView(views: trailing)
+        actionsRow.orientation = .horizontal
+        actionsRow.spacing = 6
 
-        let row = NSStackView(views: [iconView, textStack] + trailing)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        row.translatesAutoresizingMaskIntoConstraints = false
-        for t in trailing { t.setContentHuggingPriority(.required, for: .horizontal) }
-
-        return wrapRow(row, minHeight: 40)
+        let row = HelmAccentRow(chipPlacement: .belowBody, trailingAccessory: actionsRow, hover: false)
+        row.configure(HelmAccentRow.Content(
+            tint: visuals.tint,
+            kicker: kickerParts.joined(separator: " \u{00B7} "),
+            title: heading,
+            badgeSymbol: "arrow.triangle.pull",
+            chipText: visuals.chipLabel
+        ), theme: theme)
+        accentRows.append(row)
+        return row
     }
 
-    private func checksVisuals(_ checks: String) -> (label: String, colorHex: String) {
+    /// Live `HelmAccentRow`s, so a theme change re-tints them. They are
+    /// rebuilt on every `render()`, so this is cleared alongside the stacks.
+    private var accentRows: [HelmAccentRow] = []
+
+    /// The prototype's forge-card subtitle (`manjesh-raj` under "GitHub") -
+    /// the account/org the PRs in that section actually belong to, derived
+    /// from a real PR's own already-fetched `url` rather than a hardcoded
+    /// name. Hidden (not left blank) when the section is empty or no PR's
+    /// URL parses, matching this page's existing "hide, don't show empty
+    /// chrome" convention for the "Other" section above.
+    private func applyAccountSubtitle(_ label: NSTextField, prs: [MergedPR]) {
+        guard let account = prs.compactMap({ accountName(from: $0.url) }).first else {
+            label.isHidden = true
+            label.stringValue = ""
+            return
+        }
+        label.stringValue = account
+        label.isHidden = false
+    }
+
+    /// Pulls the account/org/workspace segment out of a PR's own URL -
+    /// `github.com/<account>/<repo>/pull/<n>` or
+    /// `bitbucket.org/<account>/<repo>/pull-requests/<n>` both put it as the
+    /// first path component right after the host.
+    private func accountName(from urlString: String) -> String? {
+        guard let url = URL(string: urlString) else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        return parts.first
+    }
+
+    /// Maps a PR's real `checks` state (green / red / pending / none) to the
+    /// row's tint and chip text. `.good` reads "Ready to merge" rather than
+    /// merely "checks pass" because that is the state a captain can actually
+    /// act on - green checks with no other blocker is what this page treats
+    /// as ready, matching `rebuildStats`'s identical definition.
+    private func checksVisuals(_ checks: String) -> (tint: HelmTint, chipLabel: String) {
         switch checks {
-        case "green": return ("checks pass", theme.ansiHex[2])
-        case "red": return ("checks failing", theme.ansiHex[1])
-        case "pending": return ("checks running", theme.ansiHex[3])
-        default: return ("no checks", theme.chromeInkHex)
+        case "green": return (.good, "Ready to merge")
+        case "red": return (.critical, "Checks failing")
+        case "pending": return (.warn, "Checks running")
+        default: return (.neutral, "No checks")
         }
     }
-
-    private func pillLabelView(text: String, colorHex: String) -> NSView {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 10, weight: .semibold)
-        label.textColor = HelmTheme.nsColor(colorHex)
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 8
-        container.layer?.backgroundColor = HelmTheme.nsColor(colorHex).withAlphaComponent(0.15).cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3),
-        ])
-        return container
-    }
-
-    private func wrapRow(_ row: NSStackView, minHeight: CGFloat) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 9
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -7),
-            container.heightAnchor.constraint(greaterThanOrEqualToConstant: minHeight),
-        ])
-        rowContainers.append(container)
-        return container
-    }
-
-    private var rowContainers: [NSView] = []
 
     // MARK: Actions (identical to `FleetController.reviewPR`/`mergePR`)
 
@@ -506,19 +638,22 @@ final class ReviewController: NSViewController {
         let line = HelmTheme.nsColor(theme.chromeLineHex)
         let muted = HelmTheme.mutedInk(theme)
 
+        heroLabel.textColor = ink
         subtitleLabel.textColor = muted
-        refreshButton.contentTintColor = ink.withAlphaComponent(0.7)
+        // `refreshButton` is a `HelmButton` and themes itself - never set
+        // `contentTintColor` on one, `restyle()` owns that property.
 
         loadingContainer.layer?.backgroundColor = surface.cgColor
         loadingContainer.layer?.borderWidth = 1
         loadingContainer.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
         loadingLabel.textColor = muted
 
+        for tile in statTiles { tile.applyTheme(theme) }
+        for row in accentRows { row.applyTheme(theme) }
         for empty in emptyStates { empty.applyTheme(theme) }
-        for container in rowContainers {
-            container.layer?.backgroundColor = surface.cgColor
-            container.layer?.borderWidth = 1
-            container.layer?.borderColor = line.withAlphaComponent(0.4).cgColor
+        for (container, label) in countBadges {
+            container.layer?.backgroundColor = ink.withAlphaComponent(0.08).cgColor
+            label.textColor = muted
         }
     }
 }
