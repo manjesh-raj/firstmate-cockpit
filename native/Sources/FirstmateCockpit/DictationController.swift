@@ -40,29 +40,48 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let statusIconTile = IconTileView(size: 40, cornerRadius: 10)
     private let statusTitleLabel = NSTextField(labelWithString: "")
     private let statusDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private var statusTextStack = NSStackView()
     private let statusActionButton = HelmButton(title: "", variant: .primary)
+    // fm/grandline-dictation-page-redesign: the trailing chip the reviewed
+    // prototype's Status card-head shows ("On device") once every
+    // permission is granted and no action button is needed - mutually
+    // exclusive with `statusActionButton` (see `render()`).
+    private let statusChip = NSView()
+    private let statusChipLabel = NSTextField(labelWithString: "")
 
     private let shortcutPanel = HelmCard()
     private let shortcutRecorder: DictationShortcutRecorderView
     private let shortcutResetButton = HelmButton(title: "", variant: .secondary)
     private let shortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private var shortcutTextStack = NSStackView()
 
     private let cleanupPanel = HelmCard()
     private let cleanupSwitch = NSSwitch()
     private let cleanupTitleLabel = NSTextField(labelWithString: "")
     private let cleanupDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private var cleanupTextStack = NSStackView()
 
     private let localWhisperPanel = HelmCard()
     private let localWhisperSwitch = NSSwitch()
     private let localWhisperTitleLabel = NSTextField(labelWithString: "")
     private let localWhisperDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private var localWhisperTextStack = NSStackView()
     private let modelStatusLabel = NSTextField(labelWithString: "")
+    // The reviewed prototype's "Model ready" chip - shown in place of
+    // `modelStatusLabel`'s plain text only for the terse `.ready` state (the
+    // one state the prototype actually depicts); every other state
+    // (downloading/failed/not-downloaded) keeps the existing plain label,
+    // since those messages are longer and dynamic, not a fixed short word.
+    private let modelReadyPill = NSView()
+    private let modelReadyPillLabel = NSTextField(labelWithString: "")
     private let modelActionButton = HelmButton(title: "", variant: .primary)
     private let modelProgressBar = NSProgressIndicator()
     private var modelState: WhisperModelState = .notDownloaded
 
     private let vocabularyPanel = HelmCard()
     private let vocabularyCountLabel = NSTextField(labelWithString: "")
+    private let explainerLabel = NSTextField(wrappingLabelWithString: "")
+    private var vocabularyColumn = NSStackView()
     private let vocabularyChipFlow = ChipFlowView()
     private let vocabularyInputField = NSTextField()
     private let vocabularyAddButton = HelmButton(title: "", variant: .secondary)
@@ -193,6 +212,64 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         renderVocabulary()
     }
 
+    /// Keeps every card's wrapping description label sized to the row's
+    /// real, currently-rendered available width instead of the fixed
+    /// `preferredMaxLayoutWidth` constants each label starts with, which
+    /// stayed a hardcoded number regardless of how wide the card - and
+    /// therefore the row up to its trailing tile/switch/button - actually
+    /// resolved to.
+    ///
+    /// This is the fix for the captain-reported "text cramped to the first
+    /// half of the card, with a big empty gap before the toggle/button"
+    /// bug. It is the same class of defect `ToolRowLayout`'s own history
+    /// documents (`HelmUIComponents.swift`'s "status column jitters...
+    /// because textStack keeps its natural width") and AGENTS.md's AppKit
+    /// gotcha catalogue covers twice over:
+    ///
+    /// - Gotcha #10: each row here used to be left at the default
+    ///   `.gravityAreas` distribution, which lays every arranged view out
+    ///   at its own natural size and resolves leftover width by Auto
+    ///   Layout's own tie-breaking - never by any view's hugging priority.
+    ///   Every row-building method below now sets `distribution = .fill`.
+    /// - Gotcha #12: `setContentHuggingPriority`/
+    ///   `setContentCompressionResistancePriority` are no-ops on an
+    ///   `NSStackView` (it has no intrinsic content size for a
+    ///   content-priority API to constrain against) - each row's vertical
+    ///   title/description text stack used exactly that no-op call, so
+    ///   even with `.fill` distribution nothing told the row that the text
+    ///   stack, not the tile or the trailing control, should absorb the
+    ///   row's leftover width. `ToolRowLayout.columnHugging`'s stack-level
+    ///   `setHuggingPriority`/`setClippingResistancePriority` is the API
+    ///   that actually does this, and every text stack below now uses it.
+    ///
+    /// Those two fixes make each text stack's own `bounds.width` correctly
+    /// reflect the row's real leftover space - but a *wrapping* label's
+    /// intrinsic width still comes from its own `preferredMaxLayoutWidth`,
+    /// which those fixes don't touch. This is the other half:
+    /// `HelmEmptyState.layout()`'s already-established pattern (see its own
+    /// doc comment) of reading back a container's real resolved width on
+    /// every layout pass and feeding it to the wrapping label directly, so
+    /// the label always wraps at the row's actual available width - a
+    /// window resize included - rather than a hardcoded constant. The
+    /// `preferredMaxLayoutWidth` values set at construction time are only
+    /// the safe *initial* seed for the very first layout pass, before any
+    /// real width is known; every pass after that overwrites them here.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        for (stack, label) in [
+            (statusTextStack, statusDetailLabel),
+            (shortcutTextStack, shortcutDetailLabel),
+            (cleanupTextStack, cleanupDetailLabel),
+            (localWhisperTextStack, localWhisperDetailLabel),
+            (vocabularyColumn, explainerLabel),
+        ] {
+            let available = stack.bounds.width
+            guard available > 0, label.preferredMaxLayoutWidth != available else { continue }
+            label.preferredMaxLayoutWidth = available
+            label.invalidateIntrinsicContentSize()
+        }
+    }
+
     /// Re-reads real permission state and re-renders. Called on every page
     /// visit, after the captain returns from a system permission dialog
     /// (there is no completion callback for "the user closed System
@@ -257,12 +334,16 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         statusDetailLabel.preferredMaxLayoutWidth = 520
         statusDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [statusTitleLabel, statusDetailLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 3
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.translatesAutoresizingMaskIntoConstraints = false
+        statusTextStack = NSStackView(views: [statusTitleLabel, statusDetailLabel])
+        statusTextStack.orientation = .vertical
+        statusTextStack.alignment = .leading
+        statusTextStack.spacing = 3
+        statusTextStack.translatesAutoresizingMaskIntoConstraints = false
+        // Stack-level, not content-level - see `viewDidLayout`'s doc
+        // comment (AGENTS.md gotcha #12): this is what actually lets the
+        // text column absorb the row's leftover width.
+        statusTextStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        statusTextStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
 
         statusActionButton.controlSize = .regular
         statusActionButton.target = self
@@ -271,10 +352,22 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         statusActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         statusActionButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let row = NSStackView(views: [statusIconTile, textStack, statusActionButton])
+        statusChip.setContentHuggingPriority(.required, for: .horizontal)
+        statusChip.setContentCompressionResistancePriority(.required, for: .horizontal)
+        statusChip.isHidden = true
+
+        let row = NSStackView(views: [statusIconTile, statusTextStack, statusChip, statusActionButton])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 14
+        // AGENTS.md gotcha #10: the default `.gravityAreas` distribution
+        // lays every arranged view out at its own natural size and
+        // resolves leftover width by Auto Layout's own tie-breaking, which
+        // is what left the text column confined to its own natural width
+        // with a large blank gap before the trailing chip/button instead of
+        // flowing to fill the row. `.fill` is what makes `statusTextStack`'s
+        // hugging priority matter at all.
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
 
         statusPanel.setBody(row, insets: HelmCard.contentInsets)
@@ -301,7 +394,10 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         shortcutResetButton.translatesAutoresizingMaskIntoConstraints = false
 
         shortcutDetailLabel.font = .systemFont(ofSize: 11.5)
-        shortcutDetailLabel.stringValue = "Click the field, then press the key or combo you want to hold. Release to stop recording and paste the transcribed text at your cursor."
+        // Tightened to match the reviewed prototype's terser card-head
+        // copy - the release-to-paste behavior is still covered by the
+        // page's own footnote and the live status card's own detail text.
+        shortcutDetailLabel.stringValue = "Click the field, then hold the key or combo you want."
         shortcutDetailLabel.preferredMaxLayoutWidth = 460
         shortcutDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -311,16 +407,19 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         recorderRow.spacing = 8
         recorderRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [recorderRow, shortcutDetailLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 6
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        shortcutTextStack = NSStackView(views: [recorderRow, shortcutDetailLabel])
+        shortcutTextStack.orientation = .vertical
+        shortcutTextStack.alignment = .leading
+        shortcutTextStack.spacing = 6
+        shortcutTextStack.translatesAutoresizingMaskIntoConstraints = false
+        shortcutTextStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        shortcutTextStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [keyTile, textStack])
+        let row = NSStackView(views: [keyTile, shortcutTextStack])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 14
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
 
         shortcutPanel.setBody(row, insets: HelmCard.contentInsets)
@@ -340,27 +439,34 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         cleanupTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         cleanupTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        cleanupDetailLabel.stringValue = "Rewrite each dictation into a well-formed sentence before pasting - fixes filler words and rough phrasing, not just typos. Needs network access and your own signed-in claude CLI, unlike the rest of Dictation, which works fully offline. If the rewrite fails for any reason (no network, not signed in), the raw transcript is pasted instead."
+        // Tightened to the reviewed prototype's one-line phrasing - the
+        // network/fallback nuance is still covered by the page's footnote
+        // ("only the optional \"Clean up my sentences\" rewrite above needs
+        // network access").
+        cleanupDetailLabel.stringValue = "Rewrites each dictation into a well-formed sentence before pasting."
         cleanupDetailLabel.font = .systemFont(ofSize: 11)
         cleanupDetailLabel.preferredMaxLayoutWidth = 460
         cleanupDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [cleanupTitleLabel, cleanupDetailLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 3
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.translatesAutoresizingMaskIntoConstraints = false
+        cleanupTextStack = NSStackView(views: [cleanupTitleLabel, cleanupDetailLabel])
+        cleanupTextStack.orientation = .vertical
+        cleanupTextStack.alignment = .leading
+        cleanupTextStack.spacing = 3
+        cleanupTextStack.translatesAutoresizingMaskIntoConstraints = false
+        cleanupTextStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        cleanupTextStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
 
         cleanupSwitch.target = self
         cleanupSwitch.action = #selector(cleanupToggled)
         cleanupSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        cleanupSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
         cleanupSwitch.translatesAutoresizingMaskIntoConstraints = false
 
-        let row = NSStackView(views: [sparkleTile, textStack, cleanupSwitch])
+        let row = NSStackView(views: [sparkleTile, cleanupTextStack, cleanupSwitch])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = 14
+        row.distribution = .fill
         row.translatesAutoresizingMaskIntoConstraints = false
 
         cleanupPanel.setBody(row, insets: HelmCard.contentInsets)
@@ -387,32 +493,42 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         localWhisperTitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
         localWhisperTitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        localWhisperDetailLabel.stringValue = "Transcribe on-device with whisper.cpp (large-v3-turbo) instead of Apple's Speech framework - generally more accurate, and still fully offline once the model is downloaded. If the model isn't downloaded yet, or ever fails to load, dictation automatically falls back to Apple Speech."
+        // Tightened to the reviewed prototype's terser spec-line copy - the
+        // Apple Speech fallback is still covered by `modelStatusLabel`'s own
+        // dynamic states and the page's footnote.
+        localWhisperDetailLabel.stringValue = "whisper.cpp large-v3-turbo, Metal-accelerated, fully offline once downloaded."
         localWhisperDetailLabel.font = .systemFont(ofSize: 11)
         localWhisperDetailLabel.preferredMaxLayoutWidth = 460
         localWhisperDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let textStack = NSStackView(views: [localWhisperTitleLabel, localWhisperDetailLabel])
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 3
-        textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textStack.translatesAutoresizingMaskIntoConstraints = false
+        localWhisperTextStack = NSStackView(views: [localWhisperTitleLabel, localWhisperDetailLabel])
+        localWhisperTextStack.orientation = .vertical
+        localWhisperTextStack.alignment = .leading
+        localWhisperTextStack.spacing = 3
+        localWhisperTextStack.translatesAutoresizingMaskIntoConstraints = false
+        localWhisperTextStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        localWhisperTextStack.setClippingResistancePriority(.defaultLow, for: .horizontal)
 
         localWhisperSwitch.target = self
         localWhisperSwitch.action = #selector(localWhisperToggled)
         localWhisperSwitch.setContentHuggingPriority(.required, for: .horizontal)
+        localWhisperSwitch.setContentCompressionResistancePriority(.required, for: .horizontal)
         localWhisperSwitch.translatesAutoresizingMaskIntoConstraints = false
 
-        let toggleRow = NSStackView(views: [waveTile, textStack, localWhisperSwitch])
+        let toggleRow = NSStackView(views: [waveTile, localWhisperTextStack, localWhisperSwitch])
         toggleRow.orientation = .horizontal
         toggleRow.alignment = .top
         toggleRow.spacing = 14
+        toggleRow.distribution = .fill
         toggleRow.translatesAutoresizingMaskIntoConstraints = false
 
         modelStatusLabel.font = .systemFont(ofSize: 11.5)
         modelStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         modelStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        modelReadyPill.setContentHuggingPriority(.required, for: .horizontal)
+        modelReadyPill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        modelReadyPill.isHidden = true
 
         modelProgressBar.style = .bar
         modelProgressBar.isIndeterminate = false
@@ -427,12 +543,17 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         modelActionButton.target = self
         modelActionButton.action = #selector(modelActionTapped)
         modelActionButton.setContentHuggingPriority(.required, for: .horizontal)
+        modelActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         modelActionButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let modelRow = NSStackView(views: [modelStatusLabel, modelProgressBar, modelActionButton])
+        let modelRow = NSStackView(views: [modelStatusLabel, modelReadyPill, modelProgressBar, modelActionButton])
         modelRow.orientation = .horizontal
         modelRow.alignment = .centerY
         modelRow.spacing = 10
+        // Same gotcha #10 fix as every other row on this page - without
+        // `.fill`, this row's button drifted with sibling content instead
+        // of sitting pinned at the row's trailing edge.
+        modelRow.distribution = .fill
         modelRow.translatesAutoresizingMaskIntoConstraints = false
 
         let column = NSStackView(views: [toggleRow, modelRow])
@@ -459,7 +580,12 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         headerRow.translatesAutoresizingMaskIntoConstraints = false
         vocabularyPanel.setHeader(headerRow)
 
-        let explainerLabel = NSTextField(wrappingLabelWithString: "Bias speech recognition toward names, acronyms, or phrases you say often - added here, they're used as a hint on your next recording. This is a soft nudge, not a guarantee: Apple's on-device recognizer treats each phrase individually, while the local Whisper engine (if enabled) treats the whole list as a softer style hint.")
+        // Tightened to the reviewed prototype's terser card-head phrasing -
+        // the per-engine nuance (Apple's per-phrase hint vs. Whisper's
+        // softer whole-list nudge) is still available on hover via the
+        // label's own tooltip.
+        explainerLabel.stringValue = "Biases recognition toward your own vocabulary - added here, it's used as a hint on your next recording."
+        explainerLabel.toolTip = "This is a soft nudge, not a guarantee: Apple's on-device recognizer treats each phrase individually, while the local Whisper engine (if enabled) treats the whole list as a softer style hint."
         explainerLabel.font = .systemFont(ofSize: 11)
         explainerLabel.preferredMaxLayoutWidth = 520
         explainerLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -482,17 +608,17 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         addRow.spacing = 8
         addRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let column = NSStackView(views: [explainerLabel, vocabularyChipFlow, addRow])
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 10
-        column.translatesAutoresizingMaskIntoConstraints = false
+        vocabularyColumn = NSStackView(views: [explainerLabel, vocabularyChipFlow, addRow])
+        vocabularyColumn.orientation = .vertical
+        vocabularyColumn.alignment = .leading
+        vocabularyColumn.spacing = 10
+        vocabularyColumn.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            vocabularyChipFlow.widthAnchor.constraint(equalTo: column.widthAnchor),
-            addRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            vocabularyChipFlow.widthAnchor.constraint(equalTo: vocabularyColumn.widthAnchor),
+            addRow.widthAnchor.constraint(equalTo: vocabularyColumn.widthAnchor),
         ])
 
-        vocabularyPanel.setBody(column, insets: HelmCard.contentInsets)
+        vocabularyPanel.setBody(vocabularyColumn, insets: HelmCard.contentInsets)
         return vocabularyPanel
     }
 
@@ -536,14 +662,24 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         case .needsMicrophone:
             statusActionButton.title = "Request Microphone Access"
             statusActionButton.isHidden = false
+            statusChip.isHidden = true
         case .needsSpeechRecognition:
             statusActionButton.title = "Request Speech Recognition Access"
             statusActionButton.isHidden = false
+            statusChip.isHidden = true
         case .needsAccessibility:
             statusActionButton.title = "Request Accessibility Access"
             statusActionButton.isHidden = false
-        case .ready, .recording, .transcribing, .cleaningUp, .didNotCatchThat, .systemDictationDisabled:
+            statusChip.isHidden = true
+        case .ready:
+            // The reviewed prototype's "On device" chip - shown only once
+            // ready, since `.cleaningUp` genuinely does reach the network
+            // (the claude CLI rewrite pass) and would make the claim false.
             statusActionButton.isHidden = true
+            statusChip.isHidden = false
+        case .recording, .transcribing, .cleaningUp, .didNotCatchThat, .systemDictationDisabled:
+            statusActionButton.isHidden = true
+            statusChip.isHidden = true
         }
         applyTheme()
     }
@@ -567,6 +703,8 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         statusIconTile.applyTheme(theme)
         statusTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         statusDetailLabel.textColor = HelmTheme.mutedInk(theme)
+        ToolRowLayout.pill(text: "On device", colorHex: HelmTint.good.hex(in: theme),
+                          into: statusChip, label: statusChipLabel, theme: theme)
         subtitleLabel.textColor = HelmTheme.mutedInk(theme)
         shortcutRecorder.applyTheme(theme)
         shortcutDetailLabel.textColor = HelmTheme.mutedInk(theme)
@@ -577,6 +715,8 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         localWhisperTitleLabel.textColor = HelmTheme.nsColor(theme.chromeInkHex)
         localWhisperDetailLabel.textColor = HelmTheme.mutedInk(theme)
         modelStatusLabel.textColor = HelmTheme.mutedInk(theme)
+        ToolRowLayout.pill(text: "Model ready", colorHex: HelmTint.good.hex(in: theme),
+                          into: modelReadyPill, label: modelReadyPillLabel, theme: theme)
         vocabularyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyCountLabel.textColor = HelmTheme.mutedInk(theme)
         historyListView.applyTheme(theme)
@@ -590,22 +730,33 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         switch modelState {
         case .notDownloaded:
             modelStatusLabel.stringValue = "Model not downloaded (~547MB)"
+            modelStatusLabel.isHidden = false
+            modelReadyPill.isHidden = true
             modelProgressBar.isHidden = true
             modelActionButton.title = "Download Model"
             modelActionButton.isEnabled = true
         case .downloading(let progress):
             modelStatusLabel.stringValue = "Downloading… \(Int(progress * 100))%"
+            modelStatusLabel.isHidden = false
+            modelReadyPill.isHidden = true
             modelProgressBar.isHidden = false
             modelProgressBar.doubleValue = progress
             modelActionButton.title = "Cancel"
             modelActionButton.isEnabled = true
         case .ready:
-            modelStatusLabel.stringValue = "Model ready"
+            // The reviewed prototype's "Model ready" chip - this is the one
+            // state it actually depicts, so it's the one state that gets
+            // the pill treatment; every other state keeps the existing
+            // plain (longer, dynamic) text.
+            modelStatusLabel.isHidden = true
+            modelReadyPill.isHidden = false
             modelProgressBar.isHidden = true
             modelActionButton.title = "Re-download"
             modelActionButton.isEnabled = true
         case .failed(let message):
             modelStatusLabel.stringValue = "Download failed: \(message)"
+            modelStatusLabel.isHidden = false
+            modelReadyPill.isHidden = true
             modelProgressBar.isHidden = true
             modelActionButton.title = "Retry Download"
             modelActionButton.isEnabled = true
