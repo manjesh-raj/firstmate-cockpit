@@ -492,6 +492,115 @@ final class HoverHighlightView: NSView {
     }
 }
 
+/// The app's one "chat-style composer" card - the shared shape behind SRE
+/// Lead's question box and the Console Composer's intent box
+/// (`fm/grandline-input-composer-redesign`). Both used to be a bare sunken
+/// field with no surrounding chrome, which is what the captain's own
+/// screenshots flagged as "looks bad": no card, no toolbar, no sense that
+/// typing here was a distinct, considered interaction rather than an
+/// afterthought bolted onto the bottom of the pane.
+///
+/// This component owns only the *card* - a rounded, sunken-fill, bordered
+/// container whose border visibly brightens (plus a soft accent glow) while a
+/// text control inside it has focus. It does not own a text field, a toolbar,
+/// or a footer: SRE Lead's chat box and the Command Composer's intent box
+/// need genuinely different content inside the card (a compact single-row
+/// toolbar with a send button vs. a wider footer with a shortcut hint and a
+/// labelled "Generate" button) - per the captain's own framing, "related, but
+/// not identical." Each caller builds its own content as subviews of
+/// `contentContainer`.
+///
+/// **Why the glow needs two layers.** `contentContainer` clips
+/// (`masksToBounds`) so its own rounded corners stay clean, but a clipped
+/// layer cannot also cast a shadow outside its own bounds - so the shadow
+/// that makes the focus state read as a glow (rather than just a slightly
+/// brighter border) lives on `self`, the un-clipped wrapper, with an explicit
+/// `shadowPath` kept in sync with `contentContainer`'s rounded rect in
+/// `layout()` (`ConsoleCardChrome.layout()` establishes the same
+/// override-and-resync pattern for a geometry-derived layer property).
+///
+/// **Deliberately does not self-observe `ThemeManager`**, unlike `HelmButton`
+/// - both current callers (`SRELeadChatView`, `ConsoleComposerViewController`)
+/// already own exactly one theme observer of their own and call
+/// `applyTheme(_:)` from it, so a second observer here would just be another
+/// instance of the repeated-observer bug class `ThemeManager.swift`'s
+/// checklist warns about, for no benefit.
+final class HelmComposerCard: NSView {
+    /// The actual bordered/filled surface. Callers add their own content as
+    /// subviews of this, never of `self`.
+    let contentContainer = NSView()
+
+    private var isFocused = false
+    private var lastTheme: HelmTheme?
+
+    var cornerRadius: CGFloat {
+        didSet {
+            guard cornerRadius != oldValue else { return }
+            contentContainer.layer?.cornerRadius = cornerRadius
+            needsLayout = true
+        }
+    }
+
+    init(cornerRadius: CGFloat = HelmMetrics.rRow) {
+        self.cornerRadius = cornerRadius
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.masksToBounds = true
+        contentContainer.layer?.cornerRadius = cornerRadius
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentContainer)
+        NSLayoutConstraint.activate([
+            contentContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentContainer.topAnchor.constraint(equalTo: topAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    override func layout() {
+        super.layout()
+        // An un-clipped layer's shadow otherwise falls back to its full
+        // rectangular bounds rather than the rounded rect `contentContainer`
+        // actually draws - without this the glow would show square corners
+        // poking out past the card's own rounded ones.
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: cornerRadius,
+                                   cornerHeight: cornerRadius, transform: nil)
+    }
+
+    /// Toggle the focused look - driven by whichever text control inside
+    /// `contentContainer` currently has focus. Re-applies whatever theme was
+    /// last given to `applyTheme(_:)` rather than requiring the caller to
+    /// re-call it on every focus change.
+    func setFocused(_ focused: Bool) {
+        guard focused != isFocused else { return }
+        isFocused = focused
+        if let lastTheme { applyTheme(lastTheme) }
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        lastTheme = theme
+        contentContainer.layer?.backgroundColor = HelmField.fill(theme).cgColor
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        if isFocused {
+            contentContainer.layer?.borderWidth = 1.5
+            contentContainer.layer?.borderColor = accent.withAlphaComponent(0.7).cgColor
+            layer?.shadowColor = accent.cgColor
+            layer?.shadowOpacity = Float(theme.mode == .dark ? 0.35 : 0.22)
+            layer?.shadowRadius = 8
+            layer?.shadowOffset = .zero
+        } else {
+            contentContainer.layer?.borderWidth = 1
+            contentContainer.layer?.borderColor = HelmField.border(theme).cgColor
+            layer?.shadowOpacity = 0
+        }
+    }
+}
+
 /// The shared "tool checklist row" layout: an `IconTileView`, a name/detail
 /// text stack, a caller-populated trailing-controls stack, a disclosure
 /// chevron, and an expandable command-output log panel, all wrapped in a
