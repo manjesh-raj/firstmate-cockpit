@@ -40,7 +40,7 @@ struct SRELeadMessage {
     let text: String
 }
 
-final class SRELeadChatView: NSView, NSTextFieldDelegate {
+final class SRELeadChatView: NSView, NSTextViewDelegate {
     var onSubmit: ((String) -> Void)?
 
     /// Fired whenever `messages` changes (append or clear) - "Generate
@@ -51,19 +51,57 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     private let scroll = NSScrollView()
     private let document = FlippedView()
     private let stack = NSStackView()
-    private let inputRow = NSView()
-    /// The hairline between the transcript and the input row.
-    ///
-    /// Needed once the transcript stopped painting itself in the *terminal's*
-    /// `backgroundHex` and joined the pane on `chromeBackgroundHex` (see
-    /// `applyTheme`): the two zones used to be told apart by a whole
-    /// background-token step, and now share one surface, exactly like
-    /// `ConsoleController`'s own `sreLeadHeaderDivider` does for the pane
-    /// header directly above.
-    private let inputDivider = NSView()
-    private let inputField = NSTextField()
-    private let sendButton = NSButton()
+
+    // MARK: Composer
+    //
+    // `fm/grandline-input-composer-redesign`: this used to be a single flat
+    // `NSTextField` on a bare hairline-divided strip - no card, no toolbar,
+    // no sense that this was a distinct, considered control rather than an
+    // afterthought (the captain's own screenshot of this exact pane).
+    // `composerCard` (`HelmComposerCard`, `HelmUIComponents.swift`) is the
+    // shared "rounded, sunken, focus-glows" card this pane shares with the
+    // Console Composer popover; everything inside it - the auto-resizing
+    // multi-line text view and the toolbar row - is this pane's own content.
+
+    /// Padding wrapper between the composer card and this view's own edges -
+    /// the reference mockup's `.sre-area` padding, not part of the card
+    /// itself.
+    private let composerWrap = NSView()
+    /// The small uppercase caption above the card - mirrors the reference
+    /// mockup's "ASK THE CLUSTER" label and this app's own section-kicker
+    /// convention (`HelmFormSheet.addSection`).
+    private let composerKicker = NSTextField(labelWithString: "Ask a question")
+    private let composerCard = HelmComposerCard(cornerRadius: HelmMetrics.rRow)
+    private let textScroll = NSScrollView()
+    private let textView = NSTextView()
+    /// `NSTextView` has no built-in placeholder API - a plain muted label
+    /// overlaid at the text container's own inset, toggled on every edit
+    /// (mirrors `ConsoleComposerViewController.intentPlaceholderLabel`).
+    private let textPlaceholderLabel = NSTextField(labelWithString: "Ask SRE Lead\u{2026}")
+    private let toolbarRow = NSView()
+    /// A `HelmButton(.primary)` rather than the plain borderless accent-glyph
+    /// button this replaced - `.primary`'s own `isEnabled` dimming (see
+    /// `HelmButton.restyle()`) is exactly the reference mockup's "muted until
+    /// there's real text" send-button behaviour, for free.
+    private let sendButton = HelmButton(symbol: "arrow.up", variant: .primary, size: .small)
+    private var textScrollHeightConstraint: NSLayoutConstraint!
     private var documentTopConstraint: NSLayoutConstraint!
+
+    /// The text view's height clamps between one line's worth of content and
+    /// a handful of lines - the reference mockup's own `min-height`/
+    /// `max-height` pair on `.sre-input`, translated into an Auto Layout
+    /// constraint this view updates by hand on every edit (`NSTextView` has
+    /// no "grow with content, up to a cap" behaviour of its own).
+    private static let minTextHeight: CGFloat = 34
+    private static let maxTextHeight: CGFloat = 120
+
+    /// Whether the composer is allowed to accept input at all right now -
+    /// independent of whether it currently holds real text. The send button
+    /// is enabled only when both this and `hasText` are true, which is what
+    /// gives it the reference mockup's "muted until there's something to
+    /// send" behaviour without losing the pre-existing "disabled while a
+    /// turn is in flight" gate.
+    private var isInputEnabled = true
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var messages: [SRELeadMessage] = []
@@ -73,7 +111,7 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         buildScroll()
-        buildInputRow()
+        buildComposer()
         applyTheme(theme)
     }
 
@@ -105,62 +143,167 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         ])
     }
 
-    private func buildInputRow() {
-        inputRow.translatesAutoresizingMaskIntoConstraints = false
-        inputRow.wantsLayer = true
-        addSubview(inputRow)
+    /// Builds the composer: a padded wrapper holding a small kicker caption
+    /// and the `HelmComposerCard` itself, which in turn holds the
+    /// auto-resizing text view and a toolbar row carrying the send button.
+    ///
+    /// No left-side toolbar icons were added (the reference mockup shows a
+    /// "+"/attach pair) - neither has a real backing action on this pane
+    /// today (there is no context-attachment mechanism for SRE Lead), and
+    /// this task's brief is explicit that inventing one would be a
+    /// functional change, not a layout redesign. Likewise no separate
+    /// "connection status" chip was added above the card: the pane's own
+    /// header (`ConsoleController.sreLeadStatusPill`) already shows this
+    /// tab's live SRE Lead phase (ready/starting/failed) immediately above
+    /// this whole card, so a second copy of the same signal a few dozen
+    /// points below it would be pure duplication, not information - this
+    /// app's own "quiet until it matters" convention (see the Notification
+    /// Center section of AGENTS.md) argues against it. Send button aside,
+    /// this leaves the toolbar row itself as the one real "whatever actions
+    /// make sense here" surface for a future task that adds one.
+    private func buildComposer() {
+        composerWrap.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(composerWrap)
 
-        inputDivider.translatesAutoresizingMaskIntoConstraints = false
-        inputDivider.wantsLayer = true
-        addSubview(inputDivider)
+        composerKicker.translatesAutoresizingMaskIntoConstraints = false
+        composerKicker.attributedStringValue = NSAttributedString(
+            string: "Ask a question".uppercased(),
+            attributes: [.font: HelmType.kicker(), .kern: HelmType.kickerKern]
+        )
 
-        // The app's one sunken-field recipe (Phase 6, `HelmForm.swift`) rather
-        // than a bare borderless `NSTextField`. As shipped this field had no
-        // fill of its own at all, so the *cell* painted the system
-        // `.textBackgroundColor` behind the placeholder - a near-black box in
-        // a light theme's pane and a mismatched shade in a dark one, visible
-        // in the captain's own screenshot of this pane. That is AGENTS.md's
-        // documented `NSTextField.backgroundColor`-overpaints-the-layer trap;
-        // `HelmField` is the one place in the app that sets both.
-        inputField.translatesAutoresizingMaskIntoConstraints = false
-        HelmField.makeSunkenTextField(inputField)
-        inputField.delegate = self
-        inputRow.addSubview(inputField)
+        composerCard.translatesAutoresizingMaskIntoConstraints = false
 
-        sendButton.translatesAutoresizingMaskIntoConstraints = false
-        sendButton.title = ""
-        sendButton.isBordered = false
-        sendButton.image = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send")
-        sendButton.imageScaling = .scaleProportionallyDown
-        sendButton.target = self
-        sendButton.action = #selector(submit)
-        inputRow.addSubview(sendButton)
+        let composerStack = NSStackView(views: [composerKicker, composerCard])
+        composerStack.orientation = .vertical
+        composerStack.alignment = .leading
+        composerStack.spacing = HelmMetrics.s1 + 2
+        composerStack.translatesAutoresizingMaskIntoConstraints = false
+        composerWrap.addSubview(composerStack)
+
+        buildTextView()
+        buildToolbar()
+
+        let cardStack = NSStackView(views: [textScroll, toolbarRow])
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 0
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        composerCard.contentContainer.addSubview(cardStack)
+
+        textScrollHeightConstraint = textScroll.heightAnchor.constraint(equalToConstant: Self.minTextHeight)
 
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: inputDivider.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: composerWrap.topAnchor),
 
-            inputDivider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            inputDivider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            inputDivider.bottomAnchor.constraint(equalTo: inputRow.topAnchor),
-            inputDivider.heightAnchor.constraint(equalToConstant: 1),
+            composerWrap.leadingAnchor.constraint(equalTo: leadingAnchor),
+            composerWrap.trailingAnchor.constraint(equalTo: trailingAnchor),
+            composerWrap.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            inputRow.leadingAnchor.constraint(equalTo: leadingAnchor),
-            inputRow.trailingAnchor.constraint(equalTo: trailingAnchor),
-            inputRow.bottomAnchor.constraint(equalTo: bottomAnchor),
-            inputRow.heightAnchor.constraint(equalToConstant: 48),
+            composerStack.leadingAnchor.constraint(equalTo: composerWrap.leadingAnchor, constant: HelmMetrics.s3),
+            composerStack.trailingAnchor.constraint(equalTo: composerWrap.trailingAnchor, constant: -HelmMetrics.s3),
+            composerStack.topAnchor.constraint(equalTo: composerWrap.topAnchor, constant: HelmMetrics.s2),
+            composerStack.bottomAnchor.constraint(equalTo: composerWrap.bottomAnchor, constant: -HelmMetrics.s3),
+            composerCard.widthAnchor.constraint(equalTo: composerStack.widthAnchor),
 
-            inputField.leadingAnchor.constraint(equalTo: inputRow.leadingAnchor, constant: 12),
-            inputField.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -8),
-            inputField.centerYAnchor.constraint(equalTo: inputRow.centerYAnchor),
-            inputField.heightAnchor.constraint(equalToConstant: HelmField.controlHeight),
+            cardStack.leadingAnchor.constraint(equalTo: composerCard.contentContainer.leadingAnchor),
+            cardStack.trailingAnchor.constraint(equalTo: composerCard.contentContainer.trailingAnchor),
+            cardStack.topAnchor.constraint(equalTo: composerCard.contentContainer.topAnchor),
+            cardStack.bottomAnchor.constraint(equalTo: composerCard.contentContainer.bottomAnchor),
+            textScroll.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            textScrollHeightConstraint,
+            toolbarRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor),
+            toolbarRow.heightAnchor.constraint(equalToConstant: 36),
 
-            sendButton.trailingAnchor.constraint(equalTo: inputRow.trailingAnchor, constant: -10),
-            sendButton.centerYAnchor.constraint(equalTo: inputRow.centerYAnchor),
-            sendButton.widthAnchor.constraint(equalToConstant: 24),
-            sendButton.heightAnchor.constraint(equalToConstant: 24),
+            // Activated here, once `textScroll` is already embedded in the
+            // full tree, not inside `buildTextView()` where it's still an
+            // orphaned view - see this method's own history for the real,
+            // measured layout bug that ordering caused (a required
+            // content-size constraint that never actually resolved to the
+            // label's own intrinsic width). `ConsoleComposerViewController`'s
+            // identical placeholder pattern already activates its
+            // constraints at this same late point, for the same reason.
+            textPlaceholderLabel.leadingAnchor.constraint(equalTo: textScroll.leadingAnchor, constant: 9),
+            textPlaceholderLabel.topAnchor.constraint(equalTo: textScroll.topAnchor, constant: 9),
+            textPlaceholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: textScroll.trailingAnchor, constant: -9),
+        ])
+    }
+
+    /// The auto-resizing multi-line text view - the reference mockup's
+    /// `.sre-input`, translated: a plain `NSTextView` (no bezel/background of
+    /// its own, since the shared card underneath already paints the fill) in
+    /// an `NSScrollView` whose own height this view grows/shrinks by hand as
+    /// content changes, clamped to `[minTextHeight, maxTextHeight]`.
+    ///
+    /// Plain Return still submits, matching this pane's pre-existing exact
+    /// behaviour (`fm/grandline-input-composer-redesign` is a layout
+    /// redesign, not a functional change) - Shift+Return inserts a newline
+    /// instead, a purely additive capability a single-line field never had
+    /// room to offer.
+    private func buildTextView() {
+        textView.isRichText = false
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.font = HelmType.body()
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        // Transparent: the card's own `contentContainer` layer is what paints
+        // the sunken fill, and letting the text view show it through (rather
+        // than painting a second, identical fill on top) is what keeps the
+        // text area and the toolbar below reading as one surface, not two.
+        textView.drawsBackground = false
+        textView.delegate = self
+
+        textScroll.documentView = textView
+        textScroll.hasVerticalScroller = true
+        textScroll.borderType = .noBorder
+        textScroll.drawsBackground = false
+        textScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        textPlaceholderLabel.font = textView.font
+        textPlaceholderLabel.isEditable = false
+        textPlaceholderLabel.isBordered = false
+        textPlaceholderLabel.isSelectable = false
+        textPlaceholderLabel.drawsBackground = false
+        textPlaceholderLabel.lineBreakMode = .byWordWrapping
+        textPlaceholderLabel.maximumNumberOfLines = 1
+        textPlaceholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        textScroll.addSubview(textPlaceholderLabel)
+        // Constraints for this label are activated later, in
+        // `buildComposer`'s own final activation block - see the doc comment
+        // there for why.
+    }
+
+    /// The toolbar strip under the text view - just the send button today
+    /// (see `buildComposer`'s doc comment for why there is nothing on the
+    /// left), built as a real row rather than pinning the button straight to
+    /// the card so a future real toolbar action has somewhere to go.
+    private func buildToolbar() {
+        toolbarRow.translatesAutoresizingMaskIntoConstraints = false
+
+        sendButton.translatesAutoresizingMaskIntoConstraints = false
+        sendButton.target = self
+        sendButton.action = #selector(submit)
+        sendButton.isEnabled = false
+        toolbarRow.addSubview(sendButton)
+
+        // The same alignment-rect-inset correction `HelmPageToolbar.
+        // iconButton` uses: a `HelmButton`'s frame is taller than its own
+        // height constraint by `alignmentRectInsets`, so subtracting them is
+        // what makes the button actually measure `side`pt square instead of
+        // a few points taller.
+        let side: CGFloat = 28
+        let insets = sendButton.alignmentRectInsets
+        NSLayoutConstraint.activate([
+            sendButton.trailingAnchor.constraint(equalTo: toolbarRow.trailingAnchor, constant: -HelmMetrics.s2),
+            sendButton.centerYAnchor.constraint(equalTo: toolbarRow.centerYAnchor),
+            sendButton.widthAnchor.constraint(equalToConstant: side - insets.left - insets.right),
+            sendButton.heightAnchor.constraint(equalToConstant: side - insets.top - insets.bottom),
         ])
     }
 
@@ -212,8 +355,19 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     /// second question before the first one's `claude -p` process exits -
     /// `SRELeadRunner` is not built to handle concurrent `ask` calls.
     func setInputEnabled(_ enabled: Bool) {
-        inputField.isEnabled = enabled
-        sendButton.isEnabled = enabled
+        isInputEnabled = enabled
+        textView.isEditable = enabled
+        updateSendButtonEnabled()
+    }
+
+    /// The send button is enabled only while input is allowed at all
+    /// (`isInputEnabled`) *and* there is real, non-whitespace text to send -
+    /// the reference mockup's "muted until there's something to send" state,
+    /// which `HelmButton(.primary)`'s own `isEnabled` dimming already renders
+    /// correctly with no extra styling needed here.
+    private func updateSendButtonEnabled() {
+        let hasText = !textView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sendButton.isEnabled = isInputEnabled && hasText
     }
 
     private func scrollToBottom() {
@@ -529,16 +683,61 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func submit() {
-        let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        inputField.stringValue = ""
+        textView.string = ""
+        updateTextPlaceholderVisibility()
+        updateTextViewHeight()
+        updateSendButtonEnabled()
         onSubmit?(text)
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
-        guard let field = obj.object as? NSTextField, field === inputField else { return }
-        guard let event = NSApp.currentEvent, event.type == .keyDown, event.keyCode == 36 else { return } // Return
+    // MARK: Text view delegate
+
+    func textDidChange(_ notification: Notification) {
+        updateTextPlaceholderVisibility()
+        updateTextViewHeight()
+        updateSendButtonEnabled()
+    }
+
+    func textDidBeginEditing(_ notification: Notification) {
+        composerCard.setFocused(true)
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+        composerCard.setFocused(false)
+    }
+
+    /// Plain Return still submits - this pane's pre-existing exact behaviour
+    /// (see `buildTextView`'s doc comment). Shift+Return inserts a newline
+    /// instead, the one additive capability a genuinely multi-line field can
+    /// offer that a single-line one never could.
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            textView.insertText("\n", replacementRange: textView.selectedRange())
+            return true
+        }
         submit()
+        return true
+    }
+
+    private func updateTextPlaceholderVisibility() {
+        textPlaceholderLabel.isHidden = !textView.string.isEmpty
+    }
+
+    /// Grows or shrinks `textScrollHeightConstraint` to fit the text view's
+    /// real content, clamped to `[minTextHeight, maxTextHeight]` - the
+    /// reference mockup's `autoResize` JS helper, done as an Auto Layout
+    /// constraint update instead of a raw frame write.
+    private func updateTextViewHeight() {
+        guard let layoutManager = textView.layoutManager, let textContainer = textView.textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer).height
+        let desired = ceil(used) + textView.textContainerInset.height * 2
+        let clamped = min(max(desired, Self.minTextHeight), Self.maxTextHeight)
+        guard abs(clamped - textScrollHeightConstraint.constant) > 0.5 else { return }
+        textScrollHeightConstraint.constant = clamped
     }
 
     // MARK: Theming
@@ -560,19 +759,14 @@ final class SRELeadChatView: NSView, NSTextFieldDelegate {
         // showed the bug and no fill change can be what proves the fix -
         // measure the resolved colour against the pane's, per theme.
         layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-        inputDivider.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeLineHex).cgColor
-        inputRow.layer?.backgroundColor = HelmTheme.nsColor(theme.chromeBackgroundHex).cgColor
-        HelmField.applySunken(to: inputField, theme: theme)
-        // Both, deliberately - the cell paints over the layer. See
-        // `HelmField.makeSunkenTextField`'s call site above.
-        inputField.backgroundColor = HelmField.fill(theme)
-        inputField.textColor = HelmField.ink(theme)
-        (inputField.cell as? NSTextFieldCell)?.placeholderAttributedString = NSAttributedString(
-            string: "Ask SRE Lead\u{2026}",
-            attributes: [.font: inputField.font ?? HelmType.body(),
-                         .foregroundColor: HelmField.mutedInk(theme)]
-        )
-        sendButton.contentTintColor = HelmTheme.nsColor(theme.accentHex)
+        composerKicker.textColor = HelmTheme.mutedInk(theme)
+        composerCard.applyTheme(theme)
+        let ink = HelmField.ink(theme)
+        textView.textColor = ink
+        textView.insertionPointColor = ink
+        textPlaceholderLabel.textColor = HelmField.mutedInk(theme)
+        // `HelmButton` themes its own fill/border/label - nothing else to set
+        // here beyond what `buildToolbar`/`setInputEnabled` already own.
 
         // Rebuild every block rather than trying to re-derive each one's
         // role from its current styling - `messages` is the source of truth
