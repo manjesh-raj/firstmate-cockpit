@@ -18,9 +18,31 @@
 // than a `-c` argument so the token never appears in `ps`) - not a second
 // git-wrapping mechanism. Unlike `ShiftGitSync`, this feature operates
 // directly on the captain's own already-checked-out working tree (no
-// separate managed clone, no merge-base/conflict logic) - it's the
-// captain's real repo, with their real git identity and credential helper
-// already configured, so a plain add/commit/push is the whole job.
+// separate managed clone, no per-record merge-base/conflict logic like
+// `ShiftConflict.swift`) - it's the captain's real repo, with their real
+// git identity and credential helper already configured.
+//
+// `export` fetches and `git merge --ff-only`s before committing (and
+// therefore before pushing) - fm/grandline-vault-export-push-fix - the
+// captain's clone can be behind `origin` for reasons unrelated to this
+// export (another machine pushed, a manual edit elsewhere), and a bare
+// commit-then-push then fails with git's own "[rejected] ... fetch first"
+// error. The fetch/merge has to happen with the recipe file already
+// staged but NOT yet committed - merging *after* the recipe commit exists
+// can't fast-forward, since that commit and origin's tip would then be two
+// different children of the same old base (a narrow but real divergence,
+// even in the "purely behind" case) - live-verified against a disposable
+// local repo pair that this exact ordering both fixes the "purely behind"
+// case and leaves a staged-but-uncommitted file untouched by the merge.
+// `--ff-only` is the same load-bearing choice `DotfilesRunCommand.
+// rebuildCommand`'s `git pull --ff-only` and `ShiftGitSync.pullNow()`
+// already make: it fast-forwards silently when the local checkout is a
+// clean ancestor of the remote, and aborts with a real, visible error -
+// never force, never discard - the moment local and remote have genuinely
+// diverged (real local-only commits that predate this export). A genuine
+// divergence is reported back pointing at Bootstrap's "Dotfiles & machine
+// config" card to resolve by hand, same as every other git-writing path in
+// this app.
 
 import Foundation
 
@@ -49,7 +71,9 @@ enum VaultRecipeGit {
     }
 
     /// Writes the recipe JSON into `automatic-vault-details-backup/` inside
-    /// `repoPath`, then commits and pushes it. Safe to call from a
+    /// `repoPath`, then fetches + fast-forwards past anything new on
+    /// `origin` before committing and pushing it (see this file's header for
+    /// why that order, not fetch-after-commit). Safe to call from a
     /// background queue - this never touches the main thread.
     static func export(recipe: VaultRecipe, repoPath: String) -> VaultRecipeExportResult {
         let fm = FileManager.default
@@ -79,13 +103,57 @@ enum VaultRecipeGit {
             return VaultRecipeExportResult(ok: true, message: "No changes since the last export - nothing to push.", filePath: filePath)
         }
 
+        let branchResult = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd: repoPath, remoteURL: remoteURL, authenticated: false)
+        let branch = branchResult.stdout.isEmpty ? "HEAD" : branchResult.stdout
+
+        // The captain's local clone can be behind `origin` for reasons that
+        // have nothing to do with this export (another machine pushed, a
+        // manual edit elsewhere) - a bare `git commit` + `git push` then
+        // fails with git's own "[rejected] ... fetch first" error, since the
+        // new commit this export just created is a sibling of, not a
+        // descendant of, origin's tip.
+        //
+        // This has to run BEFORE the commit, not after: fast-forwarding
+        // *after* creating the recipe commit can't work, because by then the
+        // recipe commit and origin's tip are two different children of the
+        // same old base - a genuine (if narrow) divergence, not a pure
+        // "behind" case, however clean the captain's own history is. Doing
+        // it here - with the recipe file already staged but not yet
+        // committed - lets `git merge --ff-only` bring origin's unrelated
+        // commits in first, so the recipe commit lands on top of a caught-up
+        // base and pushes as an ordinary fast-forward. Verified live against
+        // a disposable local repo pair: a staged-but-uncommitted new file
+        // survives this fast-forward untouched.
+        //
+        // Mirrors `DotfilesRunCommand.rebuildCommand`'s own `git pull
+        // --ff-only` convention: `--ff-only` fast-forwards silently when the
+        // local checkout is a clean ancestor of the remote, and aborts with
+        // a real, visible error - never force, never discard - the moment
+        // local and remote have genuinely diverged (real local-only commits
+        // that predate this export, unrelated to it).
+        let fetch = runGit(["fetch", "origin", branch], cwd: repoPath, remoteURL: remoteURL, authenticated: true)
+        guard fetch.status == 0 else {
+            return VaultRecipeExportResult(
+                ok: false,
+                message: "Couldn't fetch from GitHub to check for new changes before committing: \(fetch.stderr.isEmpty ? "unknown error" : fetch.stderr)",
+                filePath: filePath
+            )
+        }
+
+        let merge = runGit(["merge", "--ff-only", "origin/\(branch)"], cwd: repoPath, remoteURL: remoteURL, authenticated: false)
+        guard merge.status == 0 else {
+            return VaultRecipeExportResult(
+                ok: false,
+                message: "Your manjesh-config clone has diverged from GitHub (there are commits on each side the other doesn't have), so this can't fast-forward automatically. Resolve it by hand from Bootstrap's \"Dotfiles & machine config\" card, then export again - nothing was force-pushed or discarded.",
+                filePath: filePath
+            )
+        }
+
         let commit = runGit(["commit", "-m", "Vault: update secret recipe backup"], cwd: repoPath, remoteURL: remoteURL, authenticated: false)
         guard commit.status == 0 else {
             return VaultRecipeExportResult(ok: false, message: "git commit failed: \(commit.stderr.isEmpty ? "unknown error" : commit.stderr)", filePath: filePath)
         }
 
-        let branchResult = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd: repoPath, remoteURL: remoteURL, authenticated: false)
-        let branch = branchResult.stdout.isEmpty ? "HEAD" : branchResult.stdout
         let push = runGit(["push", "origin", "HEAD:\(branch)"], cwd: repoPath, remoteURL: remoteURL, authenticated: true)
         guard push.status == 0 else {
             return VaultRecipeExportResult(
