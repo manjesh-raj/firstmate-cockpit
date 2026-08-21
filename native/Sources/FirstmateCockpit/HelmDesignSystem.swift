@@ -1029,6 +1029,10 @@ final class HelmAccentRow: NSView {
         /// meta line that is literally a command or a fingerprint, where
         /// proportional spacing costs real readability.
         var metaIsCode: Bool = false
+        /// Render `title` in `HelmType.code()` rather than `rowTitle()` -
+        /// `metaIsCode`'s sibling, for a title that is itself a literal
+        /// identifier (an env-var-shaped secret name) rather than prose.
+        var titleIsCode: Bool = false
         /// A literal hue for the bar / badge / border, overriding `tint`.
         ///
         /// Only for a record that genuinely carries a **user-chosen** colour
@@ -1311,6 +1315,7 @@ final class HelmAccentRow: NSView {
         }
 
         titleLabel.stringValue = content.title
+        titleLabel.font = content.titleIsCode ? HelmType.code() : HelmType.rowTitle()
         titleLabel.maximumNumberOfLines = content.titleWraps ? 0 : 1
         titleLabel.lineBreakMode = content.titleWraps ? .byWordWrapping : .byTruncatingTail
 
