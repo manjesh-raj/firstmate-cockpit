@@ -22,6 +22,18 @@
 #   ./Scripts/run-all-tests.sh FM_RUN_SHIFT_STORE_TESTS FM_RUN_BACKUP_TESTS
 #                                           # run only the named suites
 #
+# The suites are compiled into DEBUG builds only (GL-27): `Package.swift`
+# defines `FM_SELFTESTS` for the debug configuration, so `swift build` has every
+# suite and `swift build -c release` - what `native/build_native_app.sh`
+# assembles the shipped `.app` from - has none of them. That is why this script
+# builds and runs `.build/debug/FirstmateCockpit` and must keep doing so; a
+# release binary silently runs zero suites and exits 0, which would look exactly
+# like a clean run.
+#
+# The suite list is still discovered by grepping `main.swift` for the flags,
+# which works either way: the flags remain plain source text inside the
+# `#if FM_SELFTESTS` block.
+#
 # SAFETY: this runs the app's own binary, which is safe *because* every one of
 # these flags is handled before `NSApplication.shared` is ever touched - the
 # process runs headless and exits. Do NOT extend this script to launch the app

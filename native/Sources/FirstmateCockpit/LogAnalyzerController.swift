@@ -1841,6 +1841,12 @@ extension LogAnalyzerController {
     }
 
     func reloadHistory() {
+        // GL-35: `history()` is memoised now, and this is the page's own
+        // "show me what is actually on disk" path (the history rail being
+        // revealed, or a save/delete completing) - so it is the one place that
+        // should look past the cache. Everything else in a single interaction
+        // reads the same snapshot.
+        store.invalidateHistoryCache()
         historyEntries = store.history()
         let contents = historyEntries.map { entry -> HelmAccentRow.Content in
             var content = HelmAccentRow.Content(tint: entry.severity.tint,

@@ -27,6 +27,11 @@ final class DictationHistoryListView: NSObject {
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var entries: [DictationHistoryEntry] = []
 
+    /// GL-35: per-entry delete. Set by the page; the row's trash button calls
+    /// it with the entry itself (not a row index), so a list that has been
+    /// re-read since the row was drawn cannot delete the wrong entry.
+    var onDeleteEntry: ((DictationHistoryEntry) -> Void)?
+
     private static let columnID = NSUserInterfaceItemIdentifier("dictationHistoryCol")
     private static let rowViewID = NSUserInterfaceItemIdentifier("dictationHistoryRow")
     private static let emptyViewID = NSUserInterfaceItemIdentifier("dictationHistoryEmpty")
@@ -73,7 +78,9 @@ extension DictationHistoryListView: NSTableViewDataSource, NSTableViewDelegate {
         }
         let rowView = (tableView.makeView(withIdentifier: Self.rowViewID, owner: nil) as? DictationHistoryRowView)
             ?? { let v = DictationHistoryRowView(); v.identifier = Self.rowViewID; return v }()
-        rowView.configure(entry: entries[row], theme: theme)
+        let entry = entries[row]
+        rowView.configure(entry: entry, theme: theme)
+        rowView.onDelete = { [weak self] in self?.onDeleteEntry?(entry) }
         return rowView
     }
 }
@@ -82,6 +89,11 @@ private final class DictationHistoryRowView: NSView {
     private let hoverBackground = HoverHighlightView()
     private let textLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
+    private let deleteButton = HelmButton(symbol: "trash", variant: .quiet, size: .small)
+
+    /// GL-35. Reassigned on every `configure`, since table cell views are
+    /// reused.
+    var onDelete: (() -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -113,13 +125,25 @@ private final class DictationHistoryRowView: NSView {
         textStack.spacing = 2
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
+        deleteButton.toolTip = "Delete this transcription"
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteClicked)
+        deleteButton.translatesAutoresizingMaskIntoConstraints = false
+        deleteButton.setContentHuggingPriority(.required, for: .horizontal)
+        deleteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         addSubview(textStack)
+        addSubview(deleteButton)
         NSLayoutConstraint.activate([
             textStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            textStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: deleteButton.leadingAnchor, constant: -8),
             textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            deleteButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            deleteButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
+
+    @objc private func deleteClicked() { onDelete?() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 

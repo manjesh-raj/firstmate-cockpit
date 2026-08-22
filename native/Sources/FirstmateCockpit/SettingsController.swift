@@ -87,6 +87,8 @@ final class SettingsController: NSViewController {
 
     // Terminal
     private var fontPresetButtons: [Int: HelmButton] = [:]
+    /// Keyed by index into `ChromeTextScale.steps` (GL-32).
+    private var uiScaleButtons: [Int: HelmButton] = [:]
     private let autoReconnectSwitch = NSSwitch()
     private let notifySwitch = NSSwitch()
 
@@ -716,6 +718,25 @@ final class SettingsController: NSViewController {
         presetRow.spacing = 6
         let fontRow = descRow(title: "Default font size", desc: "Also adjustable live with \u{2318}+ / \u{2318}\u{2212} in the console.", trailing: presetRow)
 
+        // GL-32. The row above is the *terminal* size (`FontSizeManager`);
+        // this one is the app's own interface text (`ChromeTextScale`), which
+        // had no control at all before - `HelmType`'s sizes were fixed, which
+        // is what the accessibility review measured. Pages that derive their
+        // fonts inside `applyTheme` (the shared components, and every page
+        // built on them) pick a change up live; anything whose font is set
+        // once in its own `loadView` follows on relaunch, which is why the
+        // description says so rather than pretending otherwise.
+        let scaleButtons = ChromeTextScale.steps.enumerated().map { index, step -> HelmButton in
+            let b = HelmButton(title: step.title, variant: .secondary, target: self, action: #selector(uiScaleClicked(_:)))
+            b.tag = index
+            uiScaleButtons[index] = b
+            return b
+        }
+        let scaleRow = NSStackView(views: scaleButtons)
+        scaleRow.orientation = .horizontal
+        scaleRow.spacing = 6
+        let interfaceRow = descRow(title: "Interface text", desc: "Scales the app's own labels, captions and titles. Some pages pick this up after a relaunch.", trailing: scaleRow)
+
         autoReconnectSwitch.target = self
         autoReconnectSwitch.action = #selector(autoReconnectToggled)
         let reconnectRow = descRow(title: "Reconnect automatically", desc: "If a tab's connection drops, restore it silently rather than waiting for \u{2318}R.", trailing: autoReconnectSwitch)
@@ -724,11 +745,11 @@ final class SettingsController: NSViewController {
         notifySwitch.action = #selector(notifyToggled)
         let notifyRow = descRow(title: "Bell & notifications", desc: "Surface a desktop notification the moment a crewmate needs your decision.", trailing: notifySwitch)
 
-        let section = NSStackView(views: [fontRow, separator(), reconnectRow, separator(), notifyRow])
+        let section = NSStackView(views: [fontRow, separator(), interfaceRow, separator(), reconnectRow, separator(), notifyRow])
         section.orientation = .vertical
         section.alignment = .leading
         section.spacing = 12
-        for row in [fontRow, reconnectRow, notifyRow] {
+        for row in [fontRow, interfaceRow, reconnectRow, notifyRow] {
             row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         }
         return section
@@ -1047,6 +1068,12 @@ final class SettingsController: NSViewController {
         }
     }
 
+    @objc private func uiScaleClicked(_ sender: NSButton) {
+        guard ChromeTextScale.steps.indices.contains(sender.tag) else { return }
+        ChromeTextScale.shared.setScale(ChromeTextScale.steps[sender.tag].scale)
+        refreshFromSettings()
+    }
+
     @objc private func fontPresetClicked(_ sender: NSButton) {
         let target = CGFloat(sender.tag)
         onFontSizeStep?(target - AppSettings.shared.fontSize)
@@ -1092,6 +1119,10 @@ final class SettingsController: NSViewController {
         guard isViewLoaded else { return }
         mirrorTargetField.stringValue = AppSettings.shared.mirrorTarget ?? ""
         shellCwdField.stringValue = AppSettings.shared.defaultShellCwd ?? ""
+        for (index, step) in ChromeTextScale.steps.enumerated() {
+            uiScaleButtons[index]?.variant =
+                abs(ChromeTextScale.shared.scale - step.scale) < 0.001 ? .primary : .secondary
+        }
         for size in [12, 13, 14, 16] {
             // `NSButton.state`'s on-look was the stock bezel's; the selected
             // preset now reads as the accent-filled `.primary` variant, which

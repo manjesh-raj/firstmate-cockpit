@@ -145,7 +145,11 @@ final class TopBarController: NSViewController {
 /// `NSButton` can't mix an image, a title, and a separately-styled badge in
 /// one control, so this composes them from plain subviews with a click
 /// gesture recognizer standing in for the button action.
-final class PillButton: NSView {
+/// GL-16: `HoverHighlightView`, not `NSView` - the search pill is one of the
+/// controls the accessibility review named specifically, and subclassing the
+/// app's one clickable-surface component gives it a role, a label, a focus
+/// ring and Return/Space in one line rather than four overrides here.
+final class PillButton: HoverHighlightView {
     var onClick: (() -> Void)?
 
     private let iconView = NSImageView()

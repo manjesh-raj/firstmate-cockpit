@@ -123,15 +123,53 @@ final class BackgroundSignalsPoller {
         timer = nil
     }
 
+    /// Whether a new pass may start (GL-03), extracted so it can be tested
+    /// without shelling out to `brew`/`npm`/`gh`/`av` - which is what made the
+    /// original latch bug invisible: the *decision* is three lines and the
+    /// *work* is 60 subprocesses, so nothing could reach the decision.
+    enum PassAdmission: Equatable {
+        /// Nothing is running - go.
+        case start
+        /// Something is running and has not exceeded the watchdog. This is the
+        /// normal skip, and the one that used to be permanent.
+        case refused
+        /// Something has been running longer than the watchdog: start anyway,
+        /// and say so. `ageSeconds` is what the log/health message reports.
+        case supersede(ageSeconds: Int)
+    }
+
+    static func admit(isChecking: Bool, passStartedAt: Date?,
+                      now: Date, watchdog: TimeInterval) -> PassAdmission {
+        guard isChecking else { return .start }
+        // No start time recorded while the latch is held is itself a broken
+        // state (the two are set together) - treat it as refused rather than
+        // as licence to pile on another pass.
+        guard let passStartedAt else { return .refused }
+        let age = now.timeIntervalSince(passStartedAt)
+        guard age > watchdog else { return .refused }
+        return .supersede(ageSeconds: Int(age))
+    }
+
+    /// Only the pass that still owns the latch may release it. A superseded
+    /// pass finishes eventually and reaches the same completion block; if it
+    /// cleared the latch there, it would clear it out from under its own
+    /// replacement and a third pass would start alongside the second.
+    static func mayReleaseLatch(finishingPassID: Int, currentPassID: Int) -> Bool {
+        finishingPassID == currentPassID
+    }
+
     /// Exposed (not `private`) so a debug probe / self-test can force one
     /// pass without waiting on the timer, matching
     /// `ShiftNotificationScheduler.poll()`'s own convention.
     func checkNow() {
-        if isChecking {
-            guard let started = passStartedAt,
-                  Date().timeIntervalSince(started) > passWatchdog else { return }
+        switch Self.admit(isChecking: isChecking, passStartedAt: passStartedAt,
+                          now: Date(), watchdog: passWatchdog) {
+        case .refused:
+            return
+        case .start:
+            break
+        case .supersede(let age):
             supersededPassCount += 1
-            let age = Int(Date().timeIntervalSince(started))
             AppLog.poller.error("""
                 background signals: pass started \(age)s ago has not finished - starting a new one \
                 anyway (GL-03 watchdog, \(self.supersededPassCount) so far this session).
@@ -166,7 +204,7 @@ final class BackgroundSignalsPoller {
                 ServiceHealthRegistry.shared.recordSuccess(.backgroundSignals)
                 // ...but only the pass that still owns the latch may release
                 // it. See `currentPassID`.
-                guard passID == self.currentPassID else { return }
+                guard Self.mayReleaseLatch(finishingPassID: passID, currentPassID: self.currentPassID) else { return }
                 self.isChecking = false
                 self.passStartedAt = nil
             }

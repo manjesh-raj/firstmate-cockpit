@@ -140,6 +140,44 @@ final class WhisperModelManager: NSObject {
         notify()
     }
 
+    /// GL-35: delete the downloaded model.
+    ///
+    /// The review's finding was blunt - 547MB with no way to get it back
+    /// except finding the directory by hand. A captain who tried the local
+    /// engine and went back to Apple Speech has no reason to keep it, and the
+    /// app that manages every other tool's disk footprint should not be the
+    /// one thing that strands half a gigabyte.
+    ///
+    /// Cancels an in-flight download first, so "delete" means the same thing
+    /// in every state. Returns whether anything was actually removed.
+    @discardableResult
+    func deleteDownloadedModel() -> Bool {
+        if case .downloading = state { cancelDownload() }
+        let path = modelPathOnDisk
+        guard FileManager.default.fileExists(atPath: path) else {
+            refreshState()
+            return false
+        }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            AppLog.store.info("deleted the local Whisper model")
+        } catch {
+            AppLog.store.error("could not delete the local Whisper model: \(error.localizedDescription, privacy: .public)")
+            state = .failed("Could not delete the model: \(error.localizedDescription)")
+            notify()
+            return false
+        }
+        refreshState()
+        return true
+    }
+
+    /// The model file's size on disk, for a UI that wants to say what deleting
+    /// it would actually reclaim. `nil` when it is not downloaded.
+    var downloadedByteCount: Int64? {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: modelPathOnDisk)
+        return (attrs?[.size] as? NSNumber)?.int64Value
+    }
+
     /// The real, cheap validation this class applies to a just-downloaded
     /// file before it's ever treated as a usable model - separated out so a
     /// test can exercise it directly against a crafted fixture without a

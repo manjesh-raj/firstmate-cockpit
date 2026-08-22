@@ -117,7 +117,28 @@ let package = Package(
         ),
         .executableTarget(
             name: "FirstmateCockpit",
-            dependencies: ["SwiftTerm", "Yaml", "CWhisper"]
+            dependencies: ["SwiftTerm", "Yaml", "CWhisper"],
+            swiftSettings: [
+                // GL-27: the 51 self-test suites (~10,500 lines, plus their
+                // fault-injection seams and fixture data) are compiled into
+                // debug builds only. `swift build` - the dev flow, CI, and
+                // `Scripts/run-all-tests.sh` - is a debug build and has every
+                // suite; `swift build -c release`, which
+                // `native/build_native_app.sh` assembles the shipped `.app`
+                // from, has none of them.
+                //
+                // A compilation condition rather than a second SPM target,
+                // deliberately: the suites reach `internal` members of this
+                // target throughout (that is what lets them drive the *real*
+                // `ConsoleController`, `DictationEngine` and stores rather than
+                // stand-ins), and a separate target would mean widening
+                // hundreds of declarations to `public` - trading a real
+                // encapsulation boundary for a build-layout one. `@testable
+                // import` is not an option either: it needs a test target, and
+                // this project builds with Command Line Tools only, with no
+                // XCTest available (see any `SelfTests/*.swift` header).
+                .define("FM_SELFTESTS", .when(configuration: .debug)),
+            ]
         )
     ],
     cxxLanguageStandard: .cxx17

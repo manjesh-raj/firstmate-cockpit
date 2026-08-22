@@ -135,12 +135,18 @@ enum KeychainKeyStore {
     }
 
     /// App-level Touch ID / passcode gate, standing in for the OS-level ACL
-    /// this build can't hold an entitlement for (see the file header). Blocks
-    /// the calling thread until the challenge resolves - the same synchronous-
-    /// during-a-biometric-prompt assumption `SecItemCopyMatching` itself made
-    /// when it was the thing presenting the prompt, so this doesn't change
-    /// the threading contract callers (`SSHKeyMaterializer`) already rely on.
+    /// this build can't hold an entitlement for (see the file header).
+    ///
+    /// Blocks the calling thread until the challenge resolves - so it must not
+    /// be called on the main thread. GL-25: it used to be, from
+    /// `ConsoleController.connectSSH`, which froze the entire app (every
+    /// window, every other terminal tab, the menu bar) for as long as the
+    /// captain took to answer the prompt. `SSHKeyMaterializer.materialize` is
+    /// now called from a background queue for exactly this reason; the
+    /// `dispatchPrecondition` below is what stops that from silently
+    /// regressing the next time a caller is added.
     private static func authenticate(context: LAContext) throws {
+        dispatchPrecondition(condition: .notOnQueue(.main))
         let policy: LAPolicy = biometryAvailable ? .deviceOwnerAuthenticationWithBiometrics : .deviceOwnerAuthentication
         let reason = context.localizedReason.isEmpty ? "Unlock this key" : context.localizedReason
         var authError: Error?

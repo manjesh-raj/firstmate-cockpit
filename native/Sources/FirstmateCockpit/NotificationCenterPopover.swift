@@ -253,6 +253,12 @@ private final class NotificationPanelViewController: NSViewController {
 
     private let titleLabel = NSTextField(labelWithString: "Notifications")
     private let markAllReadLabel = NSTextField(labelWithString: "Mark all read")
+    /// GL-16: the click recognizer used to sit on the label itself, which
+    /// VoiceOver reads as static text with no way to activate it. A
+    /// clear-coloured `HoverHighlightView` wrapper (visually identical - it
+    /// paints nothing) carries the recognizer instead, so this reads and
+    /// behaves as the button it always was.
+    private let markAllReadButton = HoverHighlightView()
     /// Was a bare wrapping `NSTextField` - one of the four §3.2 called out.
     /// This panel is 340pt wide, so `.compact` is the right size; the glyph and
     /// the centred copy now match every other empty list in the app.
@@ -276,9 +282,18 @@ private final class NotificationPanelViewController: NSViewController {
         markAllReadLabel.font = .systemFont(ofSize: 11, weight: .medium)
         markAllReadLabel.translatesAutoresizingMaskIntoConstraints = false
         markAllReadLabel.setContentHuggingPriority(.required, for: .horizontal)
-        markAllReadLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(markAllReadClicked)))
+        markAllReadButton.translatesAutoresizingMaskIntoConstraints = false
+        markAllReadButton.addSubview(markAllReadLabel)
+        markAllReadButton.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(markAllReadClicked)))
+        markAllReadButton.accessibilityLabelOverride = "Mark all read"
+        NSLayoutConstraint.activate([
+            markAllReadLabel.leadingAnchor.constraint(equalTo: markAllReadButton.leadingAnchor),
+            markAllReadLabel.trailingAnchor.constraint(equalTo: markAllReadButton.trailingAnchor),
+            markAllReadLabel.topAnchor.constraint(equalTo: markAllReadButton.topAnchor),
+            markAllReadLabel.bottomAnchor.constraint(equalTo: markAllReadButton.bottomAnchor),
+        ])
 
-        let headerRow = NSStackView(views: [titleLabel, markAllReadLabel])
+        let headerRow = NSStackView(views: [titleLabel, markAllReadButton])
         headerRow.orientation = .horizontal
         headerRow.distribution = .fill
         headerRow.alignment = .centerY
@@ -341,7 +356,7 @@ private final class NotificationPanelViewController: NSViewController {
         }
         let entries = GrandLineNotificationCenter.shared.entries
         emptyState.isHidden = !entries.isEmpty
-        markAllReadLabel.isHidden = !entries.contains { $0.kind == .informational }
+        markAllReadButton.isHidden = !entries.contains { $0.kind == .informational }
         for entry in entries {
             let row = Self.makeRow(for: entry, theme: theme)
             row.translatesAutoresizingMaskIntoConstraints = false

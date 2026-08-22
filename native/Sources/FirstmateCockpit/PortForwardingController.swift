@@ -119,9 +119,25 @@ final class PortForwardingController: NSViewController {
         let row = PortForwardRuleRowView(rule: rule)
         row.onRemove = { [weak self, weak row] in
             guard let self, let row else { return }
+            // GL-33: the other unconfirmed small delete the review named. The
+            // rule the row *currently* holds (not the one it was built with -
+            // the captain may have edited the fields since) is what gets
+            // restored, at the same position.
+            let restored = row.currentRule
+            let index = self.rows.firstIndex { $0 === row }
             self.rowsStack.removeArrangedSubview(row)
             row.removeFromSuperview()
             self.rows.removeAll { $0 === row }
+            Toast.showUndo(in: self.view, message: "Removed a forwarding rule") { [weak self] in
+                guard let self else { return }
+                self.addRow(for: restored)
+                // Put it back where it was rather than at the end.
+                if let index, index < self.rows.count - 1, let moved = self.rows.popLast() {
+                    self.rows.insert(moved, at: index)
+                    self.rowsStack.removeArrangedSubview(moved)
+                    self.rowsStack.insertArrangedSubview(moved, at: index)
+                }
+            }
         }
         rows.append(row)
         rowsStack.addArrangedSubview(row)

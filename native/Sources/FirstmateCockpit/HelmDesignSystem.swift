@@ -119,23 +119,24 @@ enum HelmType {
     /// name - the top bar already shows that, which is why Phase 7 removed
     /// Review's literal "Review" label rather than restyling it.
     static func pageTitle(_ voice: Voice = .sans) -> NSFont {
+        let size = scaled(22)
         switch voice {
-        case .sans: return .systemFont(ofSize: 22, weight: .semibold)
-        case .serif: return ShiftFont.serif(22)
+        case .sans: return .systemFont(ofSize: size, weight: .semibold)
+        case .serif: return ShiftFont.serif(size)
         }
     }
 
     /// A card / section header title. Was 14 / 14.5 / 15 depending on page.
-    static func sectionTitle() -> NSFont { .systemFont(ofSize: 15, weight: .semibold) }
+    static func sectionTitle() -> NSFont { .systemFont(ofSize: scaled(15), weight: .semibold) }
 
     /// The title line of a row inside a card.
-    static func rowTitle() -> NSFont { .systemFont(ofSize: 13, weight: .semibold) }
+    static func rowTitle() -> NSFont { .systemFont(ofSize: scaled(13), weight: .semibold) }
 
     /// Ordinary body copy.
-    static func body() -> NSFont { .systemFont(ofSize: 12) }
+    static func body() -> NSFont { .systemFont(ofSize: scaled(12)) }
 
     /// Supporting / secondary copy - a card subtitle, a row's detail line.
-    static func caption() -> NSFont { .systemFont(ofSize: 11.5) }
+    static func caption() -> NSFont { .systemFont(ofSize: scaled(11.5)) }
 
     /// The small uppercase label above a row's body text.
     ///
@@ -144,7 +145,11 @@ enum HelmType {
     /// kicker: Phase 3 replaced the four hand-rolled copies that each carried
     /// their own 0.6 / 0.7 / 0.9 kern, and `HelmContrastSelfTest.
     /// checkNoHandRolledKickers` fails the build on a new one.
-    static func kicker() -> NSFont { .systemFont(ofSize: 10, weight: .bold) }
+    /// GL-32's floor bump: this was 10pt, the smallest type in the app and
+    /// the one the accessibility review named first. 11 is the floor
+    /// (`minimumUIPointSize`) every scaled size in here is clamped to, so the
+    /// kicker now sits exactly on it rather than a point and a half below.
+    static func kicker() -> NSFont { .systemFont(ofSize: scaled(11), weight: .bold) }
 
     /// The tracking a kicker is set with.
     static let kickerKern: CGFloat = 0.9
@@ -157,13 +162,49 @@ enum HelmType {
     /// Text that *is* code - a saved snippet's command preview, a key
     /// fingerprint. Monospaced at `caption()`'s size, so a code line and a
     /// prose caption sit on the same baseline rhythm.
-    static func code() -> NSFont { .monospacedSystemFont(ofSize: 11.5, weight: .regular) }
+    static func code() -> NSFont { .monospacedSystemFont(ofSize: scaled(11.5), weight: .regular) }
 
     /// A number meant to be read as a measurement - a stat tile's value, a
     /// count badge. Monospaced digits so it does not reflow as it changes.
     static func metric(_ size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
-        .monospacedDigitSystemFont(ofSize: size, weight: weight)
+        .monospacedDigitSystemFont(ofSize: scaled(size), weight: weight)
     }
+
+    // MARK: Scale and floor (GL-32)
+
+    /// No UI-chrome text in this app renders below this. The accessibility
+    /// review measured 10-11.5pt captions and kickers with no way to change
+    /// them; this is the floor half of that finding, and it applies at every
+    /// scale (so it raises the *designed* sizes, not just the scaled ones).
+    static let minimumUIPointSize: CGFloat = 11
+
+    /// A designed point size, multiplied by the captain's chosen chrome scale
+    /// and floored. Every accessor above goes through it, which is what makes
+    /// `ChromeTextScale` a real setting rather than a stored number nothing
+    /// reads - and what makes the floor impossible to bypass by adding a new
+    /// role here.
+    static func scaled(_ points: CGFloat) -> CGFloat {
+        let scale = ChromeTextScale.shared.scale
+        return max(minimumUIPointSize * scale, points * scale)
+    }
+}
+
+// MARK: - HelmFocusRing
+
+/// The one shared constant behind every hand-drawn focus ring in this app
+/// (GL-16).
+///
+/// This app de-bezels almost every control (`HelmButton`, `HelmPopUpButton`,
+/// `HelmField`), and a de-bezeled control gets no focus ring from AppKit -
+/// which is why the accessibility review found that keyboard focus was
+/// invisible app-wide, with ~12 sites having additionally set
+/// `focusRingType = .none` outright. A control that can hold focus now sets
+/// `focusRingType = .exterior` and draws its own mask from its own rounded
+/// rect, insetting by this much where it clips its own layer.
+enum HelmFocusRing {
+    /// Roughly the width AppKit's own `.exterior` ring occupies outside the
+    /// mask shape.
+    static let inset: CGFloat = 3
 }
 
 // MARK: - HelmCard
@@ -604,9 +645,15 @@ final class HelmButton: NSButton {
         // No bezel to paint grey (or system blue): all chrome is this view's
         // own layer from here on.
         isBordered = false
-        // The stock default/focus rings are the other half of the system-blue
-        // look the audit measured.
-        focusRingType = .none
+        // The stock *default*-button ring is the other half of the system-blue
+        // look the audit measured, and `isBordered = false` already takes care
+        // of that (see `rebuildImage`'s note on the same mechanism). The
+        // *focus* ring is a different thing and has to stay: GL-16 measured
+        // that a keyboard user could not see where focus was anywhere in this
+        // app. `.exterior` plus `drawFocusRingMask` draws it from this
+        // button's own rounded rect rather than from the bezel it no longer
+        // has.
+        focusRingType = .exterior
         wantsLayer = true
         layer?.masksToBounds = true
         alignment = .center
@@ -861,6 +908,32 @@ final class HelmButton: NSButton {
         contentTintColor = labelColor
     }
 
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    /// Inset, not `bounds`: this control clips its own layer
+    /// (`masksToBounds = true`, for the rounded fill), and an `.exterior` ring
+    /// drawn on the bounds edge would be clipped away by that mask. Insetting
+    /// the shape by the ring's own width puts the ring's outer edge back on
+    /// the control's edge, where it reads correctly.
+    override func drawFocusRingMask() {
+        let inset = min(HelmFocusRing.inset, min(bounds.width, bounds.height) / 4)
+        let rect = bounds.insetBy(dx: inset, dy: inset)
+        let radius = max((layer?.cornerRadius ?? HelmMetrics.rControl) - inset, 1)
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+    }
+
+    /// GL-16: an icon-only button has no title for VoiceOver to read, so
+    /// AppKit falls back to the image's accessibility description - which,
+    /// before this, was the raw SF Symbol name ("arrow dot clockwise" for
+    /// Refresh). The tooltip is the string a sighted captain already gets on
+    /// hover and is the right words by construction, so it wins; the symbol
+    /// name is never announced.
+    override func accessibilityLabel() -> String? {
+        if !plainTitle.isEmpty { return plainTitle }
+        if let toolTip, !toolTip.isEmpty { return toolTip }
+        return super.accessibilityLabel()
+    }
+
     private func rebuildImage() {
         guard let symbolName else {
             image = nil
@@ -868,7 +941,11 @@ final class HelmButton: NSButton {
             return
         }
         let configuration = NSImage.SymbolConfiguration(pointSize: size.symbolPointSize, weight: .semibold)
-        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: plainTitle.isEmpty ? symbolName : plainTitle)?
+        // GL-16: never the raw symbol name - the title, else the tooltip, else
+        // nothing at all (a nil description is better than "arrow dot
+        // clockwise", and `accessibilityLabel()` above covers the real case).
+        let described = plainTitle.isEmpty ? (toolTip?.isEmpty == false ? toolTip : nil) : plainTitle
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: described)?
             .withSymbolConfiguration(configuration)
         imagePosition = plainTitle.isEmpty ? .imageOnly : .imageLeading
         // Without this the glyph is pinned to the cell's leading edge and the
@@ -916,10 +993,26 @@ final class HelmPopUpButton: NSPopUpButton {
 
     private func commonSetup() {
         isBordered = false
-        focusRingType = .none
+        // GL-16, same reasoning as `HelmButton`: the bezel goes, the focus
+        // ring stays and is drawn from this control's own rounded rect.
+        focusRingType = .exterior
         wantsLayer = true
         layer?.masksToBounds = true
         themeObservation = ThemeManager.shared.observe { [weak self] theme in self?.applyTheme(theme) }
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    /// Inset, not `bounds`: this control clips its own layer
+    /// (`masksToBounds = true`, for the rounded fill), and an `.exterior` ring
+    /// drawn on the bounds edge would be clipped away by that mask. Insetting
+    /// the shape by the ring's own width puts the ring's outer edge back on
+    /// the control's edge, where it reads correctly.
+    override func drawFocusRingMask() {
+        let inset = min(HelmFocusRing.inset, min(bounds.width, bounds.height) / 4)
+        let rect = bounds.insetBy(dx: inset, dy: inset)
+        let radius = max((layer?.cornerRadius ?? HelmMetrics.rControl) - inset, 1)
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
     }
 
     /// A popup's own title is drawn from its selected menu item, not from
@@ -1302,6 +1395,51 @@ final class HelmAccentRow: NSView {
 
     @objc private func rowClicked() { onClick?() }
 
+    // MARK: Accessibility (GL-16)
+
+    /// The row's card is a `HoverHighlightView`, but the *row* is what the
+    /// caller hands to a table and what carries the click recognizer, so the
+    /// element has to live here. A row with no `onClick` (Overview's
+    /// read-only rows, SRE Lead's transcript cards) announces as a group of
+    /// its own labels rather than pretending to be a button.
+    override func isAccessibilityElement() -> Bool { onClick != nil }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        onClick == nil ? super.accessibilityRole() : .button
+    }
+
+    /// Kicker, title, meta, chip - the row read the way it is laid out. The
+    /// kicker leads because it is the row's category ("HOST", "OVERDUE"),
+    /// which is what tells a listener what kind of thing they landed on.
+    override func accessibilityLabel() -> String? {
+        guard onClick != nil else { return super.accessibilityLabel() }
+        var parts: [String] = []
+        for piece in [content?.kicker, content?.title, content?.meta, content?.chipText] {
+            let text = (piece ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { parts.append(text) }
+        }
+        return parts.isEmpty ? super.accessibilityLabel() : parts.joined(separator: ", ")
+    }
+
+    override func accessibilityValue() -> Any? {
+        isRowSelected ? "selected" : super.accessibilityValue()
+    }
+
+    /// The trailing accessory (Connect / Edit / `...`) stays reachable - those
+    /// are real `NSButton`s with their own labels, and hiding them would make
+    /// the row's own actions unreachable. Only the text this row already read
+    /// out as its label is suppressed.
+    override func accessibilityChildren() -> [Any]? {
+        guard onClick != nil else { return super.accessibilityChildren() }
+        return trailingAccessory.map { [$0] } ?? []
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onClick else { return false }
+        onClick()
+        return true
+    }
+
     // MARK: Content
 
     func configure(_ content: Content, theme: HelmTheme) {
@@ -1460,8 +1598,11 @@ final class HelmStatTile: NSView {
     private static let insetV: CGFloat = 10
     /// The one metric size. Was 15 (Overview) / 19 (Shift) / 19 bold (Updates).
     private static let metricSize: CGFloat = 19
-    /// The caption size. Was 9.5 (Overview, Shift) / 10.5 medium (Updates).
-    private static let captionSize: CGFloat = 10.5
+    /// The caption size. Was 9.5 (Overview, Shift) / 10.5 medium (Updates),
+    /// then a single 10.5 - which GL-32's floor bump raises to 11, the same
+    /// floor `HelmType.scaled` applies everywhere else. Goes through
+    /// `HelmType.scaled` so this tile honours the chrome scale too.
+    static let captionSize: CGFloat = 11
 
     private let iconView = NSImageView()
     private let valueLabel = NSTextField(labelWithString: "")
@@ -1501,7 +1642,7 @@ final class HelmStatTile: NSView {
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
 
         captionLabel.stringValue = caption
-        captionLabel.font = .systemFont(ofSize: Self.captionSize, weight: .medium)
+        captionLabel.font = .systemFont(ofSize: HelmType.scaled(Self.captionSize), weight: .medium)
         captionLabel.lineBreakMode = .byTruncatingTail
         captionLabel.maximumNumberOfLines = 1
         captionLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1528,12 +1669,71 @@ final class HelmStatTile: NSView {
         ])
 
         addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(tileClicked)))
+        focusRingType = .exterior
         applyTheme(ThemeManager.shared.theme)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
     @objc private func tileClicked() { onClick?() }
+
+    // MARK: Accessibility and keyboard (GL-16)
+
+    /// A tile is always worth reading aloud - it is the page's headline number
+    /// - but it is only a *button* when `onClick` is set. A plain readout
+    /// announces as static text, which is what it is; that distinction is the
+    /// same one `onClick` already draws for the hover highlight.
+    override func isAccessibilityElement() -> Bool { true }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        onClick == nil ? .staticText : .button
+    }
+
+    /// Caption first, then the number: "ready to merge, 3" is the order a
+    /// captain would say it, and it means the label alone identifies the tile
+    /// in VoiceOver's element list.
+    override func accessibilityLabel() -> String? {
+        let caption = captionLabel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = valueLabel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if caption.isEmpty { return value.isEmpty ? nil : value }
+        return value.isEmpty ? caption : "\(caption), \(value)"
+    }
+
+    override func accessibilityValue() -> Any? { valueLabel.stringValue }
+    override func accessibilityChildren() -> [Any]? { [] }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onClick else { return false }
+        onClick()
+        return true
+    }
+
+    override var acceptsFirstResponder: Bool { onClick != nil }
+    override var canBecomeKeyView: Bool { onClick != nil && !isHiddenOrHasHiddenAncestor }
+
+    override func becomeFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.resignFirstResponder()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: HelmMetrics.rRow, yRadius: HelmMetrics.rRow).fill()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 49, let onClick {
+            onClick()
+            return
+        }
+        super.keyDown(with: event)
+    }
 
     /// The number. Set as often as the data changes - the tile keeps its own
     /// font and colour, so a page only ever writes the string.
@@ -1836,7 +2036,7 @@ final class HelmSegmentedTabs: NSView {
         case compact
         case standard
 
-        var labelSize: CGFloat { self == .compact ? 11.5 : 12 }
+        var labelSize: CGFloat { HelmType.scaled(self == .compact ? 11.5 : 12) }
         var pillInsetH: CGFloat { self == .compact ? HelmMetrics.s3 : 10 }
         var pillInsetV: CGFloat { self == .compact ? 5 : 6 }
         var capsuleInset: CGFloat { self == .compact ? 2 : 3 }
@@ -1902,6 +2102,17 @@ final class HelmSegmentedTabs: NSView {
                 label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -size.pillInsetV),
             ])
             container.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(pillClicked(_:))))
+            // GL-16: a segment is one-of-many, so it announces as a radio
+            // button carrying its own selected state rather than a plain
+            // button - and left/right arrows move between segments, which is
+            // what a keyboard user reaches for in a tab strip. The pill is a
+            // `HoverHighlightView`, so the press action, focus ring and label
+            // all come from that one component.
+            container.accessibilityRoleOverride = .radioButton
+            container.accessibilityLabelOverride = item.title
+            container.onKeyDown = { [weak self] event in
+                self?.handleArrowKey(event, fromID: item.id) ?? false
+            }
             pills.append(Pill(id: item.id, container: container, label: label))
             pillViews.append(container)
         }
@@ -1939,6 +2150,26 @@ final class HelmSegmentedTabs: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
+    /// Left/right (and up/down, which read the same way in a horizontal
+    /// strip) move the selection to the adjacent segment and take keyboard
+    /// focus with it, matching how `NSSegmentedControl` itself behaves.
+    private func handleArrowKey(_ event: NSEvent, fromID id: String) -> Bool {
+        let step: Int
+        switch Int(event.keyCode) {
+        case 123, 126: step = -1   // left, up
+        case 124, 125: step = 1    // right, down
+        default: return false
+        }
+        guard let index = pills.firstIndex(where: { $0.id == id }) else { return false }
+        let next = index + step
+        guard pills.indices.contains(next) else { return true }
+        let target = pills[next]
+        select(target.id)
+        onSelect?(target.id)
+        window?.makeFirstResponder(target.container)
+        return true
+    }
+
     @objc private func pillClicked(_ sender: NSClickGestureRecognizer) {
         guard let id = sender.view?.identifier?.rawValue else { return }
         // Repaint immediately, then hand the id up: a page that re-themes on
@@ -1956,6 +2187,13 @@ final class HelmSegmentedTabs: NSView {
     }
 
     var selected: String { selectedID }
+
+    /// Probe / self-test surface (GL-16): the pill views themselves, so
+    /// `AccessibilitySelfTest` can assert the role, label, value and press
+    /// behaviour of a real segment rather than a stand-in.
+    func debugPillsForAccessibilityTests() -> [HoverHighlightView] {
+        pills.map { $0.container }
+    }
 
     /// Rewrites one pill's label - for a tab carrying a live count.
     func setTitle(_ title: String, forID id: String) {
@@ -2004,6 +2242,9 @@ final class HelmSegmentedTabs: NSView {
                                                       overAnyOf: activeFills, theme: theme)
         for pill in pills {
             let isActive = pill.id == selectedID
+            // GL-16: the same place the active pill is painted is the only
+            // place that can keep its announced value honest.
+            pill.container.accessibilityValueOverride = isActive ? "selected" : "not selected"
             pill.container.normalColor = isActive ? activeWash : .clear
             pill.container.hoverColor = isActive ? activeWash : line.withAlphaComponent(0.25)
             pill.label.textColor = isActive ? activeInk : muted

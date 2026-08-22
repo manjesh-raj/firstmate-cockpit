@@ -241,7 +241,11 @@ final class UpdatesController: NSViewController {
     /// `SettingsController.themeCard`/`sessionCard` build a clickable styled
     /// card (a plain `NSView` + click gesture) rather than fighting `NSButton`
     /// for custom padding on a borderless button.
-    private let checkAllPill = NSView()
+    /// GL-16: a `HoverHighlightView` (colours left clear, so it renders
+    /// exactly as the plain `NSView` it replaced) purely to inherit that
+    /// component's accessibility press action, focus ring and Return/Space
+    /// handling - this pill is the page's primary action.
+    private let checkAllPill = HoverHighlightView()
     private let checkAllIcon = NSImageView()
     private let checkAllLabel = NSTextField(labelWithString: "Refresh")
     private let checkAllProgressBar = NSProgressIndicator()
@@ -283,6 +287,8 @@ final class UpdatesController: NSViewController {
         checkAllPill.toolTip = "Check all tools for updates"
         checkAllPill.setAccessibilityRole(.button)
         checkAllPill.setAccessibilityLabel("Refresh")
+        checkAllPill.accessibilityLabelOverride = "Refresh"
+        checkAllPill.cornerRadius = 8
         checkAllPill.addSubview(pillContent)
         NSLayoutConstraint.activate([
             pillContent.leadingAnchor.constraint(equalTo: checkAllPill.leadingAnchor, constant: 13),

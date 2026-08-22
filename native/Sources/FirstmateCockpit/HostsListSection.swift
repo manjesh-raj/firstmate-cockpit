@@ -90,7 +90,7 @@ final class HostsListSection: NSObject, NSTableViewDataSource, NSTableViewDelega
 
     let card = HelmCard()
 
-    private let table = NSTableView()
+    private let table = HelmTableView()
     private let scroll = NSScrollView()
     private var items: [Item] = []
     private var theme: HelmTheme = ThemeManager.shared.theme

@@ -76,6 +76,12 @@ final class FleetController: NSViewController {
     /// cross-page jump in this app already uses.
     var onNavigateToReview: (() -> Void)?
 
+    /// GL-31: firstmate home not being configured is a *setup* state, not a
+    /// fleet state - so Overview says so and offers the one action that fixes
+    /// it, instead of printing a raw environment-variable name as UI copy and
+    /// leaving the captain to find the Setup flyout on their own.
+    var onNavigateToSetup: (() -> Void)?
+
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 940, height: 720))
         root.wantsLayer = true
@@ -427,10 +433,10 @@ final class FleetController: NSViewController {
         df.setLocalizedDateFormatFromTemplate("EEEE")
         subtitleLabel.stringValue = snapshot.homeOk
             ? "\(df.string(from: Date())) \u{00B7} the fleet is yours"
-            : "firstmate home not found at \(FirstmateHome.root.path) - set FM_HOME"
+            : "Setup isn't finished yet"
 
         renderBanner(needs: needs, working: working, readyCount: mergedPRs?.count ?? 0,
-                     prFetchFailure: prFetchFailure)
+                     prFetchFailure: prFetchFailure, homeOk: snapshot.homeOk)
         rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot,
                      prFetchFailure: prFetchFailure)
         rebuildTaskRows(into: inFlightStack, tasks: working, emptyTitle: "All hands idle", emptyBody: "No crew are working right now. Send your first mate a task from the console and this board lights up.")
@@ -456,8 +462,24 @@ final class FleetController: NSViewController {
     /// the round badge and the uppercase kicker come from the component now
     /// rather than being absent.
     private func renderBanner(needs: [FleetTask], working: [FleetTask], readyCount: Int,
-                              prFetchFailure: String? = nil) {
+                              prFetchFailure: String? = nil, homeOk: Bool = true) {
         let content: HelmAccentRow.Content
+        // GL-31: with no firstmate home resolved there is no fleet to report
+        // on, and every number below it is zero for a reason that has nothing
+        // to do with the fleet. Say the real thing, and make it actionable.
+        if !homeOk {
+            content = HelmAccentRow.Content(
+                tint: .info,
+                kicker: "Finish setup",
+                title: "Point Manjesh Grand Line at your firstmate home",
+                meta: "Nothing was found at \(FirstmateHome.root.path). Open Setup to choose the directory firstmate keeps its projects, backlog and crew state in.",
+                badgeSymbol: "wrench.and.screwdriver.fill",
+                chipText: "Open Setup")
+            bannerRow.configure(content, theme: theme)
+            bannerRow.onClick = { [weak self] in self?.onNavigateToSetup?() }
+            return
+        }
+        bannerRow.onClick = nil
         if needs.isEmpty {
             // GL-14: an "all clear" banner must not assert something this
             // refresh could not actually verify. With a failed PR scan the

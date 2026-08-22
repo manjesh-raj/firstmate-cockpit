@@ -36,6 +36,8 @@ import AppKit
 
 final class AppShellController: NSViewController {
 
+    private var chromeTextScaleObservation: ChromeTextScaleObservation?
+
     let rail = IconRailController()
     let topBar = TopBarController()
     private let hostsPanel: HostsController
@@ -177,6 +179,18 @@ final class AppShellController: NSViewController {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1220, height: 720))
         view = root
 
+        // GL-32: one place turns a chrome-text-scale change into the app-wide
+        // repaint every page already knows how to do. See
+        // `ThemeManager.reapplyCurrentTheme`'s own note on why this rides the
+        // theme observer rather than adding a second fan-out of its own. The
+        // token is discarded deliberately - this controller is the window's
+        // root and lives for the process.
+        chromeTextScaleObservation = ChromeTextScale.shared.observe { [weak self] _ in
+            guard let self, self.isViewLoaded else { return }
+            ThemeManager.shared.reapplyCurrentTheme()
+            self.view.layoutSubtreeIfNeeded()
+        }
+
         addChild(rail)
         root.addSubview(rail.view)
         rail.view.translatesAutoresizingMaskIntoConstraints = false
@@ -314,6 +328,9 @@ final class AppShellController: NSViewController {
         // itemized "Ready to merge" list was removed as a duplicate of
         // `.review`'s - the stat tile that's left jumps straight there.
         overview.onNavigateToReview = { [weak self] in self?.show(.review) }
+        // GL-31: Overview's unconfigured banner leads straight into the
+        // Bootstrap stepper, which is where firstmate home is actually set.
+        overview.onNavigateToSetup = { [weak self] in self?.show(.bootstrap) }
         // cockpit-settings-sudo-touchid: Settings' "Touch ID for sudo" row
         // runs `sudo av harden sudo`, which needs a real interactive `sudo`
         // prompt exactly like Bootstrap's provisioning actions - same
@@ -381,7 +398,21 @@ final class AppShellController: NSViewController {
         overview.refreshIfNeeded()
         review.refreshIfNeeded()
 
-        show(.console)
+        // GL-31: a machine with no firstmate home resolved lands on Setup, not
+        // on a Console tab in front of an Overview that can only report
+        // zeroes. `FirstmateHome.root` is resolved once at launch, so this is
+        // a one-time decision and cannot flap.
+        //
+        // Deliberately only this one condition: the app is genuinely usable
+        // with no saved hosts, no Shift data and no Vault password beyond the
+        // lock screen's own, so none of those should redirect a captain who
+        // knows where they were going.
+        if FirstmateHome.homeOk() {
+            show(.console)
+        } else {
+            AppLog.lifecycle.info("firstmate home not configured - opening Setup instead of the console")
+            show(.bootstrap)
+        }
 
         // Added last (and therefore topmost in z-order) so it covers the
         // rail as well as the body area - no fleet/secrets/hosts content, or

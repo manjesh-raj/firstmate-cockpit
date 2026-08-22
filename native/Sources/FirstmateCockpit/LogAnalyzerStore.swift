@@ -98,8 +98,28 @@ final class LogAnalyzerStore {
         var relativeTime: String { LogAnalyzerStore.relativeTime(from: createdAt) }
     }
 
+    /// GL-35: memoised `history()`.
+    ///
+    /// Building it stats and YAML-parses one folder per saved investigation,
+    /// and the Log Analyzer page calls it on every render (the history rail)
+    /// *and* from `directory(forID:)` on every save/delete - so the walk grew
+    /// with the archive and was repaid several times per interaction.
+    /// Invalidated by this store's own writes; a page that wants to see an
+    /// external change calls `invalidateHistoryCache()` (its refresh path
+    /// does).
+    private var historyCache: [HistoryEntry]?
+
+    func invalidateHistoryCache() { historyCache = nil }
+
     /// Every saved investigation, newest first.
     func history() -> [HistoryEntry] {
+        if let historyCache { return historyCache }
+        let entries = scanHistory()
+        historyCache = entries
+        return entries
+    }
+
+    private func scanHistory() -> [HistoryEntry] {
         guard let years = try? fm.contentsOfDirectory(at: investigationsDir,
                                                       includingPropertiesForKeys: [.isDirectoryKey],
                                                       options: [.skipsHiddenFiles]) else { return [] }
@@ -124,6 +144,7 @@ final class LogAnalyzerStore {
     /// `.doNotSave`.
     @discardableResult
     func save(_ investigation: LogInvestigation) -> URL? {
+        defer { invalidateHistoryCache() }
         // A previously-saved copy is always removed first, so changing the
         // storage choice downward genuinely deletes content rather than
         // leaving `analysis.md`/`evidence/` orphaned next to a now-metadata-
@@ -167,6 +188,7 @@ final class LogAnalyzerStore {
     func delete(id: String) {
         guard let dir = directory(forID: id) else { return }
         try? fm.removeItem(at: dir)
+        invalidateHistoryCache()
         gitSync?.markDirty()
     }
 
@@ -306,7 +328,35 @@ final class LogAnalyzerStore {
     /// its original folder, so a title-derived path would miss it and leave
     /// a duplicate behind.
     private func directory(forID id: String) -> URL? {
-        history().first { $0.id == id }?.directory
+        if let known = history().first(where: { $0.id == id })?.directory { return known }
+        // GL-35: a folder whose `investigation.yaml` no longer parses is
+        // invisible to `history()`, which used to make it both undeletable
+        // *and* invisible to `save`'s "remove the previous copy first" step -
+        // so re-saving that investigation silently left a duplicate folder
+        // behind and the corrupt one on disk forever. Fall back to a raw
+        // scan matching the id in the file's own bytes, which needs no
+        // successful parse.
+        return rawDirectoryContainingID(id)
+    }
+
+    private func rawDirectoryContainingID(_ id: String) -> URL? {
+        guard let years = try? fm.contentsOfDirectory(at: investigationsDir,
+                                                     includingPropertiesForKeys: [.isDirectoryKey],
+                                                     options: [.skipsHiddenFiles]) else { return nil }
+        for year in years {
+            guard let folders = try? fm.contentsOfDirectory(at: year,
+                                                            includingPropertiesForKeys: [.isDirectoryKey],
+                                                            options: [.skipsHiddenFiles]) else { continue }
+            for folder in folders {
+                let yaml = folder.appendingPathComponent("investigation.yaml")
+                guard let text = try? String(contentsOf: yaml, encoding: .utf8) else { continue }
+                // The id is written as its own `id: "<uuid>"` line, so a plain
+                // containment check is unambiguous for a UUID-shaped id and
+                // needs no parser.
+                if text.contains(id) { return folder }
+            }
+        }
+        return nil
     }
 
     private func newDirectory(for investigation: LogInvestigation) -> URL {
