@@ -179,6 +179,23 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// Phase 3 of "Knowledge and speed" (`fm/grandline-console-command-
     /// composer`) - only ever shown for a plain `.shell` tab that isn't a
     /// one-shot command, see `updateComposeControls`.
+    /// `fm/grandline-log-analyzer-build`, spec §2's "Send from Terminal":
+    /// captures this tab's most recent completed command (or the captain's
+    /// current selection) and hands it to the Log Analyzer. A peer of SRE
+    /// Lead and Compose in the same toolbar cluster, and - like SRE Lead -
+    /// a dedicated-host-page affordance only (`!isFirstmateConsole`): the
+    /// shared Firstmate console's Mirror/Shell pair is this app's own
+    /// session, not infrastructure output an investigation would be built
+    /// from. See `LogAnalyzerCapture.swift` for exactly what gets captured
+    /// and what happens on a host without per-command block tracking.
+    private var analyzeLogsButton: HelmButton?
+
+    /// Fired by "Analyze Logs" with an already-built capture plus this
+    /// tab's label. Forwarded (never handled here) exactly like every other
+    /// cross-destination action this controller exposes - the console knows
+    /// nothing about the Log Analyzer destination.
+    var onAnalyzeLogs: ((LogTerminalCapture, String) -> Void)?
+
     private var composeButton: HelmButton!
     private let composer = ConsoleComposerController()
     /// `fm/grandline-herdr-utilization-panel` - only ever shown for a
@@ -444,6 +461,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // (`updateUtilizationControls` - the two are never both visible on
         // the same tab), stays in its original trailing position.
         toolViews.append(composeButton)
+        // Analyze Logs sits immediately after Compose, so the three
+        // investigation-shaped features (SRE Lead, Compose, Analyze Logs)
+        // read as one cluster - the placement the captain asked for.
+        if !isFirstmateConsole {
+            let button = makeLabeledButton(symbol: "text.magnifyingglass", title: "Analyze Logs",
+                                           tooltip: "Send this tab's last command output to the Log Analyzer. "
+                                               + "Select text in the terminal first to send that instead.",
+                                           action: #selector(analyzeLogsTapped))
+            analyzeLogsButton = button
+            toolViews.append(button)
+        }
         toolViews += [findButton, zoomOutButton, zoomInButton, themeButton]
         if !isFirstmateConsole {
             toolViews += [blockViewToggleButton, blockViewRefreshButton]
@@ -1658,6 +1686,43 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         blockViewShowing.toggle()
         if let tab = currentTab { updateTabViewVisibility(tab) }
         updateBlockViewControls()
+    }
+
+    // MARK: Log Analyzer bridge (`fm/grandline-log-analyzer-build`, spec §2)
+
+    /// Gathers this tab's three capture inputs and hands the decision to
+    /// `LogTerminalCaptureBuilder` (which is pure logic, so every branch is
+    /// covered by `LogAnalyzerSelfTest` without a terminal).
+    ///
+    /// **What is deliberately NOT sent:** the full scrollback. A tab holds
+    /// 10,000 lines (`makeTerminal`'s `changeScrollback`) and almost none of
+    /// it belongs to the command being investigated. Nor is it the visible
+    /// viewport - that silently drops output that scrolled past. See
+    /// `LogAnalyzerCapture.swift`'s header for the full reasoning and for
+    /// what happens on a host without per-command block tracking.
+    @objc private func analyzeLogsTapped() {
+        guard let tab = currentTab else {
+            Toast.show(in: view, message: "No tab to capture from")
+            return
+        }
+        let capture = buildLogCapture(for: tab)
+        guard !capture.isEmpty else {
+            Toast.show(in: view, message: "This tab has no output to analyze yet")
+            return
+        }
+        onAnalyzeLogs?(capture, tab.name)
+    }
+
+    /// Split out of the action so the capture can be built (and inspected)
+    /// without firing the callback.
+    func buildLogCapture(for tab: TabModel) -> LogTerminalCapture {
+        let selection = tab.terminal.selectionActive ? tab.terminal.getSelection() : nil
+        let blocks = tab.blockTracker?.blocks ?? []
+        let bufferLines = tab.terminal.terminal.map { TerminalBlockTracker.bufferLines($0) } ?? []
+        return LogTerminalCaptureBuilder.build(selection: selection,
+                                               blocks: blocks,
+                                               bufferLines: bufferLines,
+                                               hasBlockTracking: tab.blockTracker != nil)
     }
 
     /// Stage 0's one interactive action on the block view: re-parse
