@@ -53,22 +53,11 @@ import AppKit
 /// established reuse shape.
 private final class ReviewPRRowCellView: NSView {
     private let accentRow: HelmAccentRow
-    // A compact status indicator sitting immediately to the left of the
-    // Review/Merge buttons, per captain request (#221/#226/#227/#228
-    // follow-up) - additive to the existing status pill under the title,
-    // not a replacement for it. Reuses the exact same shared component and
-    // sizing `HelmAccentRow`'s own leading badge uses (`IconTileView` at
-    // `HelmMetrics.tileSmall`, circular via `cornerRadius: tileSmall / 2`) -
-    // the same "colored circular icon badge" the Vault destination's
-    // secret/tool rows already show next to their own trailing action
-    // buttons (`VaultController.secretRowActions`/`toolRowView`, both of
-    // which get this look for free from `HelmAccentRow`'s badge slot).
-    private let statusBadge = IconTileView(size: HelmMetrics.tileSmall, cornerRadius: HelmMetrics.tileSmall / 2)
     private let reviewButton = HelmButton(title: "Review", variant: .secondary, size: .small)
     private let mergeButton = HelmButton(title: "Merge", variant: .primary, size: .small)
 
     override init(frame frameRect: NSRect) {
-        let actionsRow = NSStackView(views: [statusBadge, reviewButton, mergeButton])
+        let actionsRow = NSStackView(views: [reviewButton, mergeButton])
         actionsRow.orientation = .horizontal
         actionsRow.alignment = .centerY
         actionsRow.spacing = 6
@@ -93,10 +82,6 @@ private final class ReviewPRRowCellView: NSView {
         // which is the actual site of the regression: `reviewButton`
         // stretching to fill the row while `mergeButton` (though genuinely
         // `isHidden = false`) gets squeezed to unusably little space.
-        // `statusBadge` (an `IconTileView`) already carries required
-        // hugging/compression resistance from its own `init` (fixed
-        // 26x26pt), so it needs no extra hugging call here - only the two
-        // buttons do, same as before this indicator was added.
         actionsRow.distribution = .fill
         actionsRow.setHuggingPriority(.required, for: .horizontal)
         actionsRow.setClippingResistancePriority(.required, for: .horizontal)
@@ -105,7 +90,19 @@ private final class ReviewPRRowCellView: NSView {
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
 
-        accentRow = HelmAccentRow(chipPlacement: .belowBody, trailingAccessory: actionsRow, hover: false)
+        // Status pill moved from under the title (`.belowBody`) into the
+        // row's own trailing area (`.trailing`) per captain follow-up on
+        // #229's icon-only badge: the text pill already carries the status
+        // (colour + label, e.g. "Ready to merge"/"No checks"/"Checks
+        // running") and duplicating that as a separate icon-only badge next
+        // to it added nothing - so #229's `statusBadge` (`IconTileView`) is
+        // gone outright rather than kept alongside the pill. `HelmAccentRow`
+        // already places a `.trailing` chip immediately before
+        // `trailingAccessory` in the same horizontal row (`buildLayout`'s
+        // `rowViews` order: text column, chip, trailingAccessory) - which is
+        // exactly the "status pill, then Review, then Merge" left-to-right
+        // order this task asked for, so no new layout code was needed here.
+        accentRow = HelmAccentRow(chipPlacement: .trailing, trailingAccessory: actionsRow, hover: false)
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         accentRow.translatesAutoresizingMaskIntoConstraints = false
@@ -165,27 +162,6 @@ private final class ReviewPRRowCellView: NSView {
             badgeSymbol: "arrow.triangle.pull",
             chipText: visuals.chipLabel
         ), theme: theme)
-
-        // Same tint the pill/chip already use for this PR's checks state -
-        // the badge is just that same color/meaning read as a compact icon
-        // instead of text, positioned beside the actions rather than under
-        // the title. `pointSize: 11` matches `HelmAccentRow`'s own badge
-        // glyph size (`HelmDesignSystem.swift`'s `configure`).
-        statusBadge.configure(symbol: Self.statusIcon(for: visuals.tint), tint: visuals.tint, pointSize: 11)
-        statusBadge.applyTheme(theme)
-    }
-
-    /// Maps a checks-state tint to the icon this app already uses for that
-    /// same semantic meaning elsewhere (`FleetController.taskVisuals`'s
-    /// "done"/"working"/"blocked" glyphs) rather than inventing new
-    /// iconography for this one row.
-    private static func statusIcon(for tint: HelmTint) -> String {
-        switch tint {
-        case .good: return "checkmark.circle.fill"
-        case .warn: return "clock.fill"
-        case .critical: return "xmark.octagon.fill"
-        default: return "minus.circle.fill"
-        }
     }
 
     // MARK: Probe / self-test surface
@@ -196,7 +172,6 @@ private final class ReviewPRRowCellView: NSView {
     var debugReviewButtonFrame: NSRect { reviewButton.frame }
     var debugMergeButtonFrame: NSRect { mergeButton.frame }
     var debugMergeButtonHidden: Bool { mergeButton.isHidden }
-    var debugStatusBadgeFrame: NSRect { statusBadge.frame }
 }
 
 /// The demand-driven replacement for a plain `NSStackView` of `HelmAccentRow`
