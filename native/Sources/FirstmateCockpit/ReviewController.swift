@@ -521,8 +521,20 @@ final class ReviewController: NSViewController {
         let reviewButton = HelmButton(title: "Review", variant: .secondary, size: .small, target: self, action: #selector(reviewPR(_:)))
         reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
 
+        // Merge only ever shows for a PR that is both (a) genuinely ready -
+        // `checks == "green"`, the same definition `rebuildStats`'s "ready to
+        // merge" tile already uses, so a PR with checks still running or
+        // failing never gets a Merge button, just its status chip - and (b)
+        // actually mergeable through this action at all: `fm-pr-merge.sh`
+        // takes `<task-id> <pr-url>` and validates the task id, so a PR the
+        // forge scan found with no tracked task behind it (`pr.taskID ==
+        // nil`) has no working merge path here regardless of its checks
+        // state. Before this fix the gate was only (b) - a task-tracked PR
+        // showed Merge even while its checks were still pending, which is
+        // the "checks running but Merge is offered anyway" bug this page's
+        // redesign didn't catch since it never combined the two.
         var trailing: [NSView] = [reviewButton]
-        if pr.source == "work", let taskID = pr.taskID {
+        if pr.checks == "green", let taskID = pr.taskID {
             let mergeButton = HelmButton(title: "Merge", variant: .primary, size: .small, target: self, action: #selector(mergePR(_:)))
             mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
             trailing.append(mergeButton)
