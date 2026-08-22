@@ -230,6 +230,20 @@ enum MirrorResolveRaceSelfTest {
         // currently active.
         guard let mirrorTab = controller.debugAllTabIDs().first else { return "no tabs created" }
         controller.debugSelectTab(mirrorTab)
+
+        // GL-12: resolution moved off the launch path, so the pair is frozen a
+        // moment later than it used to be - on the main queue, once the three
+        // subprocess calls answer. The invariant this suite exists to protect is
+        // unchanged (one call, both values, frozen before the tab's process ever
+        // starts); only the timing moved. Pump the main run loop until it lands.
+        let deadline = Date().addingTimeInterval(20)
+        while controller.debugIsAwaitingMirrorResolution(mirrorTab), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        if controller.debugIsAwaitingMirrorResolution(mirrorTab) {
+            return "the mirror tab never finished resolving its backend"
+        }
+
         guard let launch = controller.debugMirrorLaunch() else { return "current tab is not a .mirror launch" }
         guard launch.kind == .herdr else { return "expected the frozen kind to be .herdr, got \(launch.kind)" }
         guard launch.target == "default" else { return "expected the frozen target to be 'default', got \(launch.target)" }

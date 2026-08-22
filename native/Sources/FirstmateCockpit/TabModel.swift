@@ -114,7 +114,27 @@ final class TabModel {
     var name: String
 
     /// How to (re)start this tab. Duplicate copies it verbatim; reconnect re-runs it.
-    let launch: TabLaunch
+    ///
+    /// GL-12 made this `var` for exactly one narrow purpose: the Firstmate
+    /// mirror tab is created before its backend has been resolved (resolving it
+    /// is three subprocess calls, and doing them synchronously put up to ~9s of
+    /// beachball in front of the launch path), so its launch spec is written
+    /// once when `FirstmateBackend.resolveMirrorTargetAsync` answers - *before*
+    /// the tab's process has ever started. After that it is frozen exactly as
+    /// `TabLaunch.mirror`'s doc comment requires: every restart replays this
+    /// stored pair and never re-resolves. Nothing else reassigns it.
+    var launch: TabLaunch
+
+    /// GL-12: true between "the mirror tab exists" and "its backend has been
+    /// resolved". `startTab` refuses to start a tab in this state (there is no
+    /// real target to attach to yet) and shows a placeholder line instead; the
+    /// resolution's completion starts it.
+    var isAwaitingMirrorResolution = false
+
+    /// Set once the captain renames a tab, so a name this app derived (the
+    /// mirror tab's "Mirror"/"Herdr", which is only known after resolution)
+    /// never overwrites one they chose.
+    var hasUserChosenName = false
 
     /// This tab's terminal. Always a paste-hardening `CockpitTerminalView` so the
     /// screenshot-paste-into-Claude flow works on every tab.

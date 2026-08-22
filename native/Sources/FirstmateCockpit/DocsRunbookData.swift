@@ -324,40 +324,19 @@ final class DocsRunbookGitSync {
         return result.stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    // MARK: Process plumbing (same shape as ShiftGitSync.runGit - see that
-    // file's own doc comment on the authenticated-header mechanism)
+    // MARK: Process plumbing
 
-    private struct GitResult { let status: Int32; let stdout: String; let stderr: String }
+    // GL-15: one shared runner and one copy of the git token injection - see
+    // `Subprocess.gitAuthEnvironment`. Bounded, for the same reason
+    // `ShiftGitSync` is: this class shares that class's working tree and serial
+    // queue, so an unbounded fetch here parks both.
+
+    private typealias GitResult = SubprocessResult
 
     private func runGit(_ args: [String], cwd: URL?, authenticated: Bool) -> GitResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        if let cwd { proc.currentDirectoryURL = cwd }
-        var env = childEnvironmentDict()
-        if authenticated, remoteURL.hasPrefix("https://"), let token = DocsSyncSource.ghAuthToken() {
-            let basic = Data("x-access-token:\(token)".utf8).base64EncodedString()
-            env["GIT_CONFIG_COUNT"] = "1"
-            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-            env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic \(basic)"
-        }
-        proc.environment = env
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return GitResult(status: -1, stdout: "", stderr: "\(error)")
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return GitResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.git(args, cwd: cwd,
+                       authenticateFor: authenticated ? remoteURL : nil,
+                       timeout: 600)
     }
 }
 
@@ -419,14 +398,14 @@ final class DocsRunbookStore {
             n += 1
         }
         let url = root.appendingPathComponent("\(slug).md")
-        try? content.write(to: url, atomically: true, encoding: .utf8)
+        persist(what: "runbook \"\(title)\"", to: url, content: content)
         gitSync?.markDirty()
         return DocsRunbook(id: slug, title: Self.titleFromContent(content, fallback: slug), content: content, modifiedAt: Date())
     }
 
     func updateRunbook(id: String, content: String) {
         let url = root.appendingPathComponent("\(id).md")
-        try? content.write(to: url, atomically: true, encoding: .utf8)
+        persist(what: "runbook \"\(id)\"", to: url, content: content)
         gitSync?.markDirty()
     }
 
@@ -445,9 +424,8 @@ final class DocsRunbookStore {
             slug = "\(base)-\(n)"
             n += 1
         }
-        try? fm.createDirectory(at: postmortemsRoot, withIntermediateDirectories: true)
         let url = postmortemsRoot.appendingPathComponent("\(slug).md")
-        try? content.write(to: url, atomically: true, encoding: .utf8)
+        persist(what: "postmortem \"\(title)\"", to: url, content: content)
         gitSync?.markDirty()
         return DocsRunbook(id: slug, title: Self.titleFromContent(content, fallback: slug), content: content, modifiedAt: Date())
     }
@@ -456,6 +434,19 @@ final class DocsRunbookStore {
         let url = root.appendingPathComponent("\(id).md")
         try? fm.removeItem(at: url)
         gitSync?.markDirty()
+    }
+
+    /// GL-10: markdown writes used to be `try?`, so a runbook the editor
+    /// reported as saved could simply not exist. `AtomicWrite` also creates the
+    /// `postmortems/` directory, which is why the separate `createDirectory`
+    /// call above is gone rather than merely converted.
+    private func persist(what: String, to url: URL, content: String) {
+        do {
+            try AtomicWrite.text(content, to: url)
+            PersistenceFailureReporter.reportSuccess()
+        } catch {
+            PersistenceFailureReporter.report(what: what, path: url.path, error: error)
+        }
     }
 
     // MARK: Title/slug helpers

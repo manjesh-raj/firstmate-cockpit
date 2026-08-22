@@ -200,37 +200,15 @@ enum DocsSyncSource {
     /// verbatim for its own Contents API calls rather than inventing a second
     /// `gh auth token` shell-out.
     static func ghAuthToken() -> String? {
-        guard let ghPath = {
-            let fm = FileManager.default
-            if let path = ProcessInfo.processInfo.environment["PATH"] {
-                for dir in path.split(separator: ":") {
-                    let candidate = "\(dir)/gh"
-                    if fm.isExecutableFile(atPath: candidate) { return candidate }
-                }
-            }
-            for candidate in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-            return nil
-        }() else { return nil }
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: ghPath)
-        proc.arguments = ["auth", "token"]
-        proc.environment = childEnvironmentDict()
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-        } catch {
-            return nil
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        let token = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (token?.isEmpty ?? true) ? nil : token
+        // `gh auth token` is a local keychain read; a bound this tight is
+        // still generous, and it matters because this is called before every
+        // authenticated git and API call in the app (GL-15 put the token
+        // injection itself in `Subprocess.gitAuthEnvironment`, which calls
+        // this).
+        let result = Subprocess.run(tool: "gh", arguments: ["auth", "token"],
+                                    timeout: 15, stderr: .discard, log: AppLog.keychain)
+        guard result.ok, !result.stdout.isEmpty else { return nil }
+        return result.stdout
     }
 
     private static func applyAuth(to request: inout URLRequest) {

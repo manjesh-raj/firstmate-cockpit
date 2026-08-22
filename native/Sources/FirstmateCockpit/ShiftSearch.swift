@@ -150,6 +150,14 @@ final class ShiftSearchController: NSWindowController, NSTextFieldDelegate {
     /// Centers the palette near the top of the main window, Spotlight-style,
     /// and focuses the search field so typing works immediately.
     func present() {
+        // GL-09: this palette is a `.floating` `NSPanel`, so it renders above
+        // the lock overlay (which only covers the main window's own view tree)
+        // and its results disclose real task/runbook titles. A locked app does
+        // not open it.
+        guard AppLockGate.shared.allows(.quickCapture) else {
+            AppLog.lifecycle.info("search palette refused - app is locked (GL-09)")
+            return
+        }
         guard let window else { return }
         searchField.stringValue = ""
         reload(query: "")

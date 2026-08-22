@@ -102,6 +102,15 @@ final class ShiftQuickCaptureController: NSWindowController, NSTextFieldDelegate
     private var dividerRef: NSView?
 
     func present() {
+        // GL-09: ⌥Space is a *global* hotkey - it fires while another app is
+        // frontmost, which is exactly why it kept working over the lock screen.
+        // A locked app must not open a capture field, and must certainly not
+        // accept the write behind it.
+        guard AppLockGate.shared.allows(.quickCapture) else {
+            AppLog.lifecycle.info("quick capture refused - app is locked (GL-09)")
+            NSSound.beep()
+            return
+        }
         guard let window else { return }
         inputField.stringValue = ""
         hintLabel.isHidden = false

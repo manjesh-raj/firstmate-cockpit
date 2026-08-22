@@ -109,6 +109,9 @@ final class BackgroundSignalsPoller {
     /// 15-minute interval elapses) and then on the fixed cadence.
     func start() {
         guard timer == nil else { return }
+        // F1: declare the row before the first pass, so the Health card shows
+        // "Not run yet" rather than omitting a service that exists.
+        ServiceHealthRegistry.shared.register(.backgroundSignals)
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.checkNow() }
         let t = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in self?.checkNow() }
         t.tolerance = 30
@@ -128,11 +131,21 @@ final class BackgroundSignalsPoller {
             guard let started = passStartedAt,
                   Date().timeIntervalSince(started) > passWatchdog else { return }
             supersededPassCount += 1
-            NSLog("[cockpit] background signals: pass started \(Int(Date().timeIntervalSince(started)))s ago has not finished - "
-                + "starting a new one anyway (GL-03 watchdog, \(supersededPassCount) so far this session).")
+            let age = Int(Date().timeIntervalSince(started))
+            AppLog.poller.error("""
+                background signals: pass started \(age)s ago has not finished - starting a new one \
+                anyway (GL-03 watchdog, \(self.supersededPassCount) so far this session).
+                """)
+            // A superseded pass is exactly the invisible failure F1 exists to
+            // surface: something in the check path is hanging, and until now
+            // nothing anywhere said so.
+            ServiceHealthRegistry.shared.recordFailure(
+                .backgroundSignals,
+                "A check pass has been running for \(age)s without finishing (watchdog fired \(supersededPassCount)x).")
         }
         isChecking = true
         passStartedAt = Date()
+        ServiceHealthRegistry.shared.markRunning(.backgroundSignals)
         currentPassID += 1
         let passID = currentPassID
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -150,6 +163,7 @@ final class BackgroundSignalsPoller {
                 // Every completed pass counts as a real completion for
                 // diagnostics, even a superseded one - it did finish.
                 self.lastCompletedPassAt = Date()
+                ServiceHealthRegistry.shared.recordSuccess(.backgroundSignals)
                 // ...but only the pass that still owns the latch may release
                 // it. See `currentPassID`.
                 guard passID == self.currentPassID else { return }

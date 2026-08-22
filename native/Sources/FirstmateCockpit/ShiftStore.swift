@@ -85,15 +85,63 @@ final class ShiftStore {
     @discardableResult
     private func writeListGuarded(path: String, key: String, items: [Yaml]) -> Bool {
         guard !loadFailurePaths.contains(path) else {
-            NSLog("[cockpit] Shift: refusing to write \(path) - its last read failed to parse (GL-01). Fix or remove the file, then reload.")
+            AppLog.store.error("""
+                Shift: refusing to write \(path, privacy: .public) - its last read failed to \
+                parse (GL-01). Fix or remove the file, then reload.
+                """)
             return false
         }
         do {
             try ShiftYaml.writeList(path: path, key: key, items: items)
+            PersistenceFailureReporter.reportSuccess()
             return true
         } catch {
-            NSLog("[cockpit] Shift: failed to write \(path): \(error.localizedDescription)")
+            // GL-10: a failed write used to be a bare NSLog nobody would ever
+            // read. It now reaches the Health card and the Notification Center,
+            // because the alternative is a UI that confirms a save which never
+            // landed and data that is simply gone at next launch.
+            PersistenceFailureReporter.report(what: shortName(of: path), path: path, error: error)
             return false
+        }
+    }
+
+    /// The mapping-file equivalent of `writeListGuarded` - same refuse-if-
+    /// unreadable rule (GL-01), same failure reporting (GL-10). Before this,
+    /// `settings.yaml` was written with a bare `try?` in two places.
+    @discardableResult
+    private func writeMappingGuarded(path: String, doc: Yaml) -> Bool {
+        guard !loadFailurePaths.contains(path) else {
+            AppLog.store.error("""
+                Shift: refusing to write \(path, privacy: .public) - its last read failed to \
+                parse (GL-01). Fix or remove the file, then reload.
+                """)
+            return false
+        }
+        do {
+            try ShiftYaml.writeMapping(path: path, doc: doc)
+            PersistenceFailureReporter.reportSuccess()
+            return true
+        } catch {
+            PersistenceFailureReporter.report(what: shortName(of: path), path: path, error: error)
+            return false
+        }
+    }
+
+    /// "task list", "follow-ups", "settings" - what the captain would call the
+    /// thing that failed to save, rather than an absolute path they have never
+    /// seen. The Notification Center subtext is the reason this exists.
+    private func shortName(of path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        switch name {
+        case "active.yaml": return "task list"
+        case "follow-ups.yaml": return "follow-ups"
+        case "projects.yaml": return "projects"
+        case "settings.yaml": return "Tasks settings"
+        case "notes.yaml": return "notes"
+        default:
+            return name.hasSuffix(".yaml") && path.contains("/activity/")
+                ? "activity log"
+                : (name.hasSuffix(".yaml") && path.contains("/completed/") ? "completed tasks" : name)
         }
     }
 
@@ -191,7 +239,7 @@ final class ShiftStore {
             // Genuine first run - write the scaffold, as before.
             noteLoadOK(settingsPath)
             settings = ShiftSettings()
-            try? ShiftYaml.writeMapping(path: settingsPath, doc: ShiftYaml.toYaml(settings))
+            writeMappingGuarded(path: settingsPath, doc: ShiftYaml.toYaml(settings))
         case .parseFailed:
             // GL-01: do NOT overwrite a settings file we could not read.
             noteLoadFailure(settingsPath)
@@ -477,8 +525,17 @@ final class ShiftStore {
     /// `ShiftImageAttachmentWell.normalizedPNGData`; this method just writes
     /// whatever bytes it's given.
     private func writeAttachment(_ data: Data, taskID: String) {
-        try? FileManager.default.createDirectory(at: attachmentsDir, withIntermediateDirectories: true)
-        try? data.write(to: attachmentURL(forTaskID: taskID), options: .atomic)
+        let url = attachmentURL(forTaskID: taskID)
+        do {
+            try AtomicWrite.data(data, to: url)
+            PersistenceFailureReporter.reportSuccess()
+        } catch {
+            // GL-10: silently losing an attachment while keeping
+            // `hasAttachment == true` on the task leaves the model and the disk
+            // disagreeing - the row shows a paperclip for a file that is not
+            // there.
+            PersistenceFailureReporter.report(what: "task attachment", path: url.path, error: error)
+        }
     }
 
     /// Deletes a task's attachment file, if any - a no-op if there isn't
@@ -517,7 +574,7 @@ final class ShiftStore {
         // store owns is unreadable - that is the path by which a local wipe
         // became a pushed wipe.
         guard !isInFailedLoadState else {
-            NSLog("[cockpit] Shift: skipping git sync - \(loadFailurePaths.count) file(s) failed to parse (GL-01).")
+            AppLog.store.error("Tasks: skipping git sync - \(self.loadFailurePaths.count) file(s) failed to parse (GL-01).")
             return
         }
         gitSync?.markDirty()
@@ -687,9 +744,9 @@ final class ShiftStore {
                 projectID: project.id, notes: nil
             ),
         ]
-        try? ShiftYaml.writeList(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
+        writeListGuarded(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
 
         settings = ShiftSettings()
-        try? ShiftYaml.writeMapping(path: settingsPath, doc: ShiftYaml.toYaml(settings))
+        writeMappingGuarded(path: settingsPath, doc: ShiftYaml.toYaml(settings))
     }
 }

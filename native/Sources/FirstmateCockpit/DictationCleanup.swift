@@ -93,79 +93,28 @@ enum DictationCleanup {
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: claude)
-        proc.arguments = ["-p", prompt(for: trimmed), "--output-format", "json"]
-        proc.environment = childEnvironmentDict()
-        proc.standardInput = FileHandle.nullDevice
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-
-        var finished = false
-        let finishLock = NSLock()
-        func finishOnce(_ result: Result<String, DictationCleanupError>) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finished = true
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            DispatchQueue.main.async { completion(result) }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try proc.run()
-            } catch {
-                finishOnce(.failure(DictationCleanupError(message: "could not start claude: \(error.localizedDescription)")))
-                return
+        // GL-26: the `Process` setup, the finish-exactly-once lock and the
+        // JSON parse this function used to own are all `ClaudeOneShot` now -
+        // one copy shared with the other four `claude -p` callers. The
+        // behaviour this call site cares about is unchanged: bounded by
+        // `timeout`, completion always on the main thread exactly once, and any
+        // failure means "fall back to the raw transcript".
+        ClaudeOneShot.run(executable: claude, prompt: prompt(for: trimmed),
+                          timeout: timeout, label: "claude -p (dictation cleanup)") { result in
+            switch result {
+            case .success(let reply):
+                // Defensive only - see this file's header on why the quote
+                // stripping is not load-bearing for the common case.
+                let cleaned = stripWrappingQuotes(reply.text)
+                if cleaned.isEmpty {
+                    completion(.failure(DictationCleanupError(message: "claude's rewrite was empty.")))
+                } else {
+                    completion(.success(cleaned))
+                }
+            case .failure(let error):
+                completion(.failure(DictationCleanupError(message: error.message)))
             }
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            let status = proc.terminationStatus
-            finishOnce(Self.parseResult(outData: outData, errData: errData, status: status))
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            proc.terminate()
-            finishOnce(.failure(DictationCleanupError(message: "claude did not respond within \(Int(timeout))s")))
-        }
-    }
-
-    private static func parseResult(outData: Data, errData: Data, status: Int32) -> Result<String, DictationCleanupError> {
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let lastNonEmptyLine = stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .last
-            .map(String.init)
-
-        guard let line = lastNonEmptyLine,
-              let jsonData = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
-            return .failure(DictationCleanupError(message: detail))
-        }
-
-        if let isError = obj["is_error"] as? Bool, isError {
-            let detail = (obj["result"] as? String) ?? "claude reported an error."
-            return .failure(DictationCleanupError(message: detail))
-        }
-
-        guard let result = obj["result"] as? String else {
-            return .failure(DictationCleanupError(message: "claude's response had no reply text."))
-        }
-        let cleaned = stripWrappingQuotes(result.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !cleaned.isEmpty else {
-            return .failure(DictationCleanupError(message: "claude's rewrite was empty."))
-        }
-        return .success(cleaned)
     }
 
     /// Defensive only - see this file's header for why this isn't load-

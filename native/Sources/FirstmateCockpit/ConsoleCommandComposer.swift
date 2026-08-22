@@ -74,85 +74,25 @@ enum ConsoleCommandComposer {
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: claude)
-        proc.arguments = ["-p", prompt(for: trimmed), "--output-format", "json"]
-        proc.environment = childEnvironmentDict()
-        // Without this, `claude -p` probes for piped stdin and waits ~3s
-        // before proceeding without it, on every single call - see
-        // `SRELeadRunner.ask`'s identical comment.
-        proc.standardInput = FileHandle.nullDevice
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-
-        var finished = false
-        let finishLock = NSLock()
-        func finishOnce(_ result: Result<String, ConsoleCommandComposerError>) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finished = true
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            DispatchQueue.main.async { completion(result) }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try proc.run()
-            } catch {
-                finishOnce(.failure(ConsoleCommandComposerError(message: "could not start claude: \(error.localizedDescription)")))
-                return
+        // GL-26: one shared `claude -p` runner - see `ClaudeOneShot`. Nothing
+        // about this call site's contract changed: bounded by `timeout`,
+        // completion on the main thread exactly once, and the generated command
+        // is still only ever shown for review - `generate` never touches a
+        // terminal.
+        ClaudeOneShot.run(executable: claude, prompt: prompt(for: trimmed),
+                          timeout: timeout, label: "claude -p (compose)") { result in
+            switch result {
+            case .success(let reply):
+                let cleaned = stripWrappingFormatting(reply.text)
+                if cleaned.isEmpty {
+                    completion(.failure(ConsoleCommandComposerError(message: "claude's reply was empty.")))
+                } else {
+                    completion(.success(cleaned))
+                }
+            case .failure(let error):
+                completion(.failure(ConsoleCommandComposerError(message: error.message)))
             }
-            // Read both pipes to completion before `waitUntilExit()` - a
-            // pipe's buffer can fill and deadlock the child if the parent
-            // isn't draining it concurrently with the child still writing.
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            let status = proc.terminationStatus
-            finishOnce(Self.parseResult(outData: outData, errData: errData, status: status))
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            proc.terminate()
-            finishOnce(.failure(ConsoleCommandComposerError(message: "claude did not respond within \(Int(timeout))s")))
-        }
-    }
-
-    private static func parseResult(outData: Data, errData: Data, status: Int32) -> Result<String, ConsoleCommandComposerError> {
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let lastNonEmptyLine = stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .last
-            .map(String.init)
-
-        guard let line = lastNonEmptyLine,
-              let jsonData = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
-            return .failure(ConsoleCommandComposerError(message: detail))
-        }
-
-        if let isError = obj["is_error"] as? Bool, isError {
-            let detail = (obj["result"] as? String) ?? "claude reported an error."
-            return .failure(ConsoleCommandComposerError(message: detail))
-        }
-
-        guard let result = obj["result"] as? String else {
-            return .failure(ConsoleCommandComposerError(message: "claude's response had no reply text."))
-        }
-        let cleaned = stripWrappingFormatting(result.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !cleaned.isEmpty else {
-            return .failure(ConsoleCommandComposerError(message: "claude's reply was empty."))
-        }
-        return .success(cleaned)
     }
 
     /// Defensive only, mirroring `DictationCleanup.stripWrappingQuotes`/

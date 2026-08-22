@@ -152,29 +152,15 @@ enum FleetDataSource {
     private static func crewState(taskID: String) -> (state: String, source: String, detail: String) {
         let script = FirstmateHome.bin.appendingPathComponent("fm-crew-state.sh")
         guard FileManager.default.fileExists(atPath: script.path) else { return ("unknown", "none", "") }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = [script.path, taskID]
-        proc.currentDirectoryURL = FirstmateHome.root
-        var env = childEnvironmentDict()
-        env["FM_HOME"] = FirstmateHome.root.path
-        proc.environment = env
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return ("unknown", "none", "") }
-
-        let deadline = DispatchTime.now() + crewStateTimeout
-        let exited = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in exited.signal() }
-        if exited.wait(timeout: deadline) == .timedOut {
-            proc.terminationHandler = nil
-            if proc.isRunning { proc.terminate() }
-            return ("unknown", "none", "")
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return parseCrewLine(line)
+        let result = Subprocess.run(
+            executable: "/bin/bash", arguments: [script.path, taskID],
+            cwd: FirstmateHome.root,
+            extraEnv: ["FM_HOME": FirstmateHome.root.path],
+            timeout: crewStateTimeout,
+            stderr: .discard
+        )
+        guard result.ok else { return ("unknown", "none", "") }
+        return parseCrewLine(result.stdout)
     }
 
     /// `"state: <s> · source: <src> · <detail>"` - the one stable, parseable
@@ -297,52 +283,56 @@ enum FleetDataSource {
 
     // MARK: Merge action (bin/fm-pr-merge.sh - firstmate's guarded merge helper)
 
-    static func mergePR(url: String) -> (ok: Bool, message: String) {
+    /// GL-38: `bin/fm-pr-merge.sh` takes `<task-id> <pr-url>` and validates the
+    /// task id before it will touch anything - and for the whole life of this
+    /// action, this function passed only the URL, so the script's own argument
+    /// guard rejected every single invocation. The merge button was documented
+    /// as working, was never actually able to work, and nothing asserted the
+    /// argv shape.
+    ///
+    /// The task id was never missing - `MergedPR.taskID` carries it, and the
+    /// Review row's button identifier has held `"<taskID>\0<url>"` since it was
+    /// written. It simply was not threaded through. `taskID` is non-optional
+    /// here on purpose: a PR with no tracked task has no working merge path
+    /// through this script, and `canMerge` is what keeps the button off those
+    /// rows rather than letting them reach a guaranteed failure.
+    static func mergePR(taskID: String, url: String) -> (ok: Bool, message: String) {
         let script = FirstmateHome.bin.appendingPathComponent("fm-pr-merge.sh")
         guard FileManager.default.fileExists(atPath: script.path) else {
             return (false, "fm-pr-merge.sh not found under \(FirstmateHome.bin.path)")
         }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = [script.path, url]
-        proc.currentDirectoryURL = FirstmateHome.root
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do { try proc.run() } catch {
-            return (false, error.localizedDescription)
+        AppLog.ui.info("merging PR for task \(taskID, privacy: .public)")
+        let result = Subprocess.run(
+            executable: "/bin/bash",
+            arguments: [script.path] + mergeArguments(taskID: taskID, url: url),
+            cwd: FirstmateHome.root,
+            timeout: mergeTimeout
+        )
+        if result.ok {
+            return (true, result.stdout.isEmpty ? "Merged." : result.stdout)
         }
-        // GL-02: drain BOTH pipes concurrently, then wait. The previous order
-        // (`waitUntilExit()` first, then read) deadlocks the moment the merge
-        // script emits more than one pipe buffer (~64KB) on either stream: the
-        // child blocks in `write()` forever waiting for a reader that never
-        // comes, this thread blocks in `waitUntilExit()` forever waiting for a
-        // child that never exits, the completion that re-enables the Merge
-        // button never runs, and the thread leaks for the session. Reading
-        // stdout to EOF and *then* stderr is only half a fix - it still
-        // deadlocks on a child that fills stderr while stdout is open - so
-        // both reads happen on their own queues here.
-        var stdoutData = Data(), stderrData = Data()
-        let drain = DispatchGroup()
-        let readQueue = DispatchQueue(label: "fm.mergepr.drain", attributes: .concurrent)
-        drain.enter()
-        readQueue.async {
-            stdoutData = out.fileHandleForReading.readDataToEndOfFile()
-            drain.leave()
-        }
-        drain.enter()
-        readQueue.async {
-            stderrData = err.fileHandleForReading.readDataToEndOfFile()
-            drain.leave()
-        }
-        drain.wait()
-        proc.waitUntilExit()
-        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let ok = proc.terminationStatus == 0
-        return (ok, ok ? (stdout.isEmpty ? "Merged." : stdout) : (stderr.isEmpty ? stdout : stderr))
+        let detail = result.stderr.isEmpty ? result.stdout : result.stderr
+        return (false, detail.isEmpty ? (result.failureSummary ?? "Merge failed.") : detail)
     }
+
+    /// Extracted so the argv contract is assertable without running a merge -
+    /// see `Phase2HardeningSelfTest.mergeCommandCarriesTheTaskID`.
+    static func mergeArguments(taskID: String, url: String) -> [String] {
+        [taskID, url]
+    }
+
+    /// Whether the Merge button should exist for this PR at all. Readiness
+    /// (`checks == "green"`) is the captain-facing half; a tracked task id is
+    /// the technical half the script requires. Both were already being checked
+    /// at the row level - this is the one definition of them.
+    static func canMerge(_ pr: MergedPR) -> Bool {
+        pr.checks == "green" && !(pr.taskID ?? "").isEmpty
+    }
+
+    /// A guarded merge runs `gh`/`git` against a real remote. Minutes is
+    /// plausible on a slow link; unbounded is not acceptable (this is the
+    /// call that wedged its own completion handler for a whole session).
+    private static let mergeTimeout: TimeInterval = 300
 }
 
 // MARK: - Open PRs across every project clone (openprs.py)
@@ -452,37 +442,27 @@ enum OpenPRsSource {
     // MARK: git plumbing
 
     private static func originURL(_ clone: URL) -> String? {
-        guard let gitPath = resolveExecutable("git") else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: gitPath)
-        proc.arguments = ["-C", clone.path, "remote", "get-url", "origin"]
-        proc.environment = childEnvironmentDict()
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (s?.isEmpty ?? true) ? nil : s
+        let result = Subprocess.run(
+            tool: "git", arguments: ["-C", clone.path, "remote", "get-url", "origin"],
+            timeout: localGitTimeout, stderr: .discard, log: AppLog.gitSync
+        )
+        guard result.ok, !result.stdout.isEmpty else { return nil }
+        return result.stdout
     }
 
+    /// A purely local `git config`/`git remote` read is milliseconds; anything
+    /// past this is a wedged git (an index lock, a hung credential helper) and
+    /// this runs inside the bounded PR-fetch worker pool, so it must not be the
+    /// thing that stalls it.
+    private static let localGitTimeout: TimeInterval = 20
+
     private static func gitEmail() -> String? {
-        guard let gitPath = resolveExecutable("git") else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: gitPath)
-        proc.arguments = ["config", "--global", "user.email"]
-        proc.environment = childEnvironmentDict()
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (s?.isEmpty ?? true) ? nil : s
+        let result = Subprocess.run(
+            tool: "git", arguments: ["config", "--global", "user.email"],
+            timeout: localGitTimeout, stderr: .discard, log: AppLog.gitSync
+        )
+        guard result.ok, !result.stdout.isEmpty else { return nil }
+        return result.stdout
     }
 
     /// `(forge, owner, repo)` for a github.com / bitbucket.org remote - both
@@ -523,20 +503,6 @@ enum OpenPRsSource {
         return (forge, parts[0], parts[1])
     }
 
-    private static func resolveExecutable(_ name: String) -> String? {
-        let fm = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in path.split(separator: ":") {
-                let candidate = "\(dir)/\(name)"
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-        }
-        for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
-    }
-
     // MARK: GitHub
 
     private static let ghFail: Set<String> = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE", "ERROR"]
@@ -572,23 +538,17 @@ enum OpenPRsSource {
     /// all-clear on the one page whose entire job is telling the captain
     /// whether there is something to act on.
     private static func githubOpenPRs(owner: String, repo: String, label: String) -> [OpenPRInfo]? {
-        guard let ghPath = resolveExecutable("gh") else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: ghPath)
-        proc.arguments = [
-            "pr", "list", "--repo", "\(owner)/\(repo)",
-            "--state", "open", "--limit", "50",
-            "--json", "number,title,url,statusCheckRollup,createdAt",
-        ]
-        proc.environment = childEnvironmentDict()
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil }
-        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        let result = Subprocess.run(
+            tool: "gh",
+            arguments: [
+                "pr", "list", "--repo", "\(owner)/\(repo)",
+                "--state", "open", "--limit", "50",
+                "--json", "number,title,url,statusCheckRollup,createdAt",
+            ],
+            timeout: ghTimeout, stderr: .discard, log: AppLog.network
+        )
+        guard result.ok else { return nil }
+        guard let rows = try? JSONSerialization.jsonObject(with: result.stdoutData) as? [[String: Any]] else { return nil }
         return rows.map { row in
             OpenPRInfo(
                 repo: label,
@@ -600,6 +560,13 @@ enum OpenPRsSource {
             )
         }
     }
+
+    /// One `gh pr list` per clone, running inside the bounded concurrent
+    /// fetch pool. 45s is generous for a single API round trip and is the
+    /// bound that stops one unreachable forge from wedging every Review and
+    /// Overview refresh for the session (GL-02's never-read-stderr case lived
+    /// here).
+    private static let ghTimeout: TimeInterval = 45
 
     // MARK: Bitbucket
 
@@ -628,39 +595,26 @@ enum OpenPRsSource {
         bbCacheLock.unlock()
         if let cached = cachedCandidates { return cached }
         var cands: [(String, String)] = []
-        guard let gitPath = resolveExecutable("git") else {
-            bbCacheLock.lock(); _bbCandidatesCache = cands; bbCacheLock.unlock()
-            return cands
-        }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: gitPath)
-        proc.arguments = ["credential", "fill"]
-        proc.environment = childEnvironmentDict()
-        let inPipe = Pipe(), outPipe = Pipe()
-        proc.standardInput = inPipe
-        proc.standardOutput = outPipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            inPipe.fileHandleForWriting.write("protocol=https\nhost=bitbucket.org\n\n".data(using: .utf8)!)
-            inPipe.fileHandleForWriting.closeFile()
-            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            if proc.terminationStatus == 0, let text = String(data: data, encoding: .utf8) {
-                var user: String?, token: String?
-                for line in text.split(separator: "\n") {
-                    if line.hasPrefix("username=") { user = String(line.dropFirst("username=".count)) }
-                    else if line.hasPrefix("password=") { token = String(line.dropFirst("password=".count)) }
-                }
-                if let token {
-                    if let user, !user.isEmpty { cands.append((user, token)) }
-                    if let email = gitEmail(), !cands.contains(where: { $0.0 == email }) {
-                        cands.append((email, token))
-                    }
+        // `git credential fill` reads its query from stdin and answers on
+        // stdout; a credential helper that decides to prompt is exactly the
+        // "hangs forever" case the bound below exists for.
+        let result = Subprocess.run(
+            tool: "git", arguments: ["credential", "fill"],
+            stdin: Data("protocol=https\nhost=bitbucket.org\n\n".utf8),
+            timeout: localGitTimeout, stderr: .discard, log: AppLog.gitSync
+        )
+        if result.ok {
+            var user: String?, token: String?
+            for line in result.stdout.split(separator: "\n") {
+                if line.hasPrefix("username=") { user = String(line.dropFirst("username=".count)) }
+                else if line.hasPrefix("password=") { token = String(line.dropFirst("password=".count)) }
+            }
+            if let token {
+                if let user, !user.isEmpty { cands.append((user, token)) }
+                if let email = gitEmail(), !cands.contains(where: { $0.0 == email }) {
+                    cands.append((email, token))
                 }
             }
-        } catch {
-            // no usable credential - fall through with an empty candidate list
         }
         bbCacheLock.lock()
         // Last writer wins if two clones raced to fill this - both computed

@@ -630,6 +630,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 currentDirectory: cwd
             )
         case .mirror(let kind, let target):
+            // GL-12: nothing to attach to until the backend has been resolved.
+            // The placeholder line is what the review asks for in place of a
+            // pre-window beachball; the resolution's completion starts this tab.
+            guard !tab.isAwaitingMirrorResolution else {
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[mirror]\u{1b}[0m Resolving the fleet's backend\u{2026}\r\n")
+                return
+            }
             connectMirror(tab, kind: kind, target: target)
         case .ssh(_, let exe, let hostArgs, let keyID, let startupSnippetID):
             connectSSH(tab, executable: exe, hostArgs: hostArgs, keyID: keyID, startupSnippetID: startupSnippetID)
@@ -734,9 +741,31 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         // `fm/grandline-mirror-resolve-race-fix`: kind and target come from
         // one atomic call, never a separate `mirrorTarget()`/`resolve()`
         // pair - see `FirstmateBackend.resolveMirrorTarget()`'s doc comment.
-        let resolution = FirstmateBackend.resolveMirrorTarget()
-        let mirror = TabLaunch.mirror(kind: resolution.kind, target: resolution.target)
-        addTab(launch: mirror, name: numberedName(for: mirror), select: false)
+        // GL-12: resolution is asynchronous now. The tab is created immediately
+        // (so tab order and ⌘1…⌘9 numbering are unchanged - the mirror tab must
+        // be first), marked as awaiting resolution, and its real launch pair is
+        // written exactly once when the answer arrives - before its process has
+        // ever started. See `TabModel.launch`'s doc comment on why that one
+        // reassignment does not weaken the frozen-pair invariant.
+        let placeholder = TabLaunch.mirror(kind: .tmux, target: "")
+        let mirrorTab = addTab(launch: placeholder, name: numberedName(for: placeholder), select: false)
+        mirrorTab.isAwaitingMirrorResolution = true
+        FirstmateBackend.resolveMirrorTargetAsync { [weak self, weak mirrorTab] kind, target in
+            guard let self, let mirrorTab, self.tabs.contains(where: { $0 === mirrorTab }) else { return }
+            mirrorTab.launch = .mirror(kind: kind, target: target)
+            mirrorTab.isAwaitingMirrorResolution = false
+            if !mirrorTab.hasUserChosenName {
+                mirrorTab.name = mirrorTab.launch.defaultName
+                mirrorTab.chip?.setName(mirrorTab.name)
+                self.styleChips()
+            }
+            // Only start it if the view is already on screen and something was
+            // waiting for the answer; otherwise `viewDidAppear` starts it as
+            // usual.
+            if self.hasAppeared, !mirrorTab.started {
+                self.startTab(mirrorTab)
+            }
+        }
         let s = shellArgv()
         let shell = TabLaunch.shell(executable: s.executable, args: s.args, cwd: shellCwd())
         let shellTab = addTab(launch: shell, name: numberedName(for: shell), select: false)
@@ -827,10 +856,17 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// through the Keychain into a fresh temp `-i <path>` (`SSHKeyMaterializer`)
     /// - the Touch ID / passcode prompt happens inside that call. Any temp file
     /// from a previous start of this tab is cleaned up first, so reconnect never
-    /// piles up scratch directories. A resolution failure (deleted key,
-    /// cancelled prompt, Keychain error) does not block the connection - `ssh`
-    /// still starts without `-i`, falling back to the system agent, with the
-    /// error surfaced in the terminal so it is visible rather than silent.
+    /// piles up scratch directories.
+    ///
+    /// **Cancelling the Touch ID prompt aborts the connect** (resolved captain
+    /// decision, production review section 15). It used to fall through and
+    /// start `ssh` without `-i`, silently downgrading to agent auth - which is
+    /// the wrong default twice over: the captain who just pressed Cancel did not
+    /// ask for a connection by other means, and on a host that *does* accept
+    /// agent auth the downgrade succeeds, so the "no" has no visible effect at
+    /// all. A genuine *error* (a deleted key, a Keychain fault) still falls
+    /// through to agent auth as before - that is an accident, not a decision,
+    /// and refusing to connect over it would be a regression.
     private func connectSSH(_ tab: TabModel, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID? = nil) {
         cleanupSSHKeyTempFile(tab)
         var args = hostArgs
@@ -839,6 +875,10 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
                 let materialized = try SSHKeyMaterializer.materialize(key: key)
                 tab.sshKeyTempPath = materialized.privateKeyPath
                 args = ["-i", materialized.privateKeyPath] + args
+            } catch KeychainError.userCancelled {
+                tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m Unlock cancelled - not connecting.\r\n")
+                tab.terminal.feed(text: "  \u{1b}[2mPress ⌘R to try again.\u{1b}[0m\r\n")
+                return
             } catch {
                 tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m \(error.localizedDescription)\r\n")
                 tab.terminal.feed(text: "  \u{1b}[2mConnecting without the saved key. Press ⌘R to retry.\u{1b}[0m\r\n")
@@ -1527,6 +1567,9 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         tab.name = trimmed.isEmpty ? tab.launch.defaultName : trimmed
+        // GL-12: a name the captain chose must survive the mirror tab's
+        // post-resolution rename.
+        tab.hasUserChosenName = !trimmed.isEmpty
         tab.chip.setName(tab.name)
         styleChips()
         if let current = currentTab { view.window?.makeFirstResponder(current.terminal) }
@@ -2116,6 +2159,13 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     /// Selects a tab by id, exactly like clicking its chip.
     func debugSelectTab(_ id: UUID) { select(tabID: id, focus: false) }
+
+    /// GL-12: whether the named tab is still waiting on
+    /// `FirstmateBackend.resolveMirrorTargetAsync`. A test that asserts the
+    /// frozen pair has to wait for it, and this is what it waits on.
+    func debugIsAwaitingMirrorResolution(_ id: UUID) -> Bool {
+        tabs.first(where: { $0.id == id })?.isAwaitingMirrorResolution ?? false
+    }
 
     /// The kind+target frozen into the current tab's `TabLaunch.mirror` (if
     /// it is one) - lets a test confirm they were resolved atomically and

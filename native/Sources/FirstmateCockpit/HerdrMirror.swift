@@ -164,25 +164,14 @@ struct HerdrMirror {
     static func run(_ executable: String, _ args: [String], session: String, env: [String: String]) -> (status: Int32, stdout: String, stderr: String) {
         var scopedEnv = env
         scopedEnv["HERDR_SESSION"] = session
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args + ["--session", session]
-        proc.environment = scopedEnv
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return (-1, "", "\(error.localizedDescription)")
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return (
-            proc.terminationStatus,
-            String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        // GL-02/GL-04: bounded and concurrently drained. `FirstmateBackend`'s
+        // launch-time backend resolution calls through here, and its own
+        // comment already noted it could not terminate a wrapped `run` call -
+        // `Subprocess` owns that now.
+        let result = Subprocess.run(executable: executable,
+                                    arguments: args + ["--session", session],
+                                    env: scopedEnv, timeout: TmuxMirror.commandTimeout,
+                                    log: AppLog.subprocess, label: "herdr \(args.first ?? "")")
+        return (result.status, result.stdout, result.stderr)
     }
 }

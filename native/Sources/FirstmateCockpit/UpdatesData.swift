@@ -130,53 +130,31 @@ struct UpdateOutcome {
     let log: String
 }
 
-// MARK: - Process plumbing (mirrors OpenPRsSource's resolveExecutable/childEnvironmentDict use)
+// MARK: - Process plumbing
+
+// GL-15: this file used to carry its own `resolveExecutable`, its own
+// `RunResult` and its own unbounded `Process` runner (which drained stdout to
+// EOF and stderr only afterwards - GL-02's half-fix, and a real deadlock for
+// `npm -g`/`brew` output). All three now come from `Subprocess`, which drains
+// both streams concurrently and bounds every run.
 
 private func resolveExecutable(_ name: String) -> String? {
-    let fm = FileManager.default
-    if let path = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in path.split(separator: ":") {
-            let candidate = "\(dir)/\(name)"
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-    }
-    for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-        if fm.isExecutableFile(atPath: candidate) { return candidate }
-    }
-    return nil
+    Subprocess.resolveExecutable(name)
 }
 
-private struct RunResult {
-    let status: Int32
-    let stdout: String
-    let stderr: String
-    var combinedLog: String {
-        [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n")
-    }
-}
+private typealias RunResult = SubprocessResult
+
+/// `brew upgrade`, `npm -g install` and `git fetch` legitimately take minutes
+/// on a slow link, so this is far above `Subprocess.defaultTimeout` - but it is
+/// a bound, which is the whole point of GL-02. A check or update that has not
+/// finished in five minutes is wedged, and reporting that beats a background
+/// thread parked forever (the failure that took every notification signal down
+/// with it in GL-03).
+private let updatesRunTimeout: TimeInterval = 300
 
 private func run(_ executable: String, _ args: [String], cwd: URL? = nil) -> RunResult {
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: executable)
-    proc.arguments = args
-    if let cwd { proc.currentDirectoryURL = cwd }
-    proc.environment = childEnvironmentDict()
-    let out = Pipe(), err = Pipe()
-    proc.standardOutput = out
-    proc.standardError = err
-    do {
-        try proc.run()
-    } catch {
-        return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-    }
-    let outData = out.fileHandleForReading.readDataToEndOfFile()
-    let errData = err.fileHandleForReading.readDataToEndOfFile()
-    proc.waitUntilExit()
-    return RunResult(
-        status: proc.terminationStatus,
-        stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-        stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    )
+    Subprocess.run(executable: executable, arguments: args, cwd: cwd,
+                   timeout: updatesRunTimeout, log: AppLog.subprocess)
 }
 
 private func missingToolOutcome(_ tool: String) -> CheckOutcome {

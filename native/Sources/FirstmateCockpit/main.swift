@@ -58,14 +58,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (vocabulary bias, history recording) - same "one store, every reader/
     // writer shares it" convention as `shiftStore`.
     let dictationStore = DictationStore()
+    // GL-23: one command library for the whole app. The Tasks page's DevOps
+    // Commands tab and the Log Analyzer's "from your library" matching both
+    // read and write it; two caching instances diverged in-session and
+    // last-writer-wins on `recent.yaml`. Same one-store convention as
+    // `shiftStore` and `dictationStore` above.
+    let commandLibraryStore = CommandLibraryStore()
     // fm/grandline-dictation-visual-feedback-hud: the floating on-screen HUD
     // - see DictationHUD.swift's header. Owned here (not by `AppShellController`)
     // since it must appear regardless of whether Grand Line's own window is
     // visible/frontmost.
     let dictationHUD = DictationHUDController()
+    // GL-09: dictation is gated on the lock here rather than inside
+    // `DictationEngine`, because the gate belongs where the *trigger* is - a
+    // hotkey that fires while locked should do nothing at all, not start an
+    // engine that then declines. `onUp` is deliberately NOT gated: a recording
+    // that was legitimately started before the lock engaged still has to be
+    // stopped, or the microphone stays open.
     lazy var dictationHotkey = DictationHotkey(
         shortcut: AppSettings.shared.dictationShortcut,
-        onDown: { [weak self] in self?.dictationEngine.startRecording() },
+        onDown: { [weak self] in
+            guard AppLockGate.shared.allows(.dictation) else {
+                AppLog.lifecycle.info("dictation hotkey refused - app is locked (GL-09)")
+                return
+            }
+            self?.dictationEngine.startRecording()
+        },
         onUp: { [weak self] in self?.dictationEngine.stopRecording() }
     )
     // fm/grandline-app-lock: the app-level password lock's timing state
@@ -81,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return AppShellController(
             hostsPanel: hostsPanel, console: console, settings: settingsController,
             hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, shiftStore: shiftStore,
-            dictationStore: dictationStore,
+            dictationStore: dictationStore, commandLibraryStore: commandLibraryStore,
             makeHostConsole: { ConsoleController(keyStore: keyStore, snippetStore: snippetStore, isFirstmateConsole: false) }
         )
     }()
@@ -525,6 +543,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.level = .floating
             win.followHelmTheme()
             hostEditorWindow = win
+            // GL-09: a `.floating` window stays above the lock overlay - which
+            // is a subview of the *main* window, not a screen-level shield - so
+            // a Host Editor open at lock time remained fully usable, editing and
+            // saving real host records. Registered once, when the window is
+            // created; the gate orders it out on every lock.
+            AppLockGate.shared.registerSecondaryWindow { [weak self] in self?.hostEditorWindow }
         }
         win.title = host == nil ? "New Host" : "Edit Host"
         win.contentViewController = editor
@@ -1035,6 +1059,27 @@ if ProcessInfo.processInfo.environment["FM_RUN_STORE_DURABILITY_TESTS"] == "1" {
     exit(StoreDurabilitySelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-review-phase2-harden` (GL-02/GL-15): the shared subprocess
+// runner, including the stderr-flood child the review asked for by name plus
+// an in-process reproduction of the pre-fix drain order still deadlocking on
+// that same child - see SubprocessSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_SUBPROCESS_TESTS"] == "1" {
+    exit(SubprocessSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-review-phase2-harden` (GL-26): the one `claude -p` runner the
+// five drifted copies collapsed into - see ClaudeOneShotSelfTest.swift.
+if ProcessInfo.processInfo.environment["FM_RUN_CLAUDE_ONE_SHOT_TESTS"] == "1" {
+    exit(ClaudeOneShotSelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-review-phase2-harden` (GL-10/GL-11/GL-30): throwing
+// persistence writes funnelled through PersistenceFailureReporter, and the
+// ServiceHealth registry behind the Health card - see Phase2HardeningSelfTest.swift.
+if ProcessInfo.processInfo.environment["FM_RUN_PHASE2_HARDENING_TESTS"] == "1" {
+    exit(Phase2HardeningSelfTest.run() ? 0 : 1)
+}
+
 // `fm/grandline-review-phase1-stabilize` (GL-05/GL-08): the single-instance
 // lock and the `ssh` argv option-terminator contract.
 if ProcessInfo.processInfo.environment["FM_RUN_PHASE1_HARDENING_TESTS"] == "1" {
@@ -1211,9 +1256,11 @@ case .acquired:
     break
 case .alreadyRunning(let pid):
     let who = pid.map { " (pid \($0))" } ?? ""
-    NSLog("[cockpit] Manjesh Grand Line is already running\(who) - activating it and exiting. "
-        + "Two instances share one set of JSON stores and one Shift git working tree; the second "
-        + "one silently overwrites the first's saves. See GL-05.")
+    AppLog.lifecycle.error("""
+        Manjesh Grand Line is already running\(who, privacy: .public) - activating it and exiting. \
+        Two instances share one set of JSON stores and one Shift git working tree; the second one \
+        silently overwrites the first's saves. See GL-05.
+        """)
     exit(0)
 }
 

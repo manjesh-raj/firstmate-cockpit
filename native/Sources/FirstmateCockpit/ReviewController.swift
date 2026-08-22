@@ -552,7 +552,18 @@ final class ReviewController: NSViewController {
         guard let raw = sender.identifier?.rawValue else { return }
         let parts = raw.components(separatedBy: "\u{0}")
         guard parts.count == 2 else { return }
+        // GL-38: `parts[0]` is the task id, and it has been sitting in this
+        // identifier since the row was written - it just never reached
+        // `mergePR`, so `bin/fm-pr-merge.sh` rejected every invocation on its
+        // own argument count. `ReviewPRListView` only builds this button for a
+        // PR that has one (see `FleetDataSource.canMerge`), so an empty task id
+        // here means the identifier's shape changed and the merge must not run.
+        let taskID = parts[0]
         let prURL = parts[1]
+        guard !taskID.isEmpty else {
+            AppLog.ui.error("merge button carried no task id - refusing to run fm-pr-merge.sh")
+            return
+        }
 
         let alert = NSAlert()
         alert.messageText = "Merge this PR?"
@@ -565,7 +576,7 @@ final class ReviewController: NSViewController {
         sender.isEnabled = false
         sender.title = "Merging\u{2026}"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = FleetDataSource.mergePR(url: prURL)
+            let result = FleetDataSource.mergePR(taskID: taskID, url: prURL)
             DispatchQueue.main.async {
                 if result.ok {
                     self?.refresh()

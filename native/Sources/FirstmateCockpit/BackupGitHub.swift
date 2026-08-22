@@ -127,7 +127,7 @@ enum GitHubBackupSource {
                 Thread.sleep(forTimeInterval: 1)
                 continue
             }
-            throw GitHubBackupError.requestFailed("HTTP \(status) writing \(backupPath)")
+            throw GitHubBackupError.requestFailed(describe(status: status, doing: "writing \(backupPath)"))
         }
     }
 
@@ -153,7 +153,7 @@ enum GitHubBackupSource {
 
         let (status, data) = syncSend(request)
         guard (200..<300).contains(status), let data else {
-            throw GitHubBackupError.requestFailed("HTTP \(status) reading \(backupPath)")
+            throw GitHubBackupError.requestFailed(describe(status: status, doing: "reading \(backupPath)"))
         }
         let entry = try JSONDecoder().decode(ContentFileResponse.self, from: data)
         guard let decoded = Data(base64Encoded: entry.content.replacingOccurrences(of: "\n", with: "")) else {
@@ -192,15 +192,48 @@ enum GitHubBackupSource {
         let semaphore = DispatchSemaphore(value: 0)
         var status = -1
         var result: Data?
-        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+        var transportError: Error?
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
             if let http = response as? HTTPURLResponse {
                 status = http.statusCode
             }
+            transportError = error
             result = data
             semaphore.signal()
         }
         task.resume()
         semaphore.wait()
+        // GL-14: `status` stays -1 when there was no HTTP response at all, and
+        // that used to surface to the captain verbatim as "HTTP -1", which reads
+        // like a server fault rather than "you are offline". Remember the real
+        // transport error so `describe(status:)` can say what actually happened.
+        lastTransportError = transportError
+        if let transportError {
+            AppLog.network.error("backup request failed: \(transportError.localizedDescription, privacy: .public)")
+        }
         return (status, result)
+    }
+
+    /// The transport error from the most recent `syncSend`, if it never reached
+    /// a server. Single-threaded by construction: every caller in this file runs
+    /// on one background queue, one request at a time.
+    private static var lastTransportError: Error?
+
+    /// Turns a status into something worth showing. `-1` is not a status.
+    private static func describe(status: Int, doing what: String) -> String {
+        guard status < 0 else { return "HTTP \(status) \(what)" }
+        if let error = lastTransportError as? URLError {
+            switch error.code {
+            case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost,
+                 .dnsLookupFailed, .timedOut, .internationalRoamingOff, .dataNotAllowed:
+                return "Couldn't reach GitHub - check your connection, then try again."
+            default:
+                return "Couldn't reach GitHub \(what): \(error.localizedDescription)"
+            }
+        }
+        if let error = lastTransportError {
+            return "Couldn't reach GitHub \(what): \(error.localizedDescription)"
+        }
+        return "Couldn't reach GitHub \(what)."
     }
 }

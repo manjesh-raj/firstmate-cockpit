@@ -150,6 +150,34 @@ enum QuotaDataSelfTest {
             failures.append("nearly-exhausted payload failed to parse")
         }
 
+        // MARK: GL-14 - an offline failure must not surface as raw tool spew.
+
+        func failureResult(_ stderr: String, status: Int32 = 1) -> SubprocessResult {
+            SubprocessResult(outcome: .exited, status: status,
+                             stdoutData: Data(), stderrData: Data(stderr.utf8), duration: 0.1)
+        }
+
+        let offline = QuotaSource.friendlyFailure(
+            failureResult("error: could not resolve host: api.anthropic.com"))
+        check("offline failure reads as offline, not as tool output",
+              offline.contains("Couldn't reach Anthropic"))
+
+        let timedOut = QuotaSource.friendlyFailure(failureResult("request failed: operation timed out"))
+        check("a timeout also reads as offline", timedOut.contains("Couldn't reach Anthropic"))
+
+        let unauth = QuotaSource.friendlyFailure(failureResult("HTTP 401 Unauthorized"))
+        check("an auth failure says how to fix it", unauth.contains("isn't authenticated"))
+
+        // Anything unrecognised must still show the real output - inventing a
+        // friendly message for an unknown failure would hide the one thing
+        // worth reading.
+        let unknown = QuotaSource.friendlyFailure(failureResult("weird internal assertion at line 42"))
+        check("an unrecognised failure still shows the real output",
+              unknown.contains("weird internal assertion"))
+
+        let silent = QuotaSource.friendlyFailure(failureResult("", status: 3))
+        check("a silent non-zero exit at least names the exit code", silent.contains("exit 3"))
+
         if failures.isEmpty {
             print("QuotaDataSelfTest: all checks passed")
             return true

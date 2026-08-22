@@ -87,85 +87,24 @@ enum SRELeadPostmortem {
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: claude)
-        proc.arguments = ["-p", prompt(hostLabel: hostLabel, transcript: trimmedTranscript), "--output-format", "json"]
-        proc.environment = childEnvironmentDict()
-        // Without this, `claude -p` probes for piped stdin and waits ~3s
-        // before proceeding without it, on every single call - see
-        // `SRELeadRunner.ask`'s identical comment.
-        proc.standardInput = FileHandle.nullDevice
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-
-        var finished = false
-        let finishLock = NSLock()
-        func finishOnce(_ result: Result<String, SRELeadPostmortemError>) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finished = true
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            DispatchQueue.main.async { completion(result) }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try proc.run()
-            } catch {
-                finishOnce(.failure(SRELeadPostmortemError(message: "could not start claude: \(error.localizedDescription)")))
-                return
+        // GL-26: one shared `claude -p` runner - see `ClaudeOneShot`. Same
+        // bound, same "main thread, exactly once" completion contract, same
+        // "never touches the transcript on failure" guarantee.
+        ClaudeOneShot.run(executable: claude,
+                          prompt: prompt(hostLabel: hostLabel, transcript: trimmedTranscript),
+                          timeout: timeout, label: "claude -p (postmortem)") { result in
+            switch result {
+            case .success(let reply):
+                let cleaned = stripWrappingCodeFence(reply.text)
+                if cleaned.isEmpty {
+                    completion(.failure(SRELeadPostmortemError(message: "claude's postmortem was empty.")))
+                } else {
+                    completion(.success(cleaned))
+                }
+            case .failure(let error):
+                completion(.failure(SRELeadPostmortemError(message: error.message)))
             }
-            // Read both pipes to completion before `waitUntilExit()` - a
-            // pipe's buffer can fill and deadlock the child if the parent
-            // isn't draining it concurrently with the child still writing.
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            let status = proc.terminationStatus
-            finishOnce(Self.parseResult(outData: outData, errData: errData, status: status))
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            finishLock.lock()
-            let alreadyFinished = finished
-            finishLock.unlock()
-            guard !alreadyFinished else { return }
-            proc.terminate()
-            finishOnce(.failure(SRELeadPostmortemError(message: "claude did not respond within \(Int(timeout))s")))
-        }
-    }
-
-    private static func parseResult(outData: Data, errData: Data, status: Int32) -> Result<String, SRELeadPostmortemError> {
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let lastNonEmptyLine = stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .last
-            .map(String.init)
-
-        guard let line = lastNonEmptyLine,
-              let jsonData = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
-            return .failure(SRELeadPostmortemError(message: detail))
-        }
-
-        if let isError = obj["is_error"] as? Bool, isError {
-            let detail = (obj["result"] as? String) ?? "claude reported an error."
-            return .failure(SRELeadPostmortemError(message: detail))
-        }
-
-        guard let result = obj["result"] as? String else {
-            return .failure(SRELeadPostmortemError(message: "claude's response had no reply text."))
-        }
-        let cleaned = stripWrappingCodeFence(result.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !cleaned.isEmpty else {
-            return .failure(SRELeadPostmortemError(message: "claude's postmortem was empty."))
-        }
-        return .success(cleaned)
     }
 
     /// Defensive only, mirroring `DictationCleanup.stripWrappingQuotes`'s own

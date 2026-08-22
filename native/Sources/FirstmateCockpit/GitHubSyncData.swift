@@ -170,52 +170,29 @@ struct GitHubSyncSyncOutcome {
     let log: String
 }
 
-// MARK: - Process plumbing (mirrors UpdatesData.swift's/VaultData.swift's own private trio)
+// MARK: - Process plumbing
 
 enum GitHubSyncSource {
 
+    // GL-15: `resolveExecutable`, `RunResult` and the runner itself all come
+    // from `Subprocess` now. The previous local copies drained stdout to EOF
+    // before touching stderr, which deadlocks on a `gh`/`git` failure large
+    // enough to fill the 64KB stderr buffer - realistic here, since git's
+    // "advice" output is exactly what a rejected push emits.
+
     private static func resolveExecutable(_ name: String) -> String? {
-        let fm = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in path.split(separator: ":") {
-                let candidate = "\(dir)/\(name)"
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-        }
-        for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
+        Subprocess.resolveExecutable(name)
     }
 
-    private struct RunResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-        var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
-    }
+    private typealias RunResult = SubprocessResult
+
+    /// `gh api` calls are network round trips against a rate-limited API; 90s
+    /// is generous for one, and a bound where there was none before.
+    private static let apiTimeout: TimeInterval = 90
 
     private static func run(_ executable: String, _ args: [String]) -> RunResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.run(executable: executable, arguments: args,
+                       timeout: apiTimeout, log: AppLog.network)
     }
 
     // MARK: Check
@@ -373,54 +350,29 @@ enum GitHubSyncSource {
         defaultCloneRoot().appendingPathComponent("\(repo.owner)__\(repo.name)", isDirectory: true)
     }
 
-    private struct GitResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-        var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
-    }
+    private typealias GitResult = SubprocessResult
 
     /// `authenticated: true` for any operation that talks to a remote
-    /// (`clone`/`fetch`/`push`) - injects `DocsSyncSource.ghAuthToken()` as a
-    /// Basic-auth `http.extraheader` via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
-    /// `GIT_CONFIG_VALUE_0` env vars rather than a `-c` argument (so the token
-    /// never appears in `ps`'s argument listing) - the exact same mechanism
-    /// `ShiftGitSync.runGit` already established for this app's other local-
-    /// clone-based git sync (`ShiftGitSync.swift:748-759`), reused verbatim
-    /// rather than inventing a second credential path. A local/`file://`
-    /// remote (this task's own disposable-bare-repo verification) has no such
-    /// host, so the header is harmless there too - `git` simply never uses it
-    /// for a non-`https://` transport.
+    /// (`clone`/`fetch`/`push`). GL-15 moved the token injection itself into
+    /// `Subprocess.gitAuthEnvironment` - the single copy of what four files
+    /// each carried verbatim; see its doc comment for why the token travels as
+    /// a `GIT_CONFIG_*` environment variable rather than a `-c` argument.
+    ///
+    /// The remote passed to it is `https://github.com` rather than the repo's
+    /// own URL because this file only ever talks to github.com (its catalog is
+    /// a fixed list of the captain's own forks). That keeps the header shape
+    /// identical to before, while inheriting the "never authenticate a local or
+    /// `file://` remote" rule the shared helper enforces.
     private static func runGit(_ args: [String], cwd: URL?, authenticated: Bool) -> GitResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        if let cwd { proc.currentDirectoryURL = cwd }
-        var env = childEnvironmentDict()
-        if authenticated, let token = DocsSyncSource.ghAuthToken() {
-            let basic = Data("x-access-token:\(token)".utf8).base64EncodedString()
-            env["GIT_CONFIG_COUNT"] = "1"
-            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-            env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic \(basic)"
-        }
-        proc.environment = env
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return GitResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return GitResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.git(args, cwd: cwd,
+                       authenticateFor: authenticated ? "https://github.com" : nil,
+                       timeout: gitTimeout)
     }
+
+    /// A `git clone`/`fetch` of a real repository over a slow link is minutes,
+    /// not seconds - this is deliberately far above `Subprocess.defaultTimeout`
+    /// and still a bound.
+    private static let gitTimeout: TimeInterval = 600
 
     /// Clones `originURL` into `localCloneDir(for:)` if it isn't there yet -
     /// a no-op on every later check/sync. Never re-clones an existing

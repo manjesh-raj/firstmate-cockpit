@@ -110,7 +110,7 @@ enum SingleInstanceGuard {
             // Cannot create/open the lock file at all (a read-only container,
             // a permissions problem). Failing *open* here is deliberate: a
             // guard that cannot run must not block the app from starting.
-            NSLog("[cockpit] single-instance: could not open \(url.path) - proceeding unguarded")
+            AppLog.lifecycle.error("single-instance: could not open \(url.path, privacy: .public) - proceeding unguarded")
             return .acquired
         }
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {

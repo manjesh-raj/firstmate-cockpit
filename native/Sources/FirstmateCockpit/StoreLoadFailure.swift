@@ -38,17 +38,17 @@ enum StoreLoadFailure {
     static func backUp(_ url: URL, label: String? = nil) -> String? {
         let name = label ?? url.lastPathComponent
         guard FileManager.default.fileExists(atPath: url.path) else {
-            NSLog("[cockpit] \(name) failed to load and does not exist on disk - nothing to back up")
+            AppLog.store.error("\(name, privacy: .public) failed to load and does not exist on disk - nothing to back up")
             return nil
         }
         let backupURL = url.deletingLastPathComponent()
             .appendingPathComponent("\(url.lastPathComponent).corrupt-\(Int(Date().timeIntervalSince1970))")
         do {
             try FileManager.default.copyItem(at: url, to: backupURL)
-            NSLog("[cockpit] \(name) failed to decode - backed up to \(backupURL.path)")
+            AppLog.store.error("\(name, privacy: .public) failed to decode - backed up to \(backupURL.path, privacy: .public)")
             return backupURL.path
         } catch {
-            NSLog("[cockpit] \(name) failed to decode AND could not be backed up: \(error.localizedDescription)")
+            AppLog.store.critical("\(name, privacy: .public) failed to decode AND could not be backed up: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

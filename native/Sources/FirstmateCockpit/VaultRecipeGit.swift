@@ -180,42 +180,18 @@ enum VaultRecipeGit {
         return try? JSONDecoder().decode(VaultRecipe.self, from: data)
     }
 
-    // MARK: git process plumbing (mirrors ShiftGitSync.runGit's auth shape)
+    // MARK: git process plumbing
 
-    private struct GitResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-    }
+    // GL-15: shared runner, shared token injection - see
+    // `Subprocess.gitAuthEnvironment`. Unchanged in behaviour, including that a
+    // `nil`/non-https remote gets no header, which is what the disposable
+    // bare-repo verification this file's header describes relies on.
+
+    private typealias GitResult = SubprocessResult
 
     private static func runGit(_ args: [String], cwd: String, remoteURL: String?, authenticated: Bool) -> GitResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        var env = childEnvironmentDict()
-        if authenticated, let remoteURL, remoteURL.hasPrefix("https://"), let token = DocsSyncSource.ghAuthToken() {
-            let basic = Data("x-access-token:\(token)".utf8).base64EncodedString()
-            env["GIT_CONFIG_COUNT"] = "1"
-            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-            env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic \(basic)"
-        }
-        proc.environment = env
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return GitResult(status: -1, stdout: "", stderr: "\(error)")
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return GitResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.git(args, cwd: URL(fileURLWithPath: cwd),
+                       authenticateFor: authenticated ? remoteURL : nil,
+                       timeout: 600)
     }
 }

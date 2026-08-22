@@ -298,7 +298,7 @@ enum BackupImport {
                     + "which `ssh` reads as a command-line option rather than a destination. "
                     + "This is not a valid host - re-add it by hand if you expected it here."
                 )
-                NSLog("[cockpit] backup import: refused host \"\(bundleHost.label)\" - unsafe field(s): \(fields) (GL-08)")
+                AppLog.store.error("backup import: refused host \"\(bundleHost.label, privacy: .public)\" - unsafe field(s): \(fields, privacy: .public) (GL-08)")
                 continue
             }
             if let match = existingHosts.first(where: { $0.id == bundleHost.id })
