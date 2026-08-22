@@ -557,6 +557,185 @@ The stabilisation pass over the captain-approved production-readiness review (`d
 - **Two permanent suites came out of this pass, both confirmed to catch a real regression rather than merely to pass** (reverting the `--`, the `SSHKeyStore` backup and the Shift write-refusal each reproduced a specific named failure): `FM_RUN_STORE_DURABILITY_TESTS` (GL-01/GL-21 - every case proves the *original bytes are still on disk* after a post-failure write, since "the store loaded zero items" was true before the fix too) and `FM_RUN_PHASE1_HARDENING_TESTS` (GL-05/GL-08). The single-instance case needs a genuinely separate process to prove anything - `flock` is per-open-file-description, so re-acquiring from the same process succeeds and proves nothing - so it spawns a small `python3` child that takes the same advisory lock, and then re-runs it after release so a probe failing for an unrelated reason cannot make the test pass vacuously.
 - **Verified with `swift build` (clean, zero warnings) plus all 43 runnable suites passing, deliberately without ever launching the app** - see the worktree rule above, which this pass also wrote into the README's front door.
 
+## Production-readiness phase 2 (`fm/grandline-review-phase2-harden`)
+
+The "harden the machinery" slice of the captain-approved production-readiness review
+(`data/grandline-production-review/MANJESH_GRAND_LINE_PRODUCTION_REVIEW.md`, findings
+GL-01..GL-38). Phase 1 was the stop-irreversible-loss pass; this one builds the shared
+infrastructure everything else rides on. Phase 3 (the full accessibility sweep, the
+high-risk subsystem suites, Touch ID off-main, release-binary test exclusion, first-run
+thread) and Phase 4 (the architectural splits) are still open - read section 31 before
+picking up a GL-numbered item.
+
+- **`Subprocess.swift` is the app's one subprocess runner, and a hand-rolled `Process()`
+  outside it is now a self-test failure (GL-02/03/04/15).** It replaced ~25 call sites in
+  21 files, seven `resolveExecutable` copies, ten result structs and four identical
+  git-auth blocks. The thing worth internalising is *why* the duplication mattered: the
+  three deadlock shapes it hid were not hypothetical, and the middle one is the trap.
+  About twelve helpers drained stdout to EOF and stderr only afterwards, each with a
+  comment explaining the pipe deadlock they thought they had fixed - and all twelve still
+  deadlocked, permanently, on any child that filled the 64KB *stderr* buffer while stdout
+  was open (`npm -g`, `brew upgrade`, git advice output, a `gh`/`av` failure spew). Both
+  streams are drained concurrently now, via `readabilityHandler` into a locked buffer.
+  - **`readDataToEndOfFile()` on a background thread is not an acceptable drain**, which
+    is why `StreamCollector` uses handlers. That call does not return until *every* writer
+    closes the pipe, including a grandchild that inherited it (`brew` and `npm` both spawn
+    such children) - so a timeout could kill the child and still leave a thread blocked on
+    the pipe forever. A handler can be torn down; a blocked `read(2)` cannot.
+  - **Every run is bounded**, with SIGTERM then SIGKILL after a short grace, and returns
+    partial output with `timedOut == true` rather than parking its caller. This is what
+    makes `BackgroundSignalsPoller`'s watchdog a backstop rather than the only defence.
+    Long operations pass their own value (`brew`/`git clone` are minutes, legitimately);
+    the point is that nothing is unbounded, not that everything is fast.
+  - **`signal(SIGPIPE, SIG_IGN)` is installed once, lazily, from the first run** - and it
+    is load-bearing, not hygiene. Any child that exits without reading all of its stdin
+    leaves the writer holding a broken pipe, and SIGPIPE's default disposition kills the
+    process. Found live: the self-test's own "child ignores a large stdin" case took the
+    whole binary down with exit 141 before this line existed.
+  - **Secrets travel in `extraEnv`, never argv** (`ps` shows argv), and
+    `Subprocess.gitAuthEnvironment` is the single copy of the GitHub Basic-auth
+    `http.extraheader` block. It returns nothing for a non-`https://` remote, which is what
+    keeps every disposable-bare-repo self-test in this project working.
+  - **`FM_RUN_SUBPROCESS_TESTS=1`** is the guard, and it does two things rather than one:
+    it proves the runner survives an stderr flood, *and* `legacyDrainOrderStillDeadlocks`
+    runs the pre-fix drain order against the identical child in-process and asserts it does
+    **not** finish. A passing flood test proves nothing unless the flood can genuinely
+    deadlock a reader. **Confirmed to catch a real regression**: injecting the pre-fix
+    order into the shared runner did not merely fail the suite, it hung the whole binary
+    (no output at all, killed at 40s) - exactly the shipped bug's own signature.
+  - Deliberately out of scope: interactive/PTY work. Every terminal tab (including the
+    one-shot Console command tabs) forks through `LocalProcessTerminalView` and has nothing
+    to do with `Process`; a real `sudo` prompt still needs a real terminal, which is why
+    Bootstrap and Settings route through a Console tab.
+- **`ClaudeOneShot.swift` is the one `claude -p` runner (GL-26).** Five copies had drifted
+  in ways that were bugs rather than decisions: four bounded the wait (20/20/45/120s) and
+  `SRELeadRunner` did not bound it at all, so a wedged `claude` left an SRE Lead turn
+  spinning forever; all five had GL-02's half-fixed drain order; and three treated an empty
+  `result` as failure while two accepted it. Now one parse, one contract (main thread,
+  exactly once), and `SubprocessCancellation` for the one caller that needs to kill a turn
+  early. **Called-out behaviour change:** an SRE Lead turn is now bounded
+  (`ClaudeOneShot.conversationTimeout`, 300s). The per-caller `claudePathOverrideForTests`
+  seams are all preserved, which is what keeps the existing fake-`claude` suites working
+  untouched. `LogAnalyzerAI.parseEnvelope` survives as a thin adapter because
+  `LogAnalyzerSelfTest` drives it directly.
+- **`AppLog.swift` is the one logging surface (GL-11).** `os.Logger`, one subsystem
+  (`com.firstmate.cockpit.native`, a literal - `Bundle.main.bundleIdentifier` is `nil` for
+  the plain `swift build` binary this project documents as the dev flow), categories from
+  the review's own list. Two rules: every catch-and-degrade site logs the underlying error
+  *before* degrading, and nothing leaves the machine. The "don't log a secret value" rule
+  is unchanged and is not delegated to `os.Logger`'s interpolation privacy. The seven
+  remaining `NSLog` sites are gone.
+- **`ServiceHealth.swift` + Settings > Health is F1.** A registry, not a monitor: it polls
+  nothing and never decides a service is unhealthy on its own - each service reports its
+  own outcomes, so "healthy" stays defined by the thing that knows. `failureThreshold` (3)
+  is what makes a Notification Center entry mean "still broken" rather than "the network
+  blipped once". Reporters are background queues, observers are views, so the state is
+  lock-guarded and observers always fire on main. Wired from `BackgroundSignalsPoller`
+  (including its watchdog firing, which was previously invisible), `FleetNotifier`,
+  `ShiftGitSync.setStatus`, and `ShiftNotificationScheduler`.
+- **`PersistenceFailureReporter` + `AtomicWrite` are GL-10/GL-30.** ~25 `try?` writes across
+  `ShiftStore`, `CommandLibraryStore`, `DocsRunbookData` (plus the four JSON stores' own
+  persist paths) now report instead of swallowing. The convention: **`try` at the write,
+  `report` at the store** - the store method has the "which record" context a throw
+  propagated to a view would lose. It deliberately does *not* roll back the in-memory
+  model: keeping the edit visible so the captain can retry beats discarding their work a
+  second time. `Phase2HardeningSelfTest.noSilentPersistenceWrites` greps the three files
+  the finding names, so a reintroduced `try?` fails the test run - and that guard is what
+  told this task the work was not finished yet, twice.
+- **`AppLockGate.swift` closes GL-09.** The lock overlay is a subview of the main window
+  and `setContentMenusEnabled` disables menu *items*, so before this everything outside
+  that window kept working while locked: the menu-bar status item kept showing the due
+  count and opening a popover that discloses the next follow-up, its quick-add kept writing
+  *and pushing* tasks, ⌥Space kept capturing, dictation kept recording/transcribing/pasting,
+  and a `.floating` Host Editor stayed fully usable above the lock screen. The gate is one
+  tiny piece of shared state anything may read, because those surfaces are two global
+  `NSEvent` monitors, an `NSStatusItem` and a floating window - none of which has a path to
+  the shell controller, and giving them one would point four dependencies the wrong way.
+  **Rule for adding a surface:** if it runs while the main window is not frontmost *and*
+  either shows or writes the captain's data, it consults `allows(_:)`; add a case rather
+  than reusing a related one. Secondary windows register a provider closure rather than the
+  gate sweeping `NSApp.windows` - that array contains AppKit's own `NSStatusBarWindow`, and
+  ordering that out would break the status item rather than secure it. Dictation's `onUp` is
+  deliberately *not* gated: a recording started before the lock still has to be stopped, or
+  the microphone stays open.
+- **GL-38 (resolved captain decision): the merge action passes the task id.**
+  `bin/fm-pr-merge.sh` takes `<task-id> <pr-url>` and validates the id, and for its whole
+  life `FleetDataSource.mergePR` passed only the URL - so the script's own argument guard
+  rejected every invocation. The id was never missing: `MergedPR.taskID` carries it and the
+  Review row's button identifier has held `"<taskID>\0<url>"` since it was written. Nothing
+  asserted the argv shape, which is the actual lesson. `mergeArguments`/`canMerge` exist so
+  the contract and the row's gating are one definition;
+  `Phase2HardeningSelfTest.mergeCommandCarriesTheTaskID` pins it.
+- **Touch ID cancel (resolved captain decision): cancelling aborts the connect.** It used
+  to fall through and start `ssh` without `-i`, silently downgrading to agent auth - wrong
+  twice over, because the captain who pressed Cancel did not ask for a connection by other
+  means, and on a host that *does* accept agent auth the downgrade succeeds so the "no" has
+  no visible effect at all. `KeychainKeyStore.classify` maps `.userCancel`/`.appCancel`/
+  `.systemCancel` onto `KeychainError.userCancelled`; `connectSSH` catches that one case and
+  returns. A genuine *error* (deleted key, Keychain fault) still falls through to agent auth
+  - that is an accident, not a decision. Tested through `classify` directly, which is the
+  only way to cover this without a real biometric prompt.
+- **Launch path (GL-12/23/24).** Mirror-backend resolution is asynchronous
+  (`FirstmateBackend.resolveMirrorTargetAsync`): it was three serial subprocess calls on
+  the main thread from inside `ConsoleController.loadView`, i.e. inside the eager embed loop
+  *before* `makeKeyAndOrderFront`, so up to ~9s landed as a pre-window beachball. The
+  mirror tab is created immediately (tab order and ⌘1…⌘9 numbering unchanged), marked
+  `isAwaitingMirrorResolution`, shows a "Resolving the fleet's backend…" line, and has its
+  launch pair written exactly once before its process ever starts - which is why
+  `TabModel.launch` became `var` and why that does **not** weaken
+  `fm/grandline-mirror-resolve-race-fix`'s frozen-pair invariant (one call, both values,
+  frozen before the first start, replayed on every reconnect). Settings' tmux session list
+  loads off the main thread, and its theme observer no longer fetches at all: **a theme
+  observer repaints, never fetches** (`repaintForTheme()` is the repaint-only half). One
+  shared `CommandLibraryStore` replaces two caching instances that diverged in-session and
+  raced each other's `recent.yaml` - the "independent store instances" convention was
+  established for a store that re-reads disk per call and does not transfer to a caching,
+  writing one.
+- **GL-20 resize gating: the cheap check, not a debounce.** `reassertBodyContainerWidthTie`
+  used to force a full-tree `layoutSubtreeIfNeeded()` on every resize *frame*, resolving
+  every mounted destination plus every per-host console and defeating the child
+  controllers' own visibility gates. A debounce was tried first and is **wrong here** - it
+  broke `AppShellBodyWidthSelfTest`, because the whole point of #231's fix is that the
+  frame is correct *synchronously* after a resize. The gate is a staleness comparison
+  instead: `root` is the window's `contentView` (the OS keeps its frame in sync
+  unconditionally), so `bodyContainer.frame.width` vs `root.bounds.width - rail width` costs
+  two frame reads and no layout, and only a genuine disagreement (or a deactivated
+  constraint) pays for the resolve. Log Analyzer's six tabs are lazily mounted (built on
+  first selection, then kept - a tab's inputs must survive switching away), which needed the
+  Compare and Evidence tabs' implicitly-unwrapped views guarded and re-rendered on mount.
+  `HostsListSection.clipViewResized` is gated on visibility.
+- **GL-28: the two remaining races.** `ShiftGitSync`'s `status`/`statusHandlers`/
+  `pendingConflictSet` are written from its serial git queue and read from the main thread -
+  a torn read of an enum with a `String` payload, not merely a stale value - now behind one
+  lock, with no lock held across a handler call. `DictationAudioResampler`'s sample array is
+  appended from `AVAudioEngine`'s real-time audio thread and read from main; a reallocating
+  append concurrent with a read can hand out a freed buffer, so it is locked too (around the
+  array only, never across the conversion).
+- **GL-14, the rest: an offline failure must not read as a tool bug.** `QuotaSource` used to
+  surface `quota-axi`'s raw stderr and `BackupGitHub` printed a literal "HTTP -1" (its
+  sentinel for "there was no HTTP response at all"). Both now name the recognisable
+  offline/auth shapes and fall back to the real output for anything unrecognised - inventing
+  a friendly message for an unknown failure would hide the one thing worth reading.
+- **CI is real (GL-07).** `.github/workflows/ci.yml` on every push and PR: `swift build`
+  with a hard failure on any warning in `Sources/FirstmateCockpit` (the vendored C/C++ is
+  not this project's to fix), plus `./Scripts/run-all-tests.sh --ci`. `--ci` skips the
+  suites needing a real login session or the machine's Keychain, and that list lives in the
+  script with a reason per entry so CI and a local run cannot disagree about what "the
+  tests" are. CI points every `FM_*` data-location override at a scratch directory, so a run
+  never attempts a real clone of the private config repo. The runner also lost its
+  `mapfile` dependency (macOS ships bash 3.2).
+- **Verified with `swift build` (clean, zero warnings in this app's sources) and all 46
+  runnable suites passing, without ever launching the app** - see the README's
+  worktree-launch rule, which this pass did not relax. Two suites are new
+  (`FM_RUN_SUBPROCESS_TESTS`, `FM_RUN_CLAUDE_ONE_SHOT_TESTS`,
+  `FM_RUN_PHASE2_HARDENING_TESTS`), and three existing ones were adjusted for real
+  behaviour changes rather than worked around: `MirrorResolveRaceSelfTest` now waits for the
+  async resolution (the invariant is unchanged, only its timing), `QuotaDataSelfTest` gained
+  the offline-mapping cases, and `SRELeadPerTabSelfTest.scrollbackSurvivesSRELeadToggle`
+  now waits for the terminal's geometry to settle before taking its baseline - it was
+  intermittently comparing SwiftTerm's 80x25 default against the first real layout (97x32),
+  which is a test-timing fragility rather than a pane resizing anything.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

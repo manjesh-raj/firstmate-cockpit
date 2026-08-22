@@ -82,40 +82,28 @@ enum ConfigRepoPrivacy {
             return .unknown("`gh` is not installed, so repo visibility could not be verified.")
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: gh)
-        proc.arguments = ["api", "repos/\(fullName)", "--jq", ".private"]
-        proc.environment = childEnvironmentDict()
-        let out = Pipe()
-        proc.standardOutput = out
-        // Never-read stderr: `FileHandle.nullDevice`, not a `Pipe()` nobody
-        // drains (GL-02).
-        proc.standardError = FileHandle.nullDevice
-        proc.standardInput = FileHandle.nullDevice
-        do { try proc.run() } catch {
-            return .unknown("Could not run `gh`: \(error.localizedDescription)")
-        }
-
-        // Bounded: an unreachable API must not wedge the sync queue. Same
-        // watchdog shape as `FleetDataSource.crewState`.
-        let exited = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in exited.signal() }
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            proc.terminationHandler = nil
-            if proc.isRunning { proc.terminate() }
+        // GL-15: the bounded watchdog and the both-streams drain this function
+        // hand-rolled are now the shared runner's defaults.
+        let result = Subprocess.run(
+            executable: gh, arguments: ["api", "repos/\(fullName)", "--jq", ".private"],
+            timeout: timeout, stderr: .discard, log: AppLog.network
+        )
+        if result.timedOut {
             return .unknown("Timed out asking GitHub whether \(fullName) is private.")
         }
-        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard proc.terminationStatus == 0 else {
+        if result.launchFailed {
+            return .unknown("Could not run `gh`: \(result.stderr)")
+        }
+        guard result.ok else {
             return .unknown("`gh api repos/\(fullName)` failed - not authenticated, offline, or no access.")
         }
+        let text = result.stdout
         switch text {
         case "true":
             cacheLock.lock(); confirmedPrivate = true; cacheLock.unlock()
             return .privateRepo
         case "false":
-            NSLog("[cockpit] SECURITY: \(fullName) is PUBLIC. Refusing to push personal data to it (GL-22).")
+            AppLog.gitSync.critical("SECURITY: \(fullName, privacy: .public) is PUBLIC. Refusing to push personal data to it (GL-22).")
             return .publicRepo
         default:
             return .unknown("Unexpected response asking whether \(fullName) is private: \"\(text)\".")
@@ -131,7 +119,6 @@ enum ConfigRepoPrivacy {
     }
 
     private static func resolveGh() -> String? {
-        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        Subprocess.resolveExecutable("gh")
     }
 }

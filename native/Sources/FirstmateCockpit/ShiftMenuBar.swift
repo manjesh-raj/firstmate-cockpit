@@ -47,6 +47,17 @@ final class ShiftMenuBarController: NSObject, NSPopoverDelegate {
         }
 
         store.observe { [weak self] in self?.refreshCounts() }
+
+        // GL-09: this status item lives outside the locked window entirely, so
+        // before this it kept showing the due count, kept opening a popover
+        // that discloses the next follow-up's title, and its quick-add kept
+        // writing tasks *and pushing them to GitHub* while the app was locked.
+        // Re-derive on every lock transition rather than only on a store
+        // change, so locking while the count is visible clears it immediately.
+        AppLockGate.shared.observe { [weak self] _ in
+            self?.popover.performClose(nil)
+            self?.refreshCounts()
+        }
         refreshCounts()
     }
 
@@ -54,16 +65,30 @@ final class ShiftMenuBarController: NSObject, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(nil)
-        } else {
-            refreshCounts()
-            contentController.focusQuickAdd()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            return
         }
+        // GL-09: locked means the popover does not open at all. Not "opens
+        // empty" - an empty popover invites a second click, and there is
+        // nothing here worth showing behind a lock.
+        guard AppLockGate.shared.allows(.menuBarPopover) else {
+            AppLog.lifecycle.info("menu-bar popover refused - app is locked (GL-09)")
+            NSSound.beep()
+            return
+        }
+        refreshCounts()
+        contentController.focusQuickAdd()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
     private func createQuickTask(title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Belt and braces: the popover cannot be open while locked, but this is
+        // the write, and a write is the thing that must not happen.
+        guard AppLockGate.shared.allows(.menuBarPopover) else {
+            popover.performClose(nil)
+            return
+        }
         var task = ShiftTask.fresh()
         // Reuse the same natural-language date detection the New Task sheet's
         // title field already offers (cockpit-shift-create-edit), so "tomorrow
@@ -80,6 +105,16 @@ final class ShiftMenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func refreshCounts() {
+        // Locked: the title shows the app's own mark and nothing else. The
+        // count is a real disclosure - "3 things due today" is information
+        // about the captain's day, readable by anyone at the machine.
+        guard AppLockGate.shared.allows(.menuBarContent) else {
+            statusItem.button?.title = ""
+            statusItem.button?.toolTip = "Tasks - Manjesh Grand Line is locked"
+            contentController.update(tasksToday: 0, nextFollowUp: nil, nextFollowUpDate: nil)
+            return
+        }
+        statusItem.button?.toolTip = "Tasks"
         let cal = Calendar.current
         let today = Date()
         let dueTodayCount = store.activeTasks.filter { task in

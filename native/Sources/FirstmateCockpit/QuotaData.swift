@@ -108,12 +108,39 @@ enum QuotaSource {
         }
         let latency = Date().timeIntervalSince(start)
         guard result.status == 0, !result.stdout.isEmpty else {
-            return .failure(result.combinedLog.isEmpty ? "quota-axi failed (exit \(result.status))." : result.combinedLog)
+            // GL-14: this used to surface `quota-axi`'s raw stderr, which for
+            // the most common failure by far - no network - is a stack of
+            // transport detail that reads like a bug in the tool. Name the
+            // recognisable cases; anything else still shows the real output,
+            // because inventing a friendly message for an unknown failure would
+            // hide the one thing worth reading.
+            return .failure(friendlyFailure(result))
         }
         guard let snapshot = parse(result.stdout, latency: latency, log: result.combinedLog) else {
             return .failure("Couldn't parse quota-axi's output.")
         }
         return .success(snapshot)
+    }
+
+    /// Recognises the offline/auth shapes in `quota-axi`'s own output. Kept
+    /// `internal` so `QuotaDataSelfTest` can pin the mapping.
+    static func friendlyFailure(_ result: SubprocessResult) -> String {
+        let log = result.combinedLog
+        let lower = log.lowercased()
+        let offlineMarkers = ["could not resolve host", "network is unreachable", "connection refused",
+                              "temporary failure in name resolution", "offline", "no route to host",
+                              "nodename nor servname", "operation timed out", "timed out"]
+        if offlineMarkers.contains(where: { lower.contains($0) }) {
+            return "Couldn't reach Anthropic - check your connection, then try again."
+        }
+        if lower.contains("unauthorized") || lower.contains("401") || lower.contains("not authenticated")
+            || lower.contains("no credentials") {
+            return "quota-axi isn't authenticated. Run it once in a terminal to sign in."
+        }
+        if log.isEmpty {
+            return "quota-axi failed (exit \(result.status))."
+        }
+        return log
     }
 
     /// `resetsAt` comes back from `quota-axi` as e.g.
@@ -179,59 +206,24 @@ enum QuotaSource {
         return QuotaSnapshot(plan: plan, session: session, weekly: weekly, latency: latency, log: log)
     }
 
-    // MARK: Process plumbing (a fresh, purpose-built copy - see this file's header)
+    // MARK: Process plumbing
+
+    // GL-15: this file's own header used to explain why it carried a fresh copy
+    // of `resolveExecutable`/`RunResult`/`runWithTimeout`; `Subprocess` is that
+    // consolidation, and its bounded-wait behaviour *is* the shape this file
+    // established.
 
     private static func resolveExecutable(_ name: String) -> String? {
-        let fm = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in path.split(separator: ":") {
-                let candidate = "\(dir)/\(name)"
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-        }
-        for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
+        Subprocess.resolveExecutable(name)
     }
 
-    private struct RunResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-        var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
-    }
+    private typealias RunResult = SubprocessResult
 
-    /// Mirrors `VaultSource.runWithTimeout`'s shape almost verbatim - bounded
-    /// wait via `Process.terminationHandler` + `DispatchSemaphore`, killing
-    /// the process rather than leaving a background thread blocked on
-    /// `waitUntilExit()` forever if it hasn't exited by the deadline.
+    /// `nil` on timeout, matching what the local copy returned so the caller's
+    /// "couldn't read quota" branch is unchanged.
     private static func runWithTimeout(_ executable: String, _ args: [String], timeout: TimeInterval) -> RunResult? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let exited = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in exited.signal() }
-        guard exited.wait(timeout: .now() + timeout) == .success else {
-            proc.terminationHandler = nil
-            if proc.isRunning { proc.terminate() }
-            return nil
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        let result = Subprocess.run(executable: executable, arguments: args,
+                                    timeout: timeout, log: AppLog.network)
+        return result.timedOut ? nil : result
     }
 }

@@ -31,7 +31,12 @@ final class SRELeadRunner {
     private let session: SRELeadSession
     private let claude: String
     private var sessionID: String?
-    private var currentProcess: Process?
+    /// Cancellation handle for the turn currently in flight, so the pane can
+    /// tear down a running `claude` when it closes. GL-15/GL-26 replaced the
+    /// raw `Process` this used to hold - `SubprocessCancellation` is the seam
+    /// `Subprocess` exposes for exactly this, so a caller can stop a run
+    /// without this file owning process plumbing again.
+    private var inFlight: SubprocessCancellation?
 
     init(session: SRELeadSession, claude: String) {
         self.session = session
@@ -40,99 +45,48 @@ final class SRELeadRunner {
 
     /// Ask one question. `completion` is always called on the main thread.
     func ask(_ question: String, completion: @escaping (Result<String, SRELeadSetupError>) -> Void) {
-        var args = [
-            "-p", question,
+        let extraArgs = [
             "--mcp-config", session.mcpConfigPath.path,
             "--strict-mcp-config",
             "--append-system-prompt", SRELead.persona,
             "--permission-mode", "bypassPermissions",
             "--allowedTools", SRELead.allowedTools,
-            "--output-format", "json",
         ]
-        if let sessionID {
-            args += ["--resume", sessionID]
-        }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: claude)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        proc.currentDirectoryURL = session.workingDir
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        // Without this, `claude -p` probes for piped stdin and (confirmed
-        // live) waits ~3s before proceeding without it, on every single
-        // turn - `/dev/null` tells it immediately there's nothing coming.
-        proc.standardInput = FileHandle.nullDevice
-        currentProcess = proc
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                try proc.run()
-            } catch {
-                DispatchQueue.main.async {
-                    self?.currentProcess = nil
-                    completion(.failure(SRELeadSetupError(message: "could not start claude: \(error.localizedDescription)")))
-                }
-                return
-            }
-            // Read both pipes to completion before `waitUntilExit()` - a
-            // pipe's buffer can fill and deadlock the child if the parent
-            // isn't draining it concurrently with the child still writing.
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            let status = proc.terminationStatus
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.currentProcess = nil
-                self.handleResult(outData: outData, errData: errData, status: status, completion: completion)
+        // GL-26: this was the one of the five `claude -p` callers with *no*
+        // timeout at all, so a wedged `claude` left a turn spinning forever with
+        // no way out but closing the pane. It is bounded now, deliberately
+        // generously - a real turn can run several bridged `kubectl` calls
+        // through the captain's own terminal. **This is a called-out behaviour
+        // change**, not an accident of the migration.
+        inFlight = ClaudeOneShot.run(
+            executable: claude,
+            prompt: question,
+            extraArguments: extraArgs,
+            resumeSessionID: sessionID,
+            cwd: session.workingDir,
+            timeout: ClaudeOneShot.conversationTimeout,
+            label: "claude -p (SRE Lead)"
+        ) { [weak self] result in
+            guard let self else { return }
+            self.inFlight = nil
+            switch result {
+            case .success(let reply):
+                // Threading the session id back through `--resume` is what
+                // makes the pane a conversation rather than a series of
+                // unrelated questions.
+                if let sid = reply.sessionID { self.sessionID = sid }
+                completion(.success(reply.text))
+            case .failure(let error):
+                completion(.failure(SRELeadSetupError(message: error.message)))
             }
         }
-    }
-
-    private func handleResult(
-        outData: Data, errData: Data, status: Int32,
-        completion: (Result<String, SRELeadSetupError>) -> Void
-    ) {
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let lastNonEmptyLine = stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .last
-            .map(String.init)
-
-        guard let line = lastNonEmptyLine,
-              let jsonData = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
-            completion(.failure(SRELeadSetupError(message: detail)))
-            return
-        }
-
-        if let sid = obj["session_id"] as? String {
-            sessionID = sid
-        }
-
-        if let isError = obj["is_error"] as? Bool, isError {
-            let detail = (obj["result"] as? String) ?? "claude reported an error."
-            completion(.failure(SRELeadSetupError(message: detail)))
-            return
-        }
-
-        guard let result = obj["result"] as? String, !result.isEmpty else {
-            completion(.failure(SRELeadSetupError(message: "claude's response had no reply text.")))
-            return
-        }
-        completion(.success(result))
     }
 
     /// Best-effort kill of an in-flight turn - called when the pane closes.
     /// Safe to call whether or not a turn is running.
     func cancel() {
-        currentProcess?.terminate()
-        currentProcess = nil
+        inFlight?.cancel()
+        inFlight = nil
     }
 }

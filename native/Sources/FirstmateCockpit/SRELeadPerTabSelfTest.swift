@@ -299,6 +299,21 @@ enum SRELeadPerTabSelfTest {
             return length > 0 && length == lastLength
         }
 
+        // The terminal's real geometry is resolved by AppKit a runloop turn or
+        // two after the constraints are set, and this window is never ordered
+        // front, so it can still be sitting at SwiftTerm's 80x25 default here.
+        // Taking the baseline before it settles made this case fail
+        // intermittently with "80x25 -> 97x32" - which is the first real layout
+        // landing during the wait below, not the pane resizing anything. Wait
+        // for a stable size, then measure.
+        var lastSize = (cols: -1, rows: -1)
+        _ = waitUntil(timeout: 8) {
+            controller.view.layoutSubtreeIfNeeded()
+            let size = (cols: terminal.cols, rows: terminal.rows)
+            defer { lastSize = size }
+            return size == lastSize
+        }
+
         // Comfortably more than one screen, so real lines are pushed into
         // scrollback rather than all still being on the visible buffer -
         // scrollback is what a reflow truncates.

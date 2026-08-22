@@ -67,13 +67,21 @@ final class ShiftNotificationScheduler {
     /// bare binary.
     func start() {
         guard timer == nil else { return }
+        ServiceHealthRegistry.shared.register(.shiftDueItems)
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
                 if !granted {
-                    NSLog(
-                        "Shift: notification permission not granted (%@) - due-item reminders will not appear until it is.",
-                        error?.localizedDescription ?? "denied"
-                    )
+                    let reason = error?.localizedDescription ?? "denied"
+                    AppLog.poller.error("""
+                        Tasks: notification permission not granted (\(reason, privacy: .public)) - \
+                        due-item reminders will not appear until it is.
+                        """)
+                    // A permission the captain declined is a real, permanent
+                    // reason this service cannot do its job, and it is
+                    // invisible everywhere else.
+                    ServiceHealthRegistry.shared.recordFailure(
+                        .shiftDueItems,
+                        "Notification permission not granted (\(reason)). Enable it in System Settings > Notifications.")
                 }
             }
         }
@@ -93,6 +101,7 @@ final class ShiftNotificationScheduler {
     /// own poll cycle is exercised in this codebase (a temporary env-gated
     /// probe, per AGENTS.md's "Verifying native UI bugs" convention).
     func poll() {
+        ServiceHealthRegistry.shared.recordSuccess(.shiftDueItems)
         let now = Date()
         let horizon = now.addingTimeInterval(lookahead)
 

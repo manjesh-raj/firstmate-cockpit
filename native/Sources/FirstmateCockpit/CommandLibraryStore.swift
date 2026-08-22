@@ -109,7 +109,7 @@ final class CommandLibraryStore {
     /// too, so the root check is the one that matters here.
     private func scanCommandsChecked() -> (commands: [DevOpsCommand], enumerationFailed: Bool) {
         guard let categoryDirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
-            NSLog("[cockpit] command library: could not enumerate \(root.path) - not seeding (GL-21)")
+            AppLog.store.error("command library: could not enumerate \(self.root.path, privacy: .public) - not seeding (GL-21)")
             return ([], true)
         }
         var results: [DevOpsCommand] = []
@@ -182,7 +182,7 @@ final class CommandLibraryStore {
         } else {
             favoriteIDs.insert(id)
         }
-        try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
+        persist(what: "favourites", path: favoritesPath) { try CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath) }
         gitSync?.markDirty()
     }
 
@@ -199,7 +199,7 @@ final class CommandLibraryStore {
         if recentUsage.count > Self.maxRecentUsageEntries {
             recentUsage.removeLast(recentUsage.count - Self.maxRecentUsageEntries)
         }
-        try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+        persist(what: "recently used commands", path: recentUsagePath) { try CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath) }
         gitSync?.markDirty()
     }
 
@@ -222,7 +222,7 @@ final class CommandLibraryStore {
     private func migrateID(from oldID: String, to newID: String) {
         if favoriteIDs.remove(oldID) != nil {
             favoriteIDs.insert(newID)
-            try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
+            persist(what: "favourites", path: favoritesPath) { try CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath) }
         }
         var changedUsage = false
         recentUsage = recentUsage.map { entry in
@@ -231,7 +231,7 @@ final class CommandLibraryStore {
             return CommandLibraryUsageEntry(id: newID, usedAt: entry.usedAt)
         }
         if changedUsage {
-            try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+            persist(what: "recently used commands", path: recentUsagePath) { try CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath) }
         }
     }
 
@@ -288,7 +288,7 @@ final class CommandLibraryStore {
             id: id, name: name, description: description, category: category, subcategory: subcategory,
             commandTemplate: commandTemplate, parameters: parameters, tags: tags, risk: risk
         )
-        try? CommandLibraryYaml.writeCommand(command, path: filePath(for: id))
+        persist(what: "command \"\(command.name)\"", path: filePath(for: id)) { try CommandLibraryYaml.writeCommand(command, path: filePath(for: id)) }
         gitSync?.markDirty()
         reloadAll()
         return command
@@ -330,7 +330,7 @@ final class CommandLibraryStore {
             try? fm.removeItem(atPath: filePath(for: id))
             migrateID(from: id, to: newID)
         }
-        try? CommandLibraryYaml.writeCommand(updated, path: filePath(for: newID))
+        persist(what: "command \"\(updated.name)\"", path: filePath(for: newID)) { try CommandLibraryYaml.writeCommand(updated, path: filePath(for: newID)) }
         gitSync?.markDirty()
         reloadAll()
         return updated
@@ -339,11 +339,24 @@ final class CommandLibraryStore {
     func deleteCommand(id: String) {
         try? fm.removeItem(atPath: filePath(for: id))
         favoriteIDs.remove(id)
-        try? CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath)
+        persist(what: "favourites", path: favoritesPath) { try CommandLibraryYaml.writeFavorites(favoriteIDs, path: favoritesPath) }
         recentUsage.removeAll { $0.id == id }
-        try? CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath)
+        persist(what: "recently used commands", path: recentUsagePath) { try CommandLibraryYaml.writeRecentUsage(recentUsage, path: recentUsagePath) }
         gitSync?.markDirty()
         reloadAll()
+    }
+
+    /// GL-10: the one place this store's writes report. Before this every write
+    /// here was `try?`, so a full disk or a vanished `FM_COMMAND_LIBRARY_DIR`
+    /// meant the UI confirmed a save that never happened and the command was
+    /// gone at next launch.
+    private func persist(what: String, path: String, _ write: () throws -> Void) {
+        do {
+            try write()
+            PersistenceFailureReporter.reportSuccess()
+        } catch {
+            PersistenceFailureReporter.report(what: what, path: path, error: error)
+        }
     }
 
     // MARK: Seeding
@@ -374,9 +387,9 @@ final class CommandLibraryStore {
             // always trusts the caller's `fallbackID` derived from the path).
             let relativePath = ([command.category, command.subcategory, command.id]).compactMap { $0 }
             let path = root.appendingPathComponent(relativePath.joined(separator: "/")).appendingPathExtension("yaml").path
-            try? CommandLibraryYaml.writeCommand(command, path: path)
+            persist(what: "seed command \"\(command.name)\"", path: path) { try CommandLibraryYaml.writeCommand(command, path: path) }
         }
-        try? CommandLibraryYaml.writeConfig(CommandLibrarySeedData.config, path: configPath)
+        persist(what: "command library config", path: configPath) { try CommandLibraryYaml.writeConfig(CommandLibrarySeedData.config, path: configPath) }
         gitSync?.markDirty()
     }
 }

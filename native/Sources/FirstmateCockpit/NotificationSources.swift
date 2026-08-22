@@ -214,4 +214,72 @@ enum NotificationSources {
             id: fleetFinishedID
         )
     }
+
+    // MARK: #10 - A background service has failed repeatedly (GL-11 / GL-30)
+
+    /// Where "show me" goes for the two entries below. Set once, from
+    /// `AppShellController.loadView()`, to "select Settings and scroll to the
+    /// Health card" - the entries themselves are raised from background queues
+    /// that know nothing about destinations, which is the same
+    /// forward-don't-own split every other signal here uses.
+    static var navigateToHealth: (() -> Void)?
+
+    static func serviceFailingID(_ service: HealthService) -> String {
+        "service-failing.\(service.rawValue)"
+    }
+
+    /// Raised by `ServiceHealthRegistry` once a service has failed
+    /// `failureThreshold` times in a row - not on the first failure, which for
+    /// a laptop off the network is ordinary noise rather than news.
+    /// `.informational`, so it can be dismissed: the captain who already knows
+    /// they are offline should not have to keep being told.
+    static func setServiceFailing(_ service: HealthService, failures: Int, detail: String) {
+        let id = serviceFailingID(service)
+        GrandLineNotificationCenter.shared.set(
+            AppNotification(
+                id: id,
+                title: "\(service.title) keeps failing",
+                subtext: "Settings \u{00B7} \(failures) failures in a row \u{00B7} \(shortDetail(detail))",
+                kind: .informational, tint: .warn,
+                navigate: { navigateToHealth?() }
+            ),
+            id: id
+        )
+    }
+
+    static func clearServiceFailing(_ service: HealthService) {
+        GrandLineNotificationCenter.shared.set(nil, id: serviceFailingID(service))
+    }
+
+    // MARK: #11 - A save did not reach disk (GL-10 / GL-30)
+
+    static let persistenceFailureID = "persistence-failure"
+
+    /// The user-facing half of GL-10. A failed write used to be swallowed by
+    /// `try?`, so the UI confirmed a save that never reached disk and the data
+    /// was simply gone at next launch. `.actionNeeded`: unlike being offline,
+    /// this will not resolve itself.
+    static func setPersistenceFailure(count: Int, detail: String) {
+        guard count > 0 else {
+            GrandLineNotificationCenter.shared.set(nil, id: persistenceFailureID)
+            return
+        }
+        let title = count == 1 ? "A change could not be saved" : "\(count) changes could not be saved"
+        GrandLineNotificationCenter.shared.set(
+            AppNotification(
+                id: persistenceFailureID, title: title,
+                subtext: "Settings \u{00B7} \(shortDetail(detail))",
+                kind: .actionNeeded, tint: .critical,
+                navigate: { navigateToHealth?() }
+            ),
+            id: persistenceFailureID
+        )
+    }
+
+    /// One line, bounded - a notification subtext is a headline; the full text
+    /// lives on the Health card.
+    private static func shortDetail(_ detail: String, limit: Int = 90) -> String {
+        let firstLine = detail.split(separator: "\n").first.map(String.init) ?? detail
+        return firstLine.count <= limit ? firstLine : String(firstLine.prefix(limit)) + "\u{2026}"
+    }
 }

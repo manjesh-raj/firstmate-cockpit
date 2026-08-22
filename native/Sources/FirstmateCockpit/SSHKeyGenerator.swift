@@ -126,44 +126,30 @@ enum SSHKeyGenerator {
 
     @discardableResult
     private static func run(_ executable: String, _ args: [String]) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = args
-        // No controlling tty is attached to this child, so if `-P`/`-N` ever
-        // fail to suppress an interactive prompt, `readpassphrase()` fails
-        // fast (ENXIO opening /dev/tty) rather than hanging.
-        process.standardInput = FileHandle.nullDevice
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        try process.run()
-        // GL-02: drain both pipes concurrently *before* waiting. `ssh-keygen`
-        // is not normally chatty, but this call runs on the main thread, so
-        // the wait-then-read order meant any child that filled a ~64KB pipe
-        // buffer (a long `-lf` comment, an unexpected verbose failure) froze
-        // the whole UI permanently rather than just failing.
-        var outData = Data(), errData = Data()
-        let drain = DispatchGroup()
-        let readQueue = DispatchQueue(label: "fm.sshkeygen.drain", attributes: .concurrent)
-        drain.enter()
-        readQueue.async {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            drain.leave()
-        }
-        drain.enter()
-        readQueue.async {
-            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            drain.leave()
-        }
-        drain.wait()
-        process.waitUntilExit()
-        let out = String(data: outData, encoding: .utf8) ?? ""
-        let err = String(data: errData, encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
+        // GL-15: `Subprocess` owns the concurrent drain Phase 1 hand-rolled
+        // here, plus a bound this call never had. That bound matters more here
+        // than almost anywhere else in the app, because this runs on the main
+        // thread (GL-04 lists it, and moving it off is Phase 3's GL-25) - so an
+        // `ssh-keygen` that never exits used to freeze the whole UI with no
+        // recovery short of force-quitting.
+        //
+        // stdin stays `/dev/null` (the runner's default), which is load-bearing
+        // for the same reason as before: with no controlling tty, a `-P`/`-N`
+        // that somehow fails to suppress the prompt makes `readpassphrase()`
+        // fail fast rather than hang.
+        let result = Subprocess.run(executable: executable, arguments: args,
+                                    timeout: keygenTimeout, log: AppLog.keychain)
+        guard result.ok else {
+            if result.timedOut {
+                throw SSHKeyOperationError.toolFailed("ssh-keygen did not finish within \(Int(keygenTimeout))s.")
+            }
+            let trimmed = result.stderr
             throw SSHKeyOperationError.toolFailed(trimmed.isEmpty ? "ssh-keygen failed." : trimmed)
         }
-        return out
+        return String(data: result.stdoutData, encoding: .utf8) ?? ""
     }
+
+    /// Generating an RSA-4096 key is a second or two of real CPU work; this is
+    /// far above that and still a bound on a main-thread call.
+    private static let keygenTimeout: TimeInterval = 60
 }

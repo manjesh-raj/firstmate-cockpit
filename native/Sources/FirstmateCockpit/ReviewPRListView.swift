@@ -144,7 +144,10 @@ private final class ReviewPRRowCellView: NSView {
 
         reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
 
-        if pr.checks == "green", let taskID = pr.taskID {
+        // GL-38: the same two conditions, now expressed once in
+        // `FleetDataSource.canMerge` - the definition the merge call itself and
+        // this row's gating both read, so they cannot drift apart.
+        if FleetDataSource.canMerge(pr), let taskID = pr.taskID {
             mergeButton.isHidden = false
             mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
         } else {

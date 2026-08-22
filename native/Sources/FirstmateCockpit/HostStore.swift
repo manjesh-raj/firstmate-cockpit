@@ -104,9 +104,9 @@ final class HostStore {
         do {
             try FileManager.default.copyItem(at: fileURL, to: backupURL)
             loadFailureBackupPath = backupURL.path
-            NSLog("[cockpit] hosts.json failed to decode - backed up to \(backupURL.path)")
+            AppLog.store.error("hosts.json failed to decode - backed up to \(backupURL.path, privacy: .public)")
         } catch {
-            NSLog("[cockpit] hosts.json failed to decode AND could not be backed up: \(error.localizedDescription)")
+            AppLog.store.critical("hosts.json failed to decode AND could not be backed up: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -121,7 +121,7 @@ final class HostStore {
             let data = try encoder.encode(hosts)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            NSLog("[cockpit] failed to persist hosts: \(error.localizedDescription)")
+            PersistenceFailureReporter.report(what: "saved hosts", path: fileURL.path, error: error)
         }
         changeHandlers.forEach { $0() }
     }

@@ -238,31 +238,15 @@ enum DotfilesSource {
 
     // MARK: Process plumbing (mirrors UpdatesData.swift's `run`)
 
-    private struct RunResult {
-        let status: Int32
-        let stdout: String
-    }
+    private typealias RunResult = SubprocessResult
+
+    /// This file's `git fetch origin <branch>` is a real network round trip
+    /// (that is the point - see `DotfilesRepoState.commitsBehindOrigin`), so
+    /// the bound is generous. Everything else here is a local git read.
+    private static let gitTimeout: TimeInterval = 180
 
     private static func run(_ executable: String, _ args: [String], cwd: URL? = nil) -> RunResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        if let cwd { proc.currentDirectoryURL = cwd }
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "")
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        _ = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.run(executable: executable, arguments: args, cwd: cwd,
+                       timeout: gitTimeout, log: AppLog.gitSync)
     }
 }

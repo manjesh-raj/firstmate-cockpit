@@ -218,18 +218,12 @@ enum VaultSource {
     /// `RunAtLoad: true` LaunchAgent independent of this app) already-running
     /// case. Not `private` - exercised directly by `VaultDataSelfTest`.
     static func isServiceRunning() -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-x", menubarHelperProcessName]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-        } catch {
-            return false
-        }
-        proc.waitUntilExit()
-        return proc.terminationStatus == 0
+        // GL-02: both of those `Pipe()`s used to be attached and never read -
+        // the third deadlock shape. `pgrep` output is tiny so it never bit,
+        // but nothing about the code said so.
+        return Subprocess.run(executable: "/usr/bin/pgrep",
+                              arguments: ["-x", menubarHelperProcessName],
+                              timeout: 10, stdout: .discard, stderr: .discard).ok
     }
 
     /// Fire-and-forget attempt to start Automic Vault's background approval
@@ -262,13 +256,9 @@ enum VaultSource {
     /// regardless of whether the launched app has finished starting.
     static func ensureServiceRunning() {
         guard !isServiceRunning() else { return }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = ["-g", "-a", "Automic Vault"]
-        proc.environment = childEnvironmentDict()
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()
+        Subprocess.run(executable: "/usr/bin/open",
+                       arguments: ["-g", "-a", "Automic Vault"],
+                       timeout: 15, stdout: .discard, stderr: .discard)
     }
 
     /// Bounds how long the app-lock recheck waits for `av list` before
@@ -316,109 +306,52 @@ enum VaultSource {
     /// never appears in a process listing's command column.
     static func verifyAppPassword(_ typed: String) -> Bool {
         guard let av = resolveExecutable("av") else { return false }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: av)
-        proc.arguments = [
-            "inject", "+\(appPasswordSecretName)", "--",
-            "/bin/sh", "-c", "[ \"$\(appPasswordSecretName)\" = \"$GRANDLINE_LOCK_CANDIDATE\" ]",
-        ]
-        var env = childEnvironmentDict()
-        env["GRANDLINE_LOCK_CANDIDATE"] = typed
-        proc.environment = env
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return false
-        }
-        // Drain both pipes before waiting - `av inject` can print an
-        // approval-flow line ("human approval required"/"approved") to
-        // stdout, and an unread full pipe would deadlock `waitUntilExit()`.
-        _ = out.fileHandleForReading.readDataToEndOfFile()
-        _ = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return proc.terminationStatus == 0
+        // The typed candidate travels as an environment variable, never argv -
+        // `Subprocess`'s `extraEnv` is the one channel for that, and its own
+        // self-test asserts such a value never reaches the child's argv.
+        return Subprocess.run(
+            executable: av,
+            arguments: [
+                "inject", "+\(appPasswordSecretName)", "--",
+                "/bin/sh", "-c", "[ \"$\(appPasswordSecretName)\" = \"$GRANDLINE_LOCK_CANDIDATE\" ]",
+            ],
+            extraEnv: ["GRANDLINE_LOCK_CANDIDATE": typed],
+            timeout: appPasswordCheckTimeout,
+            log: AppLog.keychain, label: "av inject (app lock)"
+        ).ok
     }
 
-    // MARK: Process plumbing (mirrors UpdatesData.swift's private helpers)
+    // MARK: Process plumbing
+
+    // GL-15: `resolveExecutable`, `RunResult`, `run` and `runWithTimeout` all
+    // come from `Subprocess` now. `runWithTimeout`'s bounded-wait shape (which
+    // `QuotaData` had also copied) is what became the shared runner's default
+    // behaviour, so the distinction between the two local runners is gone: every
+    // `av` call is bounded, including the `loadSnapshot()` ones that previously
+    // were not.
 
     private static func resolveExecutable(_ name: String) -> String? {
-        let fm = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in path.split(separator: ":") {
-                let candidate = "\(dir)/\(name)"
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-        }
-        for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
+        Subprocess.resolveExecutable(name)
     }
 
-    private struct RunResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-        var combinedLog: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
-    }
+    private typealias RunResult = SubprocessResult
 
-    /// `run()` above, but bounded by `timeout` (mirroring `FleetData.swift`'s
-    /// `crewState`'s `terminationHandler` + `DispatchSemaphore` watchdog
-    /// pattern) - returns `nil`, without reading either pipe, if the process
-    /// hasn't exited by then, killing it rather than leaving a background
-    /// thread blocked on `waitUntilExit()` forever.
+    /// `av list`/`av doctor --json` are local Keychain reads that normally
+    /// answer in milliseconds; the documented failure mode is the approval
+    /// helper being unresponsive, which used to hang forever.
+    private static let avTimeout: TimeInterval = 30
+
+    /// Returns `nil` on timeout, preserving the caller shape
+    /// `checkAppPasswordConfigured` already branches on (`nil` means
+    /// `.transientFailure`).
     private static func runWithTimeout(_ executable: String, _ args: [String], timeout: TimeInterval) -> RunResult? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let exited = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in exited.signal() }
-        guard exited.wait(timeout: .now() + timeout) == .success else {
-            proc.terminationHandler = nil
-            if proc.isRunning { proc.terminate() }
-            return nil
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        let result = Subprocess.run(executable: executable, arguments: args,
+                                    timeout: timeout, log: AppLog.keychain)
+        return result.timedOut ? nil : result
     }
 
     private static func run(_ executable: String, _ args: [String]) -> RunResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.run(executable: executable, arguments: args,
+                       timeout: avTimeout, log: AppLog.keychain)
     }
 }

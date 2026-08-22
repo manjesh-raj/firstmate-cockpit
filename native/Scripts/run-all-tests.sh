@@ -17,6 +17,8 @@
 #   ./Scripts/run-all-tests.sh              # build, then run every suite
 #   ./Scripts/run-all-tests.sh --no-build   # skip `swift build`
 #   ./Scripts/run-all-tests.sh --list       # print the discovered suites and exit
+#   ./Scripts/run-all-tests.sh --ci         # skip suites that need a real login
+#                                           # session (see NEEDS_SESSION below)
 #   ./Scripts/run-all-tests.sh FM_RUN_SHIFT_STORE_TESTS FM_RUN_BACKUP_TESTS
 #                                           # run only the named suites
 #
@@ -32,12 +34,14 @@ cd "$(dirname "$0")/.."
 
 BUILD=1
 LIST_ONLY=0
+CI_MODE=0
 REQUESTED=()
 
 for arg in "$@"; do
   case "$arg" in
     --no-build) BUILD=0 ;;
     --list) LIST_ONLY=1 ;;
+    --ci) CI_MODE=1 ;;
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     FM_RUN_*) REQUESTED+=("$arg") ;;
     *) echo "unknown argument: $arg (see --help)" >&2; exit 2 ;;
@@ -53,12 +57,44 @@ MAIN="Sources/FirstmateCockpit/main.swift"
 #
 # Keep this list honest and short: a suite added here because it is *flaky* is a
 # bug to fix, not a suite to skip.
-declare -a SKIP_FLAGS=(
+SKIP_FLAGS=(
   # Needs a real ~547MB Whisper model on disk plus FM_WHISPER_TEST_MODEL_PATH /
   # FM_WHISPER_TEST_AUDIO_PATH pointing at it. FM_RUN_WHISPER_ENGINE_TESTS
   # covers the model-free half and does run below.
   "FM_RUN_WHISPER_METAL_FALLBACK_ONLY_TEST"
 )
+
+# Suites that need something a CI runner does not have. Skipped only with
+# --ci - locally they run and should pass, and a suite listed here is a real
+# coverage gap in CI, not a suite anyone should stop caring about.
+#
+# The distinction that matters is a real *login session*: these suites create
+# real NSWindows and drive real AppKit layout, which needs a window server.
+# A GitHub-hosted macOS runner does have one for the primary user, but a
+# self-hosted or headless runner may not, and a suite that hangs waiting for
+# one is worse in CI than a suite that is honestly skipped.
+NEEDS_SESSION=(
+  "FM_RUN_APP_SHELL_BODY_WIDTH_TESTS"
+  "FM_RUN_BLOCK_VIEW_HIERARCHY_TESTS"
+  "FM_RUN_BLOCK_VIEW_RESTART_TESTS"
+  "FM_RUN_BLOCK_VIEW_VOLUME_TESTS"
+  "FM_RUN_REVIEW_LOADING_STATE_TESTS"
+  "FM_RUN_REVIEW_PR_LIST_VOLUME_TESTS"
+  "FM_RUN_REVIEW_PR_ROW_BUTTON_LAYOUT_TESTS"
+  "FM_RUN_SRE_LEAD_PER_TAB_TESTS"
+  "FM_RUN_NOTIFICATION_CENTER_SRE_LEAD_TESTS"
+  "FM_RUN_MIRROR_RESOLVE_RACE_TESTS"
+  "FM_RUN_SHIFT_ATTACHMENT_WELL_TESTS"
+  "FM_RUN_TERMINAL_WRAP_REDRAW_TESTS"
+  "FM_RUN_CONTRAST_TESTS"
+  # Reads and writes the machine's real Keychain (and can prompt), which a
+  # runner has no unlocked login keychain for.
+  "FM_RUN_VAULT_DATA_TESTS"
+)
+
+if [ "$CI_MODE" -eq 1 ]; then
+  SKIP_FLAGS=("${SKIP_FLAGS[@]}" "${NEEDS_SESSION[@]}")
+fi
 
 if [ ! -f "$MAIN" ]; then
   echo "error: $MAIN not found - run this from the repo's native/ directory (or via its own path)." >&2
@@ -66,7 +102,12 @@ if [ ! -f "$MAIN" ]; then
 fi
 
 # Every flag main.swift actually dispatches on, in source order.
-mapfile -t ALL_FLAGS < <(grep -oE 'FM_RUN_[A-Z0-9_]+' "$MAIN" | awk '!seen[$0]++')
+# `while read` rather than `mapfile`: macOS ships bash 3.2, which has no
+# `mapfile`, and CI runners are not guaranteed a newer one on PATH.
+ALL_FLAGS=()
+while IFS= read -r flag; do
+  ALL_FLAGS=("${ALL_FLAGS[@]}" "$flag")
+done < <(grep -oE 'FM_RUN_[A-Z0-9_]+' "$MAIN" | awk '!seen[$0]++')
 
 if [ ${#ALL_FLAGS[@]} -eq 0 ]; then
   echo "error: found no FM_RUN_* flags in $MAIN - has the convention changed?" >&2

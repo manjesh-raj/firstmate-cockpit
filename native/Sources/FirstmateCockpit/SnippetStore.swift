@@ -87,7 +87,7 @@ final class SnippetStore {
             let data = try encoder.encode(snippets)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            NSLog("[cockpit] failed to persist snippets: \(error.localizedDescription)")
+            PersistenceFailureReporter.report(what: "snippets", path: fileURL.path, error: error)
         }
         onChange?()
     }

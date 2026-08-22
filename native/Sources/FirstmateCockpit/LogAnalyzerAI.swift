@@ -275,70 +275,34 @@ enum LogAnalyzerAI {
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: claude)
-        proc.arguments = ["-p", prompt, "--output-format", "json"]
-        proc.environment = childEnvironmentDict()
-        proc.standardInput = FileHandle.nullDevice
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-
-        var finished = false
-        let finishLock = NSLock()
-        func finishOnce(_ result: Result<String, LogAnalyzerAIError>) {
-            finishLock.lock()
-            let already = finished
-            finished = true
-            finishLock.unlock()
-            guard !already else { return }
-            DispatchQueue.main.async { completion(result) }
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try proc.run()
-            } catch {
-                finishOnce(.failure(LogAnalyzerAIError(message: "could not start claude: \(error.localizedDescription)")))
-                return
+        // GL-26: one shared `claude -p` runner - see `ClaudeOneShot`. The
+        // timeout is unchanged and is deliberately the longest of the five
+        // callers: a log analysis legitimately takes minutes, and a timeout
+        // here is never fatal (the caller falls back to showing the local-only
+        // analysis, which is always present).
+        ClaudeOneShot.run(executable: claude, prompt: prompt,
+                          timeout: timeout, label: "claude -p (log analyzer)") { result in
+            switch result {
+            case .success(let reply):
+                completion(.success(reply.text))
+            case .failure(let error):
+                completion(.failure(LogAnalyzerAIError(message: error.message)))
             }
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            finishOnce(parseEnvelope(outData: outData, errData: errData, status: proc.terminationStatus))
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            finishLock.lock()
-            let already = finished
-            finishLock.unlock()
-            guard !already else { return }
-            proc.terminate()
-            finishOnce(.failure(LogAnalyzerAIError(message: "claude did not respond within \(Int(timeout))s.")))
         }
     }
 
     /// `claude -p --output-format json` writes one JSON object on completion;
     /// `result` carries the assistant's own reply text.
+    /// GL-26: kept as a thin adapter over `ClaudeOneShot.parse` rather than
+    /// deleted, because `LogAnalyzerSelfTest` drives it directly against
+    /// hand-built payloads and that coverage is worth keeping where it is.
     static func parseEnvelope(outData: Data, errData: Data, status: Int32) -> Result<String, LogAnalyzerAIError> {
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        let lastLine = stdout.split(separator: "\n", omittingEmptySubsequences: true).last.map(String.init)
-
-        guard let line = lastLine,
-              let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            let stderr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let detail = stderr.isEmpty ? "claude exited with no parseable output (status \(status))." : stderr
-            return .failure(LogAnalyzerAIError(message: detail))
+        let result = SubprocessResult(outcome: .exited, status: status,
+                                      stdoutData: outData, stderrData: errData, duration: 0)
+        switch ClaudeOneShot.parse(result) {
+        case .success(let reply): return .success(reply.text)
+        case .failure(let error): return .failure(LogAnalyzerAIError(message: error.message))
         }
-        if let isError = obj["is_error"] as? Bool, isError {
-            return .failure(LogAnalyzerAIError(message: (obj["result"] as? String) ?? "claude reported an error."))
-        }
-        guard let result = obj["result"] as? String, !result.isEmpty else {
-            return .failure(LogAnalyzerAIError(message: "claude's response had no reply text."))
-        }
-        return .success(result)
     }
 
     /// Pulls a JSON object out of the model's reply. Tolerant of the two

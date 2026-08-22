@@ -49,7 +49,7 @@ final class AppShellController: NSViewController {
     /// `LogAnalyzerStore`, so this controller needs to know nothing about
     /// any of them - the same forward-don't-own convention every other
     /// destination here follows.
-    private let logAnalyzer = LogAnalyzerController()
+    private let logAnalyzer: LogAnalyzerController
     private let tools = ToolsController()
     private let vault = VaultController()
     private let dictation: DictationController
@@ -149,7 +149,7 @@ final class AppShellController: NSViewController {
     init(
         hostsPanel: HostsController, console: ConsoleController, settings: SettingsController,
         hostStore: HostStore, keyStore: SSHKeyStore, snippetStore: SnippetStore, shiftStore: ShiftStore,
-        dictationStore: DictationStore,
+        dictationStore: DictationStore, commandLibraryStore: CommandLibraryStore,
         makeHostConsole: @escaping () -> ConsoleController
     ) {
         self.hostsPanel = hostsPanel
@@ -162,7 +162,9 @@ final class AppShellController: NSViewController {
         // search palette, and quick capture - all of which need to read/
         // write the same tasks/follow-ups this page shows, not a second
         // independent store instance.
-        self.shift = ShiftController(store: shiftStore)
+        self.shift = ShiftController(store: shiftStore, commandLibraryStore: commandLibraryStore)
+        // GL-23: the same instance the Tasks page uses.
+        self.logAnalyzer = LogAnalyzerController(commandLibrary: commandLibraryStore)
         self.bootstrap = BootstrapController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
         self.automation = AutomationController(hostStore: hostStore, keyStore: keyStore, snippetStore: snippetStore, dictationStore: dictationStore)
         self.makeHostConsole = makeHostConsole
@@ -359,6 +361,14 @@ final class AppShellController: NSViewController {
             self?.rail.setBadgeCount(count, for: .overview)
             NotificationSources.setFleetDecisions(count: count) { self?.show(.overview) }
         }
+        // GL-11/GL-30: the two failure signals (a background service failing
+        // repeatedly, a save that did not reach disk) are raised from
+        // background queues that know nothing about destinations, so they get
+        // their navigation from here - the same forward-don't-own split every
+        // other signal in `NotificationSources` uses. Set once; both entries
+        // point at Settings, where the Health card lives.
+        NotificationSources.navigateToHealth = { [weak self] in self?.show(.settings) }
+
         review.onOpenPRCountChanged = { [weak self] count in
             self?.rail.setBadgeCount(count, for: .review)
             NotificationSources.setPRReady(count: count) { self?.show(.review) }
@@ -426,6 +436,13 @@ final class AppShellController: NSViewController {
     /// next) before deciding which of the lock screen's two states to show.
     func showLock(reason: AppLockReason) {
         lockScreen.view.isHidden = false
+        // GL-09: the overlay only covers this window. Everything that lives
+        // outside it - the menu-bar status item, ⌥Space quick capture, the
+        // dictation hotkey, an already-open Host Editor - consults
+        // `AppLockGate`, and this is the one place it is set. Set *before*
+        // anything else in this method, so there is no window in which the
+        // overlay is up but a global hotkey still fires.
+        AppLockGate.shared.setLocked(true)
         onLockStateChanged?(true)
         // fm/grandline-lock-and-rail-fixes: the rail's own sailboat mark goes
         // back to inert/static the instant the app locks, regardless of
@@ -511,6 +528,7 @@ final class AppShellController: NSViewController {
 
     private func hideLock() {
         lockScreen.view.isHidden = true
+        AppLockGate.shared.setLocked(false)
         onLockStateChanged?(false)
         // fm/grandline-lock-and-rail-fixes: bold + bob the rail's own
         // sailboat mark now that the captain is actually in the app - a
@@ -558,10 +576,50 @@ final class AppShellController: NSViewController {
     ///      views `needsLayout`; it does not itself flush that into an
     ///      updated `.frame` the way a direct `.frame` read after this call
     ///      does.
+    ///
+    /// GL-20: step 2 used to run unconditionally on every resize *frame*, which
+    /// resolves every mounted destination's whole view tree plus every per-host
+    /// console - defeating the visibility gates those child controllers each
+    /// added for exactly this reason (see `ToolsController`'s and
+    /// `SettingsController`'s own measured regressions).
+    ///
+    /// The gate is a cheap staleness check rather than a debounce. `root` is
+    /// this window's `contentView`, whose frame the OS keeps in sync with the
+    /// window unconditionally (confirmed live by the scout task), so comparing
+    /// `bodyContainer`'s *current* frame against what the constraints say it
+    /// should be costs two frame reads and no layout. Only when those disagree
+    /// - or when a constraint was found deactivated - does the expensive
+    /// resolve run. A debounce was tried first and is wrong here: the whole
+    /// point of #231's fix is that the frame is correct *immediately* after a
+    /// resize, and `AppShellBodyWidthSelfTest` asserts exactly that
+    /// synchronously.
     private func reassertBodyContainerWidthTie() {
-        if let bodyLeadingConstraint, !bodyLeadingConstraint.isActive { bodyLeadingConstraint.isActive = true }
-        if let bodyTrailingConstraint, !bodyTrailingConstraint.isActive { bodyTrailingConstraint.isActive = true }
+        var needsLayout = false
+        if let bodyLeadingConstraint, !bodyLeadingConstraint.isActive {
+            bodyLeadingConstraint.isActive = true
+            needsLayout = true
+            AppLog.ui.error("bodyContainer leading tie had been deactivated by AppKit - reactivated")
+        }
+        if let bodyTrailingConstraint, !bodyTrailingConstraint.isActive {
+            bodyTrailingConstraint.isActive = true
+            needsLayout = true
+            AppLog.ui.error("bodyContainer trailing tie had been deactivated by AppKit - reactivated")
+        }
+        if !needsLayout, bodyContainerWidthIsStale() {
+            needsLayout = true
+        }
+        guard needsLayout else { return }
         view.layoutSubtreeIfNeeded()
+    }
+
+    /// `bodyContainer` spans from the rail's trailing edge to `root`'s trailing
+    /// edge, so its correct width is exactly `root.bounds.width - rail width`.
+    /// A half-point tolerance covers the non-integral widths AppKit produces on
+    /// a Retina display.
+    private func bodyContainerWidthIsStale() -> Bool {
+        let expected = view.bounds.width - IconRailController.width
+        guard expected > 0 else { return false }
+        return abs(bodyContainer.frame.width - expected) > 0.5
     }
 
     deinit {

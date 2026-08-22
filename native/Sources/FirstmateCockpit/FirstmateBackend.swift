@@ -98,6 +98,26 @@ enum FirstmateBackend {
     /// disagreement either. This preserves the existing override contract
     /// unchanged (`FM_MIRROR_TARGET`/Settings' "Mirror target" still wins,
     /// verbatim, regardless of which backend is live).
+    /// GL-12/GL-04: the async form, for the launch path. `resolveMirrorTarget()`
+    /// is three serial subprocess calls (each individually bounded, but serial
+    /// and synchronous), and `ConsoleController.openFirstmateHost` runs inside
+    /// `loadView` - i.e. inside `AppShellController`'s eager embed loop, before
+    /// `makeKeyAndOrderFront`. So up to ~9 seconds of that landed as a
+    /// pre-window beachball, worst exactly in the post-reboot case
+    /// `resolve()`'s own comment documents as slow.
+    ///
+    /// Still one call, so kind and target still cannot disagree
+    /// (`fm/grandline-mirror-resolve-race-fix`) - it just answers on the main
+    /// queue later instead of blocking.
+    static func resolveMirrorTargetAsync(
+        completion: @escaping (_ kind: FirstmateBackendKind, _ target: String) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let resolution = resolveMirrorTarget()
+            DispatchQueue.main.async { completion(resolution.kind, resolution.target) }
+        }
+    }
+
     static func resolveMirrorTarget() -> (kind: FirstmateBackendKind, target: String) {
         let kind = resolve()
         if let override = explicitMirrorTargetOverride() {
@@ -219,32 +239,21 @@ enum FirstmateBackend {
     private static func runBackendScript(_ command: String) -> String? {
         let script = FirstmateHome.bin.appendingPathComponent("fm-backend.sh")
         guard FileManager.default.fileExists(atPath: script.path) else { return nil }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = ["-c", "source \"$1\" >/dev/null 2>&1 && \(command)", "--", script.path]
-        proc.currentDirectoryURL = FirstmateHome.root
-        var env = childEnvironmentDict()
-        env["FM_HOME"] = FirstmateHome.root.path
-        proc.environment = env
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-
-        // Finding 10: bound this the same way `FleetData.crewState`'s
-        // watchdog does - a real, hard-kill timeout, since this call owns
-        // its own `Process` and can terminate it directly (unlike
-        // `hasLiveHerdrSession`'s wrapped `HerdrMirror.run` call above).
-        let exited = DispatchSemaphore(value: 0)
-        proc.terminationHandler = { _ in exited.signal() }
-        if exited.wait(timeout: .now() + subprocessTimeout) == .timedOut {
-            proc.terminationHandler = nil
-            if proc.isRunning { proc.terminate() }
-            return nil
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        guard proc.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
+        // The bounded, hard-kill watchdog this function hand-rolled is now the
+        // shared runner's default behaviour (GL-15). stderr is discarded rather
+        // than captured-and-ignored for the same reason as before:
+        // `fm_backend_name` prints an informational NOTICE there on
+        // auto-detect, which is not part of the answer.
+        let result = Subprocess.run(
+            executable: "/bin/bash",
+            arguments: ["-c", "source \"$1\" >/dev/null 2>&1 && \(command)", "--", script.path],
+            cwd: FirstmateHome.root,
+            extraEnv: ["FM_HOME": FirstmateHome.root.path],
+            timeout: subprocessTimeout,
+            stderr: .discard
+        )
+        guard result.ok else { return nil }
+        return String(data: result.stdoutData, encoding: .utf8)
     }
 }
 

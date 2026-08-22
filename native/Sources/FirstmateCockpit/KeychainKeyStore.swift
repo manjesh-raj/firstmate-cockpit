@@ -56,6 +56,12 @@ enum KeychainError: LocalizedError {
     case osStatus(OSStatus)
     case notFound
     case authenticationFailed(String)
+    /// The captain dismissed the Touch ID / passcode sheet, or chose its
+    /// Cancel button. Distinct from `authenticationFailed` on purpose: a
+    /// cancel is a deliberate "no", and the resolved captain decision is that a
+    /// deliberate no aborts the connect outright rather than quietly
+    /// downgrading it to agent auth (production review, section 15).
+    case userCancelled
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +71,8 @@ enum KeychainError: LocalizedError {
             return "No secret is stored in the Keychain for this key."
         case .authenticationFailed(let reason):
             return reason
+        case .userCancelled:
+            return "Authentication was cancelled."
         }
     }
 }
@@ -144,7 +152,27 @@ enum KeychainKeyStore {
             semaphore.signal()
         }
         semaphore.wait()
-        if let authError { throw authError }
+        guard let authError else { return }
+        throw classify(authError)
+    }
+
+    /// Map LocalAuthentication's own error codes onto this file's vocabulary,
+    /// in one place, rather than leaving every caller to recognise `LAError`.
+    /// Not `private`: `Phase2HardeningSelfTest` drives it directly, which is the
+    /// only way to test the cancel decision without a real biometric prompt.
+    static func classify(_ error: Error) -> Error {
+        // All three codes mean the same thing to us: the captain chose not to
+        // unlock. `.userCancel` is the sheet's Cancel button, `.appCancel` and
+        // `.systemCancel` are the app or the OS taking the sheet away - none of
+        // them is a failed attempt, and none should silently downgrade a
+        // connect to agent auth (see `ConsoleController.connectSSH`).
+        if let laError = error as? LAError,
+           [.userCancel, .appCancel, .systemCancel].contains(laError.code) {
+            AppLog.keychain.info("key unlock cancelled")
+            return KeychainError.userCancelled
+        }
+        AppLog.keychain.error("key unlock failed: \(error.localizedDescription, privacy: .public)")
+        return error
     }
 
     private static func save(account: String, data: Data) throws {

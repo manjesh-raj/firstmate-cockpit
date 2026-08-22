@@ -163,7 +163,7 @@ final class DictationStore {
             let data = try encoder.encode(value)
             try data.write(to: url, options: .atomic)
         } catch {
-            NSLog("[cockpit] failed to persist \(url.lastPathComponent): \(error.localizedDescription)")
+            PersistenceFailureReporter.report(what: url.lastPathComponent == "vocabulary.json" ? "dictation vocabulary" : "dictation history", path: url.path, error: error)
         }
         changeHandlers.forEach { $0() }
     }

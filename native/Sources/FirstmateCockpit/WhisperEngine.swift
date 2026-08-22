@@ -137,27 +137,45 @@ final class WhisperCppEngine {
 /// path. Kept as its own type (not folded into `DictationEngine`) so it can
 /// be unit-tested independently of any live microphone.
 final class DictationAudioResampler {
+    /// GL-28(d): `append` runs on `AVAudioEngine`'s own real-time audio thread
+    /// while `reset`/`samples` are touched from the main thread (start, stop,
+    /// and the hand-off to `whisper_full`). Mutating a Swift `Array` from two
+    /// threads is a real data race - a reallocating append concurrent with a
+    /// read can hand out a freed buffer, not merely a short one. Guarded, with
+    /// the lock held only around the array itself and never across the
+    /// conversion.
+    private let lock = NSLock()
     private var converter: AVAudioConverter?
     private var inputFormat: AVAudioFormat?
-    private(set) var samples: [Float] = []
+    private var storedSamples: [Float] = []
+
+    var samples: [Float] {
+        lock.lock(); defer { lock.unlock() }
+        return storedSamples
+    }
 
     static let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
     func reset() {
+        lock.lock()
         converter = nil
         inputFormat = nil
-        samples = []
+        storedSamples = []
+        lock.unlock()
     }
 
     /// Appends one tapped buffer's audio, resampled to 16kHz mono, onto the
     /// accumulated sample array. Safe to call from the same audio-tap
     /// callback that also feeds `SFSpeechAudioBufferRecognitionRequest`.
     func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
         if converter == nil || inputFormat != buffer.format {
             inputFormat = buffer.format
             converter = AVAudioConverter(from: buffer.format, to: Self.targetFormat)
         }
-        guard let converter else { return }
+        let activeConverter = converter
+        lock.unlock()
+        guard let converter = activeConverter else { return }
 
         let ratio = Self.targetFormat.sampleRate / buffer.format.sampleRate
         let outCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
@@ -177,6 +195,8 @@ final class DictationAudioResampler {
         guard status != .error, let channelData = outBuffer.floatChannelData else { return }
         let frameCount = Int(outBuffer.frameLength)
         guard frameCount > 0 else { return }
-        samples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        lock.lock()
+        storedSamples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        lock.unlock()
     }
 }

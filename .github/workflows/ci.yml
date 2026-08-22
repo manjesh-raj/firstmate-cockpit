@@ -1,0 +1,99 @@
+# GL-07 (production-readiness review): until this file existed, 41 self-test
+# suites and a clean-build guarantee were both entirely opt-in. Every
+# regression guard this project has painstakingly built - the contrast floors,
+# the layout gotchas, the list-volume budgets, the store-durability proofs -
+# only ran when somebody remembered to run it.
+#
+# Two jobs, deliberately separate:
+#
+#   build - `swift build` with warnings treated as failures. Cheap, and the
+#           thing most likely to catch a bad merge.
+#   test  - the headless-safe suite subset, via the same
+#           `Scripts/run-all-tests.sh` a developer runs locally. `--ci` skips
+#           the suites that need a real login session or the machine's own
+#           Keychain; that list lives in the script, with a reason per entry,
+#           so CI and local runs can never disagree about what "the tests" are.
+#
+# The app itself is never launched. Every `FM_RUN_*` flag is handled before
+# `NSApplication.shared` is touched, so the binary runs headless and exits -
+# see the script's own SAFETY note and the README's "Never launch a built copy
+# from a worktree".
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref - a macOS runner
+  # minute is expensive enough to care.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: native
+
+jobs:
+  build:
+    name: swift build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `build_native_app.sh` derives the version from `git describe`
+          # (GL-18), so the tags have to be present for a packaging run to be
+          # representative.
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        # No `-warnings-as-errors`: this repo vendors SwiftTerm, YamlSwift and
+        # whisper.cpp as source, and upstream C/C++ warnings are not this
+        # project's to fix. The app's own target is warning-clean and the
+        # step below is what enforces that.
+        run: swift build 2>&1 | tee build.log
+
+      - name: Fail on a warning in this app's own sources
+        run: |
+          if grep -E "Sources/FirstmateCockpit/.*warning:" build.log; then
+            echo "::error::the app's own sources must build warning-clean"
+            exit 1
+          fi
+          echo "no warnings in Sources/FirstmateCockpit"
+
+  test:
+    name: self-test suites
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: swift build
+
+      # Every store in this app honours an `FM_*` override for where it reads
+      # and writes (see the README's env-var index). Pointing all of them at a
+      # scratch directory keeps a CI run from attempting a real clone of the
+      # private config repo, and makes the run reproducible instead of
+      # depending on whatever the runner's home directory happens to contain.
+      - name: Run the headless-safe suites
+        env:
+          FM_HOSTS_FILE: ${{ runner.temp }}/ci-stores/hosts.json
+          FM_KEYS_FILE: ${{ runner.temp }}/ci-stores/keys.json
+          FM_SNIPPETS_FILE: ${{ runner.temp }}/ci-stores/snippets.json
+          FM_SHIFT_DIR: ${{ runner.temp }}/ci-stores/tasks
+          FM_DICTATION_DIR: ${{ runner.temp }}/ci-stores/dictation
+          FM_DOCS_DIR: ${{ runner.temp }}/ci-stores/docs
+          FM_DOCS_RUNBOOKS_DIR: ${{ runner.temp }}/ci-stores/runbooks
+          FM_COMMAND_LIBRARY_DIR: ${{ runner.temp }}/ci-stores/commands
+          FM_LOG_ANALYZER_DIR: ${{ runner.temp }}/ci-stores/investigations
+          FM_WHISPER_MODEL_DIR: ${{ runner.temp }}/ci-stores/whisper
+          FM_INSTANCE_LOCK_FILE: ${{ runner.temp }}/ci-stores/instance.lock
+        run: ./Scripts/run-all-tests.sh --ci --no-build

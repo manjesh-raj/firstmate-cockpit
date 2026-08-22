@@ -211,6 +211,13 @@ final class HostsListSection: NSObject, NSTableViewDataSource, NSTableViewDelega
     }
 
     @objc private func clipViewResized() {
+        // GL-20: gate on visibility. Hosts is a permanently mounted,
+        // `isHidden`-toggled destination, so an ungated handler here recomputes
+        // row heights on every resize frame no matter which page is showing -
+        // the same measured regression `ToolsController` and
+        // `SettingsController` each fixed for their own resize handlers.
+        guard let clip = table.enclosingScrollView?.contentView,
+              clip.window != nil, !clip.isHiddenOrHasHiddenAncestor else { return }
         guard items.contains(where: { if case .empty = $0.kind { return true }; return false }) else { return }
         table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<items.count))
     }

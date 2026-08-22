@@ -41,7 +41,16 @@ final class LogAnalyzerController: NSViewController {
     /// "each page keeps an independent copy of the same underlying store"
     /// convention (`UpdatesController`/`BootstrapController` do the same for
     /// `DependencyCatalog`, `CommandLibraryPageView` for `DocsRunbookStore`).
-    private let commandLibrary = CommandLibraryStore()
+    /// GL-23: injected - see `ShiftController.commandLibraryStore`'s own note
+    /// for why two caching instances of this store diverge in-session.
+    private let commandLibrary: CommandLibraryStore
+
+    init(commandLibrary: CommandLibraryStore) {
+        self.commandLibrary = commandLibrary
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     /// Spec §18 - "Create Runbook" writes into the real Docs → Runbooks
     /// store, not a private copy of the concept.
     private let runbookStore = DocsRunbookStore()
@@ -596,32 +605,63 @@ final class LogAnalyzerController: NSViewController {
         tabContainer.spacing = 0
         tabContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        let analysis = buildAnalysisTab()
-        let groups = buildSimpleTab(symbol: "list.bullet.rectangle", tint: .critical,
-                                    title: "Grouped patterns",
-                                    subtitle: "Repeated lines collapsed into one pattern — click a pattern to see its matching lines.",
-                                    body: groupsList)
-        let timeline = buildSimpleTab(symbol: "clock", tint: .info,
-                                      title: "Event timeline",
-                                      subtitle: "Reconstructed only from timestamps present in the provided output.",
-                                      body: timelineList)
-        let correlation = buildCorrelationTab()
-        let compare = buildCompareTab()
-        let evidence = buildEvidenceTab()
+        // GL-20: only the default tab is built now. All six used to be built
+        // here at `loadView` time, which made this the heaviest hidden view tree
+        // in the app - and a hidden tree is not free: its constraints
+        // participate in every window layout, and this page's own Compare tab
+        // is what capped the whole app window in #231. Building on first
+        // selection keeps that cost out of launch entirely for the five tabs a
+        // given investigation may never open.
+        mountTab("analysis")
+    }
 
-        tabViews = ["analysis": analysis, "groups": groups, "timeline": timeline,
-                    "correlation": correlation, "compare": compare, "evidence": evidence]
-
-        // Fixed order, so the rendered stack doesn't depend on dictionary
-        // iteration order (only one is ever visible, but a stable order
-        // keeps a probe or a future multi-visible mode predictable).
-        for id in ["analysis", "groups", "timeline", "correlation", "compare", "evidence"] {
-            guard let tabView = tabViews[id] else { continue }
-            tabView.translatesAutoresizingMaskIntoConstraints = false
-            tabContainer.addArrangedSubview(tabView)
-            tabView.widthAnchor.constraint(equalTo: tabContainer.widthAnchor).isActive = true
-            tabView.isHidden = id != "analysis"
+    /// Builds a tab's view the first time it is selected, then keeps it (this is
+    /// lazy mounting, not rebuilding - a tab's inputs and results must survive
+    /// switching away and back, which is the whole reason the Compare tab holds
+    /// two text views).
+    private func mountTab(_ id: String) {
+        guard tabViews[id] == nil else { return }
+        let tabView: NSView
+        switch id {
+        case "analysis":
+            tabView = buildAnalysisTab()
+        case "groups":
+            tabView = buildSimpleTab(symbol: "list.bullet.rectangle", tint: .critical,
+                                     title: "Grouped patterns",
+                                     subtitle: "Repeated lines collapsed into one pattern — click a pattern to see its matching lines.",
+                                     body: groupsList)
+        case "timeline":
+            tabView = buildSimpleTab(symbol: "clock", tint: .info,
+                                     title: "Event timeline",
+                                     subtitle: "Reconstructed only from timestamps present in the provided output.",
+                                     body: timelineList)
+        case "correlation":
+            tabView = buildCorrelationTab()
+        case "compare":
+            tabView = buildCompareTab()
+        case "evidence":
+            tabView = buildEvidenceTab()
+        default:
+            return
         }
+        tabViews[id] = tabView
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        // Appended in selection order rather than a fixed one: only ever one is
+        // visible, and a hidden *arranged subview* of an `NSStackView` is out of
+        // layout entirely, so ordering carries no visual meaning here.
+        tabContainer.addArrangedSubview(tabView)
+        tabView.widthAnchor.constraint(equalTo: tabContainer.widthAnchor).isActive = true
+        tabView.isHidden = true
+        // A tab built after the page's theme observer has already fired needs
+        // one explicit pass, the same reason `HelmFormSheet` ends `loadView`
+        // with `refreshTheme()` - and one content pass, since every render since
+        // launch skipped the views that did not exist yet.
+        switch id {
+        case "evidence": renderEvidence()
+        case "compare": renderComparePickers()
+        default: break
+        }
+        applyTheme()
     }
 
     private func buildSimpleTab(symbol: String, tint: HelmTint, title: String, subtitle: String, body: NSView) -> NSView {
@@ -1845,6 +1885,7 @@ extension LogAnalyzerController {
     // MARK: Tabs
 
     func selectTab(_ id: String) {
+        mountTab(id)
         for (tabID, tabView) in tabViews { tabView.isHidden = tabID != id }
         view.layoutSubtreeIfNeeded()
     }
@@ -2280,7 +2321,9 @@ extension LogAnalyzerController {
             content.titleWraps = true
             return content
         }
-        evidenceList.setContents(contents, theme: theme)
+        // nil until the Evidence tab has been mounted (GL-20). `renderEvidence`
+        // is re-run on mount, so nothing is missed.
+        evidenceList?.setContents(contents, theme: theme)
     }
 
     private func removeEvidence(at index: Int) {
@@ -2292,7 +2335,12 @@ extension LogAnalyzerController {
     }
 
     private func renderComparePickers() {
-        for popup in [comparePopupBefore!, comparePopupAfter!] {
+        // GL-20 made the Compare tab lazily mounted, so these two are nil until
+        // it has been opened at least once. A render pass that runs before that
+        // has nothing to populate - and nothing to lose, since `mountTab`
+        // renders the pickers as part of building the tab.
+        guard let before = comparePopupBefore, let after = comparePopupAfter else { return }
+        for popup in [before, after] {
             popup.removeAllItems()
             popup.addItem(withTitle: "Paste below, or pick evidence…")
             for item in investigation.evidence { popup.addItem(withTitle: item.label) }
@@ -2435,7 +2483,7 @@ extension LogAnalyzerController {
         timelineList.applyTheme(theme)
         correlationList.applyTheme(theme)
         findingsList.applyTheme(theme)
-        evidenceList.applyTheme(theme)
+        evidenceList?.applyTheme(theme)
         historyList.applyTheme(theme)
         compareDiff.applyTheme(theme)
         renderStorageSelection()

@@ -58,6 +58,7 @@ final class FleetNotifier {
     /// fresh transition.
     func start() {
         guard timer == nil else { return }
+        ServiceHealthRegistry.shared.register(.fleetTasks)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let tasks = FleetDataSource.parseTasks()
             let decisionIDs = Set(tasks.filter { $0.status == "needs_decision" || $0.status == "blocked" }.map(\.id))
@@ -98,9 +99,21 @@ final class FleetNotifier {
     }
 
     private func poll() {
+        ServiceHealthRegistry.shared.markRunning(.fleetTasks)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let tasks = FleetDataSource.parseTasks()
             DispatchQueue.main.async {
+                // F1: "reachable, and this is what it said." An unreadable
+                // FM_HOME or a wedged `fm-crew-state.sh` yields no tasks, which
+                // used to be indistinguishable from a genuinely idle fleet -
+                // exactly the failure shape GL-14 names for the PR list.
+                if FirstmateHome.homeOk(at: FirstmateHome.root) {
+                    ServiceHealthRegistry.shared.recordSuccess(.fleetTasks)
+                } else {
+                    ServiceHealthRegistry.shared.recordFailure(
+                        .fleetTasks,
+                        "Firstmate home is not readable at \(FirstmateHome.root.path) - set it in Setup > Bootstrap.")
+                }
                 self?.reconcile(tasks)
             }
         }

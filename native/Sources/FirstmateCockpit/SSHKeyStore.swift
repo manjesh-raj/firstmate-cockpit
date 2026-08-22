@@ -112,7 +112,7 @@ final class SSHKeyStore {
             let data = try encoder.encode(keys)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            NSLog("[cockpit] failed to persist keys: \(error.localizedDescription)")
+            PersistenceFailureReporter.report(what: "SSH key metadata", path: fileURL.path, error: error)
         }
         onChange?()
     }

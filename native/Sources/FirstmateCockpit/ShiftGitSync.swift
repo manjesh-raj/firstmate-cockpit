@@ -78,8 +78,22 @@ final class ShiftGitSync {
     /// queue/working tree.
     var sharedQueue: DispatchQueue { queue }
 
-    private(set) var status: Status = .synced
-    private var statusHandlers: [(Status) -> Void] = []
+    /// GL-28(b): `status`, `statusHandlers` and `pendingConflictSet` are each
+    /// written from this class's own serial `queue` (every git operation runs
+    /// there) and read from the main thread (the Tasks header's pill, the
+    /// conflict sheet, `observeStatus`'s registration). That is a real data
+    /// race - a torn read of an enum with a `String` payload, not merely a
+    /// stale value - and it is exactly the class TSan flags here. One lock
+    /// guards all three; every handler is still delivered on the main queue,
+    /// and no lock is ever held across a handler call.
+    private let stateLock = NSLock()
+
+    private var _status: Status = .synced
+    private(set) var status: Status {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _status }
+        set { stateLock.lock(); _status = newValue; stateLock.unlock() }
+    }
+    private var _statusHandlers: [(Status) -> Void] = []
     private var pendingCommit: DispatchWorkItem?
     private var pullTimer: Timer?
 
@@ -89,7 +103,11 @@ final class ShiftGitSync {
     /// reads this to build the resolution screen; it is never used to decide
     /// anything on its own (that's always driven by an explicit captain
     /// choice or an already-proven-unambiguous auto-merge).
-    private(set) var pendingConflictSet: ShiftConflictSet?
+    private var _pendingConflictSet: ShiftConflictSet?
+    private(set) var pendingConflictSet: ShiftConflictSet? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _pendingConflictSet }
+        set { stateLock.lock(); _pendingConflictSet = newValue; stateLock.unlock() }
+    }
 
     /// Only ever `true` for `.shared` (the one production instance) - see
     /// `migrateLegacyDataIfNeeded()`. A disposable test instance (this
@@ -168,14 +186,37 @@ final class ShiftGitSync {
     /// shape as `ThemeManager.observe`/`HostStore.observe`. Callbacks are
     /// always delivered on the main thread.
     func observeStatus(_ handler: @escaping (Status) -> Void) {
-        statusHandlers.append(handler)
-        let current = status
+        stateLock.lock()
+        _statusHandlers.append(handler)
+        let current = _status
+        stateLock.unlock()
         DispatchQueue.main.async { handler(current) }
     }
 
     private func setStatus(_ newStatus: Status) {
-        status = newStatus
-        let handlers = statusHandlers
+        stateLock.lock()
+        _status = newStatus
+        let handlers = _statusHandlers
+        stateLock.unlock()
+        // F1 / GL-11: this class had zero log statements and no health signal
+        // of its own, so a sync that had been failing for hours looked
+        // identical to one that had never needed to run. The pill in the Tasks
+        // header is only visible on that one page; this is visible from
+        // Settings and, past the threshold, from the Notification Center.
+        switch newStatus {
+        case .synced:
+            AppLog.gitSync.debug("tasks sync: synced")
+            ServiceHealthRegistry.shared.recordSuccess(.shiftGitSync)
+        case .failed(let reason):
+            AppLog.gitSync.error("tasks sync failed: \(reason, privacy: .public)")
+            ServiceHealthRegistry.shared.recordFailure(.shiftGitSync, reason)
+        case .conflict(let fileCount):
+            AppLog.gitSync.error("tasks sync: \(fileCount) file(s) in conflict, waiting for the captain")
+            ServiceHealthRegistry.shared.recordFailure(
+                .shiftGitSync, "\(fileCount) file(s) diverged from GitHub - open Tasks and resolve.")
+        default:
+            break
+        }
         DispatchQueue.main.async { handlers.forEach { $0(newStatus) } }
     }
 
@@ -186,6 +227,7 @@ final class ShiftGitSync {
     /// periodic pull timer. Entirely asynchronous - safe to call from
     /// `ShiftStore.init()` on the main thread at app launch.
     func start() {
+        ServiceHealthRegistry.shared.register(.shiftGitSync)
         queue.async { [weak self] in
             guard let self else { return }
             let existedAlready = FileManager.default.fileExists(atPath: self.workingTree.appendingPathComponent(".git").path)
@@ -753,51 +795,27 @@ final class ShiftGitSync {
 
     // MARK: Process plumbing
 
-    private struct GitResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-    }
+    // GL-15: the token injection this file established (Basic-auth
+    // `http.extraheader` through `GIT_CONFIG_*` so the token never reaches
+    // `ps`) is now `Subprocess.gitAuthEnvironment` - the single copy of what
+    // four files each carried verbatim. Its behaviour is unchanged, including
+    // the "skip the header for a non-https remote" rule that keeps every
+    // disposable-bare-repo self-test working.
+    //
+    // What did change: every git call is bounded. A `clone`/`fetch`/`push`
+    // against an unreachable remote used to be able to park this class's serial
+    // queue indefinitely, and since that queue is what commits and pushes the
+    // captain's tasks, a parked queue means edits stop syncing with no signal.
 
-    /// `authenticated: true` for any operation that talks to the remote
-    /// (`clone`/`fetch`/`push`) - injects `DocsSyncSource.ghAuthToken()` as a
-    /// Basic-auth `http.extraHeader` (GitHub's own documented shape for
-    /// token-based git-over-HTTPS, the same "x-access-token" basic-auth
-    /// convention GitHub Actions' own built-in token uses) via
-    /// `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` environment
-    /// variables rather than a `-c` argument, so the token never appears in
-    /// `ps`'s argument listing. A local path or `file://` remote (this
-    /// phase's disposable-bare-repo test setup) has no such host, so the
-    /// header is skipped whenever no token is available or the remote isn't
-    /// an `https://` URL - a local remote never needs it.
+    private typealias GitResult = SubprocessResult
+
+    /// Generous, because a first `clone` of the config repo over a slow link is
+    /// legitimately minutes - and still a bound.
+    private static let gitTimeout: TimeInterval = 600
+
     private func runGit(_ args: [String], cwd: URL?, authenticated: Bool) -> GitResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        proc.arguments = args
-        if let cwd { proc.currentDirectoryURL = cwd }
-        var env = childEnvironmentDict()
-        if authenticated, remoteURL.hasPrefix("https://"), let token = DocsSyncSource.ghAuthToken() {
-            let basic = Data("x-access-token:\(token)".utf8).base64EncodedString()
-            env["GIT_CONFIG_COUNT"] = "1"
-            env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-            env["GIT_CONFIG_VALUE_0"] = "Authorization: Basic \(basic)"
-        }
-        proc.environment = env
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return GitResult(status: -1, stdout: "", stderr: "\(error)")
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return GitResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.git(args, cwd: cwd,
+                       authenticateFor: authenticated ? remoteURL : nil,
+                       timeout: Self.gitTimeout)
     }
 }

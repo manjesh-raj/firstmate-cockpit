@@ -29,6 +29,22 @@ When you are working on this codebase in a worktree:
 
 As of the phase-1 stabilisation pass the app also refuses to *be* a second instance (`SingleInstanceGuard` plus `LSMultipleInstancesProhibited`), which turns most of this from silent corruption into a clean "already running" exit - but the rule above still stands, because the guard activates the existing instance rather than giving you a separate one to test against.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request (GL-07): `swift build`
+with a hard failure on any warning in this app's own sources, plus the headless-safe
+self-test subset via `./Scripts/run-all-tests.sh --ci`.
+
+`--ci` skips the suites that need a real login session (they create real `NSWindow`s and
+drive real AppKit layout) or the machine's own Keychain. That list lives in the script
+itself, one entry per line with a reason, so CI and a local run can never disagree about
+what "the tests" are - and a locally-passing suite that CI skips shows up as a `SKIP` line
+rather than silently disappearing.
+
+CI points every `FM_*` data-location override at a scratch directory, so a run never
+attempts a real clone of the private config repo and never depends on what the runner's
+home directory happens to contain.
+
 ## Testing
 
 There is no XCTest target. The app carries ~44 permanent self-test suites, each gated behind its own environment variable and each exiting the process with 0 or 1 before `NSApplication` is ever touched - so they run headless and are safe to run while the real app is open.
@@ -40,6 +56,7 @@ cd native
 ./Scripts/run-all-tests.sh          # builds, then runs every suite
 ./Scripts/run-all-tests.sh --list   # just show what would run
 ./Scripts/run-all-tests.sh FM_RUN_SHIFT_STORE_TESTS   # one or more by name
+./Scripts/run-all-tests.sh --ci     # what CI runs: skips session/Keychain suites
 ```
 
 The runner discovers its suite list from `main.swift`, so a newly added suite is picked up automatically.
@@ -109,6 +126,24 @@ native/Scripts/    the test runner and build-time helper scripts
 native/Vendor/     vendored dependencies (SwiftTerm, YamlSwift, whisper.cpp) - no remote SPM packages
 assets/            shared app icon source files
 ```
+
+## Logs and diagnostics
+
+Every subprocess this app runs goes through one runner (`Subprocess.swift`), and every
+non-zero exit, launch failure and timeout is logged there. Logging is `os.Logger` under
+one subsystem:
+
+```
+log stream --predicate 'subsystem == "com.firstmate.cockpit.native"' --level debug
+log show  --predicate 'subsystem == "com.firstmate.cockpit.native"' --last 30m
+```
+
+Categories: `subprocess`, `poller`, `git-sync`, `keychain`, `store`, `network`, `ai`,
+`ui`, `lifecycle`. Nothing leaves the machine - there is no telemetry in this app.
+
+In-app, **Settings > Health** shows last-run and last-error per background service, with
+a "Copy diagnostics" button. A service that fails repeatedly raises a Notification Center
+entry that links there.
 
 For the architecture, the AppKit gotcha catalogue, and the per-feature history, read `AGENTS.md`.
 <!-- fm detect-test: automatic completion detection check -->

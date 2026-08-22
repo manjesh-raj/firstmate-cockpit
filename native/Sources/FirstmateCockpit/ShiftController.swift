@@ -93,7 +93,15 @@ final class ShiftController: NSViewController {
     /// command library (search-palette/`⌘⇧P` integration is explicitly
     /// Phase 3 per the design doc), so there's no need to thread this through
     /// `AppShellController`'s init chain the way the shared `ShiftStore` is.
-    private let commandLibraryStore = CommandLibraryStore()
+    /// GL-23: injected, not constructed here. Two independent instances (this
+    /// page's and Log Analyzer's) each cached their own copy of the library and
+    /// each wrote `recent.yaml` from that stale cache, so an edit in one was
+    /// invisible to the other until relaunch and whichever saved last silently
+    /// dropped the other's recency data. The "independent store instances"
+    /// convention this was copied from was established for a store that
+    /// re-reads disk on every call; it does not transfer to a caching, writing
+    /// store. Same shared-instance shape as `shiftStore`.
+    private let commandLibraryStore: CommandLibraryStore
     private lazy var commandLibraryView = CommandLibraryPageView(store: commandLibraryStore)
     /// The three-way My Tasks / Weekly Review / DevOps Commands switcher, built
     /// from the app's shared `HelmSegmentedTabs` (`HelmDesignSystem.swift`,
@@ -150,8 +158,9 @@ final class ShiftController: NSViewController {
     /// `buildFollowUpSection`.
     private static let taskFollowUpPanelBodyHeight: CGFloat = 280
 
-    init(store: ShiftStore) {
+    init(store: ShiftStore, commandLibraryStore: CommandLibraryStore) {
         self.store = store
+        self.commandLibraryStore = commandLibraryStore
         super.init(nibName: nil, bundle: nil)
     }
 

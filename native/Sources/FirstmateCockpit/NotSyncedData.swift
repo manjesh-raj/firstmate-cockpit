@@ -141,48 +141,23 @@ enum NotSyncedSource {
     static func checkCodexHardening() -> HardenerStatus { checkHardened(name: "codex") }
     static func checkHomebrewHardening() -> HardenerStatus { checkHardened(name: "brew") }
 
-    // MARK: Process plumbing (mirrors UpdatesData.swift's private helpers)
+    // MARK: Process plumbing
+
+    // GL-15: shared with every other tool-shelling source now - see
+    // `Subprocess`. `av hardeners --json` is a local read, but this file's
+    // whole subject is a tool whose approval helper has a documented history of
+    // becoming unresponsive, so a bound matters here more than most.
 
     private static func resolveExecutable(_ name: String) -> String? {
-        let fm = FileManager.default
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for dir in path.split(separator: ":") {
-                let candidate = "\(dir)/\(name)"
-                if fm.isExecutableFile(atPath: candidate) { return candidate }
-            }
-        }
-        for candidate in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)", "/bin/\(name)"] {
-            if fm.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
+        Subprocess.resolveExecutable(name)
     }
 
-    private struct RunResult {
-        let status: Int32
-        let stdout: String
-        let stderr: String
-    }
+    private typealias RunResult = SubprocessResult
+
+    private static let avTimeout: TimeInterval = 30
 
     private static func run(_ executable: String, _ args: [String]) -> RunResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
-        proc.arguments = args
-        proc.environment = childEnvironmentDict()
-        let out = Pipe(), err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        let outData = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return RunResult(
-            status: proc.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-            stderr: String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        )
+        Subprocess.run(executable: executable, arguments: args,
+                       timeout: avTimeout, log: AppLog.keychain)
     }
 }
