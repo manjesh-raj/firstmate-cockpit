@@ -70,8 +70,9 @@ import AppKit
 /// loop gets this for free just from case order (case order drives
 /// `navStack`'s iteration order, same as every other `navStack` member).
 ///
-/// `isDailyUse` (fm/grandline-sidebar-labeled-nav) marks exactly the 5
-/// `navStack` members (Overview, Console, Hosts, Shift, Review) as the set
+/// `isDailyUse` (fm/grandline-sidebar-labeled-nav) marks the 6
+/// `navStack` members (Overview, Console, Hosts, Shift, Review, Log
+/// Analyzer - the last added by `fm/grandline-log-analyzer-build`) as the set
 /// that lives in the top `navStack` block rather than the bottom-anchored
 /// utility group - `navStack`'s loop and the bottom-anchored `loadView` block
 /// both filter on this directly. It no longer selects a *different visual
@@ -80,7 +81,7 @@ import AppKit
 /// live captain feedback that icon-only utility rows looked inconsistent
 /// once the rest of the rail had labels - see `labeledRailButton(for:)`.
 enum RailDestination: CaseIterable {
-    case overview, console, hosts, shift, review, tools, vault, dictation, docs, updates, bootstrap, automation, githubSync, settings
+    case overview, console, hosts, shift, review, logAnalyzer, tools, vault, dictation, docs, updates, bootstrap, automation, githubSync, settings
 
     var symbol: String {
         switch self {
@@ -99,6 +100,10 @@ enum RailDestination: CaseIterable {
         case .hosts: return "server.rack"
         case .console: return "terminal"
         case .review: return "arrow.triangle.branch"
+        // `fm/grandline-log-analyzer-build`: a magnifier over lines - the
+        // "read this output" idea, distinct from `.review`'s branch glyph
+        // and from Console's bare terminal.
+        case .logAnalyzer: return "text.magnifyingglass"
         case .tools: return "wrench.and.screwdriver"
         case .vault: return "lock.shield"
         case .dictation: return "waveform"
@@ -118,6 +123,7 @@ enum RailDestination: CaseIterable {
         case .hosts: return "Hosts"
         case .console: return "Console"
         case .review: return "Review"
+        case .logAnalyzer: return "Log Analyzer"
         case .tools: return "Tools"
         case .vault: return "Vault"
         case .dictation: return "Dictation"
@@ -170,14 +176,14 @@ enum RailDestination: CaseIterable {
         case .bootstrap: return .warn
         case .automation: return .accent
         case .githubSync: return .violet
-        case .overview, .console, .hosts, .shift, .review,
+        case .overview, .console, .hosts, .shift, .review, .logAnalyzer,
              .tools, .vault, .dictation, .docs, .settings: return .accent
         }
     }
 
     var isDailyUse: Bool {
         switch self {
-        case .overview, .console, .hosts, .shift, .review: return true
+        case .overview, .console, .hosts, .shift, .review, .logAnalyzer: return true
         case .tools, .vault, .dictation, .docs, .updates, .bootstrap, .automation, .githubSync, .settings: return false
         }
     }
@@ -622,7 +628,7 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         for (index, dest) in dailyUseDestinations.enumerated() {
             // fm/grandline-rail-followup-fixes: a hairline separator between
             // each daily-use row (Overview | Console | Hosts | Tasks |
-            // Review), matching the existing `NSBox(.separator)` style
+            // Review | Log Analyzer), matching the existing separator style
             // already used elsewhere in the rail - captain ask was scoped to
             // this group only, so the utility group is untouched.
             if index > 0 { navStackDivider() }

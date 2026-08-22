@@ -44,6 +44,12 @@ final class AppShellController: NSViewController {
     private let overview: FleetController
     private let shift: ShiftController
     private let review = ReviewController()
+    /// `fm/grandline-log-analyzer-build`: the Log / Output Analyzer page.
+    /// Owns its own `CommandLibraryStore`/`DocsRunbookStore`/
+    /// `LogAnalyzerStore`, so this controller needs to know nothing about
+    /// any of them - the same forward-don't-own convention every other
+    /// destination here follows.
+    private let logAnalyzer = LogAnalyzerController()
     private let tools = ToolsController()
     private let vault = VaultController()
     private let dictation: DictationController
@@ -196,6 +202,7 @@ final class AppShellController: NSViewController {
         addChild(overview)
         addChild(shift)
         addChild(review)
+        addChild(logAnalyzer)
         addChild(tools)
         addChild(vault)
         addChild(dictation)
@@ -216,7 +223,7 @@ final class AppShellController: NSViewController {
         addChild(setup)
         addChild(settings)
 
-        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, tools.view, vault.view, dictation.view, docs.view, setup.view, settings.view] {
+        for destinationView in [hostsPanel.view, console.view, overview.view, shift.view, review.view, logAnalyzer.view, tools.view, vault.view, dictation.view, docs.view, setup.view, settings.view] {
             embed(destinationView)
         }
 
@@ -328,6 +335,16 @@ final class AppShellController: NSViewController {
         // above), the exact same "type this into the active tab" behavior
         // Snippets' own "Run" already uses.
         shift.onSendCommandToTerminal = { [weak self] text in self?.console.sendCommandLibraryTextToActiveTab(text) }
+
+        // `fm/grandline-log-analyzer-build`: the Log Analyzer forwards the
+        // same two things Shift's Command Library already does - "run this
+        // command" goes to whichever console tab is in front, and a runbook
+        // or postmortem it just wrote opens in Docs. It owns neither.
+        logAnalyzer.onSendCommandToTerminal = { [weak self] text in
+            self?.console.sendCommandLibraryTextToActiveTab(text)
+        }
+        logAnalyzer.onOpenRunbook = { [weak self] id in self?.openDocsRunbook(id: id) }
+        logAnalyzer.onOpenConsole = { [weak self] in self?.show(.console) }
 
         // fm/grandline-sidebar-badges: forward each page's own already-
         // computed "needs you" count straight to its rail icon - no new
@@ -600,6 +617,9 @@ final class AppShellController: NSViewController {
         case .review:
             review.view.isHidden = false
             topBar.setTitle("Review")
+        case .logAnalyzer:
+            logAnalyzer.view.isHidden = false
+            topBar.setTitle("Log Analyzer")
         case .tools:
             tools.view.isHidden = false
             topBar.setTitle("Tools")
@@ -674,6 +694,16 @@ final class AppShellController: NSViewController {
             }
         }
 
+        // `fm/grandline-log-analyzer-build`: reassigned on every call for
+        // the same reason `onSRELeadReplyWhileBackground` above is - a
+        // renamed host should show its current label on the imported
+        // evidence, and the closure only reads it when a capture actually
+        // happens.
+        controller.onAnalyzeLogs = { [weak self] capture, tabName in
+            guard let self else { return }
+            self.openLogAnalyzer(with: capture, hostLabel: "\(hostLabel) · \(tabName)")
+        }
+
         hideAllDestinations()
         controller.view.isHidden = false
         topBar.setTitle(host.label)
@@ -708,6 +738,7 @@ final class AppShellController: NSViewController {
         overview.view.isHidden = true
         shift.view.isHidden = true
         review.view.isHidden = true
+        logAnalyzer.view.isHidden = true
         tools.view.isHidden = true
         vault.view.isHidden = true
         dictation.view.isHidden = true
@@ -866,6 +897,45 @@ final class AppShellController: NSViewController {
     func openDocsPostmortem(id: String) {
         show(.docs)
         docs.openPostmortem(id: id)
+    }
+
+    // MARK: Log Analyzer (`fm/grandline-log-analyzer-build`)
+
+    /// ⌘⇧L / the Log Analyzer menu's "Open Log Analyzer" - switches to the
+    /// destination and focuses its input so a paste lands immediately (spec
+    /// §24's own success-criteria flow: ⌘⇧L → paste → ⌘↵).
+    @objc func showLogAnalyzer() {
+        show(.logAnalyzer)
+        logAnalyzer.focusForPaste()
+    }
+
+    /// The clipboard quick action (spec §2).
+    @objc func analyzeClipboardInLogAnalyzer() {
+        show(.logAnalyzer)
+        logAnalyzer.analyzeClipboard()
+    }
+
+    /// Spec §2's terminal bridge. Called from the app delegate, which owns
+    /// the host consoles' `onAnalyzeLogs` closure - the capture decision
+    /// itself is made in `ConsoleController` (which has the tab, its block
+    /// tracker and its selection) via `LogTerminalCaptureBuilder`, so this
+    /// only routes an already-built capture to the page.
+    func openLogAnalyzer(with capture: LogTerminalCapture, hostLabel: String) {
+        show(.logAnalyzer)
+        logAnalyzer.importTerminalCapture(capture, hostLabel: hostLabel)
+    }
+
+    /// The remaining spec §24 shortcuts, all routed through the destination
+    /// so they behave identically whether they came from the menu or the
+    /// page's own buttons.
+    @objc func logAnalyzerCopyAnalysis() { showThenRun { $0.menuCopyAnalysis() } }
+    @objc func logAnalyzerSendToTerminal() { showThenRun { $0.menuSendToTerminal() } }
+    @objc func logAnalyzerInvestigateFurther() { showThenRun { $0.menuInvestigateFurther() } }
+    @objc func logAnalyzerCreateRCA() { showThenRun { $0.menuCreateRCA() } }
+
+    private func showThenRun(_ body: (LogAnalyzerController) -> Void) {
+        show(.logAnalyzer)
+        body(logAnalyzer)
     }
 
     /// Fix 5: a host save closes its own (separate) editor window
