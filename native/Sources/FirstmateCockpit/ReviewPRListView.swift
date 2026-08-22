@@ -182,7 +182,22 @@ final class ReviewPRListView: NSView {
     /// Every row is a fixed height - see this file's header for why
     /// `usesAutomaticRowHeights` isn't needed here the way it is for
     /// `BlockContainerView`'s variable-height rows.
-    static let rowHeight: CGFloat = 92
+    ///
+    /// `fm/grandline-review-row-height-reduce`: was 92, which left a large
+    /// slack between the row's fixed height and its actual content's fitting
+    /// height. `HelmAccentRow`'s own top/bottom content inset
+    /// (`contentVertical`, 12pt each) plus its tallest arranged child - the
+    /// kicker+title text stack, ~32-34pt (a 10pt kicker line + 4pt spacing +
+    /// a 13pt title line) - puts the card's real fitting height around 58-60
+    /// - everything above that is dead space the row's `.centerY`-aligned
+    /// content just floats in. 64 keeps a few points of genuine breathing
+    /// room above that floor (so the trailing pill/Review/Merge cluster,
+    /// ~19-27pt tall, is never anywhere close to clipping) without
+    /// reproducing the original oversized gap. This constant is scoped to
+    /// this file only - `HelmAccentRow`'s own padding constants are shared
+    /// by Shift's task/follow-up lists, the notification panel, and the
+    /// Hosts/Keys/Snippets lists, so they were deliberately left untouched.
+    static let rowHeight: CGFloat = 64
     static let rowSpacing: CGFloat = 8
     static let emptyRowHeight: CGFloat = 140
 
