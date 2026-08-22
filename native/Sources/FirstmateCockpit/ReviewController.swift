@@ -26,11 +26,12 @@
 //   - a `statsRow` of three `HelmStatTile`s (open / ready-to-merge / checks
 //     running), the same "tint only when the number is itself a signal" rule
 //     `FleetController.rebuildStats` already follows.
-//   - each PR row is now a `HelmAccentRow` (chip below the body, Review/
-//     Merge in `trailingAccessory`) instead of a hand-rolled tinted pill
-//     row, colour-and-chip-mapped from the PR's own `checks` state - the
-//     same real field this page already read, just finally driving the
-//     row's colour instead of only a muted "no checks" label everywhere.
+//   - each PR row is now a `HelmAccentRow` (status pill + Review/Merge in
+//     the row's own trailing area - see `fm/grandline-review-row-status-
+//     pill-move` below - instead of a hand-rolled tinted pill row),
+//     colour-and-chip-mapped from the PR's own `checks` state - the same
+//     real field this page already read, just finally driving the row's
+//     colour instead of only a muted "no checks" label everywhere.
 //   - each forge's `HelmCard` header gained a plain, neutral count badge
 //     (the prototype's `.count` span) instead of baking the number into the
 //     title string, plus a subtitle naming the account/org the PRs in that
