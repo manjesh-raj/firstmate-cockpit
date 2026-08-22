@@ -980,6 +980,21 @@ if ProcessInfo.processInfo.environment["FM_RUN_CONTRAST_TESTS"] == "1" {
     exit(HelmContrastSelfTest.run() ? 0 : 1)
 }
 
+// `fm/grandline-review-page-stuck-loading-fix`: the Review page's loading ->
+// loaded state transition (drives `render(_:)` directly via
+// `ReviewController`'s own "Probe / self-test surface", no real network
+// fetch) - see ReviewControllerLoadingStateSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_LOADING_STATE_TESTS"] == "1" {
+    exit(ReviewControllerLoadingStateSelfTest.run() ? 0 : 1)
+}
+
+// The volume measurement that proves the fix above - a demand-driven
+// `NSTableView` renders hundreds of PR rows without the plain-`NSStackView`
+// blowup #221 shipped. See ReviewPRListVolumeSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_LIST_VOLUME_TESTS"] == "1" {
+    exit(ReviewPRListVolumeSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.

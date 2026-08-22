@@ -39,6 +39,24 @@
 //     hardcoded name.
 // No new data source, no invented colours/fonts/spacing - everything below
 // is `HelmTheme`/`HelmMetrics`/`HelmType` tokens already in this codebase.
+//
+// fm/grandline-review-page-stuck-loading-fix: each forge's PR list moved
+// from a plain `NSStackView` of permanent `HelmAccentRow` cards to
+// `ReviewPRListView` (`ReviewPRListView.swift`) - a demand-driven
+// `NSTableView`. #221's `HelmAccentRow` rows are a deeper nested-stack
+// construction than the flat row they replaced, and a plain `NSStackView`
+// lays out every arranged subview at once regardless of how many are
+// actually on screen - the exact "hundreds of rows in an NSStackView blow up
+// catastrophically" pathology this codebase has already hit (and fixed the
+// same way) at least three times (`DiffResultView.swift`, `BlockView.swift`,
+// the Tools-page resize handler). At the captain's real open-PR count - a
+// scale #221's own synthetic-data verification never exercised - the
+// `view.layoutSubtreeIfNeeded()` call at the end of `render()` could take so
+// long that the main thread never got back around to repainting, so the
+// screen stayed on the last frame it drew (the loading skeleton) - "stuck
+// forever on Loading" - even though `render()` had already flipped every
+// `isHidden` flag needed to show the real page. See `ReviewPRListView.swift`
+// for the full root-cause writeup and the fix.
 
 import AppKit
 
@@ -77,15 +95,15 @@ final class ReviewController: NSViewController {
     private let githubHeader = NSTextField(labelWithString: "")
     private let githubSubtitle = NSTextField(wrappingLabelWithString: "")
     private let githubCountLabel = NSTextField(labelWithString: "0")
-    private let githubStack = NSStackView()
+    private var githubList: ReviewPRListView!
     private let bitbucketHeader = NSTextField(labelWithString: "")
     private let bitbucketSubtitle = NSTextField(wrappingLabelWithString: "")
     private let bitbucketCountLabel = NSTextField(labelWithString: "0")
-    private let bitbucketStack = NSStackView()
+    private var bitbucketList: ReviewPRListView!
     private let otherHeader = NSTextField(labelWithString: "")
     private let otherSubtitle = NSTextField(wrappingLabelWithString: "")
     private let otherCountLabel = NSTextField(labelWithString: "0")
-    private let otherStack = NSStackView()
+    private var otherList: ReviewPRListView!
     /// The "Other" section (forge-less, task-tracked PRs the forge scan
     /// hasn't matched yet) only renders when non-empty - unlike GitHub/
     /// Bitbucket, which always show (matching `FleetController`'s "In
@@ -142,13 +160,24 @@ final class ReviewController: NSViewController {
         let header = buildHeader()
         buildStatsRow()
         let loadingSection = buildLoadingState()
+
+        githubList = ReviewPRListView(emptyTitle: "No open PRs here", emptyBody: "This forge has nothing waiting on you right now.",
+                                      actionTarget: self, reviewAction: #selector(reviewPR(_:)), mergeAction: #selector(mergePR(_:)),
+                                      checksVisuals: checksVisuals)
+        bitbucketList = ReviewPRListView(emptyTitle: "No open PRs here", emptyBody: "This forge has nothing waiting on you right now.",
+                                         actionTarget: self, reviewAction: #selector(reviewPR(_:)), mergeAction: #selector(mergePR(_:)),
+                                         checksVisuals: checksVisuals)
+        otherList = ReviewPRListView(emptyTitle: "No open PRs here", emptyBody: "This forge has nothing waiting on you right now.",
+                                     actionTarget: self, reviewAction: #selector(reviewPR(_:)), mergeAction: #selector(mergePR(_:)),
+                                     checksVisuals: checksVisuals)
+
         let githubSection = buildSection(header: githubHeader, subtitle: githubSubtitle, countLabel: githubCountLabel,
                                          iconSymbol: "chevron.left.forwardslash.chevron.right",
-                                         title: "GitHub", stack: githubStack)
+                                         title: "GitHub", list: githubList)
         let bitbucketSection = buildSection(header: bitbucketHeader, subtitle: bitbucketSubtitle, countLabel: bitbucketCountLabel,
-                                            iconSymbol: "water.waves", title: "Bitbucket", stack: bitbucketStack)
+                                            iconSymbol: "water.waves", title: "Bitbucket", list: bitbucketList)
         otherSection = buildSection(header: otherHeader, subtitle: otherSubtitle, countLabel: otherCountLabel,
-                                    iconSymbol: "arrow.triangle.branch", title: "Other", stack: otherStack)
+                                    iconSymbol: "arrow.triangle.branch", title: "Other", list: otherList)
         githubSectionView = githubSection
         bitbucketSectionView = bitbucketSection
 
@@ -329,7 +358,7 @@ final class ReviewController: NSViewController {
     /// title string, and the subtitle (the prototype's account/org name
     /// under "GitHub") is only known once the first PR in that forge has
     /// actually loaded - see `render`'s `subtitle(for:)` call.
-    private func buildSection(header: NSTextField, subtitle: NSTextField, countLabel: NSTextField, iconSymbol: String, title: String, stack: NSStackView) -> HelmCard {
+    private func buildSection(header: NSTextField, subtitle: NSTextField, countLabel: NSTextField, iconSymbol: String, title: String, list: ReviewPRListView) -> HelmCard {
         header.stringValue = title
         subtitle.stringValue = ""
         subtitle.isHidden = true
@@ -350,14 +379,9 @@ final class ReviewController: NSViewController {
         ])
         countBadges.append((container: badge, label: countLabel))
 
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
         let card = HelmCard()
         card.setHeader(symbol: iconSymbol, titleLabel: header, subtitleLabel: subtitle, actions: [badge])
-        card.setBody(stack, insets: HelmCard.contentInsets)
+        card.setBody(list, insets: HelmCard.contentInsets)
         cards.append(card)
         return card
     }
@@ -420,15 +444,15 @@ final class ReviewController: NSViewController {
 
         rebuildStats(prs)
 
-        rebuildRows(into: githubStack, prs: github)
+        githubList.setPRs(github, theme: theme)
         githubCountLabel.stringValue = "\(github.count)"
         applyAccountSubtitle(githubSubtitle, prs: github)
-        rebuildRows(into: bitbucketStack, prs: bitbucket)
+        bitbucketList.setPRs(bitbucket, theme: theme)
         bitbucketCountLabel.stringValue = "\(bitbucket.count)"
         applyAccountSubtitle(bitbucketSubtitle, prs: bitbucket)
         otherSection.isHidden = other.isEmpty
         if !other.isEmpty {
-            rebuildRows(into: otherStack, prs: other)
+            otherList.setPRs(other, theme: theme)
             otherCountLabel.stringValue = "\(other.count)"
             applyAccountSubtitle(otherSubtitle, prs: other)
         }
@@ -465,99 +489,6 @@ final class ReviewController: NSViewController {
         statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(ready)", label: "ready to merge", tint: .good))
         statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(running)", label: "checks running", tint: .warn))
     }
-
-    private func rebuildRows(into stack: NSStackView, prs: [MergedPR]) {
-        for v in stack.arrangedSubviews {
-            stack.removeArrangedSubview(v)
-            v.removeFromSuperview()
-        }
-        if prs.isEmpty {
-            stack.addArrangedSubview(emptyStateView(title: "No open PRs here", body: "This forge has nothing waiting on you right now."))
-            return
-        }
-        for pr in prs {
-            let row = prRowView(pr)
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-    }
-
-    /// One `HelmEmptyState` - the app's shared empty state
-    /// (`HelmDesignSystem.swift`, audit §6.3 component 5). This page's own copy
-    /// was the odd one out among the six the audit found: **left-aligned, with
-    /// no icon at all**, on a radius-9 container, while every other list in the
-    /// app centred an icon over its copy. Since this page shows the same PR
-    /// domain Overview summarises, it now renders identically to Overview's
-    /// (§6.4: "share Overview's section chrome and empty-state treatment").
-    private func emptyStateView(title: String, body: String) -> NSView {
-        let empty = HelmEmptyState(symbol: "checkmark.seal", title: title, body: body,
-                                   size: .standard, boxed: true)
-        emptyStates.append(empty)
-        return empty
-    }
-
-    /// Rebuilt with the forge sections on every render; each state themes
-    /// itself, so this only exists to reach the live ones from `applyTheme`.
-    private var emptyStates: [HelmEmptyState] = []
-
-    /// One `HelmAccentRow` per PR - the app's shared accent-bar card
-    /// (`HelmDesignSystem.swift`, audit §6.3 component 2), coloured and
-    /// chipped from the PR's own `checks` state (`checksVisuals` below) -
-    /// replacing this page's own hand-rolled tinted pill row, which only ever
-    /// coloured a "no checks" label and left every row the same flat grey
-    /// otherwise. `chipPlacement: .belowBody` puts the status chip under the
-    /// title (the prototype's `.col` div), and Review/Merge live in
-    /// `trailingAccessory` - the identical actions Overview's "Ready to
-    /// merge" list already wired up (`reviewPR`/`mergePR` below mirror
-    /// `FleetController`'s one-for-one), just relocated onto the shared row.
-    private func prRowView(_ pr: MergedPR) -> NSView {
-        let visuals = checksVisuals(pr.checks)
-
-        var kickerParts: [String] = []
-        if !pr.repo.isEmpty { kickerParts.append(pr.repo) }
-        kickerParts.append(pr.number != nil ? "PR #\(pr.number!)" : "PR")
-        let heading = pr.title.isEmpty ? (pr.number != nil ? "PR #\(pr.number!)" : "PR") : pr.title
-
-        let reviewButton = HelmButton(title: "Review", variant: .secondary, size: .small, target: self, action: #selector(reviewPR(_:)))
-        reviewButton.identifier = NSUserInterfaceItemIdentifier(pr.url)
-
-        // Merge only ever shows for a PR that is both (a) genuinely ready -
-        // `checks == "green"`, the same definition `rebuildStats`'s "ready to
-        // merge" tile already uses, so a PR with checks still running or
-        // failing never gets a Merge button, just its status chip - and (b)
-        // actually mergeable through this action at all: `fm-pr-merge.sh`
-        // takes `<task-id> <pr-url>` and validates the task id, so a PR the
-        // forge scan found with no tracked task behind it (`pr.taskID ==
-        // nil`) has no working merge path here regardless of its checks
-        // state. Before this fix the gate was only (b) - a task-tracked PR
-        // showed Merge even while its checks were still pending, which is
-        // the "checks running but Merge is offered anyway" bug this page's
-        // redesign didn't catch since it never combined the two.
-        var trailing: [NSView] = [reviewButton]
-        if pr.checks == "green", let taskID = pr.taskID {
-            let mergeButton = HelmButton(title: "Merge", variant: .primary, size: .small, target: self, action: #selector(mergePR(_:)))
-            mergeButton.identifier = NSUserInterfaceItemIdentifier("\(taskID)\u{0}\(pr.url)")
-            trailing.append(mergeButton)
-        }
-        let actionsRow = NSStackView(views: trailing)
-        actionsRow.orientation = .horizontal
-        actionsRow.spacing = 6
-
-        let row = HelmAccentRow(chipPlacement: .belowBody, trailingAccessory: actionsRow, hover: false)
-        row.configure(HelmAccentRow.Content(
-            tint: visuals.tint,
-            kicker: kickerParts.joined(separator: " \u{00B7} "),
-            title: heading,
-            badgeSymbol: "arrow.triangle.pull",
-            chipText: visuals.chipLabel
-        ), theme: theme)
-        accentRows.append(row)
-        return row
-    }
-
-    /// Live `HelmAccentRow`s, so a theme change re-tints them. They are
-    /// rebuilt on every `render()`, so this is cleared alongside the stacks.
-    private var accentRows: [HelmAccentRow] = []
 
     /// The prototype's forge-card subtitle (`manjesh-raj` under "GitHub") -
     /// the account/org the PRs in that section actually belong to, derived
@@ -661,11 +592,30 @@ final class ReviewController: NSViewController {
         loadingLabel.textColor = muted
 
         for tile in statTiles { tile.applyTheme(theme) }
-        for row in accentRows { row.applyTheme(theme) }
-        for empty in emptyStates { empty.applyTheme(theme) }
+        githubList?.applyTheme(theme)
+        bitbucketList?.applyTheme(theme)
+        otherList?.applyTheme(theme)
         for (container, label) in countBadges {
             container.layer?.backgroundColor = ink.withAlphaComponent(0.08).cgColor
             label.textColor = muted
         }
     }
+
+    // MARK: Probe / self-test surface
+    //
+    // `fm/grandline-review-page-stuck-loading-fix`: real, live handles for a
+    // self-test to drive the exact loading -> loaded state transition
+    // `render(_:)` performs - without needing a real `gh`/Bitbucket network
+    // fetch (`refresh()`'s job, deliberately untouched here) and without
+    // launching the app itself. See `ReviewControllerLoadingStateSelfTest.swift`.
+
+    /// Calls the real `render(_:)` with caller-supplied data, bypassing
+    /// `refresh()`'s background fetch entirely.
+    func debugRender(_ prs: [MergedPR]) { render(prs) }
+
+    var debugHasLoadedOnce: Bool { hasLoadedOnce }
+    var debugIsLoadingSkeletonVisible: Bool { !loadingContainer.isHidden }
+    var debugAreForgeSectionsVisible: Bool { !githubSectionView.isHidden && !bitbucketSectionView.isHidden }
+    var debugGithubRowCount: Int { githubList.debugRowCount }
+    var debugBitbucketRowCount: Int { bitbucketList.debugRowCount }
 }
