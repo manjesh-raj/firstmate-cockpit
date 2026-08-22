@@ -216,6 +216,16 @@ final class ReviewPRListView: NSView {
     private static let columnID = NSUserInterfaceItemIdentifier("reviewPRListColumn")
     private static let rowViewID = NSUserInterfaceItemIdentifier("reviewPRListRow")
     private static let emptyViewID = NSUserInterfaceItemIdentifier("reviewPRListEmpty")
+    /// GL-14: a separate cached identifier so the fetch-failed state gets its
+    /// own `HelmEmptyState` instance. `HelmEmptyState`'s glyph is fixed at
+    /// `init` (only its words can be rewritten), so reusing one instance for
+    /// both states would show a reassuring `checkmark.seal` above an "I could
+    /// not reach GitHub" message - the exact conflation this finding is about.
+    private static let unavailableViewID = NSUserInterfaceItemIdentifier("reviewPRListUnavailable")
+
+    /// Non-nil when the last fetch failed for this forge. Empty + `nil` means
+    /// a real, confirmed all-clear; empty + non-nil means "unknown".
+    private var unavailableMessage: String?
 
     init(emptyTitle: String, emptyBody: String,
          actionTarget: AnyObject, reviewAction: Selector, mergeAction: Selector,
@@ -265,9 +275,14 @@ final class ReviewPRListView: NSView {
     /// actually reconstructs/re-measures rows currently on screen (plus a
     /// small buffer), never the whole list - the same "cheap at real volume"
     /// property `BlockContainerView.render`'s doc comment already relies on.
-    func setPRs(_ prs: [MergedPR], theme: HelmTheme) {
+    /// `unavailable` (GL-14) is a short reason string when the fetch backing
+    /// this list failed - it changes the empty state from "nothing waiting on
+    /// you" to an honest "couldn't check". Passing `nil` (the default) keeps
+    /// the pre-GL-14 behaviour exactly.
+    func setPRs(_ prs: [MergedPR], theme: HelmTheme, unavailable: String? = nil) {
         self.prs = prs
         self.theme = theme
+        self.unavailableMessage = unavailable
         recomputeHeight()
         tableView.reloadData()
     }
@@ -315,6 +330,18 @@ extension ReviewPRListView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard !prs.isEmpty else {
+            if let unavailableMessage {
+                let view = (tableView.makeView(withIdentifier: Self.unavailableViewID, owner: nil) as? HelmEmptyState)
+                    ?? {
+                        let v = HelmEmptyState(symbol: "wifi.exclamationmark", title: "Couldn't check this forge",
+                                               body: unavailableMessage, size: .standard, boxed: true)
+                        v.identifier = Self.unavailableViewID
+                        return v
+                    }()
+                view.setText(title: "Couldn't check this forge", body: unavailableMessage)
+                view.applyTheme(theme)
+                return view
+            }
             let empty = (tableView.makeView(withIdentifier: Self.emptyViewID, owner: nil) as? HelmEmptyState)
                 ?? {
                     let v = HelmEmptyState(symbol: "checkmark.seal", title: emptyTitle, body: emptyBody,

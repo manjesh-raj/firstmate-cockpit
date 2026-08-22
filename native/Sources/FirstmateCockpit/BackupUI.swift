@@ -233,6 +233,13 @@ enum BackupUI {
         if !preview.keyWarnings.isEmpty {
             lines.append("\(preview.keyWarnings.count) host reference(s) point at a key not on this machine - see below.")
         }
+        // GL-08: state the refusal up front in the summary, not just in the
+        // scrollable detail - a skipped host is the one thing in this preview
+        // the captain cannot approve past, so it should not need scrolling to
+        // discover.
+        if !preview.rejectedHostWarnings.isEmpty {
+            lines.append("\u{26A0} \(preview.rejectedHostWarnings.count) host(s) in this file were REFUSED as unsafe - see below.")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -267,6 +274,11 @@ enum BackupUI {
             lines.append("")
             lines.append("KEY REFERENCES NEEDING ATTENTION")
             for warning in preview.keyWarnings { lines.append("  - \(warning)") }
+        }
+        if !preview.rejectedHostWarnings.isEmpty {
+            lines.append("")
+            lines.append("REFUSED - NOT IMPORTED (GL-08)")
+            for warning in preview.rejectedHostWarnings { lines.append("  - \(warning)") }
         }
 
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 440, height: 220))

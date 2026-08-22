@@ -462,11 +462,56 @@ final class LockScreenController: NSViewController {
     }
 
     private var animationsStarted = false
+    private var reduceMotionObserver: Any?
+
+    /// GL-16: the two animations below (the boat's bob and the wave's drift)
+    /// loop forever, and this screen is *mandatory* - a captain who has turned
+    /// on Reduce Motion cannot dismiss it or navigate away from it, so ignoring
+    /// that setting here is worse than anywhere else in the app. Both are
+    /// purely decorative: with them off the scene renders as a still
+    /// illustration and every function of the screen (typing a password,
+    /// submitting, reading the state text) is unchanged.
+    ///
+    /// The failure shake and the success sail-away are deliberately left
+    /// alone: they are brief, non-looping, and the success one carries the
+    /// `CATransaction` completion block that actually unlocks the app - a
+    /// change there risks a state where the password is accepted and the
+    /// overlay never lifts. Motion in the shared components (`HelmAccentRow`'s
+    /// hover, etc.) already honours the setting.
+    private static var prefersReducedMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
 
     private func startAnimationsIfNeeded() {
         guard !animationsStarted, waveWidth > 0 else { return }
         animationsStarted = true
 
+        // Observe live changes so toggling Reduce Motion while the lock screen
+        // is up takes effect, rather than only on the next launch.
+        if reduceMotionObserver == nil {
+            reduceMotionObserver = NotificationCenter.default.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.applyMotionPreference()
+            }
+        }
+
+        guard !Self.prefersReducedMotion else { return }
+        addLoopingAnimations()
+    }
+
+    /// Adds or removes the looping decoration to match the current setting.
+    private func applyMotionPreference() {
+        if Self.prefersReducedMotion {
+            boatImageView.layer?.removeAnimation(forKey: "bob")
+            waveLayer.removeAnimation(forKey: "drift")
+        } else if animationsStarted, boatImageView.layer?.animation(forKey: "bob") == nil {
+            addLoopingAnimations()
+        }
+    }
+
+    private func addLoopingAnimations() {
         let bob = CAKeyframeAnimation(keyPath: "transform")
         var transforms: [CATransform3D] = []
         for step in 0...8 {
@@ -491,6 +536,12 @@ final class LockScreenController: NSViewController {
         drift.isRemovedOnCompletion = false
         drift.fillMode = .forwards
         waveLayer.add(drift, forKey: "drift")
+    }
+
+    deinit {
+        if let reduceMotionObserver {
+            NotificationCenter.default.removeObserver(reduceMotionObserver)
+        }
     }
 
     // MARK: - Content

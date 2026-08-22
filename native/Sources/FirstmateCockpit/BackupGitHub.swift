@@ -74,6 +74,13 @@ enum GitHubBackupSource {
     /// contract as `DocsSyncSource.update()`'s atomic swap, just server-side.
     static func export(_ bundle: GrandLineBackup) throws {
         guard let (owner, repo) = ownerAndRepo else { throw GitHubBackupError.notConfigured }
+        // GL-22: a `.glbackup` carries the full host inventory and every SSH
+        // key's metadata and fingerprint - the single most sensitive thing this
+        // app pushes anywhere. Refuse on a confirmed-public repo; `.unknown`
+        // proceeds, per `ConfigRepoPrivacy`'s header.
+        guard ConfigRepoPrivacy.check().allowsPush else {
+            throw GitHubBackupError.requestFailed(ConfigRepoPrivacy.publicRepoRefusalMessage)
+        }
         guard let token = DocsSyncSource.ghAuthToken() else { throw GitHubBackupError.notAuthenticated }
         guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/contents/\(backupPath)") else {
             throw GitHubBackupError.notConfigured

@@ -14,6 +14,11 @@ final class SSHKeyStore {
 
     private(set) var keys: [SSHKey] = []
 
+    /// Set when `load()` found a `keys.json` it could not decode and copied it
+    /// aside - mirrors `HostStore.loadFailureBackupPath` so the app delegate
+    /// can warn about this the same way it already warns about hosts.
+    private(set) var loadFailureBackupPath: String?
+
     /// Fired after any mutation so the keys list can reload.
     var onChange: (() -> Void)?
 
@@ -82,12 +87,18 @@ final class SSHKeyStore {
 
     // MARK: Disk
 
+    /// GL-01: an undecodable `keys.json` is backed up *before* the next
+    /// `persist()` can atomically overwrite it. This matters more here than
+    /// in any other store: losing key metadata does not just lose a list, it
+    /// orphans the Keychain private-key blobs those entries pointed at, and
+    /// `delete(id:)` can no longer clean them up because it no longer knows
+    /// their ids exist.
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else {
-            keys = []
-            return
-        }
-        keys = (try? JSONDecoder().decode([SSHKey].self, from: data)) ?? []
+        var backup: String?
+        keys = StoreLoadFailure.decodeJSON(
+            [SSHKey].self, at: fileURL, label: "keys.json", didBackUp: &backup
+        ) ?? []
+        loadFailureBackupPath = backup
     }
 
     private func persist() {

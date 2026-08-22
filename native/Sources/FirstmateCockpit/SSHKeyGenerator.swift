@@ -138,9 +138,28 @@ enum SSHKeyGenerator {
         process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
+        // GL-02: drain both pipes concurrently *before* waiting. `ssh-keygen`
+        // is not normally chatty, but this call runs on the main thread, so
+        // the wait-then-read order meant any child that filled a ~64KB pipe
+        // buffer (a long `-lf` comment, an unexpected verbose failure) froze
+        // the whole UI permanently rather than just failing.
+        var outData = Data(), errData = Data()
+        let drain = DispatchGroup()
+        let readQueue = DispatchQueue(label: "fm.sshkeygen.drain", attributes: .concurrent)
+        drain.enter()
+        readQueue.async {
+            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
+        }
+        drain.enter()
+        readQueue.async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
+        }
+        drain.wait()
         process.waitUntilExit()
-        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let out = String(data: outData, encoding: .utf8) ?? ""
+        let err = String(data: errData, encoding: .utf8) ?? ""
         guard process.terminationStatus == 0 else {
             let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
             throw SSHKeyOperationError.toolFailed(trimmed.isEmpty ? "ssh-keygen failed." : trimmed)

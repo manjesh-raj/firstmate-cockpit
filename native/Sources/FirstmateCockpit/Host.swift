@@ -192,8 +192,40 @@ struct Host: Codable, Identifiable, Equatable {
         if !chain.isEmpty { args += ["-J", chain.joined(separator: ",")] }
         for rule in portForwards { args += rule.sshArguments }
         if port != 22 { args += ["-p", String(port)] }
+        // GL-08: `--` terminates option parsing, so a destination that begins
+        // with a dash can never be read by ssh as an option. Without it, an
+        // address of `-oProxyCommand=<cmd>` is parsed as `-o ProxyCommand=...`
+        // and executes `<cmd>` *locally* the moment the captain hits Connect.
+        // The realistic delivery vector is a tampered `.glbackup` import (the
+        // bundle restores hosts verbatim, including the GitHub-fetched one),
+        // which is why this is defended in three places, not one: here, at
+        // save time (`HostEditorController.save`), and at import time
+        // (`BackupImport`). Belt and braces on purpose - each layer alone is a
+        // single point of failure, and the cost here is one array element.
+        args.append("--")
         args.append(destination)
         return args
+    }
+
+    /// GL-08: whether a free-text field is safe to hand to `ssh` as (part of)
+    /// a destination or a `-J` hop. A leading `-` is the whole attack: it is
+    /// the only thing that turns a value into an option. Rejected rather than
+    /// escaped or stripped, because there is no legitimate hostname or
+    /// username that starts with a dash, so silently rewriting one would hide
+    /// a tampered record instead of surfacing it.
+    static func hasUnsafeLeadingDash(_ value: String) -> Bool {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-")
+    }
+
+    /// The fields of this host that would be unsafe to connect with, as
+    /// user-facing field names. Empty means safe. Used by the host editor's
+    /// save validation and by `.glbackup` import (GL-08).
+    var unsafeFieldNames: [String] {
+        var names: [String] = []
+        if Host.hasUnsafeLeadingDash(address) { names.append("Address") }
+        if Host.hasUnsafeLeadingDash(username) { names.append("Username") }
+        if let jumpVia, Host.hasUnsafeLeadingDash(jumpVia) { names.append("Jump host") }
+        return names
     }
 
     /// `[user@]address`, the last `ssh` positional argument.
@@ -352,9 +384,18 @@ enum HostCatalog {
         }
         guard !host.isEmpty else { return nil }
 
+        // GL-08: reject a destination ssh would read as an option rather than
+        // as a host. Quick-connect text is typed by the captain, so this is
+        // the least likely of the three entry points to be abused - but it is
+        // also the cheapest to close, and returning `nil` here just makes the
+        // field beep like any other unparseable input.
+        guard !Host.hasUnsafeLeadingDash(host), !Host.hasUnsafeLeadingDash(user) else { return nil }
+
         let dest = user.isEmpty ? host : "\(user)@\(host)"
         var args: [String] = []
         if port != 22 { args += ["-p", String(port)] }
+        // See `Host.sshArguments` - `--` before the destination, always.
+        args.append("--")
         args.append(dest)
         return (dest, args)
     }

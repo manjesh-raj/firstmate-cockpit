@@ -485,6 +485,12 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     private let mark = NSImageView()
     private var isUnlockedForMark = false
 
+    /// GL-16: live Reduce Motion changes re-apply the mark's bob (see
+    /// `applyMarkAnimation`). Removed in `deinit` - this controller is an
+    /// app-lifetime singleton, so that is belt-and-braces rather than a real
+    /// leak fix.
+    private var reduceMotionObserver: Any?
+
     /// `fm/grandline-rail-unify-and-mark-polish`: a subtle accent-tinted
     /// gradient tile behind the sailboat glyph, replacing its previous plain
     /// template-color rendering (the one thing making the mark read "bland"
@@ -569,6 +575,17 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
     /// after Setup" before this change - this task tightens and relabels
     /// that single flexible point rather than inventing a new one.
     override func loadView() {
+        // GL-16 (see `applyMarkAnimation`). Registered before the view tree is
+        // built so a change that arrives during construction is not missed;
+        // the handler is safe to run at any point because it only ever adds or
+        // removes an animation on an already-existing layer-backed view.
+        reduceMotionObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.applyMarkAnimation()
+        }
+
         let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 760))
         root.wantsLayer = true
         view = root
@@ -1242,7 +1259,25 @@ final class IconRailController: NSViewController, NSPopoverDelegate {
         guard unlocked != isUnlockedForMark else { return }
         isUnlockedForMark = unlocked
         mark.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: unlocked ? .heavy : .medium)
-        if unlocked {
+        applyMarkAnimation()
+    }
+
+    /// GL-16: the mark's bob loops forever and is purely decorative, so it is
+    /// gated on Reduce Motion. The heavier symbol weight above is *not* - it is
+    /// the actual unlocked-state signal, and a static weight change is not
+    /// motion. `reduceMotionObserver` (registered in `loadView`) re-runs this
+    /// when the setting changes, so toggling it takes effect immediately
+    /// instead of at the next lock/unlock.
+    deinit {
+        if let reduceMotionObserver {
+            NotificationCenter.default.removeObserver(reduceMotionObserver)
+        }
+    }
+
+    private func applyMarkAnimation() {
+        let allowMotion = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if isUnlockedForMark, allowMotion {
+            guard mark.layer?.animation(forKey: "bob") == nil else { return }
             let bob = CAKeyframeAnimation(keyPath: "transform")
             var transforms: [CATransform3D] = []
             for step in 0...8 {

@@ -452,6 +452,19 @@ final class ShiftGitSync {
     }
 
     private func pushOnly() -> Bool {
+        // GL-22: the one gate every push from this class goes through. Only a
+        // *confirmed* public repo refuses - offline/no-`gh`/rate-limited all
+        // return `.unknown` and proceed, since blocking a captain's task sync
+        // on an unavailable API would be far more disruptive than the risk it
+        // guards against. See `ConfigRepoPrivacy`'s header.
+        //
+        // Scoped to the real remote only: a self-test pointed at a disposable
+        // local bare repo via `FM_SHIFT_REMOTE_URL` has nothing to check and
+        // must not shell out to `gh` at all.
+        if remoteURL == DotfilesSource.cloneURL, !ConfigRepoPrivacy.check().allowsPush {
+            setStatus(.failed(ConfigRepoPrivacy.publicRepoRefusalMessage))
+            return false
+        }
         let push = runGit(["push", "origin", "HEAD:\(branch)"], cwd: workingTree, authenticated: true)
         guard push.status == 0 else {
             setStatus(.failed("git push failed: \(push.stderr.isEmpty ? "unknown error" : push.stderr)"))
@@ -505,14 +518,26 @@ final class ShiftGitSync {
         }
 
         if originBehindOrEqual {
-            // Nothing new to pull. If local has commits origin doesn't yet
-            // have, push them; a no-op push (nothing ahead either) is a
-            // harmless success.
+            // Nothing new to pull.
             if !uncommittedFiles().isEmpty {
                 setStatus(.localChanges)
-            } else if !pushOnly() {
-                return .failed("git push failed after an up-to-date pull")
+                return .upToDate
             }
+            // GL-13: only push when local genuinely has commits origin does
+            // not. `headBehindOrEqual && originBehindOrEqual` means the two
+            // refs are *equal* - there is nothing to push, and the previous
+            // code ran `git push` anyway on every 300s pull tick, i.e. a
+            // network round trip every five minutes with nothing to send, for
+            // the app's entire uptime. A push is still attempted whenever
+            // local is genuinely ahead (an earlier commit whose push failed),
+            // which is the case that "harmless success" was really covering.
+            if !headBehindOrEqual {
+                if !pushOnly() {
+                    return .failed("git push failed after an up-to-date pull")
+                }
+                return .upToDate
+            }
+            setStatus(.synced)
             return .upToDate
         }
 

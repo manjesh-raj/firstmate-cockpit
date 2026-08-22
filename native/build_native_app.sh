@@ -11,11 +11,32 @@ DIST_DIR="../dist"
 APP_DIR="$DIST_DIR/$APP_NAME"
 EXECUTABLE_NAME="FirstmateCockpit"
 BUNDLE_ID="com.firstmate.cockpit.native"
-VERSION="0.1.0"
+# GL-18: derive the version from git rather than hardcoding it. `git describe`
+# gives `v0.2.0` on a tagged commit and `v0.2.0-7-g1a2b3c4` seven commits later,
+# which is exactly what a dev build should say. Falls back to a short SHA (or
+# `0.0.0-unknown` outside a checkout) so a build never fails just because tags
+# are missing.
+#
+# `CFBundleShortVersionString` must be a plain dotted number for Launch
+# Services, so the marketing version is the tag's numeric part only, while the
+# full describe string (commits-ahead + SHA + `-dirty`) goes into
+# `CFBundleVersion`, which is free-form.
+GIT_DESCRIBE="$(git describe --tags --dirty --always 2>/dev/null || true)"
+if [ -z "$GIT_DESCRIBE" ]; then
+  GIT_DESCRIBE="0.0.0-unknown"
+fi
+# Strip a leading `v` and keep the leading dotted-number run for the short
+# version; anything without one (a bare SHA) falls back to 0.0.0.
+SHORT_VERSION="$(printf '%s' "${GIT_DESCRIBE#v}" | sed -n 's/^\([0-9][0-9.]*\).*/\1/p')"
+if [ -z "$SHORT_VERSION" ]; then
+  SHORT_VERSION="0.0.0"
+fi
+VERSION="$SHORT_VERSION"
+BUILD_VERSION="${GIT_DESCRIBE#v}"
 ICON_SRC="../assets/icon.icns"
 SIGNING_IDENTITY="Firstmate Cockpit Local Dev"
 
-echo "Building $EXECUTABLE_NAME (release)…"
+echo "Building $EXECUTABLE_NAME (release) - version $VERSION (build $BUILD_VERSION)…"
 swift build -c release
 
 BIN="./.build/release/$EXECUTABLE_NAME"
@@ -57,13 +78,20 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>$VERSION</string>
+    <string>$BUILD_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSUIElement</key>
     <false/>
+    <!-- GL-05: Launch Services activates the running copy instead of starting
+         a second process. Two instances share one set of JSON stores (all
+         last-writer-wins) and one Shift git working tree, so the second one
+         silently discards the first's saves. `SingleInstanceGuard` covers the
+         paths that bypass Launch Services (`open -n`, an unbundled binary). -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Dictation uses your microphone to capture speech while you hold Right Option, so it can transcribe and paste it at your cursor.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

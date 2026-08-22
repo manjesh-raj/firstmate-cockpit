@@ -405,20 +405,26 @@ final class ReviewController: NSViewController {
         refreshButton.isEnabled = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let tasks = FleetDataSource.parseTasks()
-            let openPRs = OpenPRsSource.fetch()
-            let merged = FleetDataSource.mergedPRs(openPRs: openPRs, tasks: tasks)
+            let fetched = OpenPRsSource.fetchDetailed()
+            let merged = FleetDataSource.mergedPRs(openPRs: fetched.prs, tasks: tasks)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
                 self.refreshButton.isEnabled = true
-                self.render(merged)
+                self.render(merged, fetchFailure: fetched.failureSummary)
             }
         }
     }
 
     // MARK: Rendering
 
-    private func render(_ prs: [MergedPR]) {
+    /// `fetchFailure` (GL-14) is a short reason string when the forge scan
+    /// behind `prs` did not fully succeed. It is the difference between "no
+    /// open pull requests" (a real all-clear) and "couldn't check" - the worst
+    /// possible ambiguity on a page whose only job is telling the captain
+    /// whether something needs them. A partial failure still renders whatever
+    /// did come back; it just stops claiming the rest is clear.
+    private func render(_ prs: [MergedPR], fetchFailure: String? = nil) {
         if !hasLoadedOnce {
             hasLoadedOnce = true
             loadingSpinner.stopAnimation(nil)
@@ -435,7 +441,11 @@ final class ReviewController: NSViewController {
         let bitbucket = sorted.filter { $0.forge == "bitbucket" }
         let other = sorted.filter { $0.forge != "github" && $0.forge != "bitbucket" }
 
-        if prs.isEmpty {
+        if let fetchFailure {
+            subtitleLabel.stringValue = prs.isEmpty
+                ? fetchFailure
+                : "\(prs.count) open pull request\(prs.count == 1 ? "" : "s") found - \(fetchFailure)"
+        } else if prs.isEmpty {
             subtitleLabel.stringValue = "No open pull requests right now"
         } else {
             let forgesRepresented = [github, bitbucket, other].filter { !$0.isEmpty }.count
@@ -445,11 +455,11 @@ final class ReviewController: NSViewController {
 
         rebuildStats(prs)
 
-        githubList.setPRs(github, theme: theme)
-        githubCountLabel.stringValue = "\(github.count)"
+        githubList.setPRs(github, theme: theme, unavailable: fetchFailure)
+        githubCountLabel.stringValue = fetchFailure != nil && github.isEmpty ? "?" : "\(github.count)"
         applyAccountSubtitle(githubSubtitle, prs: github)
-        bitbucketList.setPRs(bitbucket, theme: theme)
-        bitbucketCountLabel.stringValue = "\(bitbucket.count)"
+        bitbucketList.setPRs(bitbucket, theme: theme, unavailable: fetchFailure)
+        bitbucketCountLabel.stringValue = fetchFailure != nil && bitbucket.isEmpty ? "?" : "\(bitbucket.count)"
         applyAccountSubtitle(bitbucketSubtitle, prs: bitbucket)
         otherSection.isHidden = other.isEmpty
         if !other.isEmpty {
@@ -613,6 +623,12 @@ final class ReviewController: NSViewController {
     /// Calls the real `render(_:)` with caller-supplied data, bypassing
     /// `refresh()`'s background fetch entirely.
     func debugRender(_ prs: [MergedPR]) { render(prs) }
+
+    /// GL-14: drive the fetch-failed rendering path without a real network
+    /// failure. See `ReviewControllerLoadingStateSelfTest`.
+    func debugRender(_ prs: [MergedPR], fetchFailure: String?) { render(prs, fetchFailure: fetchFailure) }
+
+    var debugSubtitle: String { subtitleLabel.stringValue }
 
     var debugHasLoadedOnce: Bool { hasLoadedOnce }
     var debugIsLoadingSkeletonVisible: Bool { !loadingContainer.isHidden }

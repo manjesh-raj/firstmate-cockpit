@@ -247,6 +247,12 @@ enum BackupImport {
         /// already has - see this file's header on why the bundle's key
         /// metadata is never written back into `SSHKeyStore` itself.
         var keyWarnings: [String]
+        /// GL-08: one line per bundled host this import refused outright,
+        /// because a field `ssh` would read as an option (a leading `-`) made
+        /// it a code-execution vector rather than a host. These never appear in
+        /// `hostRows`, so `apply` cannot write them - a rejected host is not a
+        /// "changed" host the captain might approve past.
+        var rejectedHostWarnings: [String] = []
         var settingsSummary: String
         var vocabularyRows: [BackupVocabularyDiffRow]
         /// `nil` when the bundle carries no shortcut at all (an old-format
@@ -273,7 +279,28 @@ enum BackupImport {
     /// "the same thing, possibly changed" rather than a duplicate).
     static func diff(bundle: GrandLineBackup, existingHosts: [Host], existingSnippets: [Snippet], existingKeys: [SSHKey], existingVocabulary: [String] = [], existingShortcut: DictationShortcut? = nil) -> Preview {
         var hostRows: [BackupHostDiffRow] = []
+        var rejectedHostWarnings: [String] = []
         for bundleHost in bundle.hosts {
+            // GL-08: this is the finding's realistic delivery vector - a
+            // `.glbackup` restores hosts verbatim (including one fetched from
+            // GitHub), so a tampered bundle could plant an address of
+            // `-oProxyCommand=<cmd>` that executes locally on Connect. The
+            // `--` terminator in `Host.sshArguments` already defuses it and
+            // `HostEditorController` blocks typing one, but a bundle bypasses
+            // the editor entirely - so a host that could never have been saved
+            // by hand is refused here rather than stored and left to fail
+            // confusingly later.
+            let unsafe = bundleHost.unsafeFieldNames
+            if !unsafe.isEmpty {
+                let fields = unsafe.joined(separator: ", ")
+                rejectedHostWarnings.append(
+                    "\"\(bundleHost.label)\" was skipped: \(fields) starts with \u{201C}-\u{201D}, "
+                    + "which `ssh` reads as a command-line option rather than a destination. "
+                    + "This is not a valid host - re-add it by hand if you expected it here."
+                )
+                NSLog("[cockpit] backup import: refused host \"\(bundleHost.label)\" - unsafe field(s): \(fields) (GL-08)")
+                continue
+            }
             if let match = existingHosts.first(where: { $0.id == bundleHost.id })
                 ?? existingHosts.first(where: { $0.label.caseInsensitiveCompare(bundleHost.label) == .orderedSame }) {
                 let same = hostsEqualIgnoringIdentityAndSecrets(match, bundleHost)
@@ -318,7 +345,8 @@ enum BackupImport {
         }
 
         return Preview(
-            hostRows: hostRows, snippetRows: snippetRows, keyWarnings: keyWarnings, settingsSummary: bundle.settings.summary,
+            hostRows: hostRows, snippetRows: snippetRows, keyWarnings: keyWarnings,
+            rejectedHostWarnings: rejectedHostWarnings, settingsSummary: bundle.settings.summary,
             vocabularyRows: vocabularyRows, shortcutStatus: shortcutStatus, shortcutDisplay: shortcutDisplay
         )
     }
