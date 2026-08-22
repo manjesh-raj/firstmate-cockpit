@@ -1552,17 +1552,29 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
 
     // MARK: Compose (`fm/grandline-console-command-composer`)
 
-    /// Only ever shown for a plain `.shell` tab that isn't a one-shot
-    /// provisioning command (`isOneShotCommand`) - never an SSH tab (a
-    /// different remote shell's own command syntax), a Mirror/Herdr tab (not
-    /// a captain-typed shell at all), or a one-shot command tab (already has
-    /// a fixed, tracked purpose). Closes the popover outright when the
-    /// current tab stops qualifying (e.g. switching away mid-review), so it
-    /// never sits open pointed at a tab it no longer applies to.
+    /// Shown for a plain `.shell` tab or an `.ssh` tab (a dedicated host
+    /// page's own SSH session), as long as it isn't a one-shot provisioning
+    /// command (`isOneShotCommand`) - never a Mirror/Herdr tab (not a
+    /// captain-typed shell at all - there's nothing to type a generated
+    /// command into), or a one-shot command tab (already has a fixed,
+    /// tracked purpose). `.ssh` is included so Compose is available on a
+    /// host page exactly like it already is on the shared Firstmate
+    /// console's Shell tab - the generated command still just gets sent as
+    /// text into that tab's own real terminal (`TerminalView.send(txt:)`),
+    /// so it lands in whatever shell the remote host itself is running, the
+    /// same as anything else typed into that tab. Closes the popover
+    /// outright when the current tab stops qualifying (e.g. switching away
+    /// mid-review), so it never sits open pointed at a tab it no longer
+    /// applies to.
     private func updateComposeControls() {
         let available: Bool
-        if let tab = currentTab, case .shell = tab.launch, !tab.isOneShotCommand {
-            available = true
+        if let tab = currentTab, !tab.isOneShotCommand {
+            switch tab.launch {
+            case .shell, .ssh:
+                available = true
+            case .mirror:
+                available = false
+            }
         } else {
             available = false
         }
