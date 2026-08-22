@@ -229,6 +229,8 @@ enum GitHubSyncSource {
     /// to be two different mechanisms.
     static func check(_ repo: GitHubSyncRepoConfig) -> GitHubSyncCheckOutcome {
         if let upstream = repo.manualUpstreamFullName {
+            // GL-35, and only on the path that actually keeps clones around.
+            pruneOrphanedManualClones()
             return checkManual(repo, upstreamFullName: upstream)
         }
         return checkFork(repo)
@@ -384,12 +386,46 @@ enum GitHubSyncSource {
             return (true, "")
         }
         try? fm.createDirectory(at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let clone = runGit(["clone", originURL, dir.path], cwd: nil, authenticated: true)
+        // GL-35: `--single-branch --no-tags` rather than a full clone. This
+        // scratch checkout only ever needs the default branch's history (to
+        // count ahead/behind against `upstream`, fast-forward, and push it
+        // back), so every other branch and every tag was pure disk.
+        //
+        // `--filter=blob:none` was considered and deliberately *not* used: a
+        // blobless partial clone would have to lazily re-fetch the blobs for
+        // the commits `syncManual` pushes to `origin`, turning a local
+        // fast-forward-and-push into an unpredictable network operation on a
+        // path whose whole point is not to surprise the captain. Skipping
+        // branches is free; skipping blobs is not.
+        let clone = runGit(["clone", "--single-branch", "--no-tags", originURL, dir.path], cwd: nil, authenticated: true)
         guard clone.status == 0 else {
             try? fm.removeItem(at: dir)
             return (false, clone.combinedLog.isEmpty ? "git clone failed" : clone.combinedLog)
         }
         return (true, clone.combinedLog)
+    }
+
+    /// GL-35: remove scratch clones for repos this catalog no longer lists.
+    ///
+    /// `ensureManualClone` never re-clones, which is right, but nothing ever
+    /// removed a clone either - so a repo dropped from `GitHubSyncCatalog`
+    /// (or renamed) left its whole checkout on disk permanently, with no UI
+    /// anywhere that even mentioned it. Called from `check` so it costs one
+    /// directory listing on a path that is already doing network work.
+    static func pruneOrphanedManualClones() {
+        let fm = FileManager.default
+        let root = defaultCloneRoot()
+        guard let existing = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil,
+                                                         options: [.skipsHiddenFiles]) else { return }
+        let live = Set(GitHubSyncCatalog.repos.map { localCloneDir(for: $0).lastPathComponent })
+        for dir in existing where !live.contains(dir.lastPathComponent) {
+            do {
+                try fm.removeItem(at: dir)
+                AppLog.gitSync.info("pruned an orphaned GitHub Sync scratch clone")
+            } catch {
+                AppLog.gitSync.error("could not prune \(dir.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     /// Points the clone's `upstream` remote at `upstreamURL` - adds it if

@@ -30,7 +30,7 @@ private enum ShiftProjectTaskRow {
 }
 
 final class ShiftProjectTaskListView: NSObject {
-    let tableView = NSTableView()
+    let tableView = HelmTableView()
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var tasks: [ShiftTask] = []

@@ -433,7 +433,7 @@ extension NSColor {
 /// accessibilityDisplayShouldReduceMotion`), in which case the swap is
 /// instant. Callers own picking theme-derived colors; this view only owns the
 /// tracking + animation mechanics.
-final class HoverHighlightView: NSView {
+class HoverHighlightView: NSView {
     var normalColor: NSColor = .clear {
         didSet { if !isHovering { setBackground(normalColor, animated: false) } }
     }
@@ -446,14 +446,157 @@ final class HoverHighlightView: NSView {
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
 
+    // MARK: Accessibility and keyboard (GL-16)
+
+    /// An explicit VoiceOver label. Left `nil`, the view derives one from the
+    /// text of its own descendant labels, which is what makes the ~40
+    /// recognizer-driven controls in this app readable without touching a
+    /// single call site: a row built out of `NSTextField`s already carries
+    /// the words a captain would read aloud.
+    var accessibilityLabelOverride: String?
+
+    /// Announced role. Defaults to `.button` for an activatable view; a
+    /// caller whose control is really one-of-many (`HelmSegmentedTabs`' pills)
+    /// sets `.radioButton` and pairs it with `accessibilityValueOverride`.
+    var accessibilityRoleOverride: NSAccessibility.Role?
+
+    /// The value VoiceOver reads after the label - "selected" for the active
+    /// pill of a segmented control.
+    var accessibilityValueOverride: String?
+
+    /// Activation for a caller whose click handling does *not* go through a
+    /// click recognizer attached to this view. When nil (the common case),
+    /// pressing this view replays its own recognizer's target/action, so
+    /// every existing call site is covered without change.
+    var onAccessibilityPress: (() -> Void)?
+
+    /// Consulted before this view's own `keyDown` handling; return `true` to
+    /// say the event was handled. `HelmSegmentedTabs` uses it for arrow-key
+    /// movement between pills.
+    var onKeyDown: ((NSEvent) -> Bool)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
+        // A real system focus ring, drawn from this view's own rounded rect
+        // (see `drawFocusRingMask`). ~12 sites in this app set
+        // `focusRingType = .none` on real controls, which is why even the
+        // focusable ones showed nothing; a view that is a button by role has
+        // to show where the keyboard is.
+        focusRingType = .exterior
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) not supported")
+    }
+
+    /// The one definition of "this view does something when pressed": an
+    /// explicit press handler, or an enabled click recognizer someone
+    /// attached. A decorative `HoverHighlightView` (a card that only
+    /// highlights) stays invisible to VoiceOver and out of the key view loop,
+    /// which is the difference between fixing accessibility and flooding it.
+    var isActivatable: Bool {
+        onAccessibilityPress != nil || primaryClickRecognizer() != nil
+    }
+
+    private func primaryClickRecognizer() -> NSClickGestureRecognizer? {
+        gestureRecognizers.lazy
+            .compactMap { $0 as? NSClickGestureRecognizer }
+            .first { $0.isEnabled && $0.action != nil && $0.target != nil }
+    }
+
+    /// Fires this view's primary action the same way a real click does.
+    /// Returns whether anything was actually invoked.
+    @discardableResult
+    func performPrimaryAction() -> Bool {
+        if let onAccessibilityPress {
+            onAccessibilityPress()
+            return true
+        }
+        guard let recognizer = primaryClickRecognizer(),
+              let action = recognizer.action,
+              let target = recognizer.target else { return false }
+        // `from: recognizer`, not `from: self`: several handlers in this app
+        // read `sender.view` off the recognizer to know which row was hit
+        // (`HelmSegmentedTabs.pillClicked` is the clearest case), so the
+        // sender has to be the recognizer a real click would have passed.
+        return NSApp.sendAction(action, to: target, from: recognizer)
+    }
+
+    override func isAccessibilityElement() -> Bool { isActivatable }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        guard isActivatable else { return super.accessibilityRole() }
+        return accessibilityRoleOverride ?? .button
+    }
+
+    override func accessibilityLabel() -> String? {
+        if let accessibilityLabelOverride { return accessibilityLabelOverride }
+        guard isActivatable else { return super.accessibilityLabel() }
+        let words = Self.readableText(in: self)
+        return words.isEmpty ? super.accessibilityLabel() : words.joined(separator: ", ")
+    }
+
+    override func accessibilityValue() -> Any? {
+        accessibilityValueOverride ?? super.accessibilityValue()
+    }
+
+    override func accessibilityChildren() -> [Any]? {
+        // Once this view *is* a button, its own labels are the button's
+        // title - exposing them as separate elements makes VoiceOver read
+        // each fragment twice.
+        isActivatable ? [] : super.accessibilityChildren()
+    }
+
+    override func accessibilityPerformPress() -> Bool { performPrimaryAction() }
+
+    /// Every non-empty string a descendant label/button shows, in view order.
+    private static func readableText(in view: NSView) -> [String] {
+        var out: [String] = []
+        for sub in view.subviews {
+            if let field = sub as? NSTextField {
+                let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { out.append(text) }
+            } else if let button = sub as? NSButton, !button.title.isEmpty {
+                out.append(button.title)
+            } else {
+                out.append(contentsOf: readableText(in: sub))
+            }
+        }
+        return out
+    }
+
+    // MARK: Keyboard
+
+    override var acceptsFirstResponder: Bool { isActivatable }
+    override var canBecomeKeyView: Bool { isActivatable && !isHiddenOrHasHiddenAncestor }
+
+    override func becomeFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.resignFirstResponder()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func drawFocusRingMask() {
+        let radius = max(cornerRadius, 2)
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        // 36 = Return, 76 = keypad Enter, 49 = Space: the three keys AppKit
+        // itself treats as "press this control".
+        if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 49 {
+            if performPrimaryAction() { return }
+        }
+        super.keyDown(with: event)
     }
 
     override func updateTrackingAreas() {
@@ -489,6 +632,39 @@ final class HoverHighlightView: NSView {
             context.duration = 0.12
             layer.backgroundColor = color.cgColor
         }
+    }
+}
+
+/// The app's one table view (GL-16): an `NSTableView` whose selected row can
+/// be activated from the keyboard.
+///
+/// Arrow keys already move an `NSTableView`'s selection, but this app's row
+/// activation is `doubleAction` throughout - so before this, every list here
+/// (hosts, tasks, follow-ups, a project's tasks) could be *navigated* without
+/// a mouse and not *used* without one.
+///
+/// The one subtlety worth knowing: all four of this app's `doubleAction`
+/// handlers read `clickedRow`, which AppKit leaves at `-1` when nothing was
+/// clicked. Rather than rewrite four handlers to consult a different property
+/// depending on how they were invoked (and leave the next one to get it
+/// wrong), `clickedRow` reports the selected row for the duration of a
+/// keyboard activation - so a handler is genuinely indifferent to which input
+/// device reached it.
+final class HelmTableView: NSTableView {
+    private var keyboardActivatedRow: Int?
+
+    override var clickedRow: Int { keyboardActivatedRow ?? super.clickedRow }
+
+    override func keyDown(with event: NSEvent) {
+        // 36 = Return, 76 = keypad Enter, 49 = Space.
+        let isActivation = event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 49
+        if isActivation, selectedRow >= 0, let action = doubleAction, let target = self.target {
+            keyboardActivatedRow = selectedRow
+            defer { keyboardActivatedRow = nil }
+            NSApp.sendAction(action, to: target, from: self)
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 

@@ -16,6 +16,7 @@ final class AppSettings {
 
     private enum Keys {
         static let fontSize = "fm.fontSize"
+        static let uiTextScale = "fm.uiTextScale"
         static let defaultShellCwd = "fm.defaultShellCwd"
         static let mirrorTarget = "fm.mirrorTarget"
         static let autoReconnect = "fm.autoReconnect"
@@ -37,6 +38,25 @@ final class AppSettings {
             return v > 0 ? CGFloat(v) : 13
         }
         set { defaults.set(Double(newValue), forKey: Keys.fontSize) }
+    }
+
+    /// GL-32: a multiplier applied to every `HelmType` size - the app's UI
+    /// chrome text, as distinct from `fontSize`, which is the *terminal* and
+    /// monospace-tool size. 1.0 is the designed scale; Settings > Terminal's
+    /// "Interface text" row writes 1.0 / 1.15 / 1.3.
+    ///
+    /// Clamped on read as well as on write, so a hand-edited preference
+    /// cannot produce a layout nothing in this app was measured against.
+    var uiTextScale: CGFloat {
+        get {
+            let v = defaults.double(forKey: Keys.uiTextScale)
+            guard v > 0 else { return 1.0 }
+            return min(ChromeTextScale.maxScale, max(ChromeTextScale.minScale, CGFloat(v)))
+        }
+        set {
+            let clamped = min(ChromeTextScale.maxScale, max(ChromeTextScale.minScale, newValue))
+            defaults.set(Double(clamped), forKey: Keys.uiTextScale)
+        }
     }
 
     /// Settings > General's "Default working directory" - checked by

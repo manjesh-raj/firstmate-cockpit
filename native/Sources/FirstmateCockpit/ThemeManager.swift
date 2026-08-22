@@ -118,6 +118,23 @@ final class ThemeManager {
         observers.forEach { $0.fn(theme) }
     }
 
+    /// Re-fire every observer with the theme that is already active.
+    ///
+    /// GL-32's live half: a `ChromeTextScale` change alters what
+    /// `HelmType`'s accessors return but changes nothing about the theme, and
+    /// every page in this app already has exactly one "repaint yourself" entry
+    /// point - its theme observer. Re-firing that is how a scale change
+    /// reaches the four shared components (which derive their fonts inside
+    /// `applyTheme`) without a second app-wide observer list whose only job
+    /// would be to duplicate this one.
+    ///
+    /// Not to be used for anything else: a *theme* change goes through
+    /// `setTheme`, and an observer that repaints on a no-op theme change is
+    /// doing so because something genuinely font-level moved underneath it.
+    func reapplyCurrentTheme() {
+        observers.forEach { $0.fn(theme) }
+    }
+
     /// The quick dark/light flip (View menu, ⌘⌥T, the console's own theme
     /// button) - flips to the *active theme's own* light/dark counterpart
     /// (`pairId`), e.g. Catppuccin Mocha <-> Latte, Solarized Dark <-> Light.

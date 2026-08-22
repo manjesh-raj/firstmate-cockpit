@@ -869,21 +869,67 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
     /// and refusing to connect over it would be a regression.
     private func connectSSH(_ tab: TabModel, executable: String, hostArgs: [String], keyID: UUID?, startupSnippetID: UUID? = nil) {
         cleanupSSHKeyTempFile(tab)
-        var args = hostArgs
-        if let keyID, let key = keyStore.key(id: keyID) {
+        guard let keyID, let key = keyStore.key(id: keyID) else {
+            startSSHProcess(tab, executable: executable, args: hostArgs, startupSnippetID: startupSnippetID)
+            return
+        }
+        // GL-25: the Keychain read inside `materialize` is what presents the
+        // Touch ID sheet, and `KeychainKeyStore.authenticate` blocks its
+        // caller until the captain answers it. Called on the main thread (as
+        // this was), that freezes the whole app - every window, every other
+        // terminal tab, the menu bar - for as long as the prompt is up, which
+        // can be tens of seconds if the captain looks away. It happens off the
+        // main thread now; the UI stays live, this tab says what it is waiting
+        // for, and the process start hops back to main because SwiftTerm's
+        // `startProcess` is main-thread-only.
+        //
+        // Re-entrancy: `awaitingKeyUnlock` refuses a second unlock for a tab
+        // that already has one in flight, so a captain hammering ⌘R cannot
+        // stack two biometric prompts and two `startProcess` calls on one tab.
+        guard !tab.awaitingKeyUnlock else {
+            tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m Still waiting for the key unlock you started.\r\n")
+            return
+        }
+        tab.awaitingKeyUnlock = true
+        tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m Unlocking \"\(key.label)\"...\r\n")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak tab] in
+            let result: Result<SSHKeyMaterializer.Materialized, Error>
             do {
-                let materialized = try SSHKeyMaterializer.materialize(key: key)
-                tab.sshKeyTempPath = materialized.privateKeyPath
-                args = ["-i", materialized.privateKeyPath] + args
-            } catch KeychainError.userCancelled {
-                tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m Unlock cancelled - not connecting.\r\n")
-                tab.terminal.feed(text: "  \u{1b}[2mPress ⌘R to try again.\u{1b}[0m\r\n")
-                return
+                result = .success(try SSHKeyMaterializer.materialize(key: key))
             } catch {
-                tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m \(error.localizedDescription)\r\n")
-                tab.terminal.feed(text: "  \u{1b}[2mConnecting without the saved key. Press ⌘R to retry.\u{1b}[0m\r\n")
+                result = .failure(error)
+            }
+            DispatchQueue.main.async {
+                guard let self, let tab, !tab.isClosing else {
+                    // The tab went away mid-prompt: the scratch key file it
+                    // would have owned has nobody to clean it up, so do it here.
+                    if case .success(let materialized) = result {
+                        SSHKeyMaterializer.cleanup(privateKeyPath: materialized.privateKeyPath)
+                    }
+                    return
+                }
+                tab.awaitingKeyUnlock = false
+                var args = hostArgs
+                switch result {
+                case .success(let materialized):
+                    tab.sshKeyTempPath = materialized.privateKeyPath
+                    args = ["-i", materialized.privateKeyPath] + args
+                case .failure(KeychainError.userCancelled):
+                    tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m Unlock cancelled - not connecting.\r\n")
+                    tab.terminal.feed(text: "  \u{1b}[2mPress ⌘R to try again.\u{1b}[0m\r\n")
+                    return
+                case .failure(let error):
+                    tab.terminal.feed(text: "\r\n  \u{1b}[2m[ssh key]\u{1b}[0m \(error.localizedDescription)\r\n")
+                    tab.terminal.feed(text: "  \u{1b}[2mConnecting without the saved key. Press ⌘R to retry.\u{1b}[0m\r\n")
+                }
+                self.startSSHProcess(tab, executable: executable, args: args, startupSnippetID: startupSnippetID)
             }
         }
+    }
+
+    /// The half of `connectSSH` that has to run on the main thread: forking
+    /// the PTY and (optionally) firing the host's startup snippet.
+    private func startSSHProcess(_ tab: TabModel, executable: String, args: [String], startupSnippetID: UUID?) {
         // No output filtering happens on this path: `startProcess` forks a
         // genuine PTY and every byte the host sends reaches the terminal
         // untouched (design report B1 "known hosts" - the interactive

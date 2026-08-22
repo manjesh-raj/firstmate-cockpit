@@ -67,6 +67,25 @@ jobs:
           fi
           echo "no warnings in Sources/FirstmateCockpit"
 
+      # GL-27: the self-test suites are compiled into debug builds only, which
+      # means the release configuration is a genuinely different compilation
+      # and can break on its own - a reference to a suite or a `debug*` shim
+      # from outside `#if FM_SELFTESTS` compiles cleanly in debug and fails
+      # only here. This is also what the shipped `.app` is built from, so it is
+      # the configuration that actually has to work.
+      - name: Build for release (the configuration the .app ships from)
+        run: swift build -c release 2>&1 | tee release-build.log
+
+      - name: Prove the release binary carries no test code
+        run: |
+          BIN=.build/release/FirstmateCockpit
+          if strings -a "$BIN" | grep -q 'FM_RUN_'; then
+            echo "::error::the release binary still contains FM_RUN_* self-test flags"
+            strings -a "$BIN" | grep 'FM_RUN_' | head
+            exit 1
+          fi
+          echo "release binary: no FM_RUN_* flags, $(stat -f%z "$BIN") bytes"
+
   test:
     name: self-test suites
     runs-on: macos-14

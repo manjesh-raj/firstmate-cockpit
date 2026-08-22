@@ -28,7 +28,10 @@ final class ShiftController: NSViewController {
 
     private let greetingLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let syncPill = NSView()
+    /// GL-16: see `UpdatesController.checkAllPill` - a clear-coloured
+    /// `HoverHighlightView` renders identically to the plain `NSView` this
+    /// was and inherits the shared press/focus/keyboard behaviour.
+    private let syncPill = HoverHighlightView()
     private let syncPillLabel = NSTextField(labelWithString: "")
     private let statsRow = NSStackView()
     /// Live dashboard stat tiles. Each themes itself; this list only exists so
@@ -335,6 +338,7 @@ final class ShiftController: NSViewController {
         syncPill.translatesAutoresizingMaskIntoConstraints = false
         let syncPillClick = NSClickGestureRecognizer(target: self, action: #selector(syncPillClicked))
         syncPill.addGestureRecognizer(syncPillClick)
+        syncPill.accessibilityLabelOverride = "Sync status - open conflict resolution"
         applySyncPill()
 
         // `store.gitSync` is fixed for this controller's whole lifetime (a

@@ -44,7 +44,7 @@ import AppKit
 // MARK: - Task list
 
 final class ShiftTaskListView: NSObject {
-    let tableView = NSTableView()
+    let tableView = HelmTableView()
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var tasks: [ShiftTask] = []
@@ -271,7 +271,7 @@ enum ShiftSnoozeOption {
 }
 
 final class ShiftFollowUpListView: NSObject {
-    let tableView = NSTableView()
+    let tableView = HelmTableView()
 
     private var theme: HelmTheme = ThemeManager.shared.theme
     private var items: [ShiftFollowUp] = []

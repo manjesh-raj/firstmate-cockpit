@@ -131,7 +131,10 @@ enum FleetDataSource {
 
     /// Mirrors `fleet.py`'s `_classify`: map a crew-state verb to a coarse
     /// status bucket the UI groups by.
-    private static func classify(_ state: String) -> String {
+    /// Not `private`: `FleetDataSelfTest` drives it directly (GL-29) - this
+    /// mapping is what decides whether a task reads as "needs your call",
+    /// which is Overview's whole reason to exist.
+    static func classify(_ state: String) -> String {
         switch state {
         case "working": return "working"
         case "parked": return "needs_decision"
@@ -250,10 +253,16 @@ enum FleetDataSource {
 
     static func mergedPRs(openPRs: [OpenPRInfo], tasks: [FleetTask]) -> [MergedPR] {
         func norm(_ u: String) -> String {
-            var s = u
+            // Lowercase *first*, then strip: the scheme check is a
+            // case-sensitive `hasPrefix`, so doing it the other way round left
+            // an `HTTP://`-cased URL carrying its scheme into the key while a
+            // lowercase one did not - and the two then read as two different
+            // PRs, which shows the same PR twice with only one of them
+            // mergeable. Found by `FleetDataSelfTest` (GL-29), not in the field.
+            var s = u.lowercased()
             for prefix in ["https://", "http://"] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
             while s.hasSuffix("/") { s.removeLast() }
-            return s.lowercased()
+            return s
         }
         func prNumber(from u: String) -> Int? {
             let trailingDigits = String(u.reversed().prefix(while: { $0.isNumber }).reversed())
@@ -468,7 +477,11 @@ enum OpenPRsSource {
     /// `(forge, owner, repo)` for a github.com / bitbucket.org remote - both
     /// the scp-like SSH form (`git@host:owner/repo.git`) and the URL form
     /// (`https://[user@]host[:port]/owner/repo`). Anything else is skipped.
-    private static func parseRemote(_ raw: String) -> (forge: String, owner: String, repo: String)? {
+    /// Not `private`: `FleetDataSelfTest` drives it directly (GL-29). Every PR
+    /// this app shows depends on getting this right for the captain's real
+    /// remotes, and it is pure string work with no network - exactly the shape
+    /// that should be pinned by a test rather than by a live run.
+    static func parseRemote(_ raw: String) -> (forge: String, owner: String, repo: String)? {
         let url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return nil }
         var host: String

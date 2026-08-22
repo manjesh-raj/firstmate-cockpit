@@ -182,6 +182,13 @@ final class TabModel {
     /// down by `cleanupSSHKeyTempFile` on close, reconnect, and process exit.
     var sshKeyTempPath: String?
 
+    /// GL-25: true between starting a background Keychain/Touch ID unlock for
+    /// this tab and the biometric prompt resolving. Guards against a second
+    /// unlock (and therefore a second `startProcess`) being started for the
+    /// same tab while the first prompt is still on screen - ⌘R during a
+    /// prompt is the easy way to hit that.
+    var awaitingKeyUnlock = false
+
     /// `fm/cockpit-block-view-stage0`: whether this tab is the one, single,
     /// opted-in host page block view applies to (`Host.blockViewOptIn`,
     /// threaded down from `AppShellController.connectHost` through

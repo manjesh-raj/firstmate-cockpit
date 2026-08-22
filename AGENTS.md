@@ -736,6 +736,177 @@ picking up a GL-numbered item.
   intermittently comparing SwiftTerm's 80x25 default against the first real layout (97x32),
   which is a test-timing fragility rather than a pane resizing anything.
 
+## Production-readiness phase 3 (`fm/grandline-review-phase3-polish`)
+
+The polish/accessibility slice of the captain-approved production-readiness
+review (`data/grandline-production-review/MANJESH_GRAND_LINE_PRODUCTION_REVIEW.md`,
+GL-01..GL-38). Phase 1 stopped irreversible loss, Phase 2 built the shared
+machinery; this one makes the app usable without a mouse, stops the shipped
+binary carrying its own test suite, and closes the growth/first-run/undo gaps.
+**Phase 4 is still open** - lazy destination mounting + the destination table
+(GL-37), `ConsoleController` decomposition (GL-36), Developer ID + notarization
++ self-update (F3), and the P3 batch. Read section 31 before picking up a
+GL-numbered item.
+
+- **Accessibility is fixed in the shared components, on purpose, and pinned by
+  `FM_RUN_ACCESSIBILITY_TESTS` (GL-16).** The review's finding was ~40
+  `NSClickGestureRecognizer`-driven controls that VoiceOver saw as static text.
+  All but four of them turned out to already host their recognizer on a
+  `HoverHighlightView`, so that component is where the fix lives: it derives a
+  label from its own descendant labels, answers `.button`, and
+  `accessibilityPerformPress()` **replays its own recognizer's target/action**
+  (with the *recognizer* as sender, because several handlers read `sender.view`
+  to know which row was hit). That is what made this a one-place change rather
+  than 40 call-site edits - so **do not hand-roll accessibility on a new
+  clickable row; put the recognizer on a `HoverHighlightView`.** The four that
+  were not: the top bar's search pill (now `PillButton: HoverHighlightView` -
+  which is why `HoverHighlightView` is no longer `final`), Updates' Refresh
+  pill, Shift's sync pill (both now clear-coloured `HoverHighlightView`s, which
+  render identically to the plain `NSView` they replaced), and the notification
+  panel's "Mark all read" label (now wrapped in one).
+  - **A control that does nothing must stay silent.** `isActivatable` gates
+    both the accessibility element and the key view loop, because this app is
+    built almost entirely out of decorative containers and flooding VoiceOver
+    with them is its own accessibility failure.
+  - **`HelmSegmentedTabs`' pills announce as `.radioButton` with a live
+    selected value** and handle left/right arrows via `HoverHighlightView`'s
+    new `onKeyDown` seam. `HelmStatTile` is `.staticText` until `onClick` is
+    set (a number is worth reading either way; a button is not). `HelmAccentRow`
+    reads kicker/title/meta/chip and keeps its `trailingAccessory` reachable as
+    its only child.
+  - **`focusRingType = .exterior` + `drawFocusRingMask()`, never `.none`, on
+    anything focusable** - and the mask has to be **inset** by
+    `HelmFocusRing.inset` on a control that clips its own layer
+    (`HelmButton`/`HelmPopUpButton` set `masksToBounds = true`, which would
+    otherwise clip an exterior ring away entirely). The remaining
+    `focusRingType = .none` sites are text fields, where the caret is the focus
+    indicator.
+  - **`HelmTableView` is the app's one table now**, and the subtlety worth
+    knowing: all four `doubleAction` handlers read `clickedRow`, which AppKit
+    leaves at `-1` for a keyboard activation - so it **overrides `clickedRow`
+    to report the selected row for the duration of a Return/Space activation**
+    rather than making four handlers input-device-aware.
+  - **An icon-only `HelmButton` announces its tooltip, never the SF Symbol
+    name.** Left alone, AppKit derives something like "refresh" from
+    `arrow.clockwise` - confirmed by injecting the regression.
+  - The dictation HUD's pulse was the one looping animation Phase 1's Reduce
+    Motion pass missed; it is gated and observed now, like the lock screen's
+    boat/wave and the rail mark's bob.
+- **GL-32 shipped as the floor plus the hook, not the full text-scaling
+  system.** `HelmType.minimumUIPointSize` is 11 and every accessor goes through
+  `HelmType.scaled(_:)`, which multiplies by `ChromeTextScale.shared.scale` and
+  clamps to that floor - so the kicker went 10 -> 11 and `HelmStatTile`'s
+  caption 10.5 -> 11, and a new role added to `HelmType` cannot bypass the
+  floor. `ChromeTextScale` (in `FontSizeManager.swift`, deliberately its
+  sibling: that one is the *monospace/terminal* size) is persisted as
+  `AppSettings.uiTextScale`, offered as Default/Large/Larger in Settings >
+  Terminal, and a change is turned into an app-wide repaint by
+  `ThemeManager.reapplyCurrentTheme()` - **a scale change rides the theme
+  observer every page already has, rather than a second app-wide fan-out.**
+  What that does *not* cover, and is GL-32's remaining "High" half: text whose
+  font is set once in a page's own `loadView` and never re-derived keeps its
+  size until relaunch, and fixed table `rowHeight`s do not grow with the scale.
+- **GL-25: `SSHKeyMaterializer.materialize` runs off the main thread now**, and
+  `KeychainKeyStore.authenticate` carries a `dispatchPrecondition(.notOnQueue(.main))`
+  so that cannot silently regress - the biometric prompt blocks its caller, and
+  on the main thread that froze every window and every other terminal tab for
+  as long as the captain took to answer. `ConsoleController.connectSSH` split
+  into the async unlock plus `startSSHProcess` (main-thread only, SwiftTerm's
+  requirement), with `TabModel.awaitingKeyUnlock` refusing a second unlock for a
+  tab that already has one in flight (⌘R during a prompt is the easy way there)
+  and cleaning up the scratch key file if the tab closes mid-prompt.
+- **GL-34: the SRE Lead bridge's per-tick cost is a viewport read, not a
+  10,000-line buffer read.** The end marker is the last thing a completed
+  command prints, so it is on screen when it arrives - `currentViewportLines()`
+  (via `Terminal.getLine(row:)`, which is display-relative) is the cheap probe,
+  and the full `getBufferAsData()` snapshot happens twice per request instead of
+  five times a second. The one case the probe cannot see is the captain
+  scrolling away while a command runs (scrolling is not keystroke activity, so
+  it does not trip the input guard) - covered by a full scan every
+  `fullScanEvery` ticks. The idle request scan dropped to 1Hz
+  (`idlePollInterval`, injectable so a hand-driven self-test does not sleep).
+  Both are pinned by real cases in `FM_RUN_SRE_LEAD_BRIDGE_TESTS`, and the cost
+  one was confirmed to fail on the pre-fix behaviour.
+- **GL-35's caps, and what each one actually was:** dictation history is capped
+  at `DictationStore.historyLimit` (the file is rewritten whole on every
+  dictation) and gained a per-entry delete; `ShiftStore.allCompletedTasks()` is
+  memoised (`completedTasksCache`, invalidated by the three writes that can
+  change it plus `reloadAll`) because the Projects grid called it *once per
+  project card* and each call re-parsed every month file; `LogAnalyzerStore.history()`
+  is memoised the same way, and `directory(forID:)` now falls back to a raw
+  id-in-bytes scan so a corrupt `investigation.yaml` is deletable instead of
+  invisible-and-undeletable; GitHub Sync's scratch clones are
+  `--single-branch --no-tags` (**not** `--filter=blob:none` - a blobless clone
+  would have to lazily re-fetch blobs for the commits `syncManual` pushes,
+  turning a local fast-forward into an unpredictable network operation) and
+  orphaned ones are pruned; the 547MB Whisper model has a confirmed delete
+  action.
+- **GL-33: `Toast.showUndo` is the app's one undo, one slot.** No
+  `UndoManager` anywhere - the rule instead is that `onUndo` must restore *the
+  value the caller already had in hand*, which is why it is wired to host,
+  snippet, dictation-vocabulary, dictation-history and port-forward-rule
+  deletes and deliberately **not** to an SSH key delete: the private bytes leave
+  the Keychain, and an "Undo" producing a key entry with no key material would
+  be a lie. A newer pill supersedes the older one by committing it (its handler
+  simply never runs). `Toast.swift`'s header also carries **GL-30's written
+  rule** - modal for a blocked decision, toast for a transient confirmation,
+  Notification Center for anything still true after the toast fades; Phase 2
+  already wired the persistence and service-health paths that way.
+- **GL-31: first run is threaded.** `AppShellController` lands on `.bootstrap`
+  instead of `.console` when `FirstmateHome.homeOk()` is false (the one
+  condition - no saved hosts, no Shift data and no Vault password beyond the
+  lock screen's own are all genuinely fine); Overview's raw "set FM_HOME" string
+  became a real `HelmAccentRow` banner with an "Open Setup" action; and the lock
+  screen's unconfigured state renders `VaultSource.appPasswordSetupCommand` as a
+  copyable code row instead of prose containing a command to retype - that
+  constant is the single source both it and `setup-guide.md` follow.
+- **GL-29 added five suites, and each one was confirmed to catch a real
+  regression rather than merely to pass:** `FM_RUN_DICTATION_ENGINE_TESTS`
+  (the finish/race/timeout state machine - all three of its shipped bugs
+  reproduce when the fixes are reverted, and `DictationEngine.pasteSinkForTests`
+  is what stops a run typing fixtures into whatever app is frontmost),
+  `FM_RUN_FLEET_DATA_TESTS`, `FM_RUN_CREDENTIAL_PATH_TESTS` (real `ssh-keygen`,
+  never the login Keychain), `FM_RUN_BACKGROUND_SIGNALS_TESTS` and
+  `FM_RUN_ACCESSIBILITY_TESTS`. Two things came out of writing them:
+  - **A real bug the Fleet suite found on its first run:** `mergedPRs`' URL
+    normaliser stripped the scheme with a case-sensitive `hasPrefix` *before*
+    lowercasing, so an `HTTP://`-cased PR URL kept its scheme in the dedup key
+    and the same PR rendered twice, only one of them mergeable.
+  - **GL-03's latch decision is now `BackgroundSignalsPoller.admit`/`mayReleaseLatch`**,
+    extracted precisely because the decision was three inline lines wrapped
+    around sixty subprocesses - which is what made the original stuck-latch bug
+    untestable.
+- **GL-27: the suites live in `SelfTests/` and are compiled into debug builds
+  only.** `Package.swift` defines `FM_SELFTESTS` `.when(configuration: .debug)`;
+  every file in that directory is wrapped in `#if FM_SELFTESTS`, as is
+  `main.swift`'s whole dispatch chain. Measured: the release binary went from
+  carrying 3,872 self-test symbols and 52 `FM_RUN_*` strings to 1 (an empty
+  object-file debug-map entry) and 0. Four things to know:
+  - **A compilation condition, not a second SPM target**, deliberately: the
+    suites reach `internal` members throughout (that is what lets them drive the
+    *real* `ConsoleController`/`DictationEngine`/stores), and a second target
+    would mean widening hundreds of declarations to `public`. `@testable import`
+    needs a test target, which this no-Xcode project has no story for.
+  - **A new suite goes in `SelfTests/` with the guard**, and
+    `FM_RUN_PHASE3_POLISH_TESTS` fails if a file there is missing it -
+    confirmed by removing one.
+  - **A suite that greps the app's own sources must use
+    `SelfTestSources.appSourceDirectory()`**, never `#filePath`'s own directory:
+    that now resolves to `SelfTests/`, and every such guard *skips* when it
+    cannot find its sentinel, so they would all have gone on printing OK while
+    checking nothing. The helper verifies a sentinel app file is really there,
+    and deliberately excludes `SelfTests/` itself (a guard scanning its own
+    suites trips on the very tokens it exists to forbid).
+  - **Always test against `.build/debug/FirstmateCockpit`.** A release binary
+    runs zero suites and exits 0, which looks exactly like a clean run.
+    `Scripts/run-all-tests.sh` builds debug and says so; CI now also builds
+    `-c release` (a genuinely separate compilation that can break on its own)
+    and asserts the shipped binary carries no `FM_RUN_*` strings.
+- **Verified with `swift build` (clean, zero warnings in this app's sources),
+  `swift build -c release`, and all 52 runnable suites passing - without ever
+  launching the app**, per the README's worktree rule, which this phase did not
+  relax.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

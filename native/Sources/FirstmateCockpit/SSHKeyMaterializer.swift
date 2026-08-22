@@ -20,7 +20,11 @@ enum SSHKeyMaterializer {
     }
 
     /// Read `key`'s private key blob out of the Keychain and write it to a
-    /// private, 0600 temp file so `ssh -i` has a path to point at. If the key
+    /// private, 0600 temp file so `ssh -i` has a path to point at.
+    ///
+    /// **Call this off the main thread** (GL-25): the Keychain read presents
+    /// the Touch ID / passcode sheet and blocks until it is answered - see
+    /// `KeychainKeyStore.authenticate`, which asserts it. If the key
     /// carries a certificate, it is written alongside as
     /// `<name>-cert.pub` (OpenSSH's own convention for auto-loading a
     /// certificate next to its identity file - no extra `ssh` flags needed).

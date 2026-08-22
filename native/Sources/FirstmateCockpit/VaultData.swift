@@ -162,6 +162,11 @@ enum VaultSource {
     /// a first-run setup screen for it.
     static let appPasswordSecretName = "GRANDLINE_APP_PASSWORD"
 
+    /// GL-31: the exact command a captain has to run to set the app password
+    /// on a fresh machine, in one place, so the lock screen's copyable row and
+    /// `setup-guide.md` cannot drift apart.
+    static var appPasswordSetupCommand: String { "av save \(appPasswordSecretName)" }
+
     enum AppPasswordAvailability {
         case configured
         case notConfigured

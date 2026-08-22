@@ -754,7 +754,18 @@ final class DictationEngine {
     /// approaches need the same Accessibility trust already required for the
     /// global hotkey (`DictationHotkey`), so there's no permission-cost
     /// difference between them - only a reliability one.
+    /// GL-29's most important seam. Set, `pasteAtCursor` routes here instead
+    /// of touching the pasteboard or posting a synthetic ⌘V - so a self-test
+    /// can drive the whole finish/deliver path without typing the captain's
+    /// test fixtures into whatever app happens to be frontmost, and without
+    /// clobbering their clipboard. Never set in the shipping app.
+    static var pasteSinkForTests: ((String) -> Void)?
+
     static func pasteAtCursor(_ text: String) {
+        if let sink = pasteSinkForTests {
+            sink(text)
+            return
+        }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -768,6 +779,52 @@ final class DictationEngine {
         keyUp?.flags = .maskCommand
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
+    }
+
+    // MARK: Probe / self-test surface (GL-29)
+
+    /// The finish/race/timeout state machine is the part of this file with
+    /// three real shipped bugs in its history (the delayed-empty-final-result
+    /// hang, the `.transcribing` stomp when recognition beats the key release,
+    /// and the hard ceiling permanently winning over a slow-but-real result) -
+    /// and all three were verified only by probes that were then reverted,
+    /// which is exactly why the review called this the highest-risk untested
+    /// subsystem. These shims are the permanent version of those probes.
+    ///
+    /// They drive the *real* methods; nothing here reimplements a decision.
+
+    /// Stand in for a real capture having started, so `finish`/`stopRecording`
+    /// see the state they would see mid-dictation.
+    func debugBeginCaptureForTests(startedAt: Date = Date()) {
+        isRecording = true
+        isFinishing = false
+        bestTranscriptSeen = ""
+        recordingStartedAt = startedAt
+        usingLocalWhisperThisRecording = false
+        report(.recording)
+    }
+
+    /// Feed a partial/final recognition result exactly as the real
+    /// `recognitionTask` callback does, so the `bestTranscriptSeen` fallback
+    /// is exercised rather than described.
+    func debugNoteTranscriptForTests(_ text: String) {
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            bestTranscriptSeen = text
+        }
+    }
+
+    func debugFinishForTests(text: String?, systemDictationDisabled: Bool = false) {
+        finish(text: text, systemDictationDisabled: systemDictationDisabled)
+    }
+
+    func debugStopRecordingForTests() { stopRecording() }
+
+    var debugIsRecordingForTests: Bool { isRecording }
+    var debugIsFinishingForTests: Bool { isFinishing }
+    var debugBestTranscriptForTests: String { bestTranscriptSeen }
+
+    static func debugHardCeilingDurationForTests(capturedAudioSeconds: TimeInterval) -> TimeInterval {
+        hardCeilingDuration(forCapturedAudioSeconds: capturedAudioSeconds)
     }
 
     /// Split out from `pasteAtCursor` so a test can stub it - posting a

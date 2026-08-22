@@ -83,6 +83,13 @@ final class LockScreenController: NSViewController {
     private let unlockButton = NSButton(title: "Unlock", target: nil, action: nil)
     private let formStack = NSStackView()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
+    /// GL-31: the first-run instruction used to be prose containing a command
+    /// the captain had to retype by hand, on the one screen in the app where
+    /// nothing else is reachable. The command now renders as a real code line
+    /// with a Copy button beside it.
+    private let setupCommandLabel = NSTextField(labelWithString: VaultSource.appPasswordSetupCommand)
+    private let copyCommandButton = NSButton(title: "Copy", target: nil, action: nil)
+    private let setupCommandStack = NSStackView()
 
     // `.avUnavailable`-only UI: a distinct message plus a real install
     // action - see `onInstallAutomicVault` above.
@@ -271,6 +278,32 @@ final class LockScreenController: NSViewController {
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
         messageLabel.isHidden = true
 
+        setupCommandLabel.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        setupCommandLabel.isSelectable = true
+        setupCommandLabel.lineBreakMode = .byTruncatingMiddle
+        setupCommandLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        copyCommandButton.isBordered = false
+        copyCommandButton.wantsLayer = true
+        copyCommandButton.layer?.cornerRadius = 6
+        copyCommandButton.target = self
+        copyCommandButton.action = #selector(copySetupCommandTapped)
+        copyCommandButton.translatesAutoresizingMaskIntoConstraints = false
+        copyCommandButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        setupCommandStack.orientation = .horizontal
+        setupCommandStack.alignment = .centerY
+        setupCommandStack.spacing = 10
+        setupCommandStack.distribution = .fill
+        setupCommandStack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 10)
+        setupCommandStack.wantsLayer = true
+        setupCommandStack.layer?.cornerRadius = 8
+        setupCommandStack.layer?.borderWidth = 1
+        setupCommandStack.translatesAutoresizingMaskIntoConstraints = false
+        setupCommandStack.addArrangedSubview(setupCommandLabel)
+        setupCommandStack.addArrangedSubview(copyCommandButton)
+        setupCommandStack.isHidden = true
+
         avMessageLabel.font = .systemFont(ofSize: 13.5)
         avMessageLabel.alignment = .center
         avMessageLabel.maximumNumberOfLines = 5
@@ -311,7 +344,7 @@ final class LockScreenController: NSViewController {
         avUnavailableStack.addArrangedSubview(installStatusLabel)
         avUnavailableStack.isHidden = true
 
-        let contentStack = NSStackView(views: [boatImageView, titleLabel, subtitleLabel, formStack, messageLabel, avUnavailableStack])
+        let contentStack = NSStackView(views: [boatImageView, titleLabel, subtitleLabel, formStack, messageLabel, setupCommandStack, avUnavailableStack])
         contentStack.orientation = .vertical
         contentStack.alignment = .centerX
         contentStack.spacing = 18
@@ -407,6 +440,14 @@ final class LockScreenController: NSViewController {
         titleLabel.textColor = inkPrimary
         subtitleLabel.textColor = inkSecondary
         messageLabel.textColor = inkTertiary
+        setupCommandLabel.textColor = inkPrimary
+        setupCommandStack.layer?.backgroundColor = inkTertiary.withAlphaComponent(0.10).cgColor
+        setupCommandStack.layer?.borderColor = inkTertiary.withAlphaComponent(0.35).cgColor
+        copyCommandButton.layer?.backgroundColor = inkTertiary.withAlphaComponent(0.18).cgColor
+        copyCommandButton.attributedTitle = NSAttributedString(
+            string: "Copy",
+            attributes: [.foregroundColor: inkPrimary, .font: NSFont.systemFont(ofSize: 12, weight: .medium)]
+        )
         avMessageLabel.textColor = inkTertiary
         installStatusLabel.textColor = inkSecondary
 
@@ -552,6 +593,7 @@ final class LockScreenController: NSViewController {
             subtitleLabel.stringValue = subtitle
             formStack.isHidden = false
             messageLabel.isHidden = true
+            setupCommandStack.isHidden = true
             avUnavailableStack.isHidden = true
             passwordField.stringValue = ""
             passwordField.isEnabled = true
@@ -572,11 +614,16 @@ final class LockScreenController: NSViewController {
             // option here either - the Vault tab lives behind this same lock
             // screen, so it's only ever reachable to rotate an already-set
             // password, never to set the first one. See `setup-guide.md`.
-            messageLabel.stringValue = "Run \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d} in a terminal, or set it from Automic Vault's own app, then relaunch Manjesh Grand Line."
+            // GL-31: the command itself moved out of this sentence and into
+            // the copyable row below, so the prose can just say what to do
+            // with it.
+            messageLabel.stringValue = "Run this in a terminal (or set the password from Automic Vault's own app), then relaunch Manjesh Grand Line."
+            setupCommandStack.isHidden = false
         case .avUnavailable:
             subtitleLabel.stringValue = "Automic Vault isn't installed"
             formStack.isHidden = true
             messageLabel.isHidden = true
+            setupCommandStack.isHidden = true
             avUnavailableStack.isHidden = false
             avMessageLabel.stringValue = "Automic Vault isn't installed on this Mac. Install it below, then set a password with \u{201c}av save GRANDLINE_APP_PASSWORD\u{201d} (or Automic Vault's own app) and relaunch."
             installButton.isEnabled = true
@@ -586,12 +633,14 @@ final class LockScreenController: NSViewController {
             formStack.isHidden = true
             avUnavailableStack.isHidden = true
             messageLabel.isHidden = false
+            setupCommandStack.isHidden = true
             messageLabel.stringValue = "Automic Vault's background service isn't running yet - starting it now. This should only take a moment."
         case .transientFailure:
             subtitleLabel.stringValue = "Checking Automic Vault"
             formStack.isHidden = true
             avUnavailableStack.isHidden = true
             messageLabel.isHidden = false
+            setupCommandStack.isHidden = true
             messageLabel.stringValue = "Automic Vault didn't respond in time - retrying automatically. This should only take a moment."
         }
     }
@@ -625,6 +674,19 @@ final class LockScreenController: NSViewController {
                 self.playUnlockFailureAnimation()
                 self.view.window?.makeFirstResponder(self.passwordField)
             }
+        }
+    }
+
+    @objc private func copySetupCommandTapped() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(VaultSource.appPasswordSetupCommand, forType: .string)
+        copyCommandButton.attributedTitle = NSAttributedString(
+            string: "Copied",
+            attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .medium)]
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+            guard let self else { return }
+            self.applyTheme(ThemeManager.shared.theme)
         }
     }
 

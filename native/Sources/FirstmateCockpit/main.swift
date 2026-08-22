@@ -910,6 +910,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openReadme() { openRepoDoc(named: "README.md") }
 }
 
+// MARK: - Self-test dispatch (GL-27: debug builds only)
+//
+// Every `FM_RUN_*_TESTS` block below is compiled out of the release binary,
+// along with the suites themselves (see any file in `SelfTests/`). The flags
+// stay greppable in this file either way, which is what
+// `Scripts/run-all-tests.sh` discovers the suite list from - and that script
+// builds and runs the debug binary, where they exist.
+//
+// This whole block sits before `SingleInstanceGuard.acquire()` and before
+// `AppDelegate()` is constructed: every branch `exit()`s, so a headless suite
+// never contends for the instance lock and never touches the real stores.
+#if FM_SELFTESTS
+
 // `fm/cockpit-sre-lead-shared-terminal`: `swift build && FM_RUN_SRE_LEAD_BRIDGE_TESTS=1
 // .build/debug/FirstmateCockpit` runs `SRELeadBridge`'s self-tests and exits,
 // never opening a window - this project builds with Command Line Tools only
@@ -1148,6 +1161,47 @@ if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_DATA_TESTS"] == "1" {
 // `fm/grandline-dictation-phase3`: same convention, for `DictationCleanup`'s
 // `claude -p` invocation/parsing/fallback logic - see
 // DictationCleanupSelfTest.swift's header.
+// Phase 3's own structural guards - the release-binary exclusion (GL-27), the
+// text floor (GL-32), the growth caps (GL-35) and the undo slot (GL-33). See
+// `SelfTests/Phase3PolishSelfTest.swift`.
+if ProcessInfo.processInfo.environment["FM_RUN_PHASE3_POLISH_TESTS"] == "1" {
+    exit(Phase3PolishSelfTest.run() ? 0 : 1)
+}
+
+// GL-16 (Phase 3): what the accessibility sweep guarantees - roles, labels,
+// press actions, keyboard activation, focus rings and Reduce Motion, asserted
+// in the shared components. See `AccessibilitySelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_ACCESSIBILITY_TESTS"] == "1" {
+    exit(AccessibilitySelfTest.run() ? 0 : 1)
+}
+
+// GL-29 (Phase 3): `BackgroundSignalsPoller`'s pass latch (GL-03's own fix) and
+// `ServiceHealthRegistry`'s verdicts. See `BackgroundSignalsSelfTest.swift`.
+if ProcessInfo.processInfo.environment["FM_RUN_BACKGROUND_SIGNALS_TESTS"] == "1" {
+    exit(BackgroundSignalsSelfTest.run() ? 0 : 1)
+}
+
+// GL-29 (Phase 3): the SSH credential path - `SSHKeyGenerator`,
+// `SSHKeyMaterializer`, and the Keychain contract. See
+// `CredentialPathSelfTest.swift`'s header for what it does and does not touch.
+if ProcessInfo.processInfo.environment["FM_RUN_CREDENTIAL_PATH_TESTS"] == "1" {
+    exit(CredentialPathSelfTest.run() ? 0 : 1)
+}
+
+// GL-29 (Phase 3): `FleetDataSource`/`OpenPRsSource` - the pair behind Overview
+// and Review, including the merge action's argv. See
+// `FleetDataSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_FLEET_DATA_TESTS"] == "1" {
+    exit(FleetDataSelfTest.run() ? 0 : 1)
+}
+
+// GL-29 (Phase 3): `DictationEngine`'s finish/race/timeout state machine -
+// three real shipped bugs, previously verified only by reverted probes. See
+// `DictationEngineSelfTest.swift`'s header.
+if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_ENGINE_TESTS"] == "1" {
+    exit(DictationEngineSelfTest.run() ? 0 : 1)
+}
+
 if ProcessInfo.processInfo.environment["FM_RUN_DICTATION_CLEANUP_TESTS"] == "1" {
     exit(DictationCleanupSelfTest.run() ? 0 : 1)
 }
@@ -1242,6 +1296,8 @@ if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_LIST_VOLUME_TESTS"] == 
 if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_ROW_BUTTON_LAYOUT_TESTS"] == "1" {
     exit(ReviewPRRowButtonLayoutSelfTest.run() ? 0 : 1)
 }
+
+#endif
 
 // GL-05: refuse to be a second instance. This sits *after* every
 // `FM_RUN_*_TESTS` block above (each of which `exit()`s, so a headless

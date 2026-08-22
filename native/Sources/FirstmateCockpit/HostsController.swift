@@ -619,6 +619,11 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
                       detail: "This removes the saved host. It does not affect any running session.")
         else { return }
         hostStore.delete(id: host.id)
+        // GL-33: the record is still in hand right here, so restoring it is a
+        // real `add` of the same value - not a reconstruction.
+        Toast.showUndo(in: view, message: "Deleted \u{201C}\(host.label)\u{201D}") { [weak self] in
+            self?.hostStore.add(host)
+        }
     }
 
     // MARK: Key actions
@@ -725,6 +730,9 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
                       detail: "Any host using this as its startup snippet will fall back to no startup command.")
         else { return }
         snippetStore.delete(id: snippet.id)
+        Toast.showUndo(in: view, message: "Deleted \u{201C}\(snippet.label)\u{201D}") { [weak self] in
+            self?.snippetStore.add(snippet)
+        }
     }
 
     // MARK: Shared alerts

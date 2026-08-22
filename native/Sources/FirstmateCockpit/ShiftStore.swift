@@ -228,6 +228,7 @@ final class ShiftStore {
     /// confirm the change survived" a real persistence check rather than
     /// trusting the in-memory array a write call already mutated.
     func reloadAll() {
+        invalidateCompletedTasksCache()
         activeTasks = readListGuarded(path: activeTasksPath, key: "tasks").compactMap(ShiftYaml.task(from:))
         followUps = readListGuarded(path: followUpsPath, key: "follow_ups").compactMap(ShiftYaml.followUp(from:))
         projects = readListGuarded(path: projectsPath, key: "projects").compactMap(ShiftYaml.project(from:))
@@ -251,12 +252,36 @@ final class ShiftStore {
     /// has, for stats/lookups that need to see completed work (not shown in
     /// the My Tasks list itself, which is active tasks only).
     func allCompletedTasks() -> [ShiftTask] {
+        if let completedTasksCache { return completedTasksCache }
         let completedDir = root.appendingPathComponent("tasks/completed", isDirectory: true)
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: completedDir.path) else { return [] }
-        return files.filter { $0.hasSuffix(".yaml") }.flatMap { file -> [ShiftTask] in
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: completedDir.path) else {
+            completedTasksCache = []
+            return []
+        }
+        let tasks = files.filter { $0.hasSuffix(".yaml") }.flatMap { file -> [ShiftTask] in
             ShiftYaml.readList(path: completedDir.appendingPathComponent(file).path, key: "tasks").compactMap(ShiftYaml.task(from:))
         }
+        completedTasksCache = tasks
+        return tasks
     }
+
+    /// GL-35: every completed month file, parsed, memoised.
+    ///
+    /// This is read from render paths, not just from stats: the Projects grid
+    /// calls `taskCounts(forProject:)` once per project card and Weekly Review
+    /// calls it repeatedly, so an uncapped, uncached read meant *every month
+    /// file this captain has ever accumulated*, re-parsed once per card, on
+    /// every render - a cost that only ever grows with use.
+    ///
+    /// Invalidated from exactly the three places that can change what is in
+    /// those files (`appendToCompletedMonth`, `removeFromCompletedMonth`,
+    /// `reloadAll`), so an external edit - a hand-edited file, a `git pull` -
+    /// is picked up by the `reloadAll()` every page already calls from
+    /// `viewWillAppear`. Nothing here is allowed to serve a value across a
+    /// write it performed itself.
+    private var completedTasksCache: [ShiftTask]?
+
+    private func invalidateCompletedTasksCache() { completedTasksCache = nil }
 
     // MARK: Mutations
 
@@ -474,6 +499,7 @@ final class ShiftStore {
     }
 
     private func appendToCompletedMonth(_ task: ShiftTask, month: String) {
+        invalidateCompletedTasksCache()
         let path = completedPath(forMonth: month)
         var tasks = readListGuarded(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
         tasks.removeAll { $0.id == task.id }
@@ -482,6 +508,7 @@ final class ShiftStore {
     }
 
     private func removeFromCompletedMonth(id: String, month: String) {
+        invalidateCompletedTasksCache()
         let path = completedPath(forMonth: month)
         var tasks = readListGuarded(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
         tasks.removeAll { $0.id == id }

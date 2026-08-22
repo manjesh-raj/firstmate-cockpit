@@ -41,8 +41,25 @@ protocol SRELeadBridgeTerminal: AnyObject {
 
     /// The terminal's entire current buffer, one entry per row - the same
     /// shape `Terminal.getBufferAsData()` already returns, just split into
-    /// lines. Called repeatedly while polling, so this should be cheap.
+    /// lines.
+    ///
+    /// This is **not** cheap on a real terminal: it translates every row of a
+    /// 10,000-line scrollback to a string. GL-34 is exactly that cost being
+    /// paid on the main thread on every tick, so it is now called only twice
+    /// per request - once to record where this request's output starts, and
+    /// once when the end marker has actually been seen.
     func currentBufferLines() -> [String]
+
+    /// Just the rows currently on screen (GL-34).
+    ///
+    /// The end marker is the last thing a completed command prints before the
+    /// prompt comes back, so it is on screen when it arrives - which makes a
+    /// viewport-sized read (tens of rows) a sufficient "is it done yet?"
+    /// probe, in place of a whole-scrollback read. `checkInFlight` still falls
+    /// back to a full read periodically, for the one case this cannot see: the
+    /// captain scrolling the view away while a command runs (scrolling is not
+    /// keystroke activity, so it does not trip the input guard).
+    func currentViewportLines() -> [String]
 
     /// The most recent moment the captain (a real keystroke or paste, never
     /// this bridge's own `sendCommand`) touched this terminal, or `nil` if
@@ -65,6 +82,10 @@ final class SRELeadBridge {
     private weak var target: SRELeadBridgeTerminal?
     private var timer: Timer?
     private var inFlight: InFlight?
+    /// GL-34 throttles: when the idle request scan last ran, and how many
+    /// ticks the current in-flight command has been checked for.
+    private var lastIdleScan: Date?
+    private var inFlightTicks = 0
 
     /// A request is refused as "busy" if the captain touched the tab within
     /// this many seconds before injection. An instance property (not a
@@ -79,9 +100,33 @@ final class SRELeadBridge {
     /// reason as `userActivityQuietWindow`.
     let commandTimeout: TimeInterval
 
-    /// How often to poll both for new request files and for the in-flight
-    /// command's end marker.
+    /// How often to poll for the in-flight command's end marker.
+    ///
+    /// Kept at 5Hz because a captain is waiting on a real answer here and the
+    /// per-tick cost is now a viewport read rather than a full-scrollback one
+    /// (GL-34) - this cadence is only paid while a command is genuinely
+    /// running.
     static let pollInterval: TimeInterval = 0.2
+
+    /// How often to look for a *new* request file while nothing is running
+    /// (GL-34).
+    ///
+    /// This is the cost that used to be paid forever, per SRE-Lead-active tab:
+    /// a directory enumeration five times a second whether or not the agent
+    /// had asked for anything. A request comes from `claude` deciding to call
+    /// a tool, which is seconds of model latency away regardless, so a 1Hz
+    /// idle poll is invisible to the captain and is 5x less idle work.
+    ///
+    /// An instance property with a default, for the same reason
+    /// `userActivityQuietWindow` and `commandTimeout` are: a self-test drives
+    /// `tick()` by hand and must not have to sleep through a real second
+    /// between two requests.
+    let idlePollInterval: TimeInterval
+
+    /// While a command is in flight, do a full-scrollback check this often
+    /// even though the viewport probe found nothing - the scrolled-away case
+    /// described on `currentViewportLines`.
+    static let fullScanEvery = 10
 
     private struct InFlight {
         let id: String
@@ -98,16 +143,22 @@ final class SRELeadBridge {
 
     init(
         bridgeDir: URL, target: SRELeadBridgeTerminal,
-        userActivityQuietWindow: TimeInterval = 0.5, commandTimeout: TimeInterval = 25
+        userActivityQuietWindow: TimeInterval = 0.5, commandTimeout: TimeInterval = 25,
+        idlePollInterval: TimeInterval = 1.0
     ) {
         self.bridgeDir = bridgeDir
         self.target = target
         self.userActivityQuietWindow = userActivityQuietWindow
         self.commandTimeout = commandTimeout
+        self.idlePollInterval = idlePollInterval
     }
 
     func start() {
         stop()
+        // One timer at the fast rate, with the idle path throttled inside
+        // `tick` (rather than two timers, or re-scheduling on every state
+        // change): the in-flight check has to be responsive the instant a
+        // request lands, and a single timer cannot be in two cadences at once.
         let t = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -119,6 +170,8 @@ final class SRELeadBridge {
         timer?.invalidate()
         timer = nil
         inFlight = nil
+        lastIdleScan = nil
+        inFlightTicks = 0
     }
 
     // MARK: Polling
@@ -137,6 +190,13 @@ final class SRELeadBridge {
             rejectAllPending(reason: "SRE Lead's shared terminal is already running another command - try again once it finishes.")
             return
         }
+        // GL-34: the idle half of the poll runs at `idlePollInterval`, not at
+        // the timer's own rate. `now`-based rather than a tick counter so a
+        // timer that gets coalesced (App Nap, a busy main thread) still scans
+        // about as often in wall-clock terms as intended.
+        let now = Date()
+        if let lastIdleScan, now.timeIntervalSince(lastIdleScan) < idlePollInterval { return }
+        lastIdleScan = now
         guard let request = nextPendingRequest() else { return }
         beginProcessing(request)
     }
@@ -198,6 +258,7 @@ final class SRELeadBridge {
         let searchFromLine = target.currentBufferLines().count
 
         target.sendCommand("echo \(startMarker); \(request.command); echo \(endMarker)\n")
+        inFlightTicks = 0
         inFlight = InFlight(
             id: request.id, startMarker: startMarker, endMarker: endMarker,
             startedAt: now, searchFromLine: searchFromLine
@@ -218,6 +279,16 @@ final class SRELeadBridge {
             inFlight = nil
             return
         }
+
+        // GL-34: the cheap probe. Only when the end marker is genuinely on
+        // screen (or the periodic safety net comes due) is the whole
+        // scrollback read and split - which is what this method used to do
+        // five times a second, per active tab, against a 10,000-line buffer.
+        inFlightTicks += 1
+        let sawEndMarkerOnScreen = target.currentViewportLines()
+            .contains { isMarkerLine($0, marker: current.endMarker) }
+        let periodicFullScan = inFlightTicks % Self.fullScanEvery == 0
+        guard sawEndMarkerOnScreen || periodicFullScan else { return }
 
         let allLines = target.currentBufferLines()
         guard allLines.count > current.searchFromLine else { return }
@@ -284,6 +355,15 @@ extension TabModel: SRELeadBridgeTerminal {
         guard let data = terminal.terminal?.getBufferAsData() else { return [] }
         let text = String(data: data, encoding: .utf8) ?? ""
         return text.components(separatedBy: "\n")
+    }
+
+    /// GL-34. `Terminal.getLine(row:)` is indexed from the *display* offset,
+    /// so this is genuinely the rows on screen (which is also why it cannot
+    /// see a marker the captain has scrolled away from - see
+    /// `SRELeadBridge.fullScanEvery` for the safety net that covers it).
+    func currentViewportLines() -> [String] {
+        guard let term = terminal.terminal else { return [] }
+        return (0..<term.rows).compactMap { term.getLine(row: $0)?.translateToString(trimRight: true) }
     }
 
     var lastUserActivity: Date? { terminal.lastUserActivity }

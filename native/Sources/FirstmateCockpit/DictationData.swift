@@ -81,10 +81,47 @@ final class DictationStore {
 
     // MARK: History
 
+    /// GL-35: the retained-history cap.
+    ///
+    /// The whole file is rewritten on every dictation, so an uncapped history
+    /// makes each dictation slower than the last, forever, for data nobody
+    /// scrolls back to - and it is the captain's own spoken text, which is the
+    /// last thing that should accumulate unbounded on disk by default. 500 is
+    /// far more than the page's list is ever scrolled through and still keeps
+    /// the rewrite trivial.
+    static let historyLimit = 500
+
     /// Called by `DictationEngine.onTranscript` right after a real paste -
     /// newest entry first, matching the page's "most recent first" display.
     func recordHistory(text: String, durationSeconds: Double, date: Date) {
         history.insert(DictationHistoryEntry(date: date, durationSeconds: durationSeconds, text: text), at: 0)
+        if history.count > Self.historyLimit {
+            history.removeLast(history.count - Self.historyLimit)
+        }
+        persistHistory()
+    }
+
+    /// GL-33: put a just-deleted entry back where it was, not at the top -
+    /// `recordHistory` is for a *new* dictation and always inserts newest-
+    /// first, which would silently reorder the list on undo.
+    func restoreHistoryEntry(_ entry: DictationHistoryEntry) {
+        guard !history.contains(where: { $0.date == entry.date && $0.text == entry.text }) else { return }
+        let index = history.firstIndex { $0.date < entry.date } ?? history.count
+        history.insert(entry, at: index)
+        if history.count > Self.historyLimit {
+            history.removeLast(history.count - Self.historyLimit)
+        }
+        persistHistory()
+    }
+
+    /// GL-35's other half: one entry, removed. "Clear everything" was the only
+    /// way to get rid of a single mis-transcribed line before this.
+    /// Identified by date + text rather than an index, so a list that has been
+    /// re-read since the row was drawn cannot delete the wrong row.
+    func removeHistoryEntry(date: Date, text: String) {
+        let before = history.count
+        history.removeAll { $0.date == date && $0.text == text }
+        guard history.count != before else { return }
         persistHistory()
     }
 
@@ -137,6 +174,13 @@ final class DictationStore {
             decoder: Self.dateFormatDecoder, label: "history.json", didBackUp: &backup
         ) ?? []
         if let backup { loadFailureBackupPaths.append(backup) }
+        // GL-35: an already-oversized file (written before the cap existed) is
+        // trimmed on load rather than only on the next dictation, so the very
+        // first rewrite after upgrading is already the small one.
+        if history.count > Self.historyLimit {
+            history.removeLast(history.count - Self.historyLimit)
+            persistHistory()
+        }
     }
 
     private func loadVocabulary() {

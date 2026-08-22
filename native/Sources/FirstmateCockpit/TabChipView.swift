@@ -85,9 +85,80 @@ final class TabChipView: NSView, NSTextFieldDelegate {
             closeButton.widthAnchor.constraint(equalToConstant: 15),
             closeButton.heightAnchor.constraint(equalToConstant: 15),
         ])
+
+        // GL-16. A chip is the console's own tab selector, and before this it
+        // was mouse-only: ⌘1-9 covered the first nine tabs and nothing else
+        // reached them. It is now a real focusable control - Tab to it, Return
+        // or Space to select, Left/Right to move along the strip - and it
+        // announces as a radio button carrying the tab's own name, which is
+        // what a tab in a one-of-many strip is.
+        focusRingType = .exterior
+        setAccessibilityElement(true)
+        setAccessibilityRole(.radioButton)
+        closeButton.setAccessibilityLabel("Close tab")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: Accessibility and keyboard (GL-16)
+
+    private var isSelectedChip = false
+
+    override func accessibilityLabel() -> String? { label.stringValue }
+    override func accessibilityValue() -> Any? { isSelectedChip ? "selected" : "not selected" }
+    /// The close button stays reachable - it is the chip's other real action.
+    override func accessibilityChildren() -> [Any]? { [closeButton] }
+
+    override func accessibilityPerformPress() -> Bool {
+        onSelect?()
+        return true
+    }
+
+    override var acceptsFirstResponder: Bool { !isRenaming }
+    override var canBecomeKeyView: Bool { !isRenaming && !isHiddenOrHasHiddenAncestor }
+
+    override func becomeFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.resignFirstResponder()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func drawFocusRingMask() {
+        let inset = min(HelmFocusRing.inset, min(bounds.width, bounds.height) / 4)
+        NSBezierPath(roundedRect: bounds.insetBy(dx: inset, dy: inset), xRadius: 5, yRadius: 5).fill()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard !isRenaming else { super.keyDown(with: event); return }
+        switch Int(event.keyCode) {
+        case 36, 76, 49:            // Return, keypad Enter, Space
+            onSelect?()
+        case 123, 126:              // Left, Up
+            moveFocusToSiblingChip(by: -1)
+        case 124, 125:              // Right, Down
+            moveFocusToSiblingChip(by: 1)
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    /// Walks the chip's own superview for the next `TabChipView` in layout
+    /// order. Deliberately not a closure back to `ConsoleController`: the strip
+    /// is the view hierarchy, and asking the controller would mean a second,
+    /// separately-maintained notion of chip order.
+    private func moveFocusToSiblingChip(by step: Int) {
+        guard let siblings = superview?.subviews.compactMap({ $0 as? TabChipView }),
+              let index = siblings.firstIndex(where: { $0 === self }) else { return }
+        let next = index + step
+        guard siblings.indices.contains(next) else { return }
+        window?.makeFirstResponder(siblings[next])
+    }
 
     // MARK: Public API used by the controller
 
@@ -98,6 +169,7 @@ final class TabChipView: NSView, NSTextFieldDelegate {
 
     /// Restyle for the current theme + selection state.
     func applyStyle(selected: Bool, accent: NSColor, muted: NSColor, tint: NSColor) {
+        isSelectedChip = selected
         layer?.backgroundColor = (selected ? tint : .clear).cgColor
         if !isRenaming {
             label.textColor = selected ? accent : muted

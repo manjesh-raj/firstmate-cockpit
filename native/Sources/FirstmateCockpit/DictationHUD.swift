@@ -117,6 +117,26 @@ final class DictationHUDController {
 
     private var hideWorkItem: DispatchWorkItem?
 
+    /// What the HUD is currently showing, so a live Reduce Motion change can
+    /// re-decide the pulse without a state change of its own.
+    private var currentState: DictationHUDVisualState?
+    private var reduceMotionObserver: NSObjectProtocol?
+
+    init() {
+        reduceMotionObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.applyPulseAnimation()
+        }
+    }
+
+    deinit {
+        if let reduceMotionObserver {
+            NotificationCenter.default.removeObserver(reduceMotionObserver)
+        }
+    }
+
     /// Set the moment a real `.recording` status is seen, cleared the moment
     /// a terminal status (success or `.didNotCatchThat`) is handled - see
     /// this file's header for why this is what distinguishes "a dictation
@@ -186,10 +206,8 @@ final class DictationHUDController {
             .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))
         iconView.contentTintColor = HelmTheme.nsColor(state.tintHex)
         titleLabel.stringValue = state.text
-        stopPulsing()
-        if state == .listening {
-            startPulsing()
-        }
+        currentState = state
+        applyPulseAnimation()
 
         positionPanel(panel)
         panel.alphaValue = panel.isVisible ? panel.alphaValue : 0
@@ -209,6 +227,8 @@ final class DictationHUDController {
     private func dismiss() {
         hideWorkItem?.cancel()
         hideWorkItem = nil
+        currentState = nil
+        stopPulsing()
         guard let panel, panel.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.2
@@ -309,6 +329,24 @@ final class DictationHUDController {
     // MARK: Pulsing (listening state only)
 
     private static let pulseAnimationKey = "dictationHUD.pulse"
+
+    /// GL-16: this pulse was the one looping animation in the app the earlier
+    /// Reduce Motion pass missed (the lock screen's boat/wave and the rail
+    /// mark's bob were both covered), and it is the most intrusive of the
+    /// three - it appears unprompted, over whatever app the captain is
+    /// dictating into. The icon still changes and the text still says
+    /// "Listening…", so nothing is lost by holding it still.
+    ///
+    /// Driven from one place (rather than gated inside `startPulsing`) so the
+    /// live `accessibilityDisplayOptionsDidChangeNotification` observer and a
+    /// state change both reach the same decision - the same shape
+    /// `IconRailController.applyMarkAnimation` uses.
+    private func applyPulseAnimation() {
+        stopPulsing()
+        guard currentState == .listening,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        startPulsing()
+    }
 
     private func startPulsing() {
         let animation = CABasicAnimation(keyPath: "opacity")

@@ -47,7 +47,9 @@ home directory happens to contain.
 
 ## Testing
 
-There is no XCTest target. The app carries ~44 permanent self-test suites, each gated behind its own environment variable and each exiting the process with 0 or 1 before `NSApplication` is ever touched - so they run headless and are safe to run while the real app is open.
+There is no XCTest target. The app carries 50+ permanent self-test suites, each gated behind its own environment variable and each exiting the process with 0 or 1 before `NSApplication` is ever touched - so they run headless and are safe to run while the real app is open.
+
+They live in `native/Sources/FirstmateCockpit/SelfTests/` and are compiled into **debug builds only** - `Package.swift` defines `FM_SELFTESTS` for the debug configuration. So `swift build` (and CI, and the runner below) has every suite, while `swift build -c release` - what `native/build_native_app.sh` assembles the shipped `.app` from - contains none of the ~10,500 lines of test code. A release binary silently runs zero suites and exits 0, which looks exactly like a clean run: always test against `.build/debug/FirstmateCockpit`.
 
 Run all of them:
 
@@ -76,6 +78,8 @@ Follow any existing `*SelfTest.swift`. The convention that matters:
 - AppKit rendering and geometry get a **temporary**, env-gated probe that is reverted before commit (see AGENTS.md's "Verifying native UI bugs without a real screenshot").
 - A suite must be **confirmed to catch a real regression**, not just to pass. Revert the fix, watch the suite fail, restore it.
 - Never touch real captain data. Use the `FM_*` overrides in the table below to point every store at a scratch directory.
+- Put the file in `SelfTests/` and wrap its contents in `#if FM_SELFTESTS` / `#endif`, so it stays out of the release binary. `FM_RUN_PHASE3_POLISH_TESTS` fails if a file in that directory is missing the guard.
+- A suite that greps the app's own sources must resolve its root through `SelfTestSources.appSourceDirectory()`, never from `#filePath`'s own directory - that would now point at `SelfTests/`, and every such guard *skips* when it cannot find its sentinel, so it would keep printing OK while checking nothing.
 
 ## Environment variables
 
@@ -116,12 +120,13 @@ Behaviour overrides. Everything here is optional; the app has working defaults f
 
 ### Test suites
 
-`FM_RUN_*_TESTS=1` runs one suite and exits. Use `./Scripts/run-all-tests.sh --list` for the current, authoritative list rather than duplicating 44 names here.
+`FM_RUN_*_TESTS=1` runs one suite and exits, on a **debug** build (see Testing above). Use `./Scripts/run-all-tests.sh --list` for the current, authoritative list rather than duplicating 50-odd names here.
 
 ## Layout
 
 ```
 native/            the cockpit app (Swift, AppKit, SwiftTerm)
+native/Sources/FirstmateCockpit/SelfTests/   the self-test suites (debug builds only)
 native/Scripts/    the test runner and build-time helper scripts
 native/Vendor/     vendored dependencies (SwiftTerm, YamlSwift, whisper.cpp) - no remote SPM packages
 assets/            shared app icon source files

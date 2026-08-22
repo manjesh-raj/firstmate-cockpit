@@ -75,6 +75,9 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
     private let modelReadyPill = NSView()
     private let modelReadyPillLabel = NSTextField(labelWithString: "")
     private let modelActionButton = HelmButton(title: "", variant: .primary)
+    /// GL-35: 547MB is not a footprint to strand. Only shown while the model
+    /// is actually on disk.
+    private let modelDeleteButton = HelmButton(title: "Delete Model", variant: .destructive)
     private let modelProgressBar = NSProgressIndicator()
     private var modelState: WhisperModelState = .notDownloaded
 
@@ -546,7 +549,16 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         modelActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         modelActionButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let modelRow = NSStackView(views: [modelStatusLabel, modelReadyPill, modelProgressBar, modelActionButton])
+        modelDeleteButton.controlSize = .small
+        modelDeleteButton.target = self
+        modelDeleteButton.action = #selector(modelDeleteTapped)
+        modelDeleteButton.toolTip = "Remove the downloaded model from disk"
+        modelDeleteButton.isHidden = true
+        modelDeleteButton.setContentHuggingPriority(.required, for: .horizontal)
+        modelDeleteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        modelDeleteButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let modelRow = NSStackView(views: [modelStatusLabel, modelReadyPill, modelProgressBar, modelDeleteButton, modelActionButton])
         modelRow.orientation = .horizontal
         modelRow.alignment = .centerY
         modelRow.spacing = 10
@@ -632,6 +644,19 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
         headerRow.translatesAutoresizingMaskIntoConstraints = false
         historyPanel.setHeader(headerRow)
 
+        // GL-35: a single entry can be removed, not only "clear everything".
+        historyListView.onDeleteEntry = { [weak self] entry in
+            guard let self else { return }
+            self.store.removeHistoryEntry(date: entry.date, text: entry.text)
+            self.renderHistory()
+            if let container = self.view.window?.contentView {
+                Toast.showUndo(in: container, message: "Deleted transcription") { [weak self] in
+                    guard let self else { return }
+                    self.store.restoreHistoryEntry(entry)
+                    self.renderHistory()
+                }
+            }
+        }
         historyListScroll.documentView = historyListView.tableView
         historyListScroll.hasVerticalScroller = true
         historyListScroll.hasHorizontalScroller = false
@@ -735,6 +760,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             modelProgressBar.isHidden = true
             modelActionButton.title = "Download Model"
             modelActionButton.isEnabled = true
+            modelDeleteButton.isHidden = true
         case .downloading(let progress):
             modelStatusLabel.stringValue = "Downloading… \(Int(progress * 100))%"
             modelStatusLabel.isHidden = false
@@ -743,6 +769,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             modelProgressBar.doubleValue = progress
             modelActionButton.title = "Cancel"
             modelActionButton.isEnabled = true
+            modelDeleteButton.isHidden = true
         case .ready:
             // The reviewed prototype's "Model ready" chip - this is the one
             // state it actually depicts, so it's the one state that gets
@@ -753,6 +780,7 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             modelProgressBar.isHidden = true
             modelActionButton.title = "Re-download"
             modelActionButton.isEnabled = true
+            modelDeleteButton.isHidden = false
         case .failed(let message):
             modelStatusLabel.stringValue = "Download failed: \(message)"
             modelStatusLabel.isHidden = false
@@ -760,6 +788,9 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             modelProgressBar.isHidden = true
             modelActionButton.title = "Retry Download"
             modelActionButton.isEnabled = true
+            // A failed *download* leaves nothing on disk; a failed delete does
+            // - so this follows the file, not the state's name.
+            modelDeleteButton.isHidden = WhisperModelManager.shared.downloadedByteCount == nil
         }
         applyTheme()
     }
@@ -774,7 +805,15 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             let chip = VocabularyChipView(word: word)
             chip.applyTheme(theme)
             chip.onRemove = { [weak self] in
-                self?.store.removeVocabularyWord(word)
+                guard let self else { return }
+                self.store.removeVocabularyWord(word)
+                // GL-33: this delete had no confirmation and no way back - one
+                // of the two the review named specifically.
+                if let container = self.view.window?.contentView {
+                    Toast.showUndo(in: container, message: "Removed \u{201C}\(word)\u{201D}") { [weak self] in
+                        self?.store.addVocabularyWord(word)
+                    }
+                }
             }
             return chip
         }
@@ -824,6 +863,25 @@ final class DictationController: NSViewController, NSTextFieldDelegate {
             WhisperModelManager.shared.cancelDownload()
         case .ready:
             WhisperModelManager.shared.startDownload()
+        }
+    }
+
+    /// GL-35. Confirmed, because it is a ~547MB re-download to undo and this
+    /// app's convention is that a destructive action asks first.
+    @objc private func modelDeleteTapped() {
+        let bytes = WhisperModelManager.shared.downloadedByteCount
+        let size = bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "the downloaded model"
+        let alert = NSAlert()
+        alert.messageText = "Delete the local Whisper model?"
+        alert.informativeText = "This frees \(size). Dictation falls back to Apple's Speech framework, "
+            + "and you can download the model again at any time."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if WhisperModelManager.shared.deleteDownloadedModel(),
+           let container = view.window?.contentView {
+            Toast.show(in: container, message: "Local Whisper model deleted")
         }
     }
 
