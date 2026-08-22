@@ -59,7 +59,36 @@ private final class ReviewPRRowCellView: NSView {
     override init(frame frameRect: NSRect) {
         let actionsRow = NSStackView(views: [reviewButton, mergeButton])
         actionsRow.orientation = .horizontal
+        actionsRow.alignment = .centerY
         actionsRow.spacing = 6
+        // The reused-row-with-toggling-button-visibility gotcha
+        // (`HostsListRecordView`'s own `actions` stack, `HostsListSection.
+        // swift`, is the reference fix): unlike the old per-render-fresh
+        // `prRowView`, whose `actionsRow` only ever contained the buttons
+        // that should show, this cell's `reviewButton`/`mergeButton` are
+        // built once and REUSED across many different `configure(pr:...)`
+        // calls as the table dequeues this row for different PRs -
+        // `mergeButton.isHidden` toggles instead of the button being added/
+        // omitted. Left at the default `.gravityAreas` distribution with no
+        // explicit hugging on the buttons themselves, AGENTS.md gotcha (10)
+        // applies exactly as documented: "leftover width is resolved by Auto
+        // Layout's own tie-breaking - which can drift between runs/rows
+        // depending on transient sibling content... even with no code
+        // change" - here, whether the *previous* row this cell displayed had
+        // Merge visible. `HelmAccentRow.buildLayout`'s stack-level hugging
+        // on `trailingAccessory` only stops the OUTER row from stretching
+        // this whole stack wider than its own fitting size - it says nothing
+        // about how *this* stack distributes width among its own children,
+        // which is the actual site of the regression: `reviewButton`
+        // stretching to fill the row while `mergeButton` (though genuinely
+        // `isHidden = false`) gets squeezed to unusably little space.
+        actionsRow.distribution = .fill
+        actionsRow.setHuggingPriority(.required, for: .horizontal)
+        actionsRow.setClippingResistancePriority(.required, for: .horizontal)
+        for b in [reviewButton, mergeButton] {
+            b.setContentHuggingPriority(.required, for: .horizontal)
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
 
         accentRow = HelmAccentRow(chipPlacement: .belowBody, trailingAccessory: actionsRow, hover: false)
         super.init(frame: frameRect)
@@ -122,6 +151,15 @@ private final class ReviewPRRowCellView: NSView {
             chipText: visuals.chipLabel
         ), theme: theme)
     }
+
+    // MARK: Probe / self-test surface
+
+    /// Real, already-laid-out button geometry - see
+    /// `ReviewPRListView.debugRowButtonState(at:)`, which is what a self-test
+    /// actually calls (this type is `private` to this file).
+    var debugReviewButtonFrame: NSRect { reviewButton.frame }
+    var debugMergeButtonFrame: NSRect { mergeButton.frame }
+    var debugMergeButtonHidden: Bool { mergeButton.isHidden }
 }
 
 /// The demand-driven replacement for a plain `NSStackView` of `HelmAccentRow`
@@ -229,6 +267,20 @@ final class ReviewPRListView: NSView {
     /// `numberOfRows`, which reports `1` for the empty-state placeholder row).
     var debugRowCount: Int { prs.count }
     var debugTableHeight: CGFloat { tableHeight.constant }
+
+    /// Forces the real, already-dequeued/laid-out cell view at `row` and
+    /// returns its two action buttons' real frames plus whether Merge is
+    /// hidden - `ReviewPRRowCellView` is `private` to this file, so this is
+    /// the seam `ReviewPRRowButtonLayoutSelfTest.swift` uses to check the
+    /// row-width/button-visibility contract without that type leaking out.
+    /// `makeIfNecessary: true` guarantees a real view even for a row that
+    /// hasn't been scrolled into view yet in a headless test window.
+    func debugRowButtonState(at row: Int) -> (reviewFrame: NSRect, mergeFrame: NSRect, mergeHidden: Bool)? {
+        guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: true) as? ReviewPRRowCellView else {
+            return nil
+        }
+        return (cell.debugReviewButtonFrame, cell.debugMergeButtonFrame, cell.debugMergeButtonHidden)
+    }
 }
 
 extension ReviewPRListView: NSTableViewDataSource, NSTableViewDelegate {

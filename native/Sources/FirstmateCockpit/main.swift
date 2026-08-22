@@ -995,6 +995,15 @@ if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_LIST_VOLUME_TESTS"] == 
     exit(ReviewPRListVolumeSelfTest.run() ? 0 : 1)
 }
 
+// The row-width/button-visibility contract that regressed a second time when
+// #227 ported this row into a reused NSTableView cell view without carrying
+// forward the "reused row, toggling button visibility" fix
+// `HostsListRecordView` already established. See
+// ReviewPRRowButtonLayoutSelfTest.swift's header.
+if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_ROW_BUTTON_LAYOUT_TESTS"] == "1" {
+    exit(ReviewPRRowButtonLayoutSelfTest.run() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 // Regular activation policy so a `swift run`-launched executable gets a real
 // Dock icon, menu bar, and key window instead of a background agent.
