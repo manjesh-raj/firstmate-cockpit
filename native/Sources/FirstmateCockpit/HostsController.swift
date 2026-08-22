@@ -630,7 +630,8 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
     }
 
     private func presentKeyEditor(for key: SSHKey?) {
-        let editor = KeyEditorController(key: key)
+        let usedByHostCount = key.map { targetKey in hostStore.hosts.filter { $0.keyID == targetKey.id }.count } ?? 0
+        let editor = KeyEditorController(key: key, usedByHostCount: usedByHostCount)
         editor.onSave = { [weak self] newKey, privateKeyData, passphrase in
             self?.persistNewKey(newKey, privateKeyData: privateKeyData, passphrase: passphrase)
         }

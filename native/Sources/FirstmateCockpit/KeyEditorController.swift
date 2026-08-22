@@ -13,15 +13,37 @@
 // imported `SSHKey` + raw private-key bytes + passphrase (create mode), or an
 // updated `SSHKey` + an optional new passphrase (edit mode) - the same
 // "editor computes, caller persists" split `HostEditorController` already uses.
+//
+// `fm/grandline-hosts-keys-form-redesign` moved this sheet onto the shared
+// `HelmFormSheet` scaffold (`HelmForm.swift`) - unlike the other five editors,
+// this one had never been migrated by the Phase 6 audit, and still carried an
+// `NSGridView`, plain bezeled `NSTextField`/`NSTextView`s, and its own
+// `ThemeManager` observer. Built against a captain-approved mockup
+// (`data/grandline-hosts-keys-mockup/mockup.html`): a hero header (an
+// accent-tinted icon tile beside the editable label, plus a real "Used by N
+// hosts" subtitle in edit mode - computed from the real host list, never
+// fabricated; there is no "Added today" because `SSHKey` has no creation
+// timestamp, so that half of the mockup's subtitle was left out rather than
+// invented), the Generate/Import segmented pair and the key-type pill
+// (already `HelmSegmentedTabs`, unchanged), a monospace public-key preview, an
+// accent-tinted Keychain-security note, and a read-only fingerprint field with
+// a copy button. This is presentation only: `generateKey`/`verifyImport`/
+// `loadImportFile`/`chooseImportFile`/`copyPublicKey`/`save`/`deleteKey`/
+// `cancel` are byte-for-byte the same logic as before.
 
 import AppKit
 
-final class KeyEditorController: NSViewController {
+final class KeyEditorController: NSViewController, NSTextFieldDelegate {
 
     /// `nil` for a brand-new key; set for editing an existing one's label,
     /// certificate, and (optionally) passphrase. Edit mode never re-derives or
     /// re-stores the private key itself.
     private let editing: SSHKey?
+
+    /// How many saved hosts currently reference this key (`Host.keyID`) - real,
+    /// caller-computed data for the edit-mode hero subtitle. Always `0` for a
+    /// brand-new key (nothing can reference it yet).
+    private let usedByHostCount: Int
 
     /// Create mode: hands back the new key's metadata, its raw private-key
     /// bytes (for the caller to write to the Keychain), and the passphrase
@@ -39,12 +61,19 @@ final class KeyEditorController: NSViewController {
 
     // MARK: Shared fields
 
-    private let labelField = NSTextField()
-    private let certificateView = NSTextView()
-    private let publicKeyView = NSTextView()
-    private let fingerprintLabel = NSTextField(labelWithString: "")
+    private let labelField = HelmTextField(placeholder: "Label (e.g. Prod bastion key)", style: .lead)
+    private let heroIconTile = IconTileView(size: 46, cornerRadius: HelmMetrics.rPanel - 1)
+    private let certificateView = HelmTextView(height: 60, monospaced: true)
+    private let publicKeyView = HelmTextView(height: 56, monospaced: true)
+    private let fingerprintField = HelmTextField(placeholder: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
-    private let saveButton = HelmButton(title: "", variant: .primary)
+    private var form: HelmFormSheet!
+    private var saveButton: HelmButton!
+    /// The edit-mode "Used by N hosts" line under the hero - `addLeadHint`
+    /// doesn't colour its own text (a caller-supplied attributed string can
+    /// set anything), so this needs its own re-tint on every theme change,
+    /// same as `ShiftTaskEditorController`'s own lead hint.
+    private var usedByHostsHintLabel: NSTextField?
 
     // MARK: Create-mode fields
 
@@ -64,17 +93,19 @@ final class KeyEditorController: NSViewController {
         selected: SSHKeyType.ed25519.rawValue,
         size: .compact)
     /// Edit mode's single passphrase field ("leave blank to keep current").
-    private let passphraseField = NSSecureTextField()
+    /// `lazy` so its placeholder can read `editing` (set earlier in `init`).
+    private lazy var passphraseField = HelmSecureTextField(
+        placeholder: (editing?.hasPassphrase ?? false) ? "Leave blank to keep current passphrase" : "Passphrase (optional)")
     /// Generate and Import each need their own passphrase control - one sets
     /// a passphrase on a brand-new key, the other supplies the existing one
     /// to decrypt - so, unlike every other create-mode field, this can't be a
     /// single shared `NSTextField` instance (a view can only live in one
     /// parent at a time; sharing one here silently detaches it from whichever
     /// panel built it first).
-    private let generatePassphraseField = NSSecureTextField()
-    private let importPassphraseField = NSSecureTextField()
+    private let generatePassphraseField = HelmSecureTextField(placeholder: "Optional")
+    private let importPassphraseField = HelmSecureTextField(placeholder: "Only if the key is encrypted")
     private let importDropZone = KeyDropZone()
-    private let importTextView = NSTextView()
+    private let importTextView = HelmTextView(height: 70, monospaced: true)
     private let generatePanel = NSView()
     private let importPanel = NSView()
 
@@ -91,8 +122,9 @@ final class KeyEditorController: NSViewController {
 
     // MARK: Init
 
-    init(key: SSHKey?) {
+    init(key: SSHKey?, usedByHostCount: Int = 0) {
         self.editing = key
+        self.usedByHostCount = usedByHostCount
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -102,32 +134,46 @@ final class KeyEditorController: NSViewController {
 
     /// Labels carrying `HelmTheme.mutedInk` instead of a fixed system grey -
     /// see `MutedInkLabels` for why a system grey is wrong here (audit §5.3).
+    /// Only the drop-zone hint and the edit-mode read-only type label live
+    /// outside the `HelmFormSheet` API (which re-tints its own labels), so
+    /// this registry only ever has those two in it.
     private let mutedLabels = MutedInkLabels()
     /// Which hue `statusLabel` is currently showing, so a theme change can
     /// re-derive its colour rather than leaving the previous theme's.
     private var statusTone: HelmTint = .critical
+
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 620))
-        view = root
-        // Theme-audit task: this sheet only ever used system-semantic colors
-        // (`.secondaryLabelColor`, etc.), which is fine as long as its own
-        // appearance is forced to match the active Helm theme's mode - it
-        // was never doing that, so those colors resolved against whichever
-        // window presented this sheet, which itself never set `.appearance`
-        // either, leaving everything on the OS's actual light/dark setting.
-        ThemeManager.shared.observe { [weak root, weak self] theme in
-            root?.appearance = NSAppearance(named: theme.mode == .dark ? .darkAqua : .aqua)
-            self?.mutedLabels.apply(theme)
-            self?.importDropZone.applyTheme(theme)
-            self?.modeSwitch.applyTheme(theme)
-            self?.typeSwitch.applyTheme(theme)
-            self?.applyStatusTone(theme)
+        let form = HelmFormSheet(title: editing == nil ? "New Key" : "Edit Key")
+        self.form = form
+        view = form
+        form.onApplyTheme = { [weak self] theme in
+            guard let self else { return }
+            self.mutedLabels.apply(theme)
+            self.importDropZone.applyTheme(theme)
+            self.modeSwitch.applyTheme(theme)
+            self.typeSwitch.applyTheme(theme)
+            self.heroIconTile.applyTheme(theme)
+            self.applyStatusTone(theme)
+            if let hint = self.usedByHostsHintLabel {
+                hint.attributedStringValue = self.usedByHostsHint(color: HelmTheme.mutedInk(theme))
+            }
         }
 
-        let title = NSTextField(labelWithString: editing == nil ? "New Key" : "Edit Key")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        // MARK: Hero - icon tile + editable label (+ a real "Used by N hosts"
+        // subtitle in edit mode; no "Added today", `SSHKey` has no timestamp)
 
-        configure(labelField, placeholder: "Label (e.g. Prod bastion key)", value: editing?.label)
+        heroIconTile.configure(symbol: "key.fill", tint: .warn, pointSize: 18)
+        labelField.stringValue = editing?.label ?? ""
+        let heroRow = NSStackView(views: [heroIconTile, labelField])
+        heroRow.orientation = .horizontal
+        heroRow.alignment = .centerY
+        heroRow.spacing = HelmMetrics.s3
+        heroRow.translatesAutoresizingMaskIntoConstraints = false
+        form.addLead(heroRow)
+        if editing != nil {
+            let label = form.addLeadHint(usedByHostsHint(color: HelmTheme.mutedInk(ThemeManager.shared.theme)))
+            usedByHostsHintLabel = label
+        }
 
         let stack: NSStackView
         if let key = editing {
@@ -135,33 +181,34 @@ final class KeyEditorController: NSViewController {
         } else {
             stack = buildCreateLayout()
         }
+        form.addRow(stack)
 
-        let top = NSStackView(views: [title, labelField])
-        top.orientation = .vertical
-        top.alignment = .leading
-        top.spacing = 12
-        top.translatesAutoresizingMaskIntoConstraints = false
+        let footer = form.setFooter(target: self,
+                                    confirmTitle: "Save Key",
+                                    confirm: #selector(save),
+                                    cancel: #selector(cancel),
+                                    delete: editing == nil ? nil : (title: "Delete", action: #selector(deleteKey)),
+                                    hint: "Stored securely in macOS Keychain")
+        saveButton = footer.confirm
+        updateSaveEnabled()
 
-        let full = NSStackView(views: [top, stack])
-        full.orientation = .vertical
-        full.alignment = .leading
-        full.spacing = 16
-        full.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(full)
-
-        NSLayoutConstraint.activate([
-            full.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
-            full.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
-            full.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
-            full.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
-            labelField.widthAnchor.constraint(equalTo: full.widthAnchor),
-            stack.widthAnchor.constraint(equalTo: full.widthAnchor),
-        ])
+        form.refreshTheme()
+        form.sizeToFitContent()
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(labelField)
+    }
+
+    /// "Used by N hosts" - real data, computed by the caller (`usedByHostCount`,
+    /// from `Host.keyID`), never fabricated. There is no "Added today" half
+    /// (the mockup's own subtitle) because `SSHKey` carries no creation
+    /// timestamp.
+    private func usedByHostsHint(color: NSColor) -> NSAttributedString {
+        let hostWord = usedByHostCount == 1 ? "host" : "hosts"
+        return NSAttributedString(string: "Used by \(usedByHostCount) \(hostWord)",
+                                  attributes: [.font: HelmType.caption(), .foregroundColor: color])
     }
 
     // MARK: Create layout (Generate / Import)
@@ -173,10 +220,7 @@ final class KeyEditorController: NSViewController {
         buildImportPanel()
         importPanel.isHidden = true
 
-        let certBox = labeledBox("Certificate (optional)", view: scrollable(certificateView, height: 60))
         certificateView.string = ""
-        certificateView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        certificateView.isEditable = true
 
         let publicKeyBox = buildPublicKeyPreview()
 
@@ -184,49 +228,67 @@ final class KeyEditorController: NSViewController {
         setStatusTone(.critical)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let bottom = buildBottomBar(showDelete: false)
-
         let stack = NSStackView(views: [
-            modeSwitch, generatePanel, importPanel, certBox, publicKeyBox, statusLabel, bottom,
+            modeSwitch, generatePanel, importPanel, statusLabel,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
+        stack.spacing = HelmMetrics.s4
         stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             generatePanel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             importPanel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            certBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            publicKeyBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
+        stack.setCustomSpacing(HelmMetrics.s2, after: modeSwitch)
+
+        form.addSection("Public Key", number: "01")
+        form.addRow(publicKeyBox)
+        form.addSection("Security", number: "02")
+        form.addInfoCard(text: "Private keys are stored only in the macOS Keychain. "
+            + "The host configuration references this key by id and never contains the private key material.")
+        form.addField("Fingerprint", buildFingerprintRow())
+        form.addSection("Certificate (optional)", number: "03")
+        form.addRow(certificateView)
+
         updateSaveEnabled()
         return stack
     }
 
     private func buildGeneratePanel() {
-        configure(generatePassphraseField, placeholder: "Passphrase (optional)", value: nil)
         let generate = HelmButton(title: "Generate", variant: .primary, target: self, action: #selector(generateKey))
 
-        let grid = NSGridView(views: [
-            [rowLabel("Type"), typeSwitch],
-            [rowLabel("Passphrase"), generatePassphraseField],
-            [NSView(), generate],
+        let fieldsRow = NSStackView(views: [
+            form.labelledField("Key type", typeSwitch),
+            form.labelledField("Passphrase", generatePassphraseField),
         ])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).xPlacement = .fill
-        grid.translatesAutoresizingMaskIntoConstraints = false
+        fieldsRow.orientation = .horizontal
+        fieldsRow.distribution = .fillEqually
+        fieldsRow.alignment = .top
+        fieldsRow.spacing = HelmMetrics.s3 - 2
+        fieldsRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let generateRow = NSStackView(views: [NSView(), generate])
+        generateRow.orientation = .horizontal
+        generateRow.distribution = .fill
+        generateRow.translatesAutoresizingMaskIntoConstraints = false
+        generateRow.arrangedSubviews[0].setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let stack = NSStackView(views: [fieldsRow, generateRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = HelmMetrics.s3
+        stack.translatesAutoresizingMaskIntoConstraints = false
 
         generatePanel.translatesAutoresizingMaskIntoConstraints = false
-        generatePanel.addSubview(grid)
+        generatePanel.addSubview(stack)
         NSLayoutConstraint.activate([
-            grid.leadingAnchor.constraint(equalTo: generatePanel.leadingAnchor),
-            grid.trailingAnchor.constraint(equalTo: generatePanel.trailingAnchor),
-            grid.topAnchor.constraint(equalTo: generatePanel.topAnchor),
-            grid.bottomAnchor.constraint(equalTo: generatePanel.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: generatePanel.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: generatePanel.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: generatePanel.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: generatePanel.bottomAnchor),
+            fieldsRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            generateRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 
@@ -247,20 +309,20 @@ final class KeyEditorController: NSViewController {
 
         let chooseFile = HelmButton(title: "Import from Key File…", variant: .secondary, target: self, action: #selector(chooseImportFile))
 
-        importTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        importTextView.isEditable = true
-        let pasteBox = labeledBox("Or paste the private key", view: scrollable(importTextView, height: 70))
+        let pasteField = form.labelledField("Private key", importTextView)
 
-        configure(importPassphraseField, placeholder: "Passphrase (if the key needs one)", value: nil)
         let verify = HelmButton(title: "Verify", variant: .secondary, target: self, action: #selector(verifyImport))
-        let verifyRow = NSStackView(views: [rowLabel("Passphrase"), importPassphraseField, verify])
+        let verifyRow = NSStackView(views: [form.labelledField("Passphrase", importPassphraseField), verify])
         verifyRow.orientation = .horizontal
-        verifyRow.spacing = 10
+        verifyRow.alignment = .bottom
+        verifyRow.spacing = HelmMetrics.s3 - 2
+        verifyRow.translatesAutoresizingMaskIntoConstraints = false
+        verify.setContentHuggingPriority(.required, for: .horizontal)
 
-        let stack = NSStackView(views: [importDropZone, chooseFile, pasteBox, verifyRow])
+        let stack = NSStackView(views: [importDropZone, chooseFile, pasteField, verifyRow])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = HelmMetrics.s3
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         importPanel.translatesAutoresizingMaskIntoConstraints = false
@@ -271,7 +333,7 @@ final class KeyEditorController: NSViewController {
             stack.topAnchor.constraint(equalTo: importPanel.topAnchor),
             stack.bottomAnchor.constraint(equalTo: importPanel.bottomAnchor),
             importDropZone.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            pasteBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            pasteField.widthAnchor.constraint(equalTo: stack.widthAnchor),
             verifyRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
@@ -280,72 +342,95 @@ final class KeyEditorController: NSViewController {
 
     private func buildEditLayout(for key: SSHKey) -> NSStackView {
         let typeLabel = NSTextField(labelWithString: key.type.displayName)
+        typeLabel.translatesAutoresizingMaskIntoConstraints = false
         mutedLabels.add(typeLabel)
 
         publicKeyView.string = key.publicKey
         let publicKeyBox = buildPublicKeyPreview()
-        fingerprintLabel.stringValue = key.fingerprint
+        fingerprintField.stringValue = key.fingerprint
         pendingPublicKeyLine = key.publicKey
         pendingFingerprint = key.fingerprint
         pendingType = key.type
 
         certificateView.string = key.certificate ?? ""
-        certificateView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        certificateView.isEditable = true
-        let certBox = labeledBox("Certificate (optional)", view: scrollable(certificateView, height: 60))
 
-        configure(passphraseField, placeholder: key.hasPassphrase ? "Leave blank to keep current passphrase" : "Passphrase (optional)", value: nil)
-
-        let grid = NSGridView(views: [
-            [rowLabel("Type"), typeLabel],
-            [rowLabel("Passphrase"), passphraseField],
+        let fieldsRow = NSStackView(views: [
+            form.labelledField("Type", typeLabel),
+            form.labelledField("Passphrase", passphraseField),
         ])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).xPlacement = .fill
-        grid.translatesAutoresizingMaskIntoConstraints = false
+        fieldsRow.orientation = .horizontal
+        fieldsRow.distribution = .fillEqually
+        fieldsRow.alignment = .top
+        fieldsRow.spacing = HelmMetrics.s3 - 2
+        fieldsRow.translatesAutoresizingMaskIntoConstraints = false
 
         statusLabel.font = HelmType.caption()
         setStatusTone(.critical)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let bottom = buildBottomBar(showDelete: true)
-
-        let stack = NSStackView(views: [grid, certBox, publicKeyBox, statusLabel, bottom])
+        let stack = NSStackView(views: [fieldsRow, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
+        stack.spacing = HelmMetrics.s3
         stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            certBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            publicKeyBox.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            fieldsRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            bottom.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
-        saveButton.isEnabled = true
+
+        form.addSection("Public Key", number: "01")
+        form.addRow(publicKeyBox)
+        form.addSection("Security", number: "02")
+        form.addInfoCard(text: "Private keys are stored only in the macOS Keychain. "
+            + "The host configuration references this key by id and never contains the private key material.")
+        form.addField("Fingerprint", buildFingerprintRow())
+        form.addSection("Certificate (optional)", number: "03")
+        form.addRow(certificateView)
+
         return stack
     }
 
-    // MARK: Public key preview
+    // MARK: Public key preview + fingerprint
 
     private func buildPublicKeyPreview() -> NSView {
-        publicKeyView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        publicKeyView.isEditable = false
-        publicKeyView.textColor = HelmTheme.mutedInk(ThemeManager.shared.theme)
-        let box = scrollable(publicKeyView, height: 50)
-
-        let copy = HelmButton(title: "Copy", variant: .secondary, target: self, action: #selector(copyPublicKey))
-        fingerprintLabel.font = .systemFont(ofSize: 11)
-        mutedLabels.add(fingerprintLabel)
-
-        let footer = NSStackView(views: [fingerprintLabel, NSView(), copy])
+        publicKeyView.textView.isEditable = false
+        let copy = HelmButton(title: "Copy", variant: .secondary, size: .small,
+                              target: self, action: #selector(copyPublicKey))
+        let footer = NSStackView(views: [NSView(), copy])
         footer.orientation = .horizontal
+        footer.distribution = .fill
         footer.translatesAutoresizingMaskIntoConstraints = false
-        fingerprintLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        footer.arrangedSubviews[0].setContentHuggingPriority(.defaultLow, for: .horizontal)
+        copy.setContentHuggingPriority(.required, for: .horizontal)
 
-        return labeledBox("Public key (derived, read-only)", view: box, footer: footer)
+        let stack = NSStackView(views: [publicKeyView, footer])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = HelmMetrics.s1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return stack
+    }
+
+    /// A read-only, monospaced fingerprint field with a trailing copy icon
+    /// button - the mockup's `.fp-copy` row. Separate from the public key
+    /// box's own "Copy" button above (unchanged, pre-existing behaviour) -
+    /// this one copies the fingerprint specifically, the mockup's own ask.
+    private func buildFingerprintRow() -> NSView {
+        fingerprintField.isEditable = false
+        fingerprintField.font = HelmType.code()
+        let copy = HelmButton(symbol: "doc.on.doc", variant: .secondary, size: .small,
+                              target: self, action: #selector(copyFingerprint))
+        copy.toolTip = "Copy fingerprint"
+        let row = NSStackView(views: [fingerprintField, copy])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = HelmMetrics.s2
+        row.translatesAutoresizingMaskIntoConstraints = false
+        copy.setContentHuggingPriority(.required, for: .horizontal)
+        copy.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return row
     }
 
     // MARK: Actions - Generate
@@ -355,6 +440,7 @@ final class KeyEditorController: NSViewController {
         generatePanel.isHidden = importing
         importPanel.isHidden = !importing
         statusLabel.stringValue = ""
+        form.sizeToFitContent()
     }
 
     @objc private func generateKey() {
@@ -370,7 +456,7 @@ final class KeyEditorController: NSViewController {
             pendingType = type
             pendingPassphrase = passphrase.isEmpty ? nil : passphrase
             publicKeyView.string = generated.publicKeyLine
-            fingerprintLabel.stringValue = generated.fingerprint
+            fingerprintField.stringValue = generated.fingerprint
             statusLabel.stringValue = ""
         } catch {
             statusLabel.stringValue = error.localizedDescription
@@ -417,7 +503,7 @@ final class KeyEditorController: NSViewController {
             pendingType = imported.type
             pendingPassphrase = passphrase.isEmpty ? nil : passphrase
             publicKeyView.string = imported.publicKeyLine
-            fingerprintLabel.stringValue = imported.fingerprint
+            fingerprintField.stringValue = imported.fingerprint
             statusLabel.stringValue = "Verified \(imported.type.displayName) key."
             setStatusTone(.good)
         } catch {
@@ -434,33 +520,16 @@ final class KeyEditorController: NSViewController {
         pasteboard.setString(publicKeyView.string, forType: .string)
     }
 
-    // MARK: Save / Delete / Cancel
-
-    private func buildBottomBar(showDelete: Bool) -> NSView {
-        let cancel = HelmButton(title: "Cancel", variant: .secondary, target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        saveButton.title = "Save"
-        saveButton.keyEquivalent = "\r"
-        saveButton.target = self
-        saveButton.action = #selector(save)
-
-        var views: [NSView] = []
-        if showDelete {
-            let del = HelmButton(title: "Delete", variant: .destructive, target: self, action: #selector(deleteKey))
-            views.append(del)
-        }
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        views += [spacer, cancel, saveButton]
-        let bar = NSStackView(views: views)
-        bar.orientation = .horizontal
-        bar.spacing = 10
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        return bar
+    @objc private func copyFingerprint() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(fingerprintField.stringValue, forType: .string)
     }
 
+    // MARK: Save / Delete / Cancel
+
     private func updateSaveEnabled() {
-        saveButton.isEnabled = editing != nil || pendingPrivateKey != nil
+        saveButton?.isEnabled = editing != nil || pendingPrivateKey != nil
     }
 
     @objc private func save() {
@@ -520,58 +589,6 @@ final class KeyEditorController: NSViewController {
         statusLabel.textColor = HelmContrast.legibleTintedText(tintHex: statusTone.hex(in: theme),
                                                                over: HelmTheme.nsColor(theme.backgroundHex),
                                                                theme: theme)
-    }
-
-
-    private func configure(_ field: NSTextField, placeholder: String, value: String?) {
-        field.placeholderString = placeholder
-        field.stringValue = value ?? ""
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.lineBreakMode = .byTruncatingTail
-    }
-
-    private func rowLabel(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 12)
-        mutedLabels.add(l)
-        return l
-    }
-
-    /// A plain programmatic `NSTextView` needs this setup to actually wrap and
-    /// track its scroll view's width instead of keeping its zero-size initial
-    /// frame - AppKit does not default it for you outside Interface Builder.
-    private func scrollable(_ textView: NSTextView, height: CGFloat) -> NSView {
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-
-        let scroll = NSScrollView()
-        scroll.documentView = textView
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
-        scroll.borderType = .lineBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.heightAnchor.constraint(equalToConstant: height).isActive = true
-        return scroll
-    }
-
-    private func labeledBox(_ caption: String, view boxed: NSView, footer: NSView? = nil) -> NSView {
-        let label = NSTextField(labelWithString: caption)
-        label.font = .systemFont(ofSize: 11)
-        mutedLabels.add(label)
-        var views: [NSView] = [label, boxed]
-        if let footer { views.append(footer) }
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        boxed.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        footer?.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
     }
 
     private func flag(_ field: NSTextField) {
