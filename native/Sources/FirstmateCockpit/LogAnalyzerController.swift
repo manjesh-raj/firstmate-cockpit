@@ -883,8 +883,40 @@ final class LogAnalyzerController: NSViewController {
         }
         compareBefore.widthAnchor.constraint(equalTo: beforeColumn.widthAnchor).isActive = true
         compareAfter.widthAnchor.constraint(equalTo: afterColumn.widthAnchor).isActive = true
-        comparePopupBefore.widthAnchor.constraint(equalTo: beforeColumn.widthAnchor).isActive = true
-        comparePopupAfter.widthAnchor.constraint(equalTo: afterColumn.widthAnchor).isActive = true
+        // `fm/grandline-log-analyzer-body-width-regression`: below `.required`
+        // (matching `buildAnalysisTab`'s own 0.38-split fix, and AGENTS.md
+        // gotcha (13) - "no content constraint may exceed
+        // NSLayoutPriorityWindowSizeStayPut (500) unless deliberately
+        // intended to drive the window's size"), NOT `.required` like every
+        // other width tie on this page.
+        //
+        // A `NSPopUpButton`'s intrinsic width is driven by its *populated
+        // menu items* - `renderComparePickers()` always adds at least
+        // "Paste below, or pick evidence…", plus one item per captured
+        // evidence label, which is free-form text a captain can make
+        // arbitrarily long. Because this tie was `.required`, and because
+        // this exact `widthAnchor == beforeColumn/afterColumn.widthAnchor`
+        // constraint is a real, externally-added constraint (not a stack's
+        // own internal arrangement math, which *does* skip a hidden arranged
+        // subview) - it stayed fully binding all the way up through the
+        // Compare tab (hidden until chosen), `tabContainer` (hidden until an
+        // analysis exists), `contentStack`, this destination's own root, and
+        // `AppShellController.bodyContainer` - capping the *whole window* at
+        // whatever width the popup's current menu items needed, on every
+        // destination, not just this one (reproduced live: Console, Vault
+        // and Review all showed the identical mis-sized `bodyContainer`).
+        // Confirmed by removing only this pair of ties: the cap disappeared
+        // completely, at every window width tried, not just one - the popup
+        // still visually fills its column in the ordinary case (there is
+        // always slack), it just can no longer force the window bigger than
+        // it is when there genuinely isn't.
+        let popupPriority = NSLayoutConstraint.Priority(499)
+        let popupBeforeWidth = comparePopupBefore.widthAnchor.constraint(equalTo: beforeColumn.widthAnchor)
+        popupBeforeWidth.priority = popupPriority
+        popupBeforeWidth.isActive = true
+        let popupAfterWidth = comparePopupAfter.widthAnchor.constraint(equalTo: afterColumn.widthAnchor)
+        popupAfterWidth.priority = popupPriority
+        popupAfterWidth.isActive = true
 
         let columns = NSStackView(views: [beforeColumn, afterColumn])
         columns.orientation = .horizontal
