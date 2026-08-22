@@ -36,6 +36,26 @@
 // stays at its stale, pre-break value after the resize, since nothing
 // notices the tie is inactive - and reapplying the fix makes it pass again.
 //
+// `fm/grandline-log-analyzer-body-width-regression` found and fixed a SECOND,
+// unrelated way to reach this same symptom (identical geometry, but nothing
+// to do with the width-tie staleness above): `LogAnalyzerController`'s
+// Compare tab ties `comparePopupBefore`/`comparePopupAfter` to their own
+// column at `.required`. That tie is a real, externally-added constraint -
+// not one a stack's own `.gravityAreas`/arrangement math would skip for a
+// hidden arranged subview - so it stayed fully binding straight through the
+// Compare tab (hidden until chosen), `tabContainer` (hidden until an
+// analysis exists) and this destination's own root, all the way up to
+// `bodyContainer`. A popup's intrinsic width comes from its populated menu
+// items (`renderComparePickers()` always adds at least one, and one per
+// captured evidence label - free-form text a captain can make arbitrarily
+// long), so it could cap the *whole window* at whatever width those items
+// needed - on every destination, not just Log Analyzer, since bodyContainer
+// is shared. `test_bodyContainerTracksWindowAcrossRealisticWidths` below is
+// the regression coverage for that fix - confirmed live, per this project's
+// convention, to actually catch it: reverting the `LogAnalyzerController`
+// fix (dropping that tie back to `.required`) fails this case at every one
+// of its swept widths, not just one, and reapplying the fix passes it again.
+//
 // Run with:
 //   swift build && FM_RUN_APP_SHELL_BODY_WIDTH_TESTS=1 .build/debug/FirstmateCockpit; echo $?
 
@@ -48,6 +68,7 @@ enum AppShellBodyWidthSelfTest {
             ("bodyContainerWidthTracksWindowAtLaunch", test_widthTracksWindowAtLaunch),
             ("bodyContainerWidthTracksASeriesOfResizes", test_widthTracksResizeSeries),
             ("widthSelfHealsAfterATieIsSilentlyBroken", test_widthSelfHealsAfterTieBroken),
+            ("bodyContainerTracksWindowAcrossRealisticWidths", test_widthTracksAcrossRealisticWidths),
         ]
         var failures = 0
         for (name, testCase) in cases {
@@ -199,6 +220,39 @@ enum AppShellBodyWidthSelfTest {
                 return "bodyContainer did not self-heal after its width tie was broken and the window resized: "
                     + "expected \(expected) (window content width \(window.contentView?.bounds.width ?? -1)), "
                     + "got \(afterResizeWidth) (still matching the stale \(staleWidth) it had before the break)"
+            }
+            return nil
+        }
+    }
+
+    /// `fm/grandline-log-analyzer-body-width-regression`: proves
+    /// `bodyContainer` fills the window's real width across a *range* of
+    /// realistic widths - not just the one specific dimension a test
+    /// happens to check, since a fix tuned to one width could pass this
+    /// suite while still being broken generally. Every width below is well
+    /// above this page's own legitimate minimum content width (confirmed
+    /// separately: `LogAnalyzerController`'s Analysis tab, which is visible
+    /// by default, needs roughly 980pt of real content width on its own to
+    /// render its raw/structured split without being squished - a genuine
+    /// floor unrelated to this bug, not something this test should fight).
+    /// This is deliberately a *different* case from
+    /// `widthSelfHealsAfterATieIsSilentlyBroken` above: that one reproduces
+    /// a specific historical staleness in the width-*tie* mechanism itself;
+    /// this one proves no destination's own content can cap the window
+    /// below its requested size in the first place, which is a property of
+    /// the destinations mounted inside `bodyContainer`, not of the tie.
+    private static func test_widthTracksAcrossRealisticWidths() -> String? {
+        withScratchEnv {
+            let (window, shell) = makeMountedShell()
+            for width in [CGFloat(1100), 1220, 1350, 1420, 1512, 1600, 1800, 2000] {
+                window.setFrame(NSRect(x: 0, y: 0, width: width, height: 900), display: true)
+                let actual = shell.bodyContainerFrameForTests.width
+                let expected = width - IconRailController.width
+                guard abs(actual - expected) < 0.5 else {
+                    return "at window width \(width): expected bodyContainer \(expected), got \(actual) "
+                        + "(window's own frame stayed at \(window.frame.width) - a destination's content is "
+                        + "capping bodyContainer below what the window actually offers)"
+                }
             }
             return nil
         }
