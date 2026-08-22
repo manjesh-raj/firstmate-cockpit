@@ -176,14 +176,27 @@ enum FirstmateBackend {
     /// work is left to finish on its own in that case (there's no handle to
     /// cancel it), but the caller is no longer blocked on it.
     private static func runWithTimeout<T>(_ timeout: TimeInterval, work: @escaping () -> T) -> T? {
+        // GL-28(c): the shared result must be lock-guarded, not a bare `var`.
+        // On the timeout path the background work is deliberately left to
+        // finish on its own (there is no handle to cancel it), so it can - and
+        // eventually will - write `result` at the same moment this thread
+        // reads it. That is a real data race, not a benign stale read: for a
+        // `T` larger than a word (this is called with `String?`) the reader
+        // can observe a half-written value.
+        let box = TimeoutBox<T>()
         let sema = DispatchSemaphore(value: 0)
-        var result: T?
         DispatchQueue.global(qos: .userInitiated).async {
-            result = work()
+            let produced = work()
+            box.lock.lock()
+            box.value = produced
+            box.done = true
+            box.lock.unlock()
             sema.signal()
         }
-        _ = sema.wait(timeout: .now() + timeout)
-        return result
+        guard sema.wait(timeout: .now() + timeout) == .success else { return nil }
+        box.lock.lock()
+        defer { box.lock.unlock() }
+        return box.done ? box.value : nil
     }
 
     /// The herdr session firstmate itself would target for its own ambient
@@ -233,4 +246,13 @@ enum FirstmateBackend {
         guard proc.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }
+}
+
+/// GL-28(c): the lock-guarded result slot `FirstmateBackend.runWithTimeout`
+/// hands to its background work. A file-scope type because a generic function
+/// cannot nest one.
+private final class TimeoutBox<T> {
+    let lock = NSLock()
+    var value: T?
+    var done = false
 }

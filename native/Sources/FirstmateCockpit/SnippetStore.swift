@@ -11,6 +11,9 @@ final class SnippetStore {
 
     private(set) var snippets: [Snippet] = []
 
+    /// Set when `load()` backed up an undecodable `snippets.json` (GL-01).
+    private(set) var loadFailureBackupPath: String?
+
     /// Fired after any mutation so the snippets list can reload.
     var onChange: (() -> Void)?
 
@@ -63,12 +66,14 @@ final class SnippetStore {
 
     // MARK: Disk
 
+    /// GL-01: back an undecodable `snippets.json` up before the next
+    /// `persist()` overwrites it - see `StoreLoadFailure`'s header.
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else {
-            snippets = []
-            return
-        }
-        snippets = (try? JSONDecoder().decode([Snippet].self, from: data)) ?? []
+        var backup: String?
+        snippets = StoreLoadFailure.decodeJSON(
+            [Snippet].self, at: fileURL, label: "snippets.json", didBackUp: &backup
+        ) ?? []
+        loadFailureBackupPath = backup
     }
 
     private func persist() {

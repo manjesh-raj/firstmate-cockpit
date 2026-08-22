@@ -488,6 +488,31 @@ final class HostEditorController: NSViewController, NSTextFieldDelegate {
             warn(title: "Invalid port", body: "Port must be a whole number between 1 and 65535.")
             return
         }
+        // GL-08: a leading dash makes `ssh` read the value as an option, not a
+        // host - `-oProxyCommand=<cmd>` runs `<cmd>` locally on Connect. The
+        // `--` terminator in `Host.sshArguments` already neutralises this at
+        // the argv level, but refusing to *save* one keeps a host record that
+        // was never meant to work out of the store entirely, and gives the
+        // captain a real explanation rather than a mysteriously failing host.
+        if Host.hasUnsafeLeadingDash(address) {
+            flag(addressField)
+            warn(title: "Address can't start with \u{201C}-\u{201D}",
+                 body: "`ssh` would read it as a command-line option instead of a hostname. "
+                     + "If you meant a hostname, remove the leading dash.")
+            return
+        }
+        if Host.hasUnsafeLeadingDash(usernameField.stringValue) {
+            flag(usernameField)
+            warn(title: "Username can't start with \u{201C}-\u{201D}",
+                 body: "`ssh` would read it as a command-line option instead of a login name.")
+            return
+        }
+        if Host.hasUnsafeLeadingDash(jumpViaField.stringValue) {
+            flag(jumpViaField)
+            warn(title: "Jump host can't start with \u{201C}-\u{201D}",
+                 body: "`ssh` would read it as a command-line option instead of a jump destination.")
+            return
+        }
 
         var host = editing ?? Host(label: "", address: "")
         let resolvedLabel = label.isEmpty ? address : label

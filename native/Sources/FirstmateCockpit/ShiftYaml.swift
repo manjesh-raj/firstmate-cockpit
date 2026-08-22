@@ -229,9 +229,39 @@ enum ShiftYaml {
     /// missing) - the shared shape every list file
     /// (active/completed/follow-ups/projects/notes/activity) uses.
     static func readList(path: String, key: String) -> [Yaml] {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { return [] }
-        guard let doc = try? Yaml.load(text) else { return [] }
-        return doc.dictionary?[str(key)]?.array ?? []
+        switch readListChecked(path: path, key: key) {
+        case .ok(let items): return items
+        case .missing, .parseFailed: return []
+        }
+    }
+
+    /// GL-01: the same read, but able to tell the caller *why* it came back
+    /// empty. `readList` collapses "this file does not exist yet" and "this
+    /// file has a YAML syntax error in it" into the same empty array, and
+    /// `ShiftStore` then wrote that empty array straight back over the real
+    /// data on the next mutation (and `ShiftGitSync` pushed the wipe). Any
+    /// caller that can go on to *write* the same file must use this variant
+    /// and refuse the write on `.parseFailed`.
+    ///
+    /// `.missing` covers both "no file" and "empty file" - genuinely nothing
+    /// to lose. A file that parses but has no `key` in it is `.ok([])`: the
+    /// document is intact and legitimately holds no items (that is exactly
+    /// what `writeList` produces for an empty list).
+    enum ListRead {
+        case ok([Yaml])
+        case missing
+        case parseFailed
+    }
+
+    static func readListChecked(path: String, key: String) -> ListRead {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return .missing }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .missing }
+        guard let doc = try? Yaml.load(text) else { return .parseFailed }
+        // A non-null document that is not a mapping at all (a bare scalar, a
+        // top-level sequence) is not something `writeList` can ever produce,
+        // so treat it as damage rather than as an empty list.
+        guard let dict = doc.dictionary else { return .parseFailed }
+        return .ok(dict[str(key)]?.array ?? [])
     }
 
     /// Serializes `items` under `key` as one YAML document and writes it to
@@ -248,8 +278,24 @@ enum ShiftYaml {
     /// Reads a flat mapping document (`settings.yaml`'s shape) rather than a
     /// `key: [ ... ]` list.
     static func readMapping(path: String) -> Yaml? {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8), !text.isEmpty else { return nil }
-        return try? Yaml.load(text)
+        switch readMappingChecked(path: path) {
+        case .ok(let doc): return doc
+        case .missing, .parseFailed: return nil
+        }
+    }
+
+    /// `readMapping`'s GL-01 counterpart - see `readListChecked`.
+    enum MappingRead {
+        case ok(Yaml)
+        case missing
+        case parseFailed
+    }
+
+    static func readMappingChecked(path: String) -> MappingRead {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return .missing }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .missing }
+        guard let doc = try? Yaml.load(text), doc.dictionary != nil else { return .parseFailed }
+        return .ok(doc)
     }
 
     static func writeMapping(path: String, doc: Yaml) throws {

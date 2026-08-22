@@ -93,14 +93,32 @@ final class CommandLibraryStore {
     /// itself, not under a category folder, so they're never mistaken for a
     /// command file regardless).
     private func scanCommands() -> [DevOpsCommand] {
-        guard let categoryDirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        scanCommandsChecked().commands
+    }
+
+    /// GL-21: `scanCommands` returns `[]` both for "this library is genuinely
+    /// empty" and for "the directory could not be enumerated at all", and
+    /// `seedIfEmpty` then wrote 73 seed files - overwriting any real command
+    /// sitting at a seed path. This variant reports which of the two it was,
+    /// so the seeder can refuse to act on a failed read.
+    ///
+    /// Note the failure is specifically about *enumerating the root*. A
+    /// category directory that fails to enumerate, or a single unparseable
+    /// command file, is a partial read, not a reason to refuse seeding - but
+    /// it also cannot make the library look empty unless the root read failed
+    /// too, so the root check is the one that matters here.
+    private func scanCommandsChecked() -> (commands: [DevOpsCommand], enumerationFailed: Bool) {
+        guard let categoryDirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            NSLog("[cockpit] command library: could not enumerate \(root.path) - not seeding (GL-21)")
+            return ([], true)
+        }
         var results: [DevOpsCommand] = []
         for categoryDir in categoryDirs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard (try? categoryDir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
             let category = categoryDir.lastPathComponent
             results.append(contentsOf: scanCategoryDir(categoryDir, category: category, subcategory: nil))
         }
-        return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return (results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, false)
     }
 
     private func scanCategoryDir(_ dir: URL, category: String, subcategory: String?) -> [DevOpsCommand] {
@@ -342,7 +360,11 @@ final class CommandLibraryStore {
     /// Shift's own deliberately-blank task list - the whole point of this
     /// tab is browsing a pre-populated reference.
     private func seedIfEmpty() {
-        guard scanCommands().isEmpty else { return }
+        let scan = scanCommandsChecked()
+        // GL-21: only seed a library that is *known* to be empty. An
+        // enumeration failure looks identical to emptiness from the outside
+        // and used to trigger a full 73-file re-seed over real data.
+        guard !scan.enumerationFailed, scan.commands.isEmpty else { return }
         for command in CommandLibrarySeedData.commands {
             // `command.id` in the seed literals is a bare slug (e.g.
             // "get-pod-logs") - the file's path (category/[subcategory/]slug)

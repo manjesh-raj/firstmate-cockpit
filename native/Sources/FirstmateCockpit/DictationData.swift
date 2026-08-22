@@ -42,6 +42,10 @@ final class DictationStore {
     private(set) var history: [DictationHistoryEntry] = []
     private(set) var vocabulary: [String] = []
 
+    /// Backup paths written by `load*()` when a file existed but would not
+    /// decode (GL-01) - one per file, so a run that hits both is visible.
+    private(set) var loadFailureBackupPaths: [String] = []
+
     /// Fired after any mutation to either list - `DictationController`
     /// observes while visible, matching `HostStore.observe`'s "list of
     /// closures" shape (not a single overwritable `onChange`) in case a
@@ -122,22 +126,25 @@ final class DictationStore {
         return d
     }()
 
+    /// GL-01: both loads back an undecodable file up before the very next
+    /// dictation (history) or vocabulary edit atomically overwrites it - see
+    /// `StoreLoadFailure`'s header. Without this a single unreadable
+    /// `history.json` was silently replaced by a one-entry file.
     private func loadHistory() {
-        guard let data = try? Data(contentsOf: historyURL),
-              let decoded = try? Self.dateFormatDecoder.decode([DictationHistoryEntry].self, from: data) else {
-            history = []
-            return
-        }
-        history = decoded
+        var backup: String?
+        history = StoreLoadFailure.decodeJSON(
+            [DictationHistoryEntry].self, at: historyURL,
+            decoder: Self.dateFormatDecoder, label: "history.json", didBackUp: &backup
+        ) ?? []
+        if let backup { loadFailureBackupPaths.append(backup) }
     }
 
     private func loadVocabulary() {
-        guard let data = try? Data(contentsOf: vocabularyURL),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            vocabulary = []
-            return
-        }
-        vocabulary = decoded
+        var backup: String?
+        vocabulary = StoreLoadFailure.decodeJSON(
+            [String].self, at: vocabularyURL, label: "vocabulary.json", didBackUp: &backup
+        ) ?? []
+        if let backup { loadFailureBackupPaths.append(backup) }
     }
 
     private func persistHistory() {

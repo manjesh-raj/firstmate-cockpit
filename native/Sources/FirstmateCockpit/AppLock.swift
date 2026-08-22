@@ -108,6 +108,20 @@ final class AppLockController {
     /// then never again for 8+ seconds of otherwise-idle real time, via a
     /// temporary debug probe logging every timer callback - reverted before
     /// commit, but the finding (and this fix) are real.
+    ///
+    /// GL-13: the *options* on this assertion were wrong, even though the
+    /// assertion itself is right. It was `[.userInitiated,
+    /// .idleSystemSleepDisabled]`, held for the app's lifetime - and
+    /// `.idleSystemSleepDisabled` does not just protect this app's timers, it
+    /// tells macOS the whole *machine* must not idle-sleep for as long as
+    /// Grand Line is open. Nothing here needs that: a lock timer that pauses
+    /// while the Mac is asleep is not a problem, because the wake-up path
+    /// re-reads the wall clock (`tick()` compares `Date()` against
+    /// `lastUnlockAt`/idle, it does not count ticks), so a machine that slept
+    /// for two hours locks correctly on wake. `.background` also means the
+    /// pollers this assertion incidentally kept at full speed while the app is
+    /// backgrounded are no longer promised foreground scheduling - which is the
+    /// right trade for a 30-second/15-minute cadence.
     private var appNapActivity: NSObjectProtocol?
 
     /// Set by the app delegate to actually show/hide the lock screen -
@@ -148,8 +162,13 @@ final class AppLockController {
         // need to keep firing. Scheduled in `.common` run loop modes (not
         // just `.default`) so it keeps firing during menu tracking/live
         // resize too, not only while the run loop is fully idle.
+        // GL-13: `.background` (not `.userInitiated`) and no
+        // `.idleSystemSleepDisabled` - see `appNapActivity`'s doc comment for
+        // why keeping the whole machine awake was never needed here.
+        // `.background` still opts this activity out of App Nap suspension,
+        // which is the one property the timer below actually depends on.
         appNapActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
+            options: [.background],
             reason: "App-level password lock idle/session timers"
         )
         timer?.invalidate()

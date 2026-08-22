@@ -133,6 +133,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let backupPath = hostStore.loadFailureBackupPath {
             appShell.showToast("Couldn't read saved hosts - backed up the old file to \((backupPath as NSString).lastPathComponent)")
         }
+        // GL-01: the same treatment for the three stores that used to fail
+        // *silently*. Backing the file up is the durability half; saying so is
+        // what makes it recoverable - a captain who is never told will not go
+        // looking for a `.corrupt-` file. Staged over a second apart so two
+        // simultaneous failures do not overwrite each other's toast.
+        //
+        // Keys first and most emphatically: losing key metadata orphans the
+        // Keychain blobs those entries pointed at, and nothing else can clean
+        // them up afterwards.
+        var storeFailureNotices: [String] = []
+        if let backupPath = keyStore.loadFailureBackupPath {
+            storeFailureNotices.append("Couldn't read saved SSH keys - backed up to \((backupPath as NSString).lastPathComponent). "
+                + "Keychain entries for those keys are still there.")
+        }
+        if let backupPath = snippetStore.loadFailureBackupPath {
+            storeFailureNotices.append("Couldn't read saved snippets - backed up to \((backupPath as NSString).lastPathComponent)")
+        }
+        for backupPath in dictationStore.loadFailureBackupPaths {
+            storeFailureNotices.append("Couldn't read a dictation file - backed up to \((backupPath as NSString).lastPathComponent)")
+        }
+        for (index, notice) in storeFailureNotices.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + Double(index) * 4) { [weak self] in
+                self?.appShell.showToast(notice)
+            }
+        }
         hostStore.observe { [weak self] in
             guard let self else { return }
             let currentIDs = Set(self.hostStore.hosts.map { $0.id })
@@ -402,7 +427,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for topLevelItem in mainMenu.items {
             guard let submenu = topLevelItem.submenu, submenu.title != "Edit" else { continue }
             for item in submenu.items {
-                if item.title == "Hide \(appName)" || item.title == "Quit \(appName)" { continue }
+                // GL-17 added Hide Others/Show All next to Hide; they are the
+                // same class of item (system-level app visibility, disclosing
+                // and writing nothing of this app's data), so they stay enabled
+                // while locked for the same reason Hide and Quit do.
+                if item.title == "Hide \(appName)" || item.title == "Quit \(appName)"
+                    || item.title == "Hide Others" || item.title == "Show All" { continue }
                 item.isEnabled = enabled
             }
         }
@@ -441,8 +471,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.appShell.showToast("\u{201C}\(saved.label)\u{201D} saved")
         }
+        // GL-06: the host editor window's Delete button was unconfirmed too,
+        // and deleting a host also tears down that host's live console page
+        // (see `HostStore.observe` in `applicationDidFinishLaunching`). Same
+        // copy as the Hosts list's own row-level confirmation, via the one
+        // shared prompt. Deferred a runloop turn because `deleteHost()` closes
+        // the editor window right after this returns.
         editor.onDelete = { [weak self] id in
-            self?.hostStore.delete(id: id)
+            DispatchQueue.main.async {
+                guard let self, let host = self.hostStore.host(id: id) else { return }
+                guard DestructiveConfirm.confirm(
+                    message: "Delete \u{201C}\(host.label)\u{201D}?",
+                    detail: "This removes the saved host and closes its console page. "
+                          + "It does not affect any running session."
+                ) else { return }
+                self.hostStore.delete(id: id)
+            }
         }
 
         // Reuse one window across repeated Add/Edit calls (matching the Keys/
@@ -546,7 +590,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "Settings…", action: #selector(AppShellController.selectSettings), keyEquivalent: ",")
             .target = appShell
         appMenu.addItem(NSMenuItem.separator())
+        // GL-17: Services, plus the standard Hide Others / Show All trio a Mac
+        // user expects to find here. `NSApp.servicesMenu` is what makes the
+        // system populate the submenu; without the assignment it stays empty.
+        let servicesItem = appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu(title: "Services")
+        servicesItem.submenu = servicesMenu
+        NSApp.servicesMenu = servicesMenu
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // Edit menu - Cut/Copy/Paste/Select All + Find.
@@ -762,8 +818,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         themeItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(themeItem)
 
+        // GL-17: Window and Help. Before this, ⌘M did nothing at all, there
+        // was no Zoom or Bring All to Front, and there was no Help menu despite
+        // `setup-guide.md` living in the repo - the first three things a
+        // discerning Mac user checks.
+        //
+        // `NSApp.windowsMenu` is the load-bearing line: assigning it is what
+        // makes AppKit itself maintain the list of open windows underneath the
+        // separator, so a floating Host Editor or a secondary panel shows up
+        // without this file tracking windows by hand.
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenuItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        NSApp.windowsMenu = windowMenu
+
+        let helpMenuItem = NSMenuItem()
+        mainMenu.addItem(helpMenuItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpMenuItem.submenu = helpMenu
+        // Both open a real file that ships in this repo, resolved at click
+        // time (see `openRepoDoc`) rather than assumed to exist - the app can
+        // be running from a bundle whose source tree has moved.
+        helpMenu.addItem(withTitle: "Grand Line Setup Guide", action: #selector(openSetupGuide), keyEquivalent: "?")
+            .target = self
+        helpMenu.addItem(withTitle: "Read Me", action: #selector(openReadme), keyEquivalent: "")
+            .target = self
+        NSApp.helpMenu = helpMenu
+
         NSApp.mainMenu = mainMenu
     }
+
+    // MARK: Help menu (GL-17)
+
+    /// Opens a doc that lives at the repo root, next to `native/`. Resolved
+    /// from `FirstmateHome`'s own resolution first (the captain's real
+    /// checkout), then relative to this executable for a `swift run` build.
+    /// Shows a plain alert rather than failing silently if neither exists -
+    /// a Help item that does nothing is worse than no Help item.
+    private func openRepoDoc(named name: String) {
+        var candidates: [URL] = []
+        // A bundled app sits at <repo>/dist/<App>.app/Contents/MacOS/<exe>;
+        // a `swift build` binary at <repo>/native/.build/<config>/<exe>.
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        var dir = exe.deletingLastPathComponent()
+        for _ in 0..<6 {
+            candidates.append(dir.appendingPathComponent(name))
+            dir = dir.deletingLastPathComponent()
+        }
+        guard let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't find \(name)"
+            alert.informativeText = "It ships at the root of the Manjesh Grand Line repository, "
+                + "next to the `native/` directory. This build couldn't locate that checkout."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+        NSWorkspace.shared.open(found)
+    }
+
+    @objc private func openSetupGuide() { openRepoDoc(named: "setup-guide.md") }
+    @objc private func openReadme() { openRepoDoc(named: "README.md") }
 }
 
 // `fm/cockpit-sre-lead-shared-terminal`: `swift build && FM_RUN_SRE_LEAD_BRIDGE_TESTS=1
@@ -907,6 +1027,20 @@ if ProcessInfo.processInfo.environment["FM_RUN_BLOCK_VIEW_VOLUME_TESTS"] == "1" 
 // custom decode fallback (a new `CodingKeys` entry with a Swift-side default,
 // like `blockViewOptIn`, must not break decoding of pre-existing `hosts.json`
 // files) - see HostStoreSelfTest.swift's header.
+// `fm/grandline-review-phase1-stabilize` (GL-01/GL-21): store durability -
+// a decode failure must preserve the file, and a failed directory read must
+// not look like an empty library. Runs entirely against scratch paths via the
+// stores' own `FM_*` overrides.
+if ProcessInfo.processInfo.environment["FM_RUN_STORE_DURABILITY_TESTS"] == "1" {
+    exit(StoreDurabilitySelfTest.run() ? 0 : 1)
+}
+
+// `fm/grandline-review-phase1-stabilize` (GL-05/GL-08): the single-instance
+// lock and the `ssh` argv option-terminator contract.
+if ProcessInfo.processInfo.environment["FM_RUN_PHASE1_HARDENING_TESTS"] == "1" {
+    exit(Phase1HardeningSelfTest.run() ? 0 : 1)
+}
+
 if ProcessInfo.processInfo.environment["FM_RUN_HOST_STORE_TESTS"] == "1" {
     exit(HostStoreSelfTest.run() ? 0 : 1)
 }
@@ -1062,6 +1196,25 @@ if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_LIST_VOLUME_TESTS"] == 
 // ReviewPRRowButtonLayoutSelfTest.swift's header.
 if ProcessInfo.processInfo.environment["FM_RUN_REVIEW_PR_ROW_BUTTON_LAYOUT_TESTS"] == "1" {
     exit(ReviewPRRowButtonLayoutSelfTest.run() ? 0 : 1)
+}
+
+// GL-05: refuse to be a second instance. This sits *after* every
+// `FM_RUN_*_TESTS` block above (each of which `exit()`s, so a headless
+// self-test never contends for the lock and never blocks a real running
+// instance) and *before* `AppDelegate()` is constructed - which is the line
+// that builds `HostStore`/`SSHKeyStore`/`SnippetStore`/`DictationStore`/
+// `ShiftStore` and therefore the first thing that touches the shared files
+// two instances corrupt. See `SingleInstanceGuard`'s header for what each of
+// the three layers (Info.plist, NSRunningApplication, flock) actually covers.
+switch SingleInstanceGuard.acquire() {
+case .acquired:
+    break
+case .alreadyRunning(let pid):
+    let who = pid.map { " (pid \($0))" } ?? ""
+    NSLog("[cockpit] Manjesh Grand Line is already running\(who) - activating it and exiting. "
+        + "Two instances share one set of JSON stores and one Shift git working tree; the second "
+        + "one silently overwrites the first's saves. See GL-05.")
+    exit(0)
 }
 
 let app = NSApplication.shared

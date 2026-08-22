@@ -382,13 +382,13 @@ final class FleetController: NSViewController {
                 guard let self else { return }
                 self.render(snapshot: snapshot, mergedPRs: nil)
             }
-            let openPRs = OpenPRsSource.fetch()
-            let merged = FleetDataSource.mergedPRs(openPRs: openPRs, tasks: snapshot.tasks)
+            let fetched = OpenPRsSource.fetchDetailed()
+            let merged = FleetDataSource.mergedPRs(openPRs: fetched.prs, tasks: snapshot.tasks)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
                 self.refreshButton.isEnabled = true
-                self.render(snapshot: snapshot, mergedPRs: merged)
+                self.render(snapshot: snapshot, mergedPRs: merged, prFetchFailure: fetched.failureSummary)
             }
         }
     }
@@ -399,7 +399,11 @@ final class FleetController: NSViewController {
     /// every other field from `snapshot` still renders immediately, and the
     /// "ready to merge" stat tile shows 0 until this method is called again
     /// once the fetch completes.
-    private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]?) {
+    /// `prFetchFailure` (GL-14) is a short reason string when the PR scan did
+    /// not fully succeed. Overview's "ready to merge" tile is a
+    /// should-I-act-on-something instrument, so a failed scan must read as
+    /// "unknown", not as a confident `0`.
+    private func render(snapshot: FleetSnapshot, mergedPRs: [MergedPR]?, prFetchFailure: String? = nil) {
         if !hasLoadedOnce {
             hasLoadedOnce = true
             loadingSpinner.stopAnimation(nil)
@@ -425,8 +429,10 @@ final class FleetController: NSViewController {
             ? "\(df.string(from: Date())) \u{00B7} the fleet is yours"
             : "firstmate home not found at \(FirstmateHome.root.path) - set FM_HOME"
 
-        renderBanner(needs: needs, working: working, readyCount: mergedPRs?.count ?? 0)
-        rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot)
+        renderBanner(needs: needs, working: working, readyCount: mergedPRs?.count ?? 0,
+                     prFetchFailure: prFetchFailure)
+        rebuildStats(working: working.count, ready: mergedPRs?.count ?? 0, snapshot: snapshot,
+                     prFetchFailure: prFetchFailure)
         rebuildTaskRows(into: inFlightStack, tasks: working, emptyTitle: "All hands idle", emptyBody: "No crew are working right now. Send your first mate a task from the console and this board lights up.")
         inFlightHeader.stringValue = "In flight"
         inFlightCountLabel.stringValue = "\(working.count)"
@@ -449,15 +455,23 @@ final class FleetController: NSViewController {
     /// same copy as before; only the presentation changed - the accent bar,
     /// the round badge and the uppercase kicker come from the component now
     /// rather than being absent.
-    private func renderBanner(needs: [FleetTask], working: [FleetTask], readyCount: Int) {
+    private func renderBanner(needs: [FleetTask], working: [FleetTask], readyCount: Int,
+                              prFetchFailure: String? = nil) {
         let content: HelmAccentRow.Content
         if needs.isEmpty {
+            // GL-14: an "all clear" banner must not assert something this
+            // refresh could not actually verify. With a failed PR scan the
+            // banner still reports what it does know (crew, decisions) and
+            // says the PR half is unknown, rather than printing "0 PRs ready".
+            let prPhrase = prFetchFailure == nil
+                ? "\(readyCount) PR\(readyCount == 1 ? "" : "s") ready to merge"
+                : "PR status unavailable"
             content = HelmAccentRow.Content(
-                tint: .good,
-                kicker: "All clear",
-                title: "Nothing needs you right now",
-                meta: "\(working.count) crew working \u{00B7} \(readyCount) PR\(readyCount == 1 ? "" : "s") ready to merge \u{00B7} nobody is parked on a decision.",
-                badgeSymbol: "checkmark")
+                tint: prFetchFailure == nil ? .good : .warn,
+                kicker: prFetchFailure == nil ? "All clear" : "Partly unknown",
+                title: prFetchFailure == nil ? "Nothing needs you right now" : "Nothing known needs you right now",
+                meta: "\(working.count) crew working \u{00B7} \(prPhrase) \u{00B7} nobody is parked on a decision.",
+                badgeSymbol: prFetchFailure == nil ? "checkmark" : "wifi.exclamationmark")
         } else {
             let decisions = needs.filter { $0.status == "needs_decision" }.count
             let blocked = needs.filter { $0.status == "blocked" }.count
@@ -474,7 +488,8 @@ final class FleetController: NSViewController {
         bannerRow.configure(content, theme: theme)
     }
 
-    private func rebuildStats(working: Int, ready: Int, snapshot: FleetSnapshot) {
+    private func rebuildStats(working: Int, ready: Int, snapshot: FleetSnapshot,
+                              prFetchFailure: String? = nil) {
         for v in statsRow.arrangedSubviews {
             statsRow.removeArrangedSubview(v)
             v.removeFromSuperview()
@@ -503,7 +518,15 @@ final class FleetController: NSViewController {
         default: watcherTint = .neutral
         }
         statsRow.addArrangedSubview(statTile(icon: "clock", value: "\(working)", label: "working"))
-        statsRow.addArrangedSubview(statTile(icon: "arrow.triangle.pull", value: "\(ready)", label: "ready to merge", tint: .accent, onClick: { [weak self] in self?.onNavigateToReview?() }))
+        // GL-14: "\u{2014}" (an em dash), not "0", when the scan failed - the
+        // tile is still clickable so the captain can go to Review and see the
+        // real reason there.
+        statsRow.addArrangedSubview(statTile(
+            icon: prFetchFailure == nil ? "arrow.triangle.pull" : "wifi.exclamationmark",
+            value: prFetchFailure == nil ? "\(ready)" : "\u{2014}",
+            label: prFetchFailure == nil ? "ready to merge" : "PRs unavailable",
+            tint: prFetchFailure == nil ? .accent : .warn,
+            onClick: { [weak self] in self?.onNavigateToReview?() }))
         statsRow.addArrangedSubview(statTile(icon: "line.3.horizontal", value: "\(snapshot.queuedCount)", label: "queued"))
         statsRow.addArrangedSubview(statTile(icon: "checkmark.circle", value: "\(snapshot.doneCount)", label: "done today", tint: .good))
         statsRow.addArrangedSubview(statTile(icon: "shippingbox", value: "\(snapshot.projectsCount)", label: "projects"))

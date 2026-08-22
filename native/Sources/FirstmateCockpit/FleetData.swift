@@ -161,7 +161,7 @@ enum FleetDataSource {
         proc.environment = env
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return ("unknown", "none", "") }
 
         let deadline = DispatchTime.now() + crewStateTimeout
@@ -313,9 +313,33 @@ enum FleetDataSource {
         do { try proc.run() } catch {
             return (false, error.localizedDescription)
         }
+        // GL-02: drain BOTH pipes concurrently, then wait. The previous order
+        // (`waitUntilExit()` first, then read) deadlocks the moment the merge
+        // script emits more than one pipe buffer (~64KB) on either stream: the
+        // child blocks in `write()` forever waiting for a reader that never
+        // comes, this thread blocks in `waitUntilExit()` forever waiting for a
+        // child that never exits, the completion that re-enables the Merge
+        // button never runs, and the thread leaks for the session. Reading
+        // stdout to EOF and *then* stderr is only half a fix - it still
+        // deadlocks on a child that fills stderr while stdout is open - so
+        // both reads happen on their own queues here.
+        var stdoutData = Data(), stderrData = Data()
+        let drain = DispatchGroup()
+        let readQueue = DispatchQueue(label: "fm.mergepr.drain", attributes: .concurrent)
+        drain.enter()
+        readQueue.async {
+            stdoutData = out.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
+        }
+        drain.enter()
+        readQueue.async {
+            stderrData = err.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
+        }
+        drain.wait()
         proc.waitUntilExit()
-        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let ok = proc.terminationStatus == 0
         return (ok, ok ? (stdout.isEmpty ? "Merged." : stdout) : (stderr.isEmpty ? stdout : stderr))
     }
@@ -339,16 +363,51 @@ enum OpenPRsSource {
     /// with dozens of projects.
     private static let fetchConcurrency = 6
 
+    /// GL-14: what a scan actually found, including whether any of it failed.
+    /// `isDegraded` is what Review/Overview render their "couldn't reach the
+    /// forge" state from - the whole point is that an empty `prs` array is no
+    /// longer, on its own, evidence of an all-clear.
+    struct FetchResult {
+        var prs: [OpenPRInfo] = []
+        /// Clone labels whose forge query failed outright.
+        var failedRepos: [String] = []
+        /// `$FM_HOME/projects` itself could not be listed - nothing was even
+        /// attempted, so this is a total failure, not a partial one.
+        var projectsUnreadable = false
+
+        var isDegraded: Bool { projectsUnreadable || !failedRepos.isEmpty }
+
+        /// One short line naming what went wrong, for an empty state or a
+        /// subtitle. `nil` when the scan was clean.
+        var failureSummary: String? {
+            if projectsUnreadable {
+                return "Couldn't read \(FirstmateHome.projects.path)."
+            }
+            guard !failedRepos.isEmpty else { return nil }
+            if failedRepos.count == 1 {
+                return "Couldn't reach the forge for \(failedRepos[0])."
+            }
+            return "Couldn't reach the forge for \(failedRepos.count) repositories."
+        }
+    }
+
+    /// The pre-GL-14 signature, kept for callers that genuinely only want the
+    /// list (nothing in-app renders an empty state off it anymore).
     static func fetch() -> [OpenPRInfo] {
+        fetchDetailed().prs
+    }
+
+    static func fetchDetailed() -> FetchResult {
         guard let clones = try? FileManager.default.contentsOfDirectory(
             at: FirstmateHome.projects, includingPropertiesForKeys: [.isDirectoryKey]
-        ) else { return [] }
+        ) else { return FetchResult(projectsUnreadable: true) }
 
         let sortedClones = clones
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
 
         var result: [OpenPRInfo] = []
+        var failed: [String] = []
         let lock = NSLock()
         let queue = DispatchQueue(label: "fm.openprs.fetch", attributes: .concurrent)
         let sema = DispatchSemaphore(value: fetchConcurrency)
@@ -359,9 +418,13 @@ enum OpenPRsSource {
             group.enter()
             queue.async {
                 defer { sema.signal(); group.leave() }
+                // A directory that is not a git clone, or whose remote this
+                // app does not understand, is skipped exactly as before -
+                // that is not a *failure* to reach a forge, so it must not
+                // trip the degraded state.
                 guard let remote = originURL(clone), let parsed = parseRemote(remote) else { return }
                 let label = clone.lastPathComponent
-                let prs: [OpenPRInfo]
+                let prs: [OpenPRInfo]?
                 switch parsed.forge {
                 case "github":
                     prs = githubOpenPRs(owner: parsed.owner, repo: parsed.repo, label: label)
@@ -370,6 +433,12 @@ enum OpenPRsSource {
                 default:
                     prs = []
                 }
+                guard let prs else {
+                    lock.lock()
+                    failed.append(label)
+                    lock.unlock()
+                    return
+                }
                 guard !prs.isEmpty else { return }
                 lock.lock()
                 result += prs
@@ -377,7 +446,7 @@ enum OpenPRsSource {
             }
         }
         group.wait()
-        return result
+        return FetchResult(prs: result, failedRepos: failed.sorted(), projectsUnreadable: false)
     }
 
     // MARK: git plumbing
@@ -390,7 +459,7 @@ enum OpenPRsSource {
         proc.environment = childEnvironmentDict()
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
@@ -407,7 +476,7 @@ enum OpenPRsSource {
         proc.environment = childEnvironmentDict()
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
@@ -496,8 +565,14 @@ enum OpenPRsSource {
         return "none"
     }
 
-    private static func githubOpenPRs(owner: String, repo: String, label: String) -> [OpenPRInfo] {
-        guard let ghPath = resolveExecutable("gh") else { return [] }
+    /// GL-14: `nil` means "the query failed" (no `gh`, no network, not
+    /// authenticated, a non-zero exit, unparseable JSON); `[]` means "this
+    /// repo genuinely has no open PRs right now". Collapsing the two - which
+    /// is what this returned before - makes an offline app render a confident
+    /// all-clear on the one page whose entire job is telling the captain
+    /// whether there is something to act on.
+    private static func githubOpenPRs(owner: String, repo: String, label: String) -> [OpenPRInfo]? {
+        guard let ghPath = resolveExecutable("gh") else { return nil }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: ghPath)
         proc.arguments = [
@@ -508,12 +583,12 @@ enum OpenPRsSource {
         proc.environment = childEnvironmentDict()
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return [] }
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return [] }
-        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        guard proc.terminationStatus == 0 else { return nil }
+        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
         return rows.map { row in
             OpenPRInfo(
                 repo: label,
@@ -533,13 +608,30 @@ enum OpenPRsSource {
     /// rejected; the stored password - an Atlassian API token - must be
     /// paired with the account email instead). Mirrors `_bb_identity` /
     /// `_bb_candidates` in openprs.py.
-    private static var bbIdentity: (user: String, token: String)?
-    private static var bbCandidatesCache: [(user: String, token: String)]?
+    /// GL-28(a): these two are read and written from inside `fetch()`'s
+    /// concurrent per-clone queue, so every access goes through `bbCacheLock`.
+    /// Unsynchronized access to a Swift `Optional` of a tuple-of-Strings is a
+    /// real data race (torn reads of the string buffers, not just a stale
+    /// value), which is exactly the class TSan flags here.
+    private static let bbCacheLock = NSLock()
+    private static var _bbIdentity: (user: String, token: String)?
+    private static var _bbCandidatesCache: [(user: String, token: String)]?
+
+    private static var bbIdentity: (user: String, token: String)? {
+        get { bbCacheLock.lock(); defer { bbCacheLock.unlock() }; return _bbIdentity }
+        set { bbCacheLock.lock(); defer { bbCacheLock.unlock() }; _bbIdentity = newValue }
+    }
 
     private static func bbCandidates() -> [(user: String, token: String)] {
-        if let cached = bbCandidatesCache { return cached }
+        bbCacheLock.lock()
+        let cachedCandidates = _bbCandidatesCache
+        bbCacheLock.unlock()
+        if let cached = cachedCandidates { return cached }
         var cands: [(String, String)] = []
-        guard let gitPath = resolveExecutable("git") else { bbCandidatesCache = cands; return cands }
+        guard let gitPath = resolveExecutable("git") else {
+            bbCacheLock.lock(); _bbCandidatesCache = cands; bbCacheLock.unlock()
+            return cands
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: gitPath)
         proc.arguments = ["credential", "fill"]
@@ -547,7 +639,7 @@ enum OpenPRsSource {
         let inPipe = Pipe(), outPipe = Pipe()
         proc.standardInput = inPipe
         proc.standardOutput = outPipe
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
             inPipe.fileHandleForWriting.write("protocol=https\nhost=bitbucket.org\n\n".data(using: .utf8)!)
@@ -570,7 +662,12 @@ enum OpenPRsSource {
         } catch {
             // no usable credential - fall through with an empty candidate list
         }
-        bbCandidatesCache = cands
+        bbCacheLock.lock()
+        // Last writer wins if two clones raced to fill this - both computed
+        // the same thing from the same git credential helper, so either is
+        // correct; the point of the lock is that neither read is torn.
+        _bbCandidatesCache = cands
+        bbCacheLock.unlock()
         return cands
     }
 
@@ -592,9 +689,10 @@ enum OpenPRsSource {
         return result
     }
 
-    private static func bitbucketOpenPRs(workspace: String, repo: String, label: String) -> [OpenPRInfo] {
+    /// `nil` on failure - see `githubOpenPRs` (GL-14).
+    private static func bitbucketOpenPRs(workspace: String, repo: String, label: String) -> [OpenPRInfo]? {
         guard let url = URL(string: "https://api.bitbucket.org/2.0/repositories/\(workspace)/\(repo)/pullrequests?state=OPEN&pagelen=50") else {
-            return []
+            return nil
         }
         var data: [String: Any]?
         if let identity = bbIdentity {
@@ -609,7 +707,7 @@ enum OpenPRsSource {
                 }
             }
         }
-        guard let values = data?["values"] as? [[String: Any]] else { return [] }
+        guard let values = data?["values"] as? [[String: Any]] else { return nil }
         return values.map { pr in
             let links = pr["links"] as? [String: Any]
             let html = links?["html"] as? [String: Any]

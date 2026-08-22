@@ -15,6 +15,7 @@
 // rule - just against a directory tree instead of a single JSON file.
 
 import Foundation
+import Yaml
 
 final class ShiftStore {
 
@@ -25,6 +26,76 @@ final class ShiftStore {
 
     private var changeHandlers: [() -> Void] = []
     func observe(_ handler: @escaping () -> Void) { changeHandlers.append(handler) }
+
+    // MARK: Failed-load state (GL-01)
+
+    /// Paths whose *last read* found a real YAML parse failure - a file that
+    /// exists and has content this store could not understand.
+    ///
+    /// This is the load-bearing half of GL-01 for Shift. Before it, a single
+    /// hand-edited syntax error in `active.yaml` parsed as `[]`, `reloadAll`
+    /// kept that silently, the next `addTask` wrote a one-task file over
+    /// every real task, and the debounced `ShiftGitSync` committed and pushed
+    /// the wipe to GitHub - git history was the only recovery. While a path
+    /// is in here, this store refuses every write to it *and* suppresses
+    /// `markDirty()` entirely, so nothing local is overwritten and nothing is
+    /// propagated off-machine. Clearing it takes a successful re-read: fix
+    /// the file (the `.corrupt-<ts>` copy is right beside it) and reload.
+    private(set) var loadFailurePaths: Set<String> = []
+
+    /// True while any file this store owns is unreadable - the app should
+    /// treat Shift as read-only until it is resolved.
+    var isInFailedLoadState: Bool { !loadFailurePaths.isEmpty }
+
+    /// Records a `.parseFailed` read: backs the file up once (so a captain
+    /// has a copy even if they then hand-fix the original into something
+    /// else) and marks the path as unwritable.
+    private func noteLoadFailure(_ path: String) {
+        if loadFailurePaths.insert(path).inserted {
+            StoreLoadFailure.backUp(URL(fileURLWithPath: path))
+        }
+    }
+
+    /// Clears a path's failed state after a successful read of it.
+    private func noteLoadOK(_ path: String) {
+        loadFailurePaths.remove(path)
+    }
+
+    /// Reads a list file, recording a parse failure rather than silently
+    /// returning `[]` for it. Every read whose result can later be written
+    /// back to the same file goes through here.
+    private func readListGuarded(path: String, key: String) -> [Yaml] {
+        switch ShiftYaml.readListChecked(path: path, key: key) {
+        case .ok(let items):
+            noteLoadOK(path)
+            return items
+        case .missing:
+            noteLoadOK(path)
+            return []
+        case .parseFailed:
+            noteLoadFailure(path)
+            return []
+        }
+    }
+
+    /// The one write choke point: refuses to write a file this store could
+    /// not read. Returns whether the write actually happened, so a caller
+    /// that needs to know (a mutation that should not then announce success)
+    /// can check.
+    @discardableResult
+    private func writeListGuarded(path: String, key: String, items: [Yaml]) -> Bool {
+        guard !loadFailurePaths.contains(path) else {
+            NSLog("[cockpit] Shift: refusing to write \(path) - its last read failed to parse (GL-01). Fix or remove the file, then reload.")
+            return false
+        }
+        do {
+            try ShiftYaml.writeList(path: path, key: key, items: items)
+            return true
+        } catch {
+            NSLog("[cockpit] Shift: failed to write \(path): \(error.localizedDescription)")
+            return false
+        }
+    }
 
     let root: URL
 
@@ -109,14 +180,22 @@ final class ShiftStore {
     /// confirm the change survived" a real persistence check rather than
     /// trusting the in-memory array a write call already mutated.
     func reloadAll() {
-        activeTasks = ShiftYaml.readList(path: activeTasksPath, key: "tasks").compactMap(ShiftYaml.task(from:))
-        followUps = ShiftYaml.readList(path: followUpsPath, key: "follow_ups").compactMap(ShiftYaml.followUp(from:))
-        projects = ShiftYaml.readList(path: projectsPath, key: "projects").compactMap(ShiftYaml.project(from:))
-        if let doc = ShiftYaml.readMapping(path: settingsPath) {
+        activeTasks = readListGuarded(path: activeTasksPath, key: "tasks").compactMap(ShiftYaml.task(from:))
+        followUps = readListGuarded(path: followUpsPath, key: "follow_ups").compactMap(ShiftYaml.followUp(from:))
+        projects = readListGuarded(path: projectsPath, key: "projects").compactMap(ShiftYaml.project(from:))
+        switch ShiftYaml.readMappingChecked(path: settingsPath) {
+        case .ok(let doc):
+            noteLoadOK(settingsPath)
             settings = ShiftYaml.settings(from: doc)
-        } else {
+        case .missing:
+            // Genuine first run - write the scaffold, as before.
+            noteLoadOK(settingsPath)
             settings = ShiftSettings()
             try? ShiftYaml.writeMapping(path: settingsPath, doc: ShiftYaml.toYaml(settings))
+        case .parseFailed:
+            // GL-01: do NOT overwrite a settings file we could not read.
+            noteLoadFailure(settingsPath)
+            settings = ShiftSettings()
         }
     }
 
@@ -291,7 +370,7 @@ final class ShiftStore {
     }
 
     private func persistFollowUps() {
-        try? ShiftYaml.writeList(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
+        writeListGuarded(path: followUpsPath, key: "follow_ups", items: followUps.map(ShiftYaml.toYaml))
     }
 
     // MARK: Projects (phase 3)
@@ -348,32 +427,32 @@ final class ShiftStore {
 
     private func appendToCompletedMonth(_ task: ShiftTask, month: String) {
         let path = completedPath(forMonth: month)
-        var tasks = ShiftYaml.readList(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
+        var tasks = readListGuarded(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
         tasks.removeAll { $0.id == task.id }
         tasks.append(task)
-        try? ShiftYaml.writeList(path: path, key: "tasks", items: tasks.map(ShiftYaml.toYaml))
+        writeListGuarded(path: path, key: "tasks", items: tasks.map(ShiftYaml.toYaml))
     }
 
     private func removeFromCompletedMonth(id: String, month: String) {
         let path = completedPath(forMonth: month)
-        var tasks = ShiftYaml.readList(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
+        var tasks = readListGuarded(path: path, key: "tasks").compactMap(ShiftYaml.task(from:))
         tasks.removeAll { $0.id == id }
-        try? ShiftYaml.writeList(path: path, key: "tasks", items: tasks.map(ShiftYaml.toYaml))
+        writeListGuarded(path: path, key: "tasks", items: tasks.map(ShiftYaml.toYaml))
     }
 
     private func logActivity(kind: String, summary: String, targetID: String? = nil, now: Date) {
         let path = activityPath(forMonth: ShiftStore.monthKey(for: now))
-        var entries = ShiftYaml.readList(path: path, key: "activity").compactMap(ShiftYaml.activity(from:))
+        var entries = readListGuarded(path: path, key: "activity").compactMap(ShiftYaml.activity(from:))
         entries.append(ShiftActivityEntry(id: UUID().uuidString, timestamp: ShiftStore.iso8601(now), kind: kind, summary: summary, targetID: targetID))
-        try? ShiftYaml.writeList(path: path, key: "activity", items: entries.map(ShiftYaml.toYaml))
+        writeListGuarded(path: path, key: "activity", items: entries.map(ShiftYaml.toYaml))
     }
 
     private func persistActiveTasks() {
-        try? ShiftYaml.writeList(path: activeTasksPath, key: "tasks", items: activeTasks.map(ShiftYaml.toYaml))
+        writeListGuarded(path: activeTasksPath, key: "tasks", items: activeTasks.map(ShiftYaml.toYaml))
     }
 
     private func persistProjects() {
-        try? ShiftYaml.writeList(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
+        writeListGuarded(path: projectsPath, key: "projects", items: projects.map(ShiftYaml.toYaml))
     }
 
     // MARK: Attachments (grandline-shift-task-image-attachments)
@@ -434,6 +513,13 @@ final class ShiftStore {
     /// so a self-test or a plain local-only setup never shells out to git.
     private func notify() {
         changeHandlers.forEach { $0() }
+        // GL-01: never propagate a write that happened while some file this
+        // store owns is unreadable - that is the path by which a local wipe
+        // became a pushed wipe.
+        guard !isInFailedLoadState else {
+            NSLog("[cockpit] Shift: skipping git sync - \(loadFailurePaths.count) file(s) failed to parse (GL-01).")
+            return
+        }
         gitSync?.markDirty()
     }
 

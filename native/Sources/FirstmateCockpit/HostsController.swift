@@ -638,7 +638,22 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
         editor.onUpdate = { [weak self] updatedKey, newPassphrase in
             self?.persistUpdatedKey(updatedKey, newPassphrase: newPassphrase)
         }
-        editor.onDelete = { [weak self] id in self?.keyStore.delete(id: id) }
+        // GL-06: the sheet's own Delete button used to call `keyStore.delete`
+        // straight through - unconfirmed, and that call removes the Keychain
+        // private key and passphrase, which exist nowhere else (key material is
+        // deliberately excluded from `.glbackup` exports). It now goes through
+        // the exact same `confirmDeleteKey` the row-level `⋯` menu uses, whose
+        // copy already spells out the Keychain consequence.
+        //
+        // Deferred to the next runloop turn on purpose: the editor dismisses
+        // itself immediately after this closure returns, so running a modal
+        // here would stack an alert on a sheet that is mid-teardown.
+        editor.onDelete = { [weak self] id in
+            DispatchQueue.main.async {
+                guard let self, let key = self.keyStore.key(id: id) else { return }
+                self.confirmDeleteKey(key)
+            }
+        }
         presentAsSheet(editor)
     }
 
@@ -694,7 +709,14 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
                 self.snippetStore.add(saved)
             }
         }
-        editor.onDelete = { [weak self] id in self?.snippetStore.delete(id: id) }
+        // GL-06: same fix as the key editor above - route the sheet's Delete
+        // through the row-level confirmation instead of deleting outright.
+        editor.onDelete = { [weak self] id in
+            DispatchQueue.main.async {
+                guard let self, let snippet = self.snippetStore.snippet(id: id) else { return }
+                self.confirmDeleteSnippet(snippet)
+            }
+        }
         presentAsSheet(editor)
     }
 
@@ -707,14 +729,11 @@ final class HostsController: NSViewController, NSSearchFieldDelegate {
 
     // MARK: Shared alerts
 
+    /// GL-06: one implementation, shared with the host editor window in
+    /// `main.swift`. Note the button order changed with it - the destructive
+    /// action is no longer the default, so Return cancels.
     private func confirm(message: String, detail: String) -> Bool {
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.informativeText = detail
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        return alert.runModal() == .alertFirstButtonReturn
+        DestructiveConfirm.confirm(message: message, detail: detail)
     }
 
     private func presentError(_ error: Error, context: String) {

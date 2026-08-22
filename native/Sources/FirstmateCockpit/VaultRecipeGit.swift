@@ -76,6 +76,12 @@ enum VaultRecipeGit {
     /// why that order, not fetch-after-commit). Safe to call from a
     /// background queue - this never touches the main thread.
     static func export(recipe: VaultRecipe, repoPath: String) -> VaultRecipeExportResult {
+        // GL-22: this writes the captain's full secret-name inventory to
+        // `manjesh-config`. Refuse only on a confirmed-public repo - see
+        // `ConfigRepoPrivacy`'s header on why `.unknown` proceeds.
+        if !ConfigRepoPrivacy.check().allowsPush {
+            return VaultRecipeExportResult(ok: false, message: ConfigRepoPrivacy.publicRepoRefusalMessage, filePath: nil)
+        }
         let fm = FileManager.default
         let folderPath = (repoPath as NSString).appendingPathComponent(backupFolderName)
         let relativeFilePath = "\(backupFolderName)/\(recipeFileName)"

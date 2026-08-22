@@ -302,6 +302,14 @@ final class DocsRunbookGitSync {
     }
 
     private func pushOnly() -> Bool {
+        // GL-22: runbooks and postmortems go to `manjesh-config` too. Same
+        // gate, same scoping rule as `ShiftGitSync.pushOnly` - only the real
+        // remote is checked, so a self-test against a disposable local bare
+        // repo never shells out to `gh`.
+        if remoteURL == DotfilesSource.cloneURL, !ConfigRepoPrivacy.check().allowsPush {
+            setStatus(.failed(ConfigRepoPrivacy.publicRepoRefusalMessage))
+            return false
+        }
         let push = runGit(["push", "origin", "HEAD:\(branch)"], cwd: workingTree, authenticated: true)
         guard push.status == 0 else {
             setStatus(.failed("git push failed: \(push.stderr.isEmpty ? "unknown error" : push.stderr)"))

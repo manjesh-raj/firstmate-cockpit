@@ -161,6 +161,18 @@ A window titled **"Manjesh Grand Line"** opens on the **Shell** tab.
 
 > Launching an unbundled executable this way is expected pre-P4. It gets a Dock icon and menu bar because the app sets a regular activation policy. Signing and notarization for real distribution are still Phase 4 - see "Package as an app" below for a double-clickable local bundle in the meantime.
 
+> **Do not do this from a git worktree.** Every build shares one bundle identity, so a copy launched from a worktree contends with the instance already running on the machine over the same JSON stores and the same Shift git working tree. The app now refuses to be a second instance (`SingleInstanceGuard` + `LSMultipleInstancesProhibited`), so this exits cleanly rather than corrupting anything - but you still get no separate instance to test against. Verify worktree changes with `swift build` plus `./Scripts/run-all-tests.sh`. See the repo root README's "Never launch a built copy from a worktree".
+
+## Tests
+
+```bash
+./Scripts/run-all-tests.sh            # build, then run every self-test suite
+./Scripts/run-all-tests.sh --list     # show the suites without running them
+./Scripts/run-all-tests.sh --no-build FM_RUN_SHIFT_STORE_TESTS
+```
+
+There is no XCTest target - the app carries ~44 permanent suites, each behind its own `FM_RUN_*_TESTS=1` variable, all handled before `NSApplication` is touched so they run headless and are safe alongside the real app. The runner reads its list out of `main.swift`, so it never goes stale. The repo root README has the full convention and the environment-variable index.
+
 ## Package as an app
 
 `./build_native_app.sh` (run from `native/`) builds a release binary with `swift build -c release` and assembles it into a real, double-clickable bundle at `dist/Manjesh Grand Line.app` - no notarization, no DMG - but it's a proper `Contents/{MacOS,Resources}/Info.plist` bundle, so Finder and Spotlight treat it like any other app.
