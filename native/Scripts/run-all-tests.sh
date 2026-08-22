@@ -93,7 +93,7 @@ NEEDS_SESSION=(
 )
 
 if [ "$CI_MODE" -eq 1 ]; then
-  SKIP_FLAGS=("${SKIP_FLAGS[@]}" "${NEEDS_SESSION[@]}")
+  SKIP_FLAGS+=("${NEEDS_SESSION[@]}")
 fi
 
 if [ ! -f "$MAIN" ]; then
@@ -104,9 +104,13 @@ fi
 # Every flag main.swift actually dispatches on, in source order.
 # `while read` rather than `mapfile`: macOS ships bash 3.2, which has no
 # `mapfile`, and CI runners are not guaranteed a newer one on PATH.
+# `+=` rather than re-expanding the array: under `set -u`, bash 3.2 (what macOS
+# and the CI runner ship) treats `"${EMPTY[@]}"` as an unbound variable and
+# aborts. Bash 5 does not, which is exactly why CI caught this and a local run
+# did not.
 ALL_FLAGS=()
 while IFS= read -r flag; do
-  ALL_FLAGS=("${ALL_FLAGS[@]}" "$flag")
+  ALL_FLAGS+=("$flag")
 done < <(grep -oE 'FM_RUN_[A-Z0-9_]+' "$MAIN" | awk '!seen[$0]++')
 
 if [ ${#ALL_FLAGS[@]} -eq 0 ]; then
