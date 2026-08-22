@@ -800,6 +800,13 @@ final class HelmFormSheet: NSView {
     private var leadView: NSView?
     private var fieldCards: [HelmFieldCard] = []
     private var toggleRows: [HelmToggleRow] = []
+    /// A section's optional accent-tinted numbered chip (the Host/Key editors'
+    /// mockup - `grandline-hosts-keys-form-redesign`) - re-tinted with the
+    /// theme's own accent on every change, unlike `mutedLabels`.
+    private var sectionNumberChips: [(chip: NSView, label: NSTextField)] = []
+    /// An accent-tinted info card added via `addInfoCard` - same re-tint
+    /// treatment as the numbered chip.
+    private var infoCards: [(card: NSView, icon: NSImageView, label: NSTextField)] = []
 
     private let scrolls: Bool
     private let maxContentWidth: CGFloat
@@ -1001,10 +1008,13 @@ final class HelmFormSheet: NSView {
     }
 
     /// Start a section. `title` is rendered as the app's one uppercase kicker,
-    /// and `actions` (if any) sit at the column's trailing edge on the same
-    /// line - for a section whose own control belongs beside its name rather
-    /// than in a row of its own.
-    func addSection(_ title: String, actions: [NSView] = []) {
+    /// optionally preceded by a small accent-tinted numbered chip (`number`,
+    /// e.g. `"01"` - the Host/Key editors' mockup convention; `nil`, the
+    /// default, reproduces every pre-existing caller unchanged). `actions`
+    /// (if any) sit at the column's trailing edge on the same line - for a
+    /// section whose own control belongs beside its name rather than in a row
+    /// of its own.
+    func addSection(_ title: String, number: String? = nil, actions: [NSView] = []) {
         let label = NSTextField(labelWithString: "")
         label.attributedStringValue = NSAttributedString(string: title.uppercased(), attributes: [
             .font: HelmType.kicker(),
@@ -1013,9 +1023,20 @@ final class HelmFormSheet: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         mutedLabels.append(label)
 
+        var headViews: [NSView] = []
+        if let number {
+            headViews.append(makeSectionNumberChip(number))
+        }
+        headViews.append(label)
+        let head = NSStackView(views: headViews)
+        head.orientation = .horizontal
+        head.alignment = .centerY
+        head.spacing = HelmMetrics.s2 - 2
+        head.translatesAutoresizingMaskIntoConstraints = false
+
         guard !actions.isEmpty else {
-            contentStack.addArrangedSubview(label)
-            contentStack.setCustomSpacing(HelmMetrics.s2, after: label)
+            appendFullWidth(head)
+            contentStack.setCustomSpacing(HelmMetrics.s2, after: head)
             return
         }
         let spacer = NSView()
@@ -1025,7 +1046,7 @@ final class HelmFormSheet: NSView {
             action.setContentHuggingPriority(.required, for: .horizontal)
             action.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        let row = NSStackView(views: [label, spacer] + actions)
+        let row = NSStackView(views: [head, spacer] + actions)
         row.orientation = .horizontal
         row.alignment = .centerY
         // AGENTS.md gotcha #10: `.gravityAreas` honours no hugging priority, so
@@ -1035,6 +1056,33 @@ final class HelmFormSheet: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         appendFullWidth(row)
         contentStack.setCustomSpacing(HelmMetrics.s2, after: row)
+    }
+
+    /// The mockup's `.fnum` - a small rounded square carrying the section
+    /// number, tinted with the theme's own accent (re-derived on every theme
+    /// change via `sectionNumberChips`, unlike the kicker label beside it
+    /// which just takes `mutedInk`).
+    private func makeSectionNumberChip(_ number: String) -> NSView {
+        let chip = NSView()
+        chip.wantsLayer = true
+        chip.layer?.cornerRadius = HelmMetrics.rChip
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.setContentHuggingPriority(.required, for: .horizontal)
+        chip.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let numberLabel = NSTextField(labelWithString: number)
+        numberLabel.font = .systemFont(ofSize: 9.5, weight: .heavy)
+        numberLabel.alignment = .center
+        numberLabel.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(numberLabel)
+        NSLayoutConstraint.activate([
+            numberLabel.centerXAnchor.constraint(equalTo: chip.centerXAnchor),
+            numberLabel.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            chip.widthAnchor.constraint(equalToConstant: 19),
+            chip.heightAnchor.constraint(equalToConstant: 19),
+        ])
+        sectionNumberChips.append((chip, numberLabel))
+        return chip
     }
 
     /// An arbitrary full-width row.
@@ -1067,6 +1115,46 @@ final class HelmFormSheet: NSView {
     func addFieldColumns(_ pairs: [(String, NSView)]) {
         addColumns(pairs.map { labelled($0.0, $0.1) })
         pairs.forEach { register($0.1) }
+    }
+
+    /// An accent-washed note card: a small leading icon plus a wrapping
+    /// message. The mockup's `.info-card` (Host/Key editors,
+    /// `grandline-hosts-keys-form-redesign`) - a plain `addCaption` reads as
+    /// throwaway fine print, this reads as a considered security note.
+    @discardableResult
+    func addInfoCard(symbol: String = "info.circle", text: String) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.cornerRadius = HelmMetrics.rRow - 1
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = HelmType.caption()
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSStackView(views: [icon, label])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = HelmMetrics.s2
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: HelmMetrics.s3),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -HelmMetrics.s3),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            icon.topAnchor.constraint(equalTo: row.topAnchor, constant: 1),
+        ])
+        infoCards.append((card, icon, label))
+        appendFullWidth(card)
+        return card
     }
 
     /// A wrapping explanatory paragraph.
@@ -1253,6 +1341,18 @@ final class HelmFormSheet: NSView {
         mutedLabels.forEach { $0.textColor = muted }
         fieldCards.forEach { $0.applyTheme(theme) }
         toggleRows.forEach { $0.applyTheme(theme) }
+        let accent = HelmTheme.nsColor(theme.accentHex)
+        sectionNumberChips.forEach { chip, label in
+            chip.layer?.backgroundColor = accent.withAlphaComponent(0.15).cgColor
+            label.textColor = accent
+        }
+        infoCards.forEach { card, icon, label in
+            card.layer?.backgroundColor = accent.withAlphaComponent(0.07).cgColor
+            card.layer?.borderWidth = 1
+            card.layer?.borderColor = accent.withAlphaComponent(0.22).cgColor
+            icon.contentTintColor = accent
+            label.textColor = muted
+        }
         onApplyTheme?(theme)
     }
 

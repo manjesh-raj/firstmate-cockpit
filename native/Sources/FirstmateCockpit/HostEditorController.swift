@@ -36,10 +36,29 @@
 // (AGENTS.md's host-editor gotcha (3)), now inside `HelmFormSheet.cappedColumn`.
 // Every field, every validation rule and the inline "+ New Key…" flow behave
 // exactly as before.
+//
+// `fm/grandline-hosts-keys-form-redesign` gave the form a real visual pass
+// against a captain-approved mockup
+// (`data/grandline-hosts-keys-mockup/mockup.html`) - numbered/kickered
+// sections, an accent-tinted Keychain-security note, a DEV/UAT/PROD quick-pick
+// row over the existing free-text `Host.group` (no new field - see
+// `HostEnvironmentPicker`'s own doc comment), and a real chip-flow Tags input
+// matching `ShiftTaskEditorController`'s own tag chips. This is presentation
+// only: every field, every validation rule, save/cancel/delete and the inline
+// "+ New Key…" flow are unchanged. The mockup's "Test Connection" footer
+// button has no backing capability anywhere in this app (no connection-test
+// code exists to call) and was deliberately left out rather than invented -
+// see the PR description for this task.
+//
+// Section numbering also picked up a fifth section, "Appearance" (the icon/
+// colour pickers), that the mockup itself doesn't show - those pickers are a
+// real, already-shipped feature (`Host.iconSymbol`/`accentHex`) with no
+// equivalent in the mockup's four sections, and removing them would be a
+// functionality regression, not a restyle.
 
 import AppKit
 
-final class HostEditorController: NSViewController {
+final class HostEditorController: NSViewController, NSTextFieldDelegate {
 
     /// The form's content column never grows past this, regardless of window
     /// width - a typical macOS dialog reading width, centred in whatever space
@@ -80,9 +99,13 @@ final class HostEditorController: NSViewController {
     private let portField = HelmTextField(placeholder: "22")
     private let usernameField = HelmTextField(placeholder: "Username")
     private let passwordField = HelmSecureTextField(placeholder: "Session only")
-    private let keyCard = HelmFieldCard(label: "Key")
+    private let keyIconTile = IconTileView(size: 30, cornerRadius: HelmMetrics.rChip)
+    private lazy var keyCard = HelmFieldCard(label: "SSH Key", accessory: keyIconTile)
+    private let environmentPicker = HostEnvironmentPicker()
     private let groupField = HelmTextField(placeholder: "e.g. Production")
-    private let tagsField = HelmTextField(placeholder: "e.g. prod, us-east")
+    private let tagInputField = HelmTextField(placeholder: "Add a tag, press Enter\u{2026}")
+    private let tagsChipsFlow = ChipFlowView()
+    private var tagChips: [String] = []
     private lazy var agentForwardRow = HelmToggleRow(
         title: "Forward SSH agent",
         subtitle: "Passes -A to ssh, so the remote host can use this machine's agent."
@@ -125,6 +148,7 @@ final class HostEditorController: NSViewController {
         self.selectedAccent = host?.accentHex ?? HostCatalog.defaultAccent
         self.selectedKeyID = host?.keyID
         self.selectedSnippetID = host?.startupSnippetID
+        self.tagChips = host?.tags ?? []
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -139,41 +163,60 @@ final class HostEditorController: NSViewController {
         form.autoresizingMask = [.width, .height]
         form.setFrameSize(NSSize(width: 640, height: 780))
         view = form
-        form.onApplyTheme = { [weak self] _ in
+        form.onApplyTheme = { [weak self] theme in
             // The icon/colour swatches carry the host's own chosen accent, not
             // a theme token, but their *unselected* tint is `mutedInk` - so
-            // they still have to be re-derived on a theme change.
+            // they still have to be re-derived on a theme change. Same for
+            // the environment quick-pick row, which is tinted per-option
+            // rather than by `mutedLabels`/`fieldCards`.
             self?.styleIconButtons()
             self?.styleColorButtons()
+            self?.environmentPicker.applyTheme(theme)
+            self?.keyIconTile.applyTheme(theme)
+            self?.tagsChipsFlow.subviews.compactMap { $0 as? VocabularyChipView }.forEach { $0.applyTheme(theme) }
         }
 
         labelField.stringValue = editing?.label ?? ""
         form.addLead(labelField)
 
-        form.addSection("Connection")
+        form.addSection("Connection", number: "01")
         addressField.stringValue = editing?.address ?? ""
+        form.addField("Address", addressField)
         portField.stringValue = editing.map { String($0.port) } ?? "22"
         portField.formatter = intFormatter()
         usernameField.stringValue = editing?.username ?? ""
+        form.addFieldColumns([("Port", portField), ("Username", usernameField)])
         passwordField.stringValue = editing?.password ?? ""
-        form.addFieldColumns([("Address", addressField), ("Port", portField)])
-        form.addFieldColumns([("Username", usernameField), ("Password", passwordField)])
+        form.addField("Password", passwordField)
+        environmentPicker.onSelect = { [weak self] title in self?.groupField.stringValue = title }
+        environmentPicker.select(editing?.group)
+        form.addField("Environment", environmentPicker)
+
+        form.addSection("Authentication", number: "02")
+        keyIconTile.configure(symbol: "key.fill", tint: .warn, pointSize: 13)
         buildKeyChooser()
         form.addRow(keyCard)
-        form.addCaption("Password is used for this session only and never written to disk. "
-            + "A chosen key is resolved from the Keychain at connect time (see the SSH Keys tab, \u{2318}\u{21e7}K); "
-            + "with no key set, ssh falls back to the system agent.")
+        form.addInfoCard(text: "The private key is resolved from the macOS Keychain when connecting. "
+            + "Grand Line never stores the private key material inside the host configuration.")
 
-        form.addSection("Appearance")
+        form.addSection("Appearance", number: "03")
         form.addRow(form.labelledField("Icon", buildIconPicker()))
         form.addRow(form.labelledField("Colour", buildColorPicker()))
 
-        form.addSection("Organisation")
+        form.addSection("Organization", number: "04")
         groupField.stringValue = editing?.group ?? ""
-        tagsField.stringValue = editing?.tags.joined(separator: ", ") ?? ""
-        form.addFieldColumns([("Group", groupField), ("Tags, comma separated", tagsField)])
+        groupField.delegate = self
+        let tagsColumn = NSStackView(views: [tagInputField, tagsChipsFlow])
+        tagsColumn.orientation = .vertical
+        tagsColumn.alignment = .leading
+        tagsColumn.spacing = HelmMetrics.s2
+        tagsColumn.translatesAutoresizingMaskIntoConstraints = false
+        tagInputField.delegate = self
+        renderTagChips()
+        form.addColumns([form.labelledField("Group", groupField),
+                          form.labelledField("Tags", tagsColumn)])
 
-        form.addSection("Advanced")
+        form.addSection("Advanced", number: "05")
         agentForwardRow.isOn = editing?.agentForward ?? false
         blockViewRow.isOn = editing?.blockViewOptIn ?? false
         form.addRow(agentForwardRow)
@@ -195,10 +238,10 @@ final class HostEditorController: NSViewController {
             + "Agent forwarding and port-forwarding rules apply to this host's own connection.")
 
         form.setFooter(target: self,
-                       confirmTitle: editing == nil ? "Create Host" : "Save",
+                       confirmTitle: editing == nil ? "Create Host" : "Save Changes",
                        confirm: #selector(save),
                        cancel: #selector(cancel),
-                       delete: editing == nil ? nil : (title: "Delete", action: #selector(deleteHost)))
+                       delete: editing == nil ? nil : (title: "Delete Host", action: #selector(deleteHost)))
 
         form.refreshTheme()
     }
@@ -298,6 +341,54 @@ final class HostEditorController: NSViewController {
             self?.updatePortForwardingButtonTitle()
         }
         presentAsSheet(editor)
+    }
+
+    // MARK: Environment quick-pick + Tags (redesign)
+
+    /// `groupField` can also be typed into directly - keep the quick-pick row
+    /// in sync either way, and keep the tag-chip input's Enter-to-commit
+    /// behaviour (`ShiftTaskEditorController`'s own established pattern).
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        if field === groupField {
+            environmentPicker.select(groupField.stringValue)
+            return
+        }
+        guard field === tagInputField else { return }
+        let text = tagInputField.stringValue
+        guard text.hasSuffix(",") else { return }
+        let candidate = String(text.dropLast())
+        tagInputField.stringValue = ""
+        commitTag(candidate)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === tagInputField, commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        commitTag(tagInputField.stringValue)
+        tagInputField.stringValue = ""
+        return true
+    }
+
+    private func commitTag(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        guard !tagChips.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return }
+        tagChips.append(trimmed)
+        renderTagChips()
+    }
+
+    private func renderTagChips() {
+        let theme = ThemeManager.shared.theme
+        let chips: [NSView] = tagChips.map { tag in
+            let chip = VocabularyChipView(word: tag)
+            chip.applyTheme(theme)
+            chip.onRemove = { [weak self] in
+                self?.tagChips.removeAll { $0 == tag }
+                self?.renderTagChips()
+            }
+            return chip
+        }
+        tagsChipsFlow.setChips(chips)
     }
 
     // MARK: Icon + colour pickers (A3)
@@ -414,10 +505,7 @@ final class HostEditorController: NSViewController {
         host.keyID = selectedKeyID
         let group = groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         host.group = group.isEmpty ? nil : group
-        host.tags = tagsField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        host.tags = tagChips
         host.agentForward = agentForwardRow.isOn
         host.blockViewOptIn = blockViewRow.isOn
         let jumpVia = jumpViaField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -470,5 +558,129 @@ final class HostEditorController: NSViewController {
     /// Add/Edit call to set a fresh `contentViewController` on it.
     private func closeEditor() {
         view.window?.close()
+    }
+}
+
+// MARK: - Environment quick-pick row
+
+/// The mockup's DEV/UAT/PROD quick-pick row - a convenience over the
+/// existing free-text `Host.group` field, **not** a new persisted concept
+/// (per this task's own instruction: check `group`/`tags` before inventing a
+/// field). Clicking a pill sets `onSelect` with that pill's title, which the
+/// host editor writes straight into `groupField`; the row itself highlights
+/// whichever pill case-insensitively matches the current `group` text, or
+/// none when the group is empty or something else entirely (a host grouped
+/// under, say, "Networking" shows no selected pill here, and the free-text
+/// Group field in the Organization section is still the source of truth).
+final class HostEnvironmentPicker: NSView {
+    private struct Option {
+        let title: String
+        let tint: HelmTint
+    }
+
+    private static let options: [Option] = [
+        Option(title: "DEV", tint: .info),
+        Option(title: "UAT", tint: .warn),
+        Option(title: "PROD", tint: .critical),
+    ]
+
+    private var pills: [(container: HoverHighlightView, dot: NSView, label: NSTextField, option: Option)] = []
+
+    /// Fires with the clicked pill's title (`"DEV"`/`"UAT"`/`"PROD"`).
+    var onSelect: ((String) -> Void)?
+
+    private(set) var selectedTitle: String?
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        var containers: [NSView] = []
+        for option in Self.options {
+            let container = HoverHighlightView()
+            container.cornerRadius = HelmField.cornerRadius
+            container.identifier = NSUserInterfaceItemIdentifier(option.title)
+
+            let dot = NSView()
+            dot.wantsLayer = true
+            dot.layer?.cornerRadius = 3
+            dot.translatesAutoresizingMaskIntoConstraints = false
+
+            let label = NSTextField(labelWithString: option.title)
+            label.font = .systemFont(ofSize: 10.5, weight: .bold)
+            label.translatesAutoresizingMaskIntoConstraints = false
+
+            let row = NSStackView(views: [dot, label])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 5
+            row.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(row)
+            NSLayoutConstraint.activate([
+                row.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                row.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                dot.widthAnchor.constraint(equalToConstant: 6),
+                dot.heightAnchor.constraint(equalToConstant: 6),
+                container.heightAnchor.constraint(equalToConstant: HelmField.controlHeight),
+            ])
+            container.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(pillClicked(_:))))
+            pills.append((container, dot, label, option))
+            containers.append(container)
+        }
+
+        let row = NSStackView(views: containers)
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = HelmMetrics.s1 + 2
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    @objc private func pillClicked(_ sender: NSClickGestureRecognizer) {
+        guard let id = sender.view?.identifier?.rawValue else { return }
+        select(id)
+        onSelect?(id)
+    }
+
+    /// Move the highlight without firing `onSelect` - called whenever the
+    /// bound `group` value changes from something other than a pill click
+    /// (typing directly into the Group field, or loading an existing host).
+    func select(_ groupValue: String?) {
+        selectedTitle = Self.options.first { $0.title.caseInsensitiveCompare(groupValue ?? "") == .orderedSame }?.title
+        applyTheme(ThemeManager.shared.theme)
+    }
+
+    func applyTheme(_ theme: HelmTheme) {
+        for (container, dot, label, option) in pills {
+            let hue = HelmTheme.nsColor(option.tint.hex(in: theme))
+            dot.layer?.backgroundColor = hue.cgColor
+            if option.title == selectedTitle {
+                let resolved = HelmContrast.tintedSurface(tintHex: option.tint.hex(in: theme),
+                                                          theme: theme,
+                                                          target: HelmContrast.textTarget)
+                container.normalColor = resolved.fill
+                container.hoverColor = resolved.fill
+                container.layer?.borderWidth = 1
+                container.layer?.borderColor = hue.withAlphaComponent(0.55).cgColor
+                label.textColor = resolved.foreground
+            } else {
+                let fill = HelmField.fill(theme)
+                container.normalColor = fill
+                container.hoverColor = fill.hoverShifted(by: 0.10, forMode: theme.mode)
+                container.layer?.borderWidth = 1
+                container.layer?.borderColor = HelmField.border(theme).cgColor
+                label.textColor = HelmField.mutedInk(theme)
+            }
+        }
     }
 }
