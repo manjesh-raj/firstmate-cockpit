@@ -433,19 +433,21 @@ final class ConsoleController: NSViewController, LocalProcessTerminalViewDelegat
             sreLeadButton = button
             toolViews.append(button)
         }
-        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton]
-        if !isFirstmateConsole {
-            toolViews += [blockViewToggleButton, blockViewRefreshButton]
-        }
         // Compose (phase 3, `fm/grandline-console-command-composer`) is
         // available on both the shared Firstmate console (its Shell tab is a
         // plain `.shell` launch too) and every dedicated host page - visibility
         // is per-tab (`updateComposeControls`), not per-console like SRE
-        // Lead/block view above. `utilizationButton` (`fm/grandline-herdr-
-        // utilization-panel`) sits in the same slot, gated the opposite way
-        // (`updateUtilizationControls`) - the two are never both visible on
-        // the same tab.
+        // Lead/block view above. Placed immediately after SRE Lead (or first,
+        // on the shared console, which has no SRE Lead button to sit next to)
+        // per captain request - `utilizationButton` (`fm/grandline-herdr-
+        // utilization-panel`), which shares this slot the opposite way
+        // (`updateUtilizationControls` - the two are never both visible on
+        // the same tab), stays in its original trailing position.
         toolViews.append(composeButton)
+        toolViews += [findButton, zoomOutButton, zoomInButton, themeButton]
+        if !isFirstmateConsole {
+            toolViews += [blockViewToggleButton, blockViewRefreshButton]
+        }
         toolViews.append(utilizationButton)
         // `setTrailing` also installs the clearance inequality that keeps a
         // long tab strip truncating rather than running under the actions -
